@@ -1,4 +1,9 @@
-import type { SourceHealth, SttStreamState, UploadStatus } from '../../shared/capture';
+import {
+  NO_AUDIO_WARNING_MS,
+  type SourceHealth,
+  type SttStreamState,
+  type UploadStatus,
+} from '../../shared/capture';
 
 /** `hh:mm:ss` for an offset in milliseconds. */
 export function formatOffset(ms: number): string {
@@ -15,6 +20,8 @@ export function describeHealth(health: SourceHealth, chunks: number): string {
       return 'waiting for audio';
     case 'active':
       return chunks === 0 ? 'open, no audio yet' : `${(chunks / 10).toFixed(0)}s captured`;
+    case 'stalled':
+      return `no audio for over ${NO_AUDIO_WARNING_MS / 1000} s`;
     case 'ended':
       return 'stopped';
     case 'error':

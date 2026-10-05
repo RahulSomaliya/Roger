@@ -130,7 +130,13 @@ body {
   margin: 0;
 }
 
-.health-error dd,
+/* A source with no audio, a dead track or an error is a problem with the call itself. */
+.health-stalled dd,
+.health-ended dd,
+.health-error dd {
+  color: var(--danger);
+}
+
 .upload-backoff dd {
   color: var(--warn);
 }

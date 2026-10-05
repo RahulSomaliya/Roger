@@ -1,8 +1,6 @@
-import type { CaptureStatus } from '../../../shared/capture';
+import { AUDIO_SOURCE_LABEL, type CaptureStatus } from '../../../shared/capture';
 import { AUDIO_SOURCES } from '../../../shared/transcript';
 import { describeHealth, describeStream, describeUpload } from '../format';
-
-const SOURCE_LABEL = { mic: 'Mic (me)', system: 'Call audio (them)' } as const;
 
 export function StatusPanel({ status }: { status: CaptureStatus }) {
   return (
@@ -12,7 +10,7 @@ export function StatusPanel({ status }: { status: CaptureStatus }) {
           const health = status.sources[source];
           return (
             <div key={source} className={`status-row health-${health.health}`}>
-              <dt>{SOURCE_LABEL[source]}</dt>
+              <dt>{AUDIO_SOURCE_LABEL[source]}</dt>
               <dd>
                 {describeHealth(health.health, health.chunks)}
                 {health.message ? <span className="muted"> · {health.message}</span> : null}

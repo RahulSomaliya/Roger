@@ -6,7 +6,20 @@ export type CapturePhase = 'idle' | 'starting' | 'recording' | 'stopping';
 /** What the renderer reports about a MediaStream track. */
 export type AudioSourceState = 'active' | 'ended' | 'error';
 
-export type SourceHealth = 'pending' | 'active' | 'ended' | 'error';
+/**
+ * `stalled`: recording, but no PCM chunk from this source for NO_AUDIO_WARNING_MS (a dead track, a
+ * missing permission, a stuck worklet). Main sets it and clears it on the next chunk.
+ */
+export type SourceHealth = 'pending' | 'active' | 'stalled' | 'ended' | 'error';
+
+/** How long a recording source may go without a single chunk before it is shown as stalled. */
+export const NO_AUDIO_WARNING_MS = 5_000;
+
+/** How the UI and user-facing errors name each stream. */
+export const AUDIO_SOURCE_LABEL: Readonly<Record<AudioSource, string>> = {
+  mic: 'Mic (me)',
+  system: 'Call audio (them)',
+};
 
 export interface SourceStatus {
   health: SourceHealth;

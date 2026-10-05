@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CaptureStatus } from '../../shared/capture';
 import type { AudioSource, TranscriptSegment } from '../../shared/transcript';
 import type { MeetingDto, SttTokenApi, UploadApi } from '../api/ApiClient';
-import { createLogger } from '../logger';
+import { createLogger, type Logger } from '../logger';
 import { InMemoryTranscriptStore } from '../store/InMemoryTranscriptStore';
 import {
   type OpenStreamOptions,
@@ -82,6 +82,7 @@ function harness(
     startupError?: string | null;
     override?: string | null;
     mic?: 'granted' | 'denied';
+    logger?: Logger;
   } = {},
 ) {
   const store = new InMemoryTranscriptStore();
@@ -112,7 +113,7 @@ function harness(
     uploader,
     createSpeechToText: () => stt,
     ensureMicrophoneAccess: () => Promise.resolve(overrides.mic ?? 'granted'),
-    logger,
+    logger: overrides.logger ?? logger,
     sttProviderOverride: overrides.override ?? null,
     startupError: overrides.startupError ?? null,
     clock: () => now,
@@ -130,6 +131,14 @@ function harness(
     statuses,
     segments,
     advance: (ms: number) => (now += ms),
+    /** Fake timers only: let `ms` pass in 100 ms steps, calling `each` after every step. */
+    elapse: async (ms: number, each: () => void = () => undefined) => {
+      for (let passed = 0; passed < ms; passed += 100) {
+        now += 100;
+        each();
+        await vi.advanceTimersByTimeAsync(100);
+      }
+    },
   };
 }
 
@@ -355,6 +364,90 @@ describe('CaptureService with the uploader loop running', () => {
     expect(h.api.appendSegments).toHaveBeenCalledTimes(1);
     expect(h.api.endMeeting).toHaveBeenCalledTimes(1);
     h.uploader.stop();
+  });
+});
+
+describe('CaptureService audio flow', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const chunk = () => new Uint8Array(3200);
+
+  function warnings() {
+    const lines: string[] = [];
+    const warnLogger = createLogger({ level: 'warn', format: 'json', sink: (l) => lines.push(l) });
+    return { lines, logger: warnLogger };
+  }
+
+  it('shows a source that sends no audio for 5 s as stalled, warns once, and clears when audio resumes', async () => {
+    const log = warnings();
+    const h = harness({ logger: log.logger });
+    const { meetingId } = await h.service.start();
+    const micChunk = () => {
+      h.service.pushAudio('mic', chunk());
+    };
+
+    await h.elapse(4_800, micChunk);
+    expect(h.service.getStatus().sources.system.health).not.toBe('stalled');
+
+    await h.elapse(1_000, micChunk);
+    const status = h.service.getStatus();
+    expect(status.sources.system.health).toBe('stalled');
+    expect(status.sources.mic.health).toBe('active');
+    expect(h.statuses.at(-1)?.sources.system.health).toBe('stalled');
+    const stalls = log.lines.filter((l) => l.includes('no audio from source'));
+    expect(stalls).toHaveLength(1);
+    expect(stalls[0]).toContain('"source":"system"');
+    expect(stalls[0]).toContain(`"meetingId":"${meetingId}"`);
+
+    await h.elapse(3_000, micChunk);
+    expect(log.lines.filter((l) => l.includes('no audio from source'))).toHaveLength(1);
+
+    h.service.pushAudio('system', chunk());
+    expect(h.service.getStatus().sources.system.health).toBe('active');
+    expect(h.statuses.at(-1)?.sources.system.health).toBe('active');
+
+    await h.elapse(5_500, micChunk);
+    expect(h.service.getStatus().sources.system.health).toBe('stalled');
+    await h.service.stop();
+  });
+
+  it('does not let the renderer report a stalled source back to healthy without audio', async () => {
+    const h = harness();
+    await h.service.start();
+    await h.elapse(5_500);
+    expect(h.service.getStatus().sources.mic.health).toBe('stalled');
+    h.service.reportSourceState('mic', 'active', null);
+    expect(h.service.getStatus().sources.mic.health).toBe('stalled');
+    await h.service.stop();
+  });
+
+  it('names the stream whose track ended mid-call, and the stall check leaves it ended', async () => {
+    const log = warnings();
+    const h = harness({ logger: log.logger });
+    const { meetingId } = await h.service.start();
+    h.service.pushAudio('system', chunk());
+    h.service.reportSourceState('system', 'ended', 'The audio device stopped delivering audio');
+
+    const status = h.service.getStatus();
+    expect(status.phase).toBe('recording');
+    expect(status.sources.system).toMatchObject({
+      health: 'ended',
+      message: 'The audio device stopped delivering audio',
+    });
+    expect(status.error).toContain('Call audio (them) stopped');
+    expect(status.error).toContain('The audio device stopped delivering audio');
+    const ended = log.lines.find((l) => l.includes('audio source problem'));
+    expect(ended).toContain('"source":"system"');
+    expect(ended).toContain(`"meetingId":"${meetingId}"`);
+
+    await h.elapse(6_000);
+    expect(h.service.getStatus().sources.system.health).toBe('ended');
+    await h.service.stop();
   });
 });
 
