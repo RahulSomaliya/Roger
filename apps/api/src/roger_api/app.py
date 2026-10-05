@@ -41,6 +41,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     # Building these does no I/O; connections are opened on first use, closed in the lifespan.
     database = Database(settings.database_url)
+    # The MCP principal is fixed here, once: right for M1, where one shared secret means one
+    # principal. When M6 gives each user a token, `get_principal` (auth.py) will resolve REST
+    # callers per request, but this line would still hand every MCP caller the default
+    # workspace. Resolve it per request in `BearerAuthMiddleware` (mcp_server.py) in that change.
     mcp = build_mcp_server(
         McpDependencies(database=database, principal=default_principal(settings))
     )

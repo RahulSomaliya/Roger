@@ -41,6 +41,10 @@ def default_principal(settings: Settings) -> Principal:
 def get_principal(
     request: Request, settings: Annotated[Settings, Depends(get_app_settings)]
 ) -> Principal:
+    # REST only. MCP never calls this: `BearerAuthMiddleware` (mcp_server.py) checks the same
+    # token and the tool uses a principal fixed at startup in `create_app` (app.py). When M6
+    # makes this resolve per-user tokens, change those two as well, or every MCP caller keeps
+    # reading the default workspace.
     expected = settings.roger_api_token.get_secret_value()
     if not verify_bearer(request.headers.get("Authorization"), expected):
         raise UnauthorizedError(UNAUTHORIZED_MESSAGE)

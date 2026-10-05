@@ -108,7 +108,13 @@ def build_mcp_server(dependencies: McpDependencies) -> MCPServer[McpDependencies
 
 
 class BearerAuthMiddleware:
-    """Rejects HTTP requests without `Authorization: Bearer <token>` with the 401 envelope."""
+    """Rejects HTTP requests without `Authorization: Bearer <token>` with the 401 envelope.
+
+    It checks the token, then forgets who sent it: the tool uses the one principal `create_app`
+    (app.py) fixed at startup. Right for M1's single shared secret. When M6 adds per-user tokens
+    to `get_principal` (auth.py), this must resolve the principal from the token too and pass it
+    to the tool per request, or every MCP caller silently reads the default workspace.
+    """
 
     def __init__(self, app: ASGIApp, *, token: str) -> None:
         self.app = app
