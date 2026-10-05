@@ -14,8 +14,8 @@ one in Docker). Settings come from the environment and from the repo-root `.env`
 ```bash
 make setup-api   # uv sync --frozen
 make dev-db      # Postgres on localhost:5432 (databases roger and roger_test)
-make migrate     # uv run alembic upgrade head
-make dev-api     # uv run uvicorn roger_api.main:app --reload --port 8000
+make migrate     # uv run --frozen alembic upgrade head
+make dev-api     # uv run --frozen uvicorn roger_api.main:app --reload --port 8000
 ```
 
 - OpenAPI docs: <http://127.0.0.1:8000/docs>
@@ -98,10 +98,13 @@ migrations themselves are tested, and a test checks they match the models), and 
 table before each test.
 
 ```bash
-uv run ruff check . && uv run ruff format --check .   # make lint-api
-uv run mypy                                            # make typecheck-api
-uv run pytest                                          # make test-api
+uv run --frozen ruff check . && uv run --frozen ruff format --check .   # make lint-api
+uv run --frozen mypy                                                     # make typecheck-api
+uv run --frozen pytest                                                   # make test-api
 ```
+
+`--frozen` runs against `uv.lock` as committed. Without it, `uv run` re-resolves the lock and fails
+on a machine whose global uv config has an `exclude-newer` cutoff.
 
 `TEST_DATABASE_URL` is read from the environment or the repo-root `.env`. `make check` runs all
 three for both apps.
@@ -111,12 +114,12 @@ three for both apps.
 Tables are only ever created by Alembic. To change the schema:
 
 1. Edit `src/roger_api/db/models.py`.
-2. `uv run alembic revision --autogenerate --rev-id 0002 -m "Add meeting notes"` against a
-   database at `head`. The file is formatted by ruff automatically.
+2. `uv run --frozen alembic revision --autogenerate --rev-id 0002 -m "Add meeting notes"`
+   against a database at `head`. The file is formatted by ruff automatically.
 3. Read the generated file and fix what autogenerate gets wrong (server defaults, data
    migrations, index expressions). Keep `downgrade()` working.
-4. `uv run alembic upgrade head`, then run the tests: `test_migrations.py` fails if the models
-   and the migrations disagree.
+4. `uv run --frozen alembic upgrade head`, then run the tests: `test_migrations.py` fails if the
+   models and the migrations disagree.
 
 ## Layout
 

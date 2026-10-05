@@ -97,13 +97,15 @@ milestone plan.
 
 Each line is a trap someone already hit. Add one when you hit a new one.
 
-- `uv run` without `--frozen` re-resolves when the machine has a global `exclude-newer` in
-  `~/.config/uv/uv.toml`, and fails on deps newer than the cutoff (`mcp>=2.3`). Use
-  `UV_FROZEN=1` or `uv run --frozen` (first Mac run, 2026-10-05).
-- `pnpm install --frozen-lockfile` fails with `ERR_PNPM_LOCKFILE_CONFIG_MISMATCH` when the global
-  pnpm rc sets `auto-install-peers=false`; the lockfile was made with `true`. Pass
-  `--config.auto-install-peers=true`. With a global `ignore-scripts=true` the Electron binary is
-  missing afterwards: run `node install.js` inside `apps/desktop/node_modules/electron`.
+- `uv run` without `--frozen` re-resolves `uv.lock` when the machine has a global `exclude-newer`
+  in `~/.config/uv/uv.toml`, and fails on deps newer than the cutoff (`mcp>=2.3`, first Mac run,
+  2026-10-05). The Makefile now runs every uv command with `--frozen`; outside make, type
+  `uv run --frozen` or export `UV_FROZEN=1`.
+- `pnpm install --frozen-lockfile` failed with `ERR_PNPM_LOCKFILE_CONFIG_MISMATCH` under a global
+  `auto-install-peers=false`; `pnpm-workspace.yaml` now pins `autoInstallPeers: true` to match the
+  lockfile. Still machine-specific: with a global `ignore-scripts=true` the Electron binary is
+  never downloaded. Fetch it once with `node node_modules/electron/install.js` inside
+  `apps/desktop`; do not change the global config.
 - In `make dev-desktop` the terminal is the app macOS asks for capture permission. cmux, iTerm2 and
   Terminal.app have no `NSAudioCaptureUsageDescription`, so the system audio ("Them") stream is
   dead with no error. Test call audio from the packaged `Roger.app`, which carries the key.

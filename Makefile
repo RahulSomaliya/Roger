@@ -5,6 +5,12 @@ SHELL := /bin/bash
 API_DIR     := apps/api
 DESKTOP_PKG := @roger/desktop
 
+# Every uv command runs against apps/api/uv.lock exactly as committed. Plain `uv run` re-resolves
+# the lock first, and on a machine with a global `exclude-newer` in ~/.config/uv/uv.toml that
+# re-resolve fails on anything published after the cutoff (`mcp>=2.3`, first Mac run 2026-10-05)
+# or silently downgrades. Never drop `--frozen` here; change dependencies with `uv lock` on purpose.
+UV_RUN := uv run --frozen
+
 .PHONY: help setup setup-api setup-desktop check lint lint-api lint-desktop typecheck typecheck-api \
         typecheck-desktop test test-api test-desktop format dev-db migrate dev-api dev-desktop clean
 
@@ -30,7 +36,7 @@ check: lint typecheck test ## Lint, typecheck and test both apps
 lint: lint-api lint-desktop ## Lint both apps
 
 lint-api:
-	cd $(API_DIR) && uv run ruff check . && uv run ruff format --check .
+	cd $(API_DIR) && $(UV_RUN) ruff check . && $(UV_RUN) ruff format --check .
 
 lint-desktop:
 	pnpm --filter $(DESKTOP_PKG) lint
@@ -39,7 +45,7 @@ lint-desktop:
 typecheck: typecheck-api typecheck-desktop ## Typecheck both apps
 
 typecheck-api:
-	cd $(API_DIR) && uv run mypy
+	cd $(API_DIR) && $(UV_RUN) mypy
 
 typecheck-desktop:
 	pnpm --filter $(DESKTOP_PKG) typecheck
@@ -47,13 +53,13 @@ typecheck-desktop:
 test: test-api test-desktop ## Test both apps (API tests need Postgres, see TEST_DATABASE_URL)
 
 test-api:
-	cd $(API_DIR) && uv run pytest
+	cd $(API_DIR) && $(UV_RUN) pytest
 
 test-desktop:
 	pnpm --filter $(DESKTOP_PKG) test
 
 format: ## Auto-format both apps
-	cd $(API_DIR) && uv run ruff check --fix . && uv run ruff format .
+	cd $(API_DIR) && $(UV_RUN) ruff check --fix . && $(UV_RUN) ruff format .
 	pnpm --filter $(DESKTOP_PKG) format
 
 # ---------------------------------------------------------------------------
@@ -63,10 +69,10 @@ dev-db: ## Start local Postgres in Docker (creates roger and roger_test database
 	docker compose up -d db
 
 migrate: ## Apply database migrations to DATABASE_URL
-	cd $(API_DIR) && uv run alembic upgrade head
+	cd $(API_DIR) && $(UV_RUN) alembic upgrade head
 
 dev-api: ## Run the API with auto-reload on :8000
-	cd $(API_DIR) && uv run uvicorn roger_api.main:app --reload --port 8000
+	cd $(API_DIR) && $(UV_RUN) uvicorn roger_api.main:app --reload --port 8000
 
 dev-desktop: ## Run the desktop app in dev mode
 	pnpm --filter $(DESKTOP_PKG) dev

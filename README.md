@@ -33,6 +33,9 @@ make dev-desktop                # in a second terminal
 make check                      # lint + typecheck + test, both apps
 ```
 
+If your global pnpm config sets `ignore-scripts=true`, the Electron binary is never downloaded;
+fetch it once with `cd apps/desktop && node node_modules/electron/install.js`.
+
 To let Claude Code read transcripts, point it at the MCP endpoint:
 
 ```bash
