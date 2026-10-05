@@ -253,12 +253,15 @@ export class CaptureService {
       if (session) {
         await session.close();
         const meetingId = session.meetingId;
+        // A meeting with no line was never sent to Postgres: TranscriptUploader.syncMeeting creates
+        // it only once it holds one, and lines are never deleted, so this delete cannot race an
+        // upload. If the uploader ever creates meetings earlier again, this leaves Postgres a
+        // meeting stuck in "recording".
         if (
-          session.storedSegmentCount === 0 &&
-          store.getMeeting(meetingId)?.remoteState === 'pending'
+          store.getMeeting(meetingId)?.remoteState === 'pending' &&
+          store.deleteMeetingIfEmpty(meetingId)
         ) {
-          // Nothing was said and Postgres has never heard of it: leave no empty "latest meeting" behind.
-          store.deleteMeetingIfEmpty(meetingId);
+          logger.info('empty meeting discarded', { meetingId });
         } else {
           store.markMeetingEnded(meetingId, new Date(this.clock()).toISOString());
         }

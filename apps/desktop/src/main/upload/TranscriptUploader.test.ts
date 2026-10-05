@@ -181,10 +181,43 @@ describe('TranscriptUploader', () => {
     expect(uploader.getStatus()).toMatchObject({ state: 'idle', pending: 0, rejected: 1 });
   });
 
+  it('does not create a meeting in Postgres until it has a line to upload', async () => {
+    const store = new InMemoryTranscriptStore();
+    const api = fakeApi();
+    store.createMeeting({ id: 'm1', title: 'T', startedAt: '2026-10-05T10:00:00Z' });
+    const uploader = new TranscriptUploader({ store, api, logger });
+
+    await uploader.flush();
+    expect(api.createMeeting).not.toHaveBeenCalled();
+    expect(store.getMeeting('m1')?.remoteState).toBe('pending');
+
+    store.appendSegment(segment('m1', 0));
+    await uploader.flush();
+    expect(api.createMeeting).toHaveBeenCalledTimes(1);
+    expect(api.appendSegments).toHaveBeenCalledTimes(1);
+    expect(store.getMeeting('m1')?.remoteState).toBe('created');
+  });
+
+  it('discards an ended meeting that never got a line, without a call to the API', async () => {
+    const store = new InMemoryTranscriptStore();
+    const api = fakeApi();
+    // For example a crash right after Start: recovery ends it at its start time with no lines.
+    store.createMeeting({ id: 'm1', title: 'T', startedAt: '2026-10-05T10:00:00Z' });
+    store.markMeetingEnded('m1', '2026-10-05T10:00:00Z');
+    const uploader = new TranscriptUploader({ store, api, logger });
+
+    await uploader.flush();
+    expect(store.getMeeting('m1')).toBeNull();
+    expect(api.createMeeting).not.toHaveBeenCalled();
+    expect(api.endMeeting).not.toHaveBeenCalled();
+    expect(uploader.getStatus()).toMatchObject({ state: 'idle', lastError: null });
+  });
+
   it('does not reschedule after stop() even if a tick was in flight', async () => {
     const store = new InMemoryTranscriptStore();
     const api = fakeApi();
     store.createMeeting({ id: 'm1', title: 'T', startedAt: '2026-10-05T10:00:00Z' });
+    store.appendSegment(segment('m1', 0));
     let resolveCreate: () => void = () => undefined;
     api.createMeeting.mockImplementationOnce(
       (input) =>
@@ -207,6 +240,7 @@ describe('TranscriptUploader', () => {
     const store = new InMemoryTranscriptStore();
     const api = fakeApi();
     store.createMeeting({ id: 'm1', title: 'T', startedAt: '2026-10-05T10:00:00Z' });
+    store.appendSegment(segment('m1', 0));
     let resolveCreate: () => void = () => undefined;
     api.createMeeting.mockImplementationOnce(
       (input) =>

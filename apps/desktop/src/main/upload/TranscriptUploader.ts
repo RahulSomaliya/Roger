@@ -24,9 +24,10 @@ interface UploaderEvents extends Record<string, unknown> {
 
 /**
  * Drains the local store into Postgres. It runs for the life of the app, not per meeting, so a
- * crash or an offline stretch is recovered on the next tick: pending meetings are created,
- * unsynced lines are appended in batches, ended meetings are ended remotely. Everything it sends
- * is idempotent (house rule 7), so a retry after a half-failed tick is always safe.
+ * crash or an offline stretch is recovered on the next tick: pending meetings are created once
+ * they hold a line, unsynced lines are appended in batches, ended meetings are ended remotely.
+ * Everything it sends is idempotent (house rule 7), so a retry after a half-failed tick is always
+ * safe.
  */
 export class TranscriptUploader {
   private readonly events = new Emitter<UploaderEvents>();
@@ -152,8 +153,20 @@ export class TranscriptUploader {
   }
 
   private async syncMeeting(meeting: LocalMeeting): Promise<void> {
-    const { store, api } = this.options;
+    const { store, api, logger } = this.options;
     if (meeting.remoteState === 'pending') {
+      // Postgres hears of a meeting only once it holds a line. Creating it at Start put empty
+      // meetings in Postgres (MCP's "latest meeting" was a 0-line one) and raced Stop's local
+      // delete, leaving a meeting stuck in "recording". CaptureService.doStop deletes an empty
+      // meeting outright and relies on this rule: keep both sides in step.
+      if (store.listUnsyncedSegments(meeting.id, 1).length === 0) {
+        if (meeting.endedAt !== null && store.deleteMeetingIfEmpty(meeting.id)) {
+          // Ended without a line, for example a crash right after Start: nothing to keep.
+          logger.info('empty meeting discarded', { meetingId: meeting.id });
+        }
+        // Still recording, or every line was set aside as rejected: nothing to create it for.
+        return;
+      }
       await api.createMeeting({
         id: meeting.id,
         title: meeting.title,

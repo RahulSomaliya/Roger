@@ -1,6 +1,6 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CaptureStatus } from '../../shared/capture';
-import type { TranscriptSegment } from '../../shared/transcript';
+import type { AudioSource, TranscriptSegment } from '../../shared/transcript';
 import type { MeetingDto, SttTokenApi, UploadApi } from '../api/ApiClient';
 import { createLogger } from '../logger';
 import { InMemoryTranscriptStore } from '../store/InMemoryTranscriptStore';
@@ -121,7 +121,30 @@ function harness(
   const segments: TranscriptSegment[] = [];
   service.on('status', (status) => statuses.push(status));
   service.on('segment', (segment) => segments.push(segment));
-  return { store, api, stt, service, statuses, segments, advance: (ms: number) => (now += ms) };
+  return {
+    store,
+    api,
+    stt,
+    uploader,
+    service,
+    statuses,
+    segments,
+    advance: (ms: number) => (now += ms),
+  };
+}
+
+type Harness = ReturnType<typeof harness>;
+
+/** A final line from one stream, as the vendor would send it. */
+function sayFinal(h: Harness, source: AudioSource, text: string): void {
+  h.stt.streams.get(source)!.emitter.emit({
+    type: 'final',
+    text,
+    startMs: 0,
+    endMs: 100,
+    confidence: 1,
+    words: [],
+  });
 }
 
 describe('CaptureService', () => {
@@ -265,6 +288,73 @@ describe('CaptureService', () => {
     expect(b.phase).toBe('recording');
     expect(h.stt.opened).toHaveLength(2);
     await h.service.stop();
+  });
+});
+
+describe('CaptureService with the uploader loop running', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('leaves no trace in Postgres of a meeting stopped before its first line', async () => {
+    const h = harness();
+    h.uploader.start();
+    await h.service.start();
+    await vi.advanceTimersByTimeAsync(5_000); // two upload ticks while recording
+    await h.service.stop();
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(h.api.createMeeting).not.toHaveBeenCalled();
+    expect(h.api.endMeeting).not.toHaveBeenCalled();
+    expect(h.store.meetings.size).toBe(0);
+    h.uploader.stop();
+  });
+
+  it('creates the meeting in Postgres with its first line, and ends it on stop', async () => {
+    const h = harness();
+    h.uploader.start();
+    const started = await h.service.start();
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(h.api.createMeeting).not.toHaveBeenCalled();
+
+    sayFinal(h, 'mic', 'first words');
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(h.api.createMeeting).toHaveBeenCalledTimes(1);
+    expect(h.api.createMeeting.mock.calls[0]?.[0].id).toBe(started.meetingId);
+    expect(h.api.appendSegments).toHaveBeenCalledTimes(1);
+
+    await h.service.stop();
+    expect(h.api.endMeeting).toHaveBeenCalledTimes(1);
+    expect(h.store.getMeeting(started.meetingId!)?.remoteState).toBe('ended');
+    h.uploader.stop();
+  });
+
+  it('keeps and ends a meeting whose creation is still in flight when Stop is pressed', async () => {
+    const h = harness();
+    let finishCreate: () => void = () => undefined;
+    h.api.createMeeting.mockImplementationOnce(
+      (input) =>
+        new Promise<MeetingDto>((resolve) => {
+          finishCreate = () => {
+            resolve(meetingDto(input.id));
+          };
+        }),
+    );
+    h.uploader.start();
+    const started = await h.service.start();
+    sayFinal(h, 'system', 'hello');
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(h.api.createMeeting).toHaveBeenCalledTimes(1);
+
+    const stopping = h.service.stop();
+    finishCreate();
+    await stopping;
+    expect(h.store.getMeeting(started.meetingId!)?.remoteState).toBe('ended');
+    expect(h.api.appendSegments).toHaveBeenCalledTimes(1);
+    expect(h.api.endMeeting).toHaveBeenCalledTimes(1);
+    h.uploader.stop();
   });
 });
 
