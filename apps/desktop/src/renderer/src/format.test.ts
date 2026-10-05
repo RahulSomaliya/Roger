@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { UploadStatus } from '../../shared/capture';
-import { describeUpload, formatOffset } from './format';
+import { describeHealth, describeSaved, describeUpload, formatOffset } from './format';
 
 const upload = (overrides: Partial<UploadStatus>): UploadStatus => ({
   state: 'idle',
@@ -20,6 +20,21 @@ describe('formatOffset', () => {
 
   it('never goes negative', () => {
     expect(formatOffset(-5)).toBe('00:00:00');
+  });
+});
+
+describe('describeHealth', () => {
+  it('says how long a stalled source has been without audio', () => {
+    expect(describeHealth('stalled', 12)).toBe('no audio for over 5 s');
+    expect(describeHealth('active', 25)).toBe('3s captured');
+    expect(describeHealth('ended', 25)).toBe('stopped');
+  });
+});
+
+describe('describeSaved', () => {
+  it('counts lines that could not be saved next to the saved ones', () => {
+    expect(describeSaved(3, 0)).toBe('3 lines');
+    expect(describeSaved(3, 2)).toBe('3 lines · 2 could not be saved');
   });
 });
 

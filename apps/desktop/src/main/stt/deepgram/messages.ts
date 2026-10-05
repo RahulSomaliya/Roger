@@ -4,41 +4,19 @@ import type { SttEvent } from '../SpeechToText';
 /**
  * Deepgram streaming wire format → SttEvent. Pure, so it is unit-tested without a socket.
  * Shapes follow the Deepgram SDK types: Results, Metadata, UtteranceEnd, SpeechStarted, Error.
+ *
+ * Every field is read from `unknown` and checked: a vendor message is untrusted input, and a cast
+ * here once let a Results without `channel` throw a TypeError mid-call. A message that does not fit
+ * comes back as `invalid` (the adapter logs it and emits a non-fatal error), never as a throw.
+ *
+ * Fields read from Results: `start` and `duration` (seconds), `is_final`, `from_finalize`,
+ * `channel.alternatives[0]` with `transcript`, `confidence` and `words[]` (`word`,
+ * `punctuated_word`, `start`, `end`, `confidence`).
  */
 
-interface DeepgramWord {
-  word: string;
-  start: number;
-  end: number;
-  confidence?: number;
-  punctuated_word?: string;
-}
-
-interface DeepgramAlternative {
-  transcript: string;
-  confidence?: number;
-  words?: DeepgramWord[];
-}
-
-interface DeepgramResults {
-  type: 'Results';
-  start: number;
-  duration: number;
-  is_final?: boolean;
-  speech_final?: boolean;
-  from_finalize?: boolean;
-  channel: { alternatives: DeepgramAlternative[] };
-}
-
-interface DeepgramError {
-  type: 'Error';
-  description?: string;
-  message?: string;
-  err_code?: string;
-}
-
 export type ParsedDeepgramMessage =
-  | { kind: 'event'; event: SttEvent }
+  /** `warning` names data that was dropped while keeping the event, for the adapter to log. */
+  | { kind: 'event'; event: SttEvent; warning?: string }
   | { kind: 'ignored'; messageType: string }
   | { kind: 'invalid'; reason: string };
 
@@ -54,10 +32,9 @@ export function parseDeepgramMessage(raw: string): ParsedDeepgramMessage {
   }
   switch (parsed.type) {
     case 'Results':
-      return resultsToEvent(parsed as unknown as DeepgramResults);
+      return resultsToEvent(parsed);
     case 'Error': {
-      const error = parsed as unknown as DeepgramError;
-      const message = error.description ?? error.message ?? 'Deepgram error';
+      const message = firstString(parsed.description, parsed.message) ?? 'Deepgram error';
       return { kind: 'event', event: { type: 'error', message, fatal: true } };
     }
     case 'Metadata':
@@ -69,37 +46,59 @@ export function parseDeepgramMessage(raw: string): ParsedDeepgramMessage {
   }
 }
 
-function resultsToEvent(results: DeepgramResults): ParsedDeepgramMessage {
-  const alternative = results.channel.alternatives[0];
-  if (!alternative || typeof results.start !== 'number' || typeof results.duration !== 'number') {
-    return { kind: 'invalid', reason: 'Results without alternatives or timing' };
+function resultsToEvent(results: Record<string, unknown>): ParsedDeepgramMessage {
+  const { start, duration, channel } = results;
+  if (!isFiniteNumber(start) || !isFiniteNumber(duration)) {
+    return { kind: 'invalid', reason: 'Results without timing' };
+  }
+  const alternatives = isRecord(channel) ? channel.alternatives : undefined;
+  const alternative: unknown = Array.isArray(alternatives) ? alternatives[0] : undefined;
+  if (!isRecord(alternative) || typeof alternative.transcript !== 'string') {
+    return { kind: 'invalid', reason: 'Results without a transcript' };
   }
   const text = alternative.transcript.trim();
   if (text === '') return { kind: 'ignored', messageType: 'Results(empty)' };
 
-  const startMs = secondsToMs(results.start);
-  const endMs = secondsToMs(results.start + results.duration);
+  const startMs = secondsToMs(start);
+  const endMs = secondsToMs(start + duration);
   const isFinal = results.is_final === true || results.from_finalize === true;
   if (!isFinal) {
     return { kind: 'event', event: { type: 'interim', text, startMs, endMs } };
   }
-  const words: TranscriptWord[] = (alternative.words ?? []).map((word) => ({
-    text: word.punctuated_word ?? word.word,
-    startMs: secondsToMs(word.start),
-    endMs: secondsToMs(word.end),
-    confidence: typeof word.confidence === 'number' ? word.confidence : null,
-  }));
-  return {
-    kind: 'event',
-    event: {
-      type: 'final',
-      text,
-      startMs,
-      endMs,
-      confidence: typeof alternative.confidence === 'number' ? alternative.confidence : null,
-      words,
-    },
+  const words = parseWords(alternative.words);
+  const event: SttEvent = {
+    type: 'final',
+    text,
+    startMs,
+    endMs,
+    confidence: isFiniteNumber(alternative.confidence) ? alternative.confidence : null,
+    words: words ?? [],
   };
+  // Word timings are extras: a malformed list costs the timings, never the line itself.
+  return words === null
+    ? { kind: 'event', event, warning: 'word timings dropped: malformed word list' }
+    : { kind: 'event', event };
+}
+
+/** The word list, `[]` when absent, or null when any entry is malformed. */
+function parseWords(value: unknown): TranscriptWord[] | null {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) return null;
+  const words: TranscriptWord[] = [];
+  for (const entry of value) {
+    if (!isRecord(entry)) return null;
+    const text = firstString(entry.punctuated_word, entry.word);
+    if (text === undefined || !isFiniteNumber(entry.start) || !isFiniteNumber(entry.end)) {
+      return null;
+    }
+    words.push({
+      text,
+      startMs: secondsToMs(entry.start),
+      endMs: secondsToMs(entry.end),
+      confidence: isFiniteNumber(entry.confidence) ? entry.confidence : null,
+    });
+  }
+  return words;
 }
 
 function secondsToMs(seconds: number): number {
@@ -108,6 +107,14 @@ function secondsToMs(seconds: number): number {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value);
+}
+
+function firstString(...values: unknown[]): string | undefined {
+  return values.find((value): value is string => typeof value === 'string');
 }
 
 /** Client → server control messages. */

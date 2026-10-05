@@ -28,7 +28,11 @@ describe('isSourceStateMessage', () => {
     expect(isSourceStateMessage({ source: 'system', state: 'error', message: 'denied' })).toBe(
       true,
     );
+    expect(
+      isSourceStateMessage({ source: 'mic', state: 'ended', message: 'device unplugged' }),
+    ).toBe(true);
     expect(isSourceStateMessage({ source: 'system', state: 'paused' })).toBe(false);
+    expect(isSourceStateMessage({ source: 'speaker', state: 'ended' })).toBe(false);
     expect(isSourceStateMessage({ source: 'mic', state: 'active', message: 5 })).toBe(false);
   });
 });

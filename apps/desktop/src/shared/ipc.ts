@@ -20,12 +20,19 @@ export const IpcChannel = {
   TranscriptInterim: 'transcript:interim',
 } as const;
 
-/** Sample rate every PCM chunk crossing IPC must have. Vendors are configured to match. */
+/**
+ * The one audio format the renderer sends: every PCM chunk crossing IPC is PCM_ENCODING at
+ * PCM_SAMPLE_RATE. The API's STT stream settings must name the same pair; main refuses to start a
+ * session otherwise (src/main/stt/streamSettings.ts), because a vendor told another rate
+ * transcribes garbage and reports no error.
+ */
 export const PCM_SAMPLE_RATE = 16_000;
+/** Int16 little-endian mono, which is what the PCM worklet produces. */
+export const PCM_ENCODING = 'linear16';
 
 export interface AudioChunkMessage {
   source: AudioSource;
-  /** Int16 little-endian mono PCM at PCM_SAMPLE_RATE. */
+  /** PCM_ENCODING mono PCM at PCM_SAMPLE_RATE. */
   pcm: ArrayBuffer;
 }
 

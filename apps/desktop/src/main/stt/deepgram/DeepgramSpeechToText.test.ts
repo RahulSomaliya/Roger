@@ -108,6 +108,26 @@ describe('DeepgramSpeechToText', () => {
     expect(events.at(-1)).toEqual({ type: 'closed', code: 1000, reason: 'done' });
   });
 
+  it('turns a message it cannot read into a non-fatal error and keeps the stream open', async () => {
+    server.removeAllListeners('connection');
+    server.on('connection', (socket: WebSocket) => {
+      socket.on('message', (_data, isBinary) => {
+        if (!isBinary) return;
+        socket.send(JSON.stringify({ type: 'Results', channel: null }));
+        socket.send(results('still here', true));
+      });
+    });
+    const stt = new DeepgramSpeechToText({ logger, baseUrl, closeTimeoutMs: 50 });
+    const stream = await stt.openStream({ accessToken: 't', settings, label: 'mic' });
+    const events: SttEvent[] = [];
+    stream.on((event) => events.push(event));
+    stream.send(new Uint8Array(3200));
+    await waitFor(() => events.some((e) => e.type === 'final'));
+    expect(events[0]).toMatchObject({ type: 'error', fatal: false });
+    expect(events[1]).toMatchObject({ type: 'final', text: 'still here' });
+    await stream.close();
+  });
+
   it('reports a rejected handshake as a connect error with the status code', async () => {
     rejectWith = 401;
     const stt = new DeepgramSpeechToText({ logger, baseUrl });

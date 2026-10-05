@@ -1,26 +1,30 @@
 import { randomUUID } from 'node:crypto';
 import {
+  AUDIO_SOURCE_LABEL,
   emptySourceStatus,
   idleCaptureStatus,
+  NO_AUDIO_WARNING_MS,
   type AudioSourceState,
   type CapturePhase,
   type CaptureStatus,
   type SourceStatus,
   type SttStreamState,
 } from '../../shared/capture';
-import { PCM_SAMPLE_RATE } from '../../shared/ipc';
+import { PCM_ENCODING, PCM_SAMPLE_RATE } from '../../shared/ipc';
 import {
+  AUDIO_SOURCES,
   SPEAKER_FOR_SOURCE,
   type AudioSource,
   type InterimTranscript,
   type TranscriptSegment,
 } from '../../shared/transcript';
-import type { ApiClient } from '../api/ApiClient';
+import type { SttTokenApi } from '../api/ApiClient';
 import { errorMessage, type Logger } from '../logger';
 import type { MicrophoneAccess } from '../permissions';
 import type { TranscriptStore } from '../store/TranscriptStore';
 import type { SpeechToTextFactory } from '../stt/createSpeechToText';
 import type { SttStreamSettings } from '../stt/SpeechToText';
+import { streamSettingsMismatch } from '../stt/streamSettings';
 import type { TranscriptUploader } from '../upload/TranscriptUploader';
 import { Emitter } from '../util/emitter';
 import { withTimeout } from '../util/time';
@@ -28,7 +32,7 @@ import { CaptureSession } from './CaptureSession';
 
 export interface CaptureServiceOptions {
   store: TranscriptStore;
-  api: ApiClient;
+  api: SttTokenApi;
   uploader: TranscriptUploader;
   createSpeechToText: SpeechToTextFactory;
   ensureMicrophoneAccess: () => Promise<MicrophoneAccess>;
@@ -57,11 +61,11 @@ const FAKE_STREAM_SETTINGS: SttStreamSettings = {
   model: 'fake',
   language: 'en',
   sampleRate: PCM_SAMPLE_RATE,
-  encoding: 'linear16',
+  encoding: PCM_ENCODING,
 };
 
-/** How often chunk counters are pushed to the UI while recording. */
-const COUNTER_EMIT_INTERVAL_MS = 500;
+/** How often the audio flow is checked and chunk counters are pushed to the UI while recording. */
+const MONITOR_INTERVAL_MS = 500;
 
 const SPEAKER_TITLE: Record<AudioSource, string> = { mic: 'Me', system: 'Them' };
 
@@ -83,8 +87,11 @@ export class CaptureService {
   };
   private streams: Record<AudioSource, SttStreamState> = { mic: 'closed', system: 'closed' };
   private error: string | null = null;
+  private segmentsUnsaved = 0;
   private transition: Promise<CaptureStatus> | null = null;
-  private counterTimer: NodeJS.Timeout | null = null;
+  private monitorTimer: NodeJS.Timeout | null = null;
+  /** Clock time the session started recording; the no-audio check counts from it until a chunk. */
+  private recordingSinceMs: number | null = null;
 
   constructor(private readonly options: CaptureServiceOptions) {
     this.clock = options.clock ?? (() => Date.now());
@@ -114,6 +121,7 @@ export class CaptureService {
       sources: { mic: { ...this.sources.mic }, system: { ...this.sources.system } },
       streams: { ...this.streams },
       segmentsStored: this.session?.storedSegmentCount ?? 0,
+      segmentsUnsaved: this.segmentsUnsaved,
       upload,
       error: this.error,
     };
@@ -140,21 +148,41 @@ export class CaptureService {
   pushAudio(source: AudioSource, pcm: Uint8Array): void {
     if (this.phase !== 'recording' || !this.session) return;
     const status = this.sources[source];
+    const now = this.clock();
+    if (status.health === 'stalled') {
+      this.options.logger.info('audio resumed', {
+        source,
+        meetingId: this.session.meetingId,
+        silentForMs: now - (status.lastChunkAt ?? this.recordingSinceMs ?? now),
+      });
+    }
     status.chunks += 1;
-    status.lastChunkAt = this.clock();
-    if (status.health === 'pending') {
+    status.lastChunkAt = now;
+    if (status.health === 'pending' || status.health === 'stalled') {
       status.health = 'active';
       this.emitStatus();
     }
+    // M2's silence warning (chunks arriving but all near zero, e.g. rmsInt16) belongs here.
     this.session.pushAudio(source, pcm);
   }
 
   reportSourceState(source: AudioSource, state: AudioSourceState, message: string | null): void {
     if (this.phase === 'idle') return;
     const status = this.sources[source];
+    if (state === 'active') {
+      // "The track is live" is not "audio flows": only a chunk may clear a stalled source.
+      if (status.health === 'pending') status.health = 'active';
+      this.emitStatus();
+      return;
+    }
     status.health = state;
     status.message = message;
-    if (state === 'error') this.options.logger.warn('audio source problem', { source, message });
+    const meetingId = this.session?.meetingId ?? null;
+    this.options.logger.warn('audio source problem', { source, state, message, meetingId });
+    if (state === 'ended' && this.phase === 'recording') {
+      // A track that ends mid-call never comes back; only a new session reopens the device.
+      this.error = `${AUDIO_SOURCE_LABEL[source]} stopped: ${message ?? 'the audio track ended'}. Press Stop, then Start again.`;
+    }
     this.emitStatus();
   }
 
@@ -178,6 +206,9 @@ export class CaptureService {
         );
       }
       const { provider, accessToken, settings } = await this.resolveStt();
+      // Checked before the meeting exists: a session on the wrong format would store nonsense lines.
+      const mismatch = streamSettingsMismatch(settings);
+      if (mismatch !== null) throw new Error(mismatch);
       const stt = this.options.createSpeechToText(provider);
       this.sttProvider = provider;
       this.startedAt = new Date(startedAtMs).toISOString();
@@ -214,12 +245,23 @@ export class CaptureService {
             logger.error('speech-to-text stream failed mid-call', { meetingId, source, reason });
             this.emitStatus();
           },
+          onSaveFailure: (source, reason) => {
+            // Recording goes on. The likely causes (disk full, the file locked past SQLite's 5 s
+            // busy timeout) are often brief or fixable mid-call, and M1 keeps no audio to
+            // re-transcribe from (that is M2), so stopping would lose every later line as well.
+            // The count and this error stay on screen so the person can decide to stop.
+            this.segmentsUnsaved += 1;
+            const lines = this.segmentsUnsaved === 1 ? '1 line' : `${this.segmentsUnsaved} lines`;
+            this.error = `${lines} could not be saved on this Mac (latest from ${AUDIO_SOURCE_LABEL[source]}, meeting ${meetingId}): ${reason}. Recording continues; free disk space, or press Stop if this keeps happening.`;
+            this.emitStatus();
+          },
         },
       });
       await session.open();
       this.session = session;
+      this.recordingSinceMs = this.clock();
       this.setPhase('recording');
-      this.startCounterTimer();
+      this.startMonitor();
       logger.info('capture started', { meetingId, provider });
     } catch (error) {
       this.error = errorMessage(error);
@@ -244,17 +286,20 @@ export class CaptureService {
     const { logger, store, uploader, stopFlushTimeoutMs = 15_000 } = this.options;
     const session = this.session;
     this.setPhase('stopping');
-    this.stopCounterTimer();
+    this.stopMonitor();
     try {
       if (session) {
         await session.close();
         const meetingId = session.meetingId;
+        // A meeting with no line was never sent to Postgres: TranscriptUploader.syncMeeting creates
+        // it only once it holds one, and lines are never deleted, so this delete cannot race an
+        // upload. If the uploader ever creates meetings earlier again, this leaves Postgres a
+        // meeting stuck in "recording".
         if (
-          session.storedSegmentCount === 0 &&
-          store.getMeeting(meetingId)?.remoteState === 'pending'
+          store.getMeeting(meetingId)?.remoteState === 'pending' &&
+          store.deleteMeetingIfEmpty(meetingId)
         ) {
-          // Nothing was said and Postgres has never heard of it: leave no empty "latest meeting" behind.
-          store.deleteMeetingIfEmpty(meetingId);
+          logger.info('empty meeting discarded', { meetingId });
         } else {
           store.markMeetingEnded(meetingId, new Date(this.clock()).toISOString());
         }
@@ -305,6 +350,8 @@ export class CaptureService {
     this.streams = { mic: 'closed', system: 'closed' };
     this.sttProvider = null;
     this.startedAt = null;
+    this.recordingSinceMs = null;
+    this.segmentsUnsaved = 0;
   }
 
   private setPhase(phase: CapturePhase): void {
@@ -312,16 +359,42 @@ export class CaptureService {
     this.emitStatus();
   }
 
-  private startCounterTimer(): void {
-    this.stopCounterTimer();
-    this.counterTimer = setInterval(() => {
+  private startMonitor(): void {
+    this.stopMonitor();
+    this.monitorTimer = setInterval(() => {
+      this.checkAudioFlow();
       this.emitStatus();
-    }, COUNTER_EMIT_INTERVAL_MS);
+    }, MONITOR_INTERVAL_MS);
   }
 
-  private stopCounterTimer(): void {
-    if (this.counterTimer) clearInterval(this.counterTimer);
-    this.counterTimer = null;
+  private stopMonitor(): void {
+    if (this.monitorTimer) clearInterval(this.monitorTimer);
+    this.monitorTimer = null;
+  }
+
+  /**
+   * The M1 plan's no-audio check: a source that has sent no chunk at all for NO_AUDIO_WARNING_MS
+   * while recording is marked stalled and logged once; its next chunk clears it (pushAudio). It
+   * sees a capture path that stopped (renderer, worklet or IPC), not a live track of silence: that
+   * still sends chunks of zeros, as system audio without its macOS permission most likely does,
+   * and is M2's silence warning (see pushAudio). Sources already `ended` or in `error` keep that
+   * more specific state.
+   */
+  private checkAudioFlow(): void {
+    if (this.phase !== 'recording' || this.recordingSinceMs === null) return;
+    const now = this.clock();
+    for (const source of AUDIO_SOURCES) {
+      const status = this.sources[source];
+      if (status.health !== 'pending' && status.health !== 'active') continue;
+      const silentForMs = now - (status.lastChunkAt ?? this.recordingSinceMs);
+      if (silentForMs < NO_AUDIO_WARNING_MS) continue;
+      status.health = 'stalled';
+      this.options.logger.warn('no audio from source', {
+        source,
+        meetingId: this.session?.meetingId ?? null,
+        silentForMs,
+      });
+    }
   }
 
   private emitStatus(): void {

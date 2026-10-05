@@ -1,8 +1,8 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CaptureStatus } from '../../shared/capture';
-import type { TranscriptSegment } from '../../shared/transcript';
-import type { ApiClient } from '../api/ApiClient';
-import { createLogger } from '../logger';
+import type { AudioSource, TranscriptSegment } from '../../shared/transcript';
+import type { MeetingDto, SttTokenApi, UploadApi } from '../api/ApiClient';
+import { createLogger, type Logger } from '../logger';
 import { InMemoryTranscriptStore } from '../store/InMemoryTranscriptStore';
 import {
   type OpenStreamOptions,
@@ -16,6 +16,20 @@ import { TranscriptUploader } from '../upload/TranscriptUploader';
 import { CaptureService, defaultMeetingTitle } from './CaptureService';
 
 const logger = createLogger({ level: 'error', format: 'json', sink: () => undefined });
+
+function meetingDto(id: string): MeetingDto {
+  return {
+    id,
+    workspace_id: 'w1',
+    title: 'T',
+    status: 'recording',
+    started_at: '2026-10-05T10:00:00Z',
+    ended_at: null,
+    segment_count: 0,
+    created_at: '2026-10-05T10:00:00Z',
+    updated_at: '2026-10-05T10:00:00Z',
+  };
+}
 
 /** A speech-to-text double the test drives by hand. */
 class ScriptedStream implements SttStream {
@@ -68,30 +82,39 @@ function harness(
     startupError?: string | null;
     override?: string | null;
     mic?: 'granted' | 'denied';
+    logger?: Logger;
+    store?: InMemoryTranscriptStore;
   } = {},
 ) {
-  const store = new InMemoryTranscriptStore();
+  const store = overrides.store ?? new InMemoryTranscriptStore();
+  // Typed by the narrow views the services take (SttTokenApi, UploadApi), so no cast is needed.
   const api = {
-    getSttToken: vi.fn().mockResolvedValue({
+    getSttToken: vi.fn<SttTokenApi['getSttToken']>().mockResolvedValue({
       provider: 'scripted',
       access_token: 'tok',
       expires_in: 30,
       stream: { model: 'm', language: 'en', sample_rate: 16000, encoding: 'linear16' },
     }),
-    createMeeting: vi.fn().mockResolvedValue({}),
-    appendSegments: vi.fn().mockResolvedValue({ accepted: 1, duplicates: 0 }),
-    endMeeting: vi.fn().mockResolvedValue({}),
+    createMeeting: vi.fn<UploadApi['createMeeting']>((input) =>
+      Promise.resolve(meetingDto(input.id)),
+    ),
+    appendSegments: vi.fn<UploadApi['appendSegments']>((_meetingId, segments) =>
+      Promise.resolve({ accepted: segments.length, duplicates: 0 }),
+    ),
+    endMeeting: vi.fn<UploadApi['endMeeting']>((meetingId) =>
+      Promise.resolve(meetingDto(meetingId)),
+    ),
   };
   const stt = new ScriptedSpeechToText();
-  const uploader = new TranscriptUploader({ store, api: api as unknown as ApiClient, logger });
+  const uploader = new TranscriptUploader({ store, api, logger });
   let now = 1_000_000;
   const service = new CaptureService({
     store,
-    api: api as unknown as ApiClient,
+    api,
     uploader,
     createSpeechToText: () => stt,
     ensureMicrophoneAccess: () => Promise.resolve(overrides.mic ?? 'granted'),
-    logger,
+    logger: overrides.logger ?? logger,
     sttProviderOverride: overrides.override ?? null,
     startupError: overrides.startupError ?? null,
     clock: () => now,
@@ -100,7 +123,49 @@ function harness(
   const segments: TranscriptSegment[] = [];
   service.on('status', (status) => statuses.push(status));
   service.on('segment', (segment) => segments.push(segment));
-  return { store, api, stt, service, statuses, segments, advance: (ms: number) => (now += ms) };
+  return {
+    store,
+    api,
+    stt,
+    uploader,
+    service,
+    statuses,
+    segments,
+    advance: (ms: number) => (now += ms),
+    /** Fake timers only: let `ms` pass in 100 ms steps, calling `each` after every step. */
+    elapse: async (ms: number, each: () => void = () => undefined) => {
+      for (let passed = 0; passed < ms; passed += 100) {
+        now += 100;
+        each();
+        await vi.advanceTimersByTimeAsync(100);
+      }
+    },
+  };
+}
+
+type Harness = ReturnType<typeof harness>;
+
+/** A store whose next `appendSegment` throws, like a full disk or SQLite busy past its timeout. */
+class FailingStore extends InMemoryTranscriptStore {
+  failNext: Error | null = null;
+  override appendSegment(segment: TranscriptSegment): void {
+    const error = this.failNext;
+    this.failNext = null;
+    if (error) throw error;
+    super.appendSegment(segment);
+  }
+}
+
+/** A final line from one stream, as the vendor would send it. */
+function sayFinal(h: Harness, source: AudioSource, text: string): void {
+  h.stt.streams.get(source)!.emitter.emit({
+    type: 'final',
+    text,
+    startMs: 0,
+    endMs: 100,
+    confidence: 1,
+    words: [],
+  });
 }
 
 describe('CaptureService', () => {
@@ -161,9 +226,7 @@ describe('CaptureService', () => {
     expect(stopped.phase).toBe('idle');
     // One final per stream, both emitted during close, both stored and uploaded before the meeting ends.
     expect(h.segments.map((s) => s.text)).toEqual(['last words', 'last words']);
-    const batches = h.api.appendSegments.mock.calls.map((call) =>
-      (call[1] as TranscriptSegment[]).map((s) => s.text),
-    );
+    const batches = h.api.appendSegments.mock.calls.map((call) => call[1].map((s) => s.text));
     expect(batches).toEqual([['last words', 'last words']]);
     expect(h.api.endMeeting).toHaveBeenCalledTimes(1);
     expect(h.api.appendSegments.mock.invocationCallOrder[0]!).toBeLessThan(
@@ -192,6 +255,35 @@ describe('CaptureService', () => {
     await h.service.stop();
   });
 
+  it('makes a line it could not save locally a visible error, and keeps recording', async () => {
+    const store = new FailingStore();
+    const h = harness({ store });
+    const { meetingId } = await h.service.start();
+    store.failNext = new Error('database or disk is full');
+    sayFinal(h, 'mic', 'lost line');
+
+    let status = h.service.getStatus();
+    expect(status.phase).toBe('recording');
+    expect(status.segmentsStored).toBe(0);
+    expect(status.segmentsUnsaved).toBe(1);
+    expect(status.error).toContain('1 line could not be saved on this Mac');
+    expect(status.error).toContain('Mic (me)');
+    expect(status.error).toContain(meetingId!);
+    expect(status.error).toContain('database or disk is full');
+    expect(h.statuses.at(-1)?.error).toBe(status.error);
+    expect(h.segments.map((s) => s.text)).toEqual(['lost line']);
+
+    sayFinal(h, 'system', 'kept line');
+    status = h.service.getStatus();
+    expect(status.segmentsStored).toBe(1);
+    expect(status.segmentsUnsaved).toBe(1);
+    expect(status.error).toContain('database or disk is full');
+
+    const stopped = await h.service.stop();
+    expect(stopped.segmentsUnsaved).toBe(0);
+    expect(h.store.getMeeting(meetingId!)?.remoteState).toBe('ended');
+  });
+
   it('returns to idle with an error and no stray meeting when speech-to-text cannot connect', async () => {
     const h = harness();
     h.stt.failWith = new SttConnectError('rejected with HTTP 401', 401);
@@ -212,6 +304,22 @@ describe('CaptureService', () => {
     expect(misconfigured.api.getSttToken).not.toHaveBeenCalled();
   });
 
+  it('refuses to start when the API asks for audio the renderer does not send', async () => {
+    const h = harness();
+    h.api.getSttToken.mockResolvedValueOnce({
+      provider: 'scripted',
+      access_token: 'tok',
+      expires_in: 30,
+      stream: { model: 'm', language: 'en', sample_rate: 48000, encoding: 'linear16' },
+    });
+    const status = await h.service.start();
+    expect(status.phase).toBe('idle');
+    expect(status.error).toContain('48000 Hz');
+    expect(status.error).toContain('16000 Hz');
+    expect(h.stt.opened).toHaveLength(0);
+    expect(h.store.meetings.size).toBe(0);
+  });
+
   it('uses the fake adapter without asking the API for a token when overridden', async () => {
     const h = harness({ override: 'fake' });
     const status = await h.service.start();
@@ -229,6 +337,157 @@ describe('CaptureService', () => {
     expect(a.phase).toBe('recording');
     expect(b.phase).toBe('recording');
     expect(h.stt.opened).toHaveLength(2);
+    await h.service.stop();
+  });
+});
+
+describe('CaptureService with the uploader loop running', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('leaves no trace in Postgres of a meeting stopped before its first line', async () => {
+    const h = harness();
+    h.uploader.start();
+    await h.service.start();
+    await vi.advanceTimersByTimeAsync(5_000); // two upload ticks while recording
+    await h.service.stop();
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(h.api.createMeeting).not.toHaveBeenCalled();
+    expect(h.api.endMeeting).not.toHaveBeenCalled();
+    expect(h.store.meetings.size).toBe(0);
+    h.uploader.stop();
+  });
+
+  it('creates the meeting in Postgres with its first line, and ends it on stop', async () => {
+    const h = harness();
+    h.uploader.start();
+    const started = await h.service.start();
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(h.api.createMeeting).not.toHaveBeenCalled();
+
+    sayFinal(h, 'mic', 'first words');
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(h.api.createMeeting).toHaveBeenCalledTimes(1);
+    expect(h.api.createMeeting.mock.calls[0]?.[0].id).toBe(started.meetingId);
+    expect(h.api.appendSegments).toHaveBeenCalledTimes(1);
+
+    await h.service.stop();
+    expect(h.api.endMeeting).toHaveBeenCalledTimes(1);
+    expect(h.store.getMeeting(started.meetingId!)?.remoteState).toBe('ended');
+    h.uploader.stop();
+  });
+
+  it('keeps and ends a meeting whose creation is still in flight when Stop is pressed', async () => {
+    const h = harness();
+    let finishCreate: () => void = () => undefined;
+    h.api.createMeeting.mockImplementationOnce(
+      (input) =>
+        new Promise<MeetingDto>((resolve) => {
+          finishCreate = () => {
+            resolve(meetingDto(input.id));
+          };
+        }),
+    );
+    h.uploader.start();
+    const started = await h.service.start();
+    sayFinal(h, 'system', 'hello');
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(h.api.createMeeting).toHaveBeenCalledTimes(1);
+
+    const stopping = h.service.stop();
+    finishCreate();
+    await stopping;
+    expect(h.store.getMeeting(started.meetingId!)?.remoteState).toBe('ended');
+    expect(h.api.appendSegments).toHaveBeenCalledTimes(1);
+    expect(h.api.endMeeting).toHaveBeenCalledTimes(1);
+    h.uploader.stop();
+  });
+});
+
+describe('CaptureService audio flow', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const chunk = () => new Uint8Array(3200);
+
+  function warnings() {
+    const lines: string[] = [];
+    const warnLogger = createLogger({ level: 'warn', format: 'json', sink: (l) => lines.push(l) });
+    return { lines, logger: warnLogger };
+  }
+
+  it('shows a source that sends no audio for 5 s as stalled, warns once, and clears when audio resumes', async () => {
+    const log = warnings();
+    const h = harness({ logger: log.logger });
+    const { meetingId } = await h.service.start();
+    const micChunk = () => {
+      h.service.pushAudio('mic', chunk());
+    };
+
+    await h.elapse(4_800, micChunk);
+    expect(h.service.getStatus().sources.system.health).not.toBe('stalled');
+
+    await h.elapse(1_000, micChunk);
+    const status = h.service.getStatus();
+    expect(status.sources.system.health).toBe('stalled');
+    expect(status.sources.mic.health).toBe('active');
+    expect(h.statuses.at(-1)?.sources.system.health).toBe('stalled');
+    const stalls = log.lines.filter((l) => l.includes('no audio from source'));
+    expect(stalls).toHaveLength(1);
+    expect(stalls[0]).toContain('"source":"system"');
+    expect(stalls[0]).toContain(`"meetingId":"${meetingId}"`);
+
+    await h.elapse(3_000, micChunk);
+    expect(log.lines.filter((l) => l.includes('no audio from source'))).toHaveLength(1);
+
+    h.service.pushAudio('system', chunk());
+    expect(h.service.getStatus().sources.system.health).toBe('active');
+    expect(h.statuses.at(-1)?.sources.system.health).toBe('active');
+
+    await h.elapse(5_500, micChunk);
+    expect(h.service.getStatus().sources.system.health).toBe('stalled');
+    await h.service.stop();
+  });
+
+  it('does not let the renderer report a stalled source back to healthy without audio', async () => {
+    const h = harness();
+    await h.service.start();
+    await h.elapse(5_500);
+    expect(h.service.getStatus().sources.mic.health).toBe('stalled');
+    h.service.reportSourceState('mic', 'active', null);
+    expect(h.service.getStatus().sources.mic.health).toBe('stalled');
+    await h.service.stop();
+  });
+
+  it('names the stream whose track ended mid-call, and the stall check leaves it ended', async () => {
+    const log = warnings();
+    const h = harness({ logger: log.logger });
+    const { meetingId } = await h.service.start();
+    h.service.pushAudio('system', chunk());
+    h.service.reportSourceState('system', 'ended', 'The audio device stopped delivering audio');
+
+    const status = h.service.getStatus();
+    expect(status.phase).toBe('recording');
+    expect(status.sources.system).toMatchObject({
+      health: 'ended',
+      message: 'The audio device stopped delivering audio',
+    });
+    expect(status.error).toContain('Call audio (them) stopped');
+    expect(status.error).toContain('The audio device stopped delivering audio');
+    const ended = log.lines.find((l) => l.includes('audio source problem'));
+    expect(ended).toContain('"source":"system"');
+    expect(ended).toContain(`"meetingId":"${meetingId}"`);
+
+    await h.elapse(6_000);
+    expect(h.service.getStatus().sources.system.health).toBe('ended');
     await h.service.stop();
   });
 });

@@ -30,6 +30,11 @@ export class PcmStreamCapture {
       // macOS hands out a dead track when the audio-capture permission is missing; Chromium raises no error.
       throw new Error('The audio track ended before capture started (is the permission granted?)');
     }
+    // Listen before the awaits below: a track that ends during setup must still be reported.
+    // Main shows it on that source's row and names the stream in the error.
+    track.addEventListener('ended', () => {
+      this.options.onState('ended', 'The audio device stopped delivering audio');
+    });
     this.stream = stream;
     const context = new AudioContext({ sampleRate: this.options.sampleRate });
     this.context = context;
@@ -57,9 +62,6 @@ export class PcmStreamCapture {
     silent.gain.value = 0;
     context.createMediaStreamSource(stream).connect(node);
     node.connect(silent).connect(context.destination);
-    track.addEventListener('ended', () => {
-      this.options.onState('ended', 'The audio device stopped delivering audio');
-    });
     if (context.state === 'suspended') await context.resume();
     this.options.onState('active');
   }

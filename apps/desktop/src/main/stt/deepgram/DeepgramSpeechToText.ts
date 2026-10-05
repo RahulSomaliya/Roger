@@ -148,7 +148,8 @@ class DeepgramStream implements SttStream {
       try {
         this.handleMessage(rawDataToString(data));
       } catch (error) {
-        // A listener (store write, UI bridge) threw. Report it; an uncaught error here would kill main.
+        // A listener (the UI bridge, say) threw. Report it; an uncaught error here would kill main.
+        // A failed local save never lands here: CaptureSession reports it as a visible error.
         this.logger.error('error while handling a transcript message', {
           error: errorMessage(error),
         });
@@ -209,6 +210,9 @@ class DeepgramStream implements SttStream {
     const parsed = parseDeepgramMessage(raw);
     switch (parsed.kind) {
       case 'event':
+        if (parsed.warning !== undefined) {
+          this.logger.warn('deepgram message partly understood', { warning: parsed.warning });
+        }
         this.emitter.emit(parsed.event);
         return;
       case 'ignored':
@@ -219,6 +223,12 @@ class DeepgramStream implements SttStream {
         this.logger.warn('deepgram message not understood', {
           reason: parsed.reason,
           bytes: raw.length,
+        });
+        // Non-fatal: one unreadable message (vendor format drift) must not end the stream.
+        this.emitter.emit({
+          type: 'error',
+          message: `Deepgram sent a message Roger could not read (${parsed.reason})`,
+          fatal: false,
         });
     }
   }

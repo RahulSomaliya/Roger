@@ -6,7 +6,21 @@ export type CapturePhase = 'idle' | 'starting' | 'recording' | 'stopping';
 /** What the renderer reports about a MediaStream track. */
 export type AudioSourceState = 'active' | 'ended' | 'error';
 
-export type SourceHealth = 'pending' | 'active' | 'ended' | 'error';
+/**
+ * `stalled`: recording, but no PCM chunk at all from this source for NO_AUDIO_WARNING_MS (the
+ * renderer, its worklet or the IPC path stopped). A live track of silence still sends chunks and
+ * stays `active` until M2's silence warning. Main sets it and clears it on the next chunk.
+ */
+export type SourceHealth = 'pending' | 'active' | 'stalled' | 'ended' | 'error';
+
+/** How long a recording source may go without a single chunk before it is shown as stalled. */
+export const NO_AUDIO_WARNING_MS = 5_000;
+
+/** How the UI and user-facing errors name each stream. */
+export const AUDIO_SOURCE_LABEL: Readonly<Record<AudioSource, string>> = {
+  mic: 'Mic (me)',
+  system: 'Call audio (them)',
+};
 
 export interface SourceStatus {
   health: SourceHealth;
@@ -40,6 +54,8 @@ export interface CaptureStatus {
   streams: Record<AudioSource, SttStreamState>;
   /** Final segments stored locally in this session. */
   segmentsStored: number;
+  /** Final segments this session that the local store refused (shown live, not saved). */
+  segmentsUnsaved: number;
   upload: UploadStatus;
   /** Last error worth showing the user, or null. */
   error: string | null;
@@ -58,6 +74,7 @@ export function idleCaptureStatus(upload: UploadStatus): CaptureStatus {
     sources: { mic: emptySourceStatus(), system: emptySourceStatus() },
     streams: { mic: 'closed', system: 'closed' },
     segmentsStored: 0,
+    segmentsUnsaved: 0,
     upload,
     error: null,
   };

@@ -1,13 +1,13 @@
 import type { UploadStatus } from '../../shared/capture';
 import type { TranscriptSegment } from '../../shared/transcript';
-import { ApiError, type ApiClient } from '../api/ApiClient';
+import { ApiError, type UploadApi } from '../api/ApiClient';
 import { errorMessage, type Logger } from '../logger';
 import type { LocalMeeting, TranscriptStore } from '../store/TranscriptStore';
 import { Emitter } from '../util/emitter';
 
 export interface TranscriptUploaderOptions {
   store: TranscriptStore;
-  api: ApiClient;
+  api: UploadApi;
   logger: Logger;
   /** Poll interval while healthy. */
   intervalMs?: number;
@@ -24,9 +24,10 @@ interface UploaderEvents extends Record<string, unknown> {
 
 /**
  * Drains the local store into Postgres. It runs for the life of the app, not per meeting, so a
- * crash or an offline stretch is recovered on the next tick: pending meetings are created,
- * unsynced lines are appended in batches, ended meetings are ended remotely. Everything it sends
- * is idempotent (house rule 7), so a retry after a half-failed tick is always safe.
+ * crash or an offline stretch is recovered on the next tick: pending meetings are created once
+ * they hold a line, unsynced lines are appended in batches, ended meetings are ended remotely.
+ * Everything it sends is idempotent (house rule 7), so a retry after a half-failed tick is always
+ * safe.
  */
 export class TranscriptUploader {
   private readonly events = new Emitter<UploaderEvents>();
@@ -37,7 +38,7 @@ export class TranscriptUploader {
   private readonly clock: () => Date;
   private timer: NodeJS.Timeout | null = null;
   private running = false;
-  private inflight: Promise<void> | null = null;
+  private inflight: Promise<Error | null> | null = null;
   private failures = 0;
   private status: UploadStatus;
 
@@ -68,10 +69,13 @@ export class TranscriptUploader {
     this.timer = null;
   }
 
-  /** Run one full sync now (after any tick in flight). Rejects if the sync fails. */
+  /** Run one full sync now (after any tick in flight). Rejects if this sync fails. */
   async flush(): Promise<void> {
-    if (this.inflight) await this.inflight.catch(() => undefined);
-    await this.runTick();
+    // A tick already in flight has reported its own outcome (log line, status, backoff); its
+    // result is not this flush's answer, so wait for it and then run a fresh tick.
+    if (this.inflight) await this.inflight;
+    const error = await this.runTick();
+    if (error !== null) throw error;
   }
 
   getStatus(): UploadStatus {
@@ -92,11 +96,12 @@ export class TranscriptUploader {
     if (!this.running) return;
     this.timer = setTimeout(() => {
       this.timer = null;
-      void this.runTick().catch(() => undefined);
+      // Never rejects: tick() logs a failure, shows it in the status and schedules the retry.
+      void this.runTick();
     }, delayMs);
   }
 
-  private runTick(): Promise<void> {
+  private runTick(): Promise<Error | null> {
     if (this.inflight) return this.inflight;
     this.inflight = this.tick().finally(() => {
       this.inflight = null;
@@ -104,11 +109,17 @@ export class TranscriptUploader {
     return this.inflight;
   }
 
-  private async tick(): Promise<void> {
-    const meetings = this.options.store.listMeetingsNeedingSync();
-    if (meetings.length > 0)
-      this.setStatus({ state: 'uploading', lastError: null, nextAttemptAt: null });
+  /**
+   * One sync pass. Never rejects: every failure, the local store's included, is logged, retried
+   * with backoff and shown in the status, then handed back for `flush` to rethrow. Anything that can
+   * throw belongs inside the try, or inside the catch's own try; a throw outside them once ended the
+   * loop with no log and no retry.
+   */
+  private async tick(): Promise<Error | null> {
     try {
+      const meetings = this.options.store.listMeetingsNeedingSync();
+      if (meetings.length > 0)
+        this.setStatus({ state: 'uploading', lastError: null, nextAttemptAt: null });
       // One meeting's problem must not hold the others hostage; the first error is still reported.
       let firstError: Error | null = null;
       for (const meeting of meetings) {
@@ -122,6 +133,7 @@ export class TranscriptUploader {
       this.failures = 0;
       this.setStatus({ state: 'idle', lastError: null, nextAttemptAt: null });
       this.schedule(this.intervalMs);
+      return null;
     } catch (error) {
       this.failures += 1;
       const delay = Math.min(this.maxBackoffMs, this.baseBackoffMs * 2 ** (this.failures - 1));
@@ -131,19 +143,42 @@ export class TranscriptUploader {
         delayMs: delay,
         error: message,
       });
-      this.setStatus({
-        state: 'backoff',
-        lastError: message,
-        nextAttemptAt: this.clock().getTime() + delay,
-      });
+      // Retry first, then report: setStatus reads the store's counts and runs the status
+      // listeners, which read them again. A store that fails every call (closed at quit, corrupt,
+      // I/O errors) throws there too, and that throw once rejected tick() before the retry was
+      // set, so the loop stopped for good right after logging that it was backing off.
       this.schedule(delay);
-      throw error;
+      try {
+        this.setStatus({
+          state: 'backoff',
+          lastError: message,
+          nextAttemptAt: this.clock().getTime() + delay,
+        });
+      } catch (statusError) {
+        this.options.logger.error('upload status could not be updated', {
+          error: errorMessage(statusError),
+          uploadError: message,
+        });
+      }
+      return error instanceof Error ? error : new Error(message);
     }
   }
 
   private async syncMeeting(meeting: LocalMeeting): Promise<void> {
-    const { store, api } = this.options;
+    const { store, api, logger } = this.options;
     if (meeting.remoteState === 'pending') {
+      // Postgres hears of a meeting only once it holds a line. Creating it at Start put empty
+      // meetings in Postgres (MCP's "latest meeting" was a 0-line one) and raced Stop's local
+      // delete, leaving a meeting stuck in "recording". CaptureService.doStop deletes an empty
+      // meeting outright and relies on this rule: keep both sides in step.
+      if (store.listUnsyncedSegments(meeting.id, 1).length === 0) {
+        if (meeting.endedAt !== null && store.deleteMeetingIfEmpty(meeting.id)) {
+          // Ended without a line, for example a crash right after Start: nothing to keep.
+          logger.info('empty meeting discarded', { meetingId: meeting.id });
+        }
+        // Still recording, or every line was set aside as rejected: nothing to create it for.
+        return;
+      }
       await api.createMeeting({
         id: meeting.id,
         title: meeting.title,
@@ -205,9 +240,11 @@ export class TranscriptUploader {
   }
 
   private setStatus(patch: Partial<UploadStatus>): void {
+    // Kept before the counts are read: when the store fails them, the backoff and its error still
+    // show as soon as the store reads again.
+    this.status = { ...this.status, ...patch };
     this.status = {
       ...this.status,
-      ...patch,
       pending: this.options.store.countUnsyncedSegments(),
       rejected: this.options.store.countRejectedSegments(),
     };

@@ -28,7 +28,7 @@ export interface TranscriptStore {
   getMeeting(id: string): LocalMeeting | null;
   markMeetingEnded(id: string, endedAt: string): void;
   setMeetingRemoteState(id: string, state: RemoteState): void;
-  /** Delete a meeting that never produced a line (for example a failed start). */
+  /** Delete a meeting that never produced a line (a failed start, or Stop before anyone spoke). */
   deleteMeetingIfEmpty(id: string): boolean;
   /**
    * Close meetings a crash left open: `ended_at` becomes the last line's time, or the start.

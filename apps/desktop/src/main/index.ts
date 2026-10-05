@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { parseEnv } from 'node:util';
-import { app, dialog, ipcMain, type BrowserWindow } from 'electron';
+import { app, dialog, ipcMain, session, type BrowserWindow } from 'electron';
 import { ApiClient } from './api/ApiClient';
 import { CaptureService } from './capture/CaptureService';
 import { loadConfig, readConfigFile } from './config';
@@ -11,7 +11,7 @@ import { ensureMicrophoneAccess } from './permissions';
 import { SqliteTranscriptStore } from './store/SqliteTranscriptStore';
 import { createSpeechToText } from './stt/createSpeechToText';
 import { TranscriptUploader } from './upload/TranscriptUploader';
-import { createMainWindow } from './window';
+import { createMainWindow, installPermissionHandlers, resolveAppPage } from './window';
 
 const MISSING_TOKEN =
   'No API token. Set ROGER_DESKTOP_API_TOKEN (or "apiToken" in config.json in the app data folder) and restart.';
@@ -51,6 +51,12 @@ async function main(): Promise<void> {
     api,
     logger: logger.child({ component: 'uploader' }),
   });
+  // An unreadable config.json is the likely reason for a missing token, so the UI names both.
+  const missingToken = config.apiToken
+    ? null
+    : configFile.error === null
+      ? MISSING_TOKEN
+      : `${MISSING_TOKEN} (${configFile.error})`;
   const capture = new CaptureService({
     store,
     api,
@@ -59,7 +65,7 @@ async function main(): Promise<void> {
     ensureMicrophoneAccess: () => ensureMicrophoneAccess(),
     logger: logger.child({ component: 'capture' }),
     sttProviderOverride: config.sttProviderOverride,
-    startupError: config.apiToken ? null : MISSING_TOKEN,
+    startupError: missingToken,
   });
 
   let window: BrowserWindow | null = null;
@@ -69,10 +75,20 @@ async function main(): Promise<void> {
     getWindow: () => window,
     logger: logger.child({ component: 'ipc' }),
   });
-  if (config.apiToken) uploader.start();
-  else logger.error(MISSING_TOKEN);
+  if (missingToken === null) uploader.start();
+  else logger.error(missingToken);
 
-  window = createMainWindow(join(__dirname, '../preload/index.js'));
+  const page = resolveAppPage();
+  installPermissionHandlers(
+    session.defaultSession,
+    page,
+    logger.child({ component: 'permissions' }),
+  );
+  window = createMainWindow(
+    join(__dirname, '../preload/index.js'),
+    page,
+    logger.child({ component: 'window' }),
+  );
   window.on('closed', () => {
     window = null;
   });
@@ -97,6 +113,8 @@ async function main(): Promise<void> {
         logger.error('stop on quit failed', { error: errorMessage(error) });
       } finally {
         uploader.stop();
+        // A tick still awaiting the API meets the closed store next ('database is not open').
+        // TranscriptUploader.tick logs that and never rejects; a rejection would be unhandled here.
         store.close();
         app.quit();
       }

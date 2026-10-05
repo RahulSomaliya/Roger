@@ -33,13 +33,24 @@ export function loadConfig(env: NodeJS.ProcessEnv, file: ConfigFile = {}): Deskt
   };
 }
 
-/** Read `config.json` from the user data dir. A missing or malformed file is treated as empty. */
-export function readConfigFile(path: string): { config: ConfigFile; error: string | null } {
+/**
+ * Read `config.json` from the user data dir. A missing file is an empty config; a file that cannot
+ * be read or parsed is an empty config plus an error saying why. `read` is injectable for tests.
+ */
+export function readConfigFile(
+  path: string,
+  read: (path: string) => string = (file) => readFileSync(file, 'utf8'),
+): { config: ConfigFile; error: string | null } {
   let raw: string;
   try {
-    raw = readFileSync(path, 'utf8');
-  } catch {
-    return { config: {}, error: null };
+    raw = read(path);
+  } catch (error) {
+    // Only ENOENT means "no config". EACCES or EISDIR is a file someone meant Roger to use, and
+    // treating it as absent turned a permissions problem into a baffling "No API token".
+    const code = errnoCode(error);
+    if (code === 'ENOENT') return { config: {}, error: null };
+    // The code, not the message: keep what reaches logs and the UI short and free of file data.
+    return { config: {}, error: `${path} could not be read (${code ?? 'unknown error'})` };
   }
   try {
     const parsed: unknown = JSON.parse(raw);
@@ -60,6 +71,12 @@ function pickStrings(source: Record<string, unknown>): ConfigFile {
     if (typeof value === 'string') result[key] = value;
   }
   return result;
+}
+
+function errnoCode(error: unknown): string | undefined {
+  return error instanceof Error && 'code' in error && typeof error.code === 'string'
+    ? error.code
+    : undefined;
 }
 
 function firstNonEmpty(...values: (string | undefined)[]): string | undefined {
