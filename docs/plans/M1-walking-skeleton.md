@@ -97,6 +97,18 @@ getDisplayMedia ───┤ worklet  ├─ SttStream(mic)  ──┐  final �
 | API down mid-call | Uploader backoff visible in status line ("12 lines waiting") | Rows stay local with `synced_at NULL`; uploader resumes. Meeting `end` is retried too. |
 | Vendor message format drifts | Parsing tests fail; unknown message types are logged, not fatal | Adapter isolates the shape. |
 
+## Known gaps carried forward
+
+The M1 wrap-up left these alone on purpose. Each has an owner.
+
+| Gap | What happens today | Owner |
+| --- | --- | --- |
+| Deepgram reconnect after a network blip | A dropped socket ends that stream for the rest of the call, with a visible failure. Lines already final stay saved. | M2 |
+| Warning when a live stream carries only silence | A stream that hears nothing still looks live. | M2 |
+| MCP transcript slicing | `get_transcript` returns the whole call in one block, so a long enough call can exceed an MCP client's output cap. | M7 |
+| Automated tests for the renderer capture code | `getUserMedia`, `getDisplayMedia` and the worklet wiring are only checked by a real call. | M2 |
+| Lockfile packages published less than 7 days before 2026-10-05 | electron 44.5.1, mcp 2.3.0, vitest 5.0.3, eslint 10.12.0 and others are inside the usual quarantine window. | Re-check at the next dependency bump |
+
 ## Exit check log
 
 **2026-10-05, automated checks (Linux, Postgres 16):** `make check` green.
