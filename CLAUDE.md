@@ -26,7 +26,7 @@ make dev-db     # Postgres in Docker
 make migrate    # alembic upgrade head
 make dev-api    # API on http://127.0.0.1:8000 (docs at /docs, MCP at /mcp)
 make dev-desktop
-make install-desktop  # build Roger.app (arm64), sign ad hoc, install to /Applications
+make install-desktop  # build Roger.app for this Mac's CPU, sign ad hoc, install to /Applications
 ```
 
 `make help` lists everything. Per-app commands live in `apps/api/pyproject.toml` and
