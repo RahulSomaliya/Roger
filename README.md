@@ -31,7 +31,11 @@ make migrate                    # create tables
 make dev-api                    # http://127.0.0.1:8000  (OpenAPI docs at /docs)
 make dev-desktop                # in a second terminal
 make check                      # lint + typecheck + test, both apps
+make install-desktop            # Roger.app in /Applications: use it to test real call audio
 ```
+
+Test real calls from the installed app: in dev mode macOS asks the terminal for audio capture
+permission, and the system audio stream stays silent.
 
 If your global pnpm config sets `ignore-scripts=true`, the Electron binary is never downloaded;
 fetch it once with `cd apps/desktop && node node_modules/electron/install.js`.

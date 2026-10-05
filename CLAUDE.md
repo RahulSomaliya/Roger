@@ -26,6 +26,7 @@ make dev-db     # Postgres in Docker
 make migrate    # alembic upgrade head
 make dev-api    # API on http://127.0.0.1:8000 (docs at /docs, MCP at /mcp)
 make dev-desktop
+make install-desktop  # build Roger.app (arm64), sign ad hoc, install to /Applications
 ```
 
 `make help` lists everything. Per-app commands live in `apps/api/pyproject.toml` and
@@ -108,9 +109,10 @@ Each line is a trap someone already hit. Add one when you hit a new one.
   `apps/desktop`; do not change the global config.
 - In `make dev-desktop` the terminal is the app macOS asks for capture permission. cmux, iTerm2 and
   Terminal.app have no `NSAudioCaptureUsageDescription`, so the system audio ("Them") stream is
-  dead with no error. Test call audio from the packaged `Roger.app`, which carries the key.
+  dead with no error. Test call audio from the installed `Roger.app`: `make install-desktop`.
 - An unsigned `electron-builder --mac` build re-signed ad hoc with `--options runtime` dies at
   launch (`Electron Framework ... not valid for use in process`: library validation needs a team
-  id). For a local install sign ad hoc without hardened runtime: `codesign --force --deep --sign -`.
+  id). For a local install sign ad hoc without hardened runtime
+  (`codesign --force --deep --sign -`), which is what `make install-desktop` does.
 - A packaged app logs to stderr only. Launch it with
   `open --stderr <file> --stdout <file> /Applications/Roger.app` to read its log.

@@ -12,7 +12,8 @@ DESKTOP_PKG := @roger/desktop
 UV_RUN := uv run --frozen
 
 .PHONY: help setup setup-api setup-desktop check lint lint-api lint-desktop typecheck typecheck-api \
-        typecheck-desktop test test-api test-desktop format dev-db migrate dev-api dev-desktop clean
+        typecheck-desktop test test-api test-desktop format dev-db migrate dev-api dev-desktop \
+        install-desktop clean
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}'
@@ -76,6 +77,11 @@ dev-api: ## Run the API with auto-reload on :8000
 
 dev-desktop: ## Run the desktop app in dev mode
 	pnpm --filter $(DESKTOP_PKG) dev
+
+# Test real call audio from the installed app, not from dev mode: in dev mode macOS asks the
+# terminal for capture permission and the system ("Them") stream is silently dead.
+install-desktop: ## Build Roger.app (arm64), sign it ad hoc and install it to /Applications
+	pnpm --filter $(DESKTOP_PKG) install:mac
 
 clean: ## Remove build output and caches
 	rm -rf apps/desktop/out apps/desktop/dist $(API_DIR)/.mypy_cache $(API_DIR)/.ruff_cache $(API_DIR)/.pytest_cache
