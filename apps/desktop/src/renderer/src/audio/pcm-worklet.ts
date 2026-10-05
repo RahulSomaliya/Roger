@@ -1,14 +1,15 @@
 import { PcmChunker } from './PcmChunker';
+import {
+  PCM_WORKLET_NAME,
+  type PcmWorkletCommand,
+  type PcmWorkletOptions,
+} from './pcm-worklet-contract';
 
-/** Options passed through `AudioWorkletNodeOptions.processorOptions`. */
-export interface PcmWorkletOptions {
-  chunkSamples: number;
-  outputSampleRate: number;
-}
-
-export const PCM_WORKLET_NAME = 'pcm-chunker';
-
-/** Runs on the audio thread: downmix to mono, convert to Int16, post complete chunks to the page. */
+/**
+ * Runs on the audio thread: downmix to mono, convert to Int16, post complete chunks to the page.
+ * Compiled by its own tsconfig (tsconfig.worklet.json) because `AudioWorkletProcessor`,
+ * `registerProcessor` and `sampleRate` exist only in the worklet scope.
+ */
 class PcmChunkerProcessor extends AudioWorkletProcessor {
   private readonly chunker: PcmChunker;
   private stopped = false;
@@ -16,10 +17,11 @@ class PcmChunkerProcessor extends AudioWorkletProcessor {
   constructor(options: AudioWorkletNodeOptions) {
     super();
     // processorOptions is untyped on the wire; PcmStreamCapture is the only sender.
-    const { chunkSamples, outputSampleRate } = options.processorOptions as PcmWorkletOptions;
-    this.chunker = new PcmChunker(chunkSamples, sampleRate, outputSampleRate);
+    const { chunkSamples } = options.processorOptions as PcmWorkletOptions;
+    this.chunker = new PcmChunker(chunkSamples);
+    const flush: PcmWorkletCommand = 'flush';
     this.port.onmessage = (event: MessageEvent<unknown>) => {
-      if (event.data !== 'flush') return;
+      if (event.data !== flush) return;
       const rest = this.chunker.flush();
       if (rest) this.port.postMessage(rest, [rest]);
       this.stopped = true;

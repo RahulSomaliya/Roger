@@ -41,7 +41,7 @@ describe('readConfigFile', () => {
     writeFileSync(path, '{ not json');
     const result = readConfigFile(path);
     expect(result.config).toEqual({});
-    expect(result.error).toContain('not valid JSON');
+    expect(result.error).toBe(`${path} is not valid JSON`);
   });
 
   it('keeps only known string keys', () => {

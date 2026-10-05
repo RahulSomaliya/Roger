@@ -47,8 +47,9 @@ export function readConfigFile(path: string): { config: ConfigFile; error: strin
       return { config: {}, error: `${path} must contain a JSON object` };
     }
     return { config: pickStrings(parsed as Record<string, unknown>), error: null };
-  } catch (error) {
-    return { config: {}, error: `${path} is not valid JSON: ${(error as Error).message}` };
+  } catch {
+    // V8 quotes the offending input in some parse errors; the file may hold the API token.
+    return { config: {}, error: `${path} is not valid JSON` };
   }
 }
 

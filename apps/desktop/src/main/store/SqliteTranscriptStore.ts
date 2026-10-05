@@ -46,6 +46,7 @@ const MIGRATIONS: readonly string[] = [
   `
   ALTER TABLE segments ADD COLUMN rejected_at TEXT;
   ALTER TABLE segments ADD COLUMN rejected_reason TEXT;
+  CREATE INDEX segments_rejected ON segments (rejected_at) WHERE rejected_at IS NOT NULL;
   `,
 ];
 
@@ -59,6 +60,8 @@ export class SqliteTranscriptStore implements TranscriptStore {
     endMeeting: StatementSync;
     setRemoteState: StatementSync;
     deleteEmptyMeeting: StatementSync;
+    endLeftOpen: StatementSync;
+    resetSync: StatementSync;
     meetingsNeedingSync: StatementSync;
     insertSegment: StatementSync;
     unsyncedSegments: StatementSync;
@@ -78,6 +81,8 @@ export class SqliteTranscriptStore implements TranscriptStore {
     this.db.exec('PRAGMA journal_mode = WAL');
     this.db.exec('PRAGMA synchronous = NORMAL');
     this.db.exec('PRAGMA foreign_keys = ON');
+    // A second process (or a stuck WAL checkpoint) must not throw SQLITE_BUSY at a live transcript.
+    this.db.exec('PRAGMA busy_timeout = 5000');
     this.migrate();
     this.statements = {
       insertMeeting: this.db.prepare(
@@ -93,6 +98,15 @@ export class SqliteTranscriptStore implements TranscriptStore {
       ),
       deleteEmptyMeeting: this.db.prepare(
         `DELETE FROM meetings WHERE id = ? AND NOT EXISTS (SELECT 1 FROM segments WHERE meeting_id = ?)`,
+      ),
+      endLeftOpen: this.db.prepare(
+        `UPDATE meetings
+         SET ended_at = COALESCE((SELECT MAX(created_at) FROM segments WHERE meeting_id = meetings.id), started_at),
+             updated_at = ?
+         WHERE ended_at IS NULL`,
+      ),
+      resetSync: this.db.prepare(
+        `UPDATE segments SET synced_at = NULL WHERE meeting_id = ? AND rejected_at IS NULL`,
       ),
       meetingsNeedingSync: this.db.prepare(
         `SELECT * FROM meetings WHERE remote_state != 'ended' ORDER BY started_at ASC, id ASC`,
@@ -142,6 +156,14 @@ export class SqliteTranscriptStore implements TranscriptStore {
 
   deleteMeetingIfEmpty(id: string): boolean {
     return this.statements.deleteEmptyMeeting.run(id, id).changes > 0;
+  }
+
+  endMeetingsLeftOpen(updatedAt: string): number {
+    return Number(this.statements.endLeftOpen.run(updatedAt).changes);
+  }
+
+  resetSyncForMeeting(id: string): void {
+    this.statements.resetSync.run(id);
   }
 
   listMeetingsNeedingSync(): LocalMeeting[] {

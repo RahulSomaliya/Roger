@@ -1,8 +1,8 @@
-import type { BrowserWindow, IpcMain, IpcMainEvent } from 'electron';
+import type { BrowserWindow, IpcMain, IpcMainEvent, IpcMainInvokeEvent } from 'electron';
 import { desktopCapturer } from 'electron';
-import { IpcChannel, type AudioChunkMessage, type AudioSourceStateMessage } from '../shared/ipc';
-import { isAudioSource } from '../shared/transcript';
+import { IpcChannel } from '../shared/ipc';
 import type { CaptureService } from './capture/CaptureService';
+import { isSourceStateMessage, parseAudioChunk } from './ipc-validation';
 import { errorMessage, type Logger } from './logger';
 
 export interface IpcDeps {
@@ -14,18 +14,24 @@ export interface IpcDeps {
 
 /** Wires the IPC contract (src/shared/ipc.ts) to the capture service. Payloads from the renderer are validated. */
 export function registerIpcHandlers({ ipcMain, capture, getWindow, logger }: IpcDeps): void {
-  const trusted = (event: IpcMainEvent): boolean => {
+  const trusted = (event: IpcMainEvent | IpcMainInvokeEvent): boolean => {
     const window = getWindow();
     const ok = window !== null && event.sender.id === window.webContents.id;
     if (!ok)
       logger.warn('ipc message from unexpected sender ignored', { senderId: event.sender.id });
     return ok;
   };
+  const handle = <T>(channel: string, run: () => Promise<T> | T): void => {
+    ipcMain.handle(channel, (event) => {
+      if (!trusted(event)) throw new Error('untrusted sender');
+      return run();
+    });
+  };
 
-  ipcMain.handle(IpcChannel.CaptureStart, () => capture.start());
-  ipcMain.handle(IpcChannel.CaptureStop, () => capture.stop());
-  ipcMain.handle(IpcChannel.CaptureGetStatus, () => capture.getStatus());
-  ipcMain.handle(IpcChannel.AudioGetSystemSource, async () => {
+  handle(IpcChannel.CaptureStart, () => capture.start());
+  handle(IpcChannel.CaptureStop, () => capture.stop());
+  handle(IpcChannel.CaptureGetStatus, () => capture.getStatus());
+  handle(IpcChannel.AudioGetSystemSource, async () => {
     try {
       // A screen source is what Chromium attaches system audio to; we never render its video.
       const sources = await desktopCapturer.getSources({
@@ -71,26 +77,4 @@ export function registerIpcHandlers({ ipcMain, capture, getWindow, logger }: Ipc
   capture.on('interim', (interim) => {
     send(IpcChannel.TranscriptInterim, interim);
   });
-}
-
-function parseAudioChunk(
-  message: unknown,
-): { source: AudioChunkMessage['source']; pcm: Uint8Array } | null {
-  if (typeof message !== 'object' || message === null) return null;
-  const { source, pcm } = message as { source?: unknown; pcm?: unknown };
-  if (!isAudioSource(source)) return null;
-  if (pcm instanceof ArrayBuffer) return { source, pcm: new Uint8Array(pcm) };
-  if (ArrayBuffer.isView(pcm))
-    return { source, pcm: new Uint8Array(pcm.buffer, pcm.byteOffset, pcm.byteLength) };
-  return null;
-}
-
-function isSourceStateMessage(message: unknown): message is AudioSourceStateMessage {
-  if (typeof message !== 'object' || message === null) return false;
-  const { source, state, message: text } = message as Record<string, unknown>;
-  return (
-    isAudioSource(source) &&
-    (state === 'active' || state === 'ended' || state === 'error') &&
-    (text === undefined || typeof text === 'string')
-  );
 }

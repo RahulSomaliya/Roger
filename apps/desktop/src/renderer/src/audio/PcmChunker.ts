@@ -1,28 +1,23 @@
-import { floatToInt16, resampleLinear } from '../../../shared/pcm';
+import { floatToInt16 } from '../../../shared/pcm';
 
 /**
  * Turns Float32 audio blocks into fixed-size Int16 chunks. Pure, so it is unit-tested; the worklet
- * just wires it to the audio graph. Resampling is a fallback: the AudioContext is asked for the
- * target rate and Chromium normally honours it.
+ * just wires it to the audio graph. No resampling: the AudioContext is created at the target rate
+ * and PcmStreamCapture refuses to run if Chromium does not honour it.
  */
 export class PcmChunker {
   private buffer: Int16Array<ArrayBuffer>;
   private offset = 0;
 
-  constructor(
-    private readonly chunkSamples: number,
-    private readonly inputRate: number,
-    private readonly outputRate: number,
-  ) {
+  constructor(private readonly chunkSamples: number) {
     if (chunkSamples <= 0) throw new Error('chunkSamples must be positive');
     this.buffer = new Int16Array(chunkSamples);
   }
 
   /** Returns zero or more complete chunks, each backed by its own transferable ArrayBuffer. */
   push(samples: Float32Array): ArrayBuffer[] {
-    const resampled = resampleLinear(samples, this.inputRate, this.outputRate);
     const chunks: ArrayBuffer[] = [];
-    for (const sample of resampled) {
+    for (const sample of samples) {
       this.buffer[this.offset] = floatToInt16(sample);
       this.offset += 1;
       if (this.offset === this.chunkSamples) {

@@ -9,7 +9,12 @@ import {
   type SttStreamState,
 } from '../../shared/capture';
 import { PCM_SAMPLE_RATE } from '../../shared/ipc';
-import type { AudioSource, InterimTranscript, TranscriptSegment } from '../../shared/transcript';
+import {
+  SPEAKER_FOR_SOURCE,
+  type AudioSource,
+  type InterimTranscript,
+  type TranscriptSegment,
+} from '../../shared/transcript';
 import type { ApiClient } from '../api/ApiClient';
 import { errorMessage, type Logger } from '../logger';
 import type { MicrophoneAccess } from '../permissions';
@@ -28,13 +33,18 @@ export interface CaptureServiceOptions {
   createSpeechToText: SpeechToTextFactory;
   ensureMicrophoneAccess: () => Promise<MicrophoneAccess>;
   logger: Logger;
-  /** Only "fake" is honoured: it lets the app run with no API token during development. */
+  /** Only "fake" is honoured: it skips the vendor token and transcribes audio energy (development). */
   sttProviderOverride: string | null;
   /** A configuration problem found at startup. Start fails with this message until it is fixed. */
   startupError: string | null;
   /** How long Stop waits for the uploader to drain before giving up (lines stay local). */
   stopFlushTimeoutMs?: number;
   clock?: () => number;
+}
+
+export interface StopOptions {
+  /** Wait for the uploader to drain. Off when quitting: the uploader resumes on next launch. */
+  flushUploads?: boolean;
 }
 
 interface CaptureEvents extends Record<string, unknown> {
@@ -52,6 +62,8 @@ const FAKE_STREAM_SETTINGS: SttStreamSettings = {
 
 /** How often chunk counters are pushed to the UI while recording. */
 const COUNTER_EMIT_INTERVAL_MS = 500;
+
+const SPEAKER_TITLE: Record<AudioSource, string> = { mic: 'Me', system: 'Them' };
 
 /**
  * The capture state machine: idle → starting → recording → stopping → idle. One session at a time;
@@ -116,10 +128,10 @@ export class CaptureService {
     return this.transition;
   }
 
-  stop(): Promise<CaptureStatus> {
-    if (this.transition) return this.transition.then(() => this.stop());
+  stop(options: StopOptions = {}): Promise<CaptureStatus> {
+    if (this.transition) return this.transition.then(() => this.stop(options));
     if (this.phase !== 'recording') return Promise.resolve(this.getStatus());
-    this.transition = this.doStop().finally(() => {
+    this.transition = this.doStop(options).finally(() => {
       this.transition = null;
     });
     return this.transition;
@@ -196,6 +208,12 @@ export class CaptureService {
             this.streams[source] = state;
             this.emitStatus();
           },
+          onStreamFailure: (source, reason) => {
+            this.streams[source] = 'error';
+            this.error = `Transcription of ${SPEAKER_TITLE[source]} (${SPEAKER_FOR_SOURCE[source]}) stopped: ${reason}. Press Stop, then Start again.`;
+            logger.error('speech-to-text stream failed mid-call', { meetingId, source, reason });
+            this.emitStatus();
+          },
         },
       });
       await session.open();
@@ -206,36 +224,58 @@ export class CaptureService {
     } catch (error) {
       this.error = errorMessage(error);
       logger.error('capture start failed', { meetingId, error: this.error });
-      if (session) await session.close();
-      if (meetingCreated) store.deleteMeetingIfEmpty(meetingId);
-      this.resetSessionState();
-      this.setPhase('idle');
+      try {
+        if (session) await session.close();
+        if (meetingCreated) store.deleteMeetingIfEmpty(meetingId);
+      } catch (cleanupError) {
+        logger.error('cleanup after failed start failed', {
+          meetingId,
+          error: errorMessage(cleanupError),
+        });
+      } finally {
+        this.resetSessionState();
+        this.setPhase('idle');
+      }
     }
     return this.getStatus();
   }
 
-  private async doStop(): Promise<CaptureStatus> {
+  private async doStop(options: StopOptions): Promise<CaptureStatus> {
     const { logger, store, uploader, stopFlushTimeoutMs = 15_000 } = this.options;
     const session = this.session;
     this.setPhase('stopping');
     this.stopCounterTimer();
-    if (session) {
-      await session.close();
-      store.markMeetingEnded(session.meetingId, new Date(this.clock()).toISOString());
-      try {
-        await withTimeout(uploader.flush(), stopFlushTimeoutMs, 'upload on stop');
-      } catch (error) {
-        // Lines are safe locally; the uploader keeps retrying in the background.
-        logger.warn('upload did not finish on stop', { error: errorMessage(error) });
+    try {
+      if (session) {
+        await session.close();
+        const meetingId = session.meetingId;
+        if (
+          session.storedSegmentCount === 0 &&
+          store.getMeeting(meetingId)?.remoteState === 'pending'
+        ) {
+          // Nothing was said and Postgres has never heard of it: leave no empty "latest meeting" behind.
+          store.deleteMeetingIfEmpty(meetingId);
+        } else {
+          store.markMeetingEnded(meetingId, new Date(this.clock()).toISOString());
+        }
+        if (options.flushUploads !== false) {
+          try {
+            await withTimeout(uploader.flush(), stopFlushTimeoutMs, 'upload on stop');
+          } catch (error) {
+            // Lines are safe locally; the uploader keeps retrying in the background.
+            logger.warn('upload did not finish on stop', { error: errorMessage(error) });
+          }
+        }
+        logger.info('capture stopped', { meetingId, segments: session.storedSegmentCount });
       }
-      logger.info('capture stopped', {
-        meetingId: session.meetingId,
-        segments: session.storedSegmentCount,
-      });
+    } catch (error) {
+      this.error = errorMessage(error);
+      logger.error('capture stop failed', { error: this.error });
+    } finally {
+      this.session = null;
+      this.resetSessionState();
+      this.setPhase('idle');
     }
-    this.session = null;
-    this.resetSessionState();
-    this.setPhase('idle');
     return this.getStatus();
   }
 

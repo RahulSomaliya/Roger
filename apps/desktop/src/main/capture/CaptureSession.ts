@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import type { SttStreamState } from '../../shared/capture';
+import { PCM_SAMPLE_RATE } from '../../shared/ipc';
+import { pcmBytesToMs } from '../../shared/pcm';
 import {
   AUDIO_SOURCES,
   SPEAKER_FOR_SOURCE,
@@ -11,10 +12,14 @@ import { errorMessage, type Logger } from '../logger';
 import type { TranscriptStore } from '../store/TranscriptStore';
 import type { SpeechToText, SttEvent, SttStream, SttStreamSettings } from '../stt/SpeechToText';
 
+export type SessionStreamState = 'connecting' | 'open' | 'closed';
+
 export interface CaptureSessionListeners {
   onSegment(segment: TranscriptSegment): void;
   onInterim(interim: InterimTranscript): void;
-  onStreamState(source: AudioSource, state: SttStreamState): void;
+  onStreamState(source: AudioSource, state: SessionStreamState): void;
+  /** A stream died while the session was still recording. The session keeps the other stream. */
+  onStreamFailure(source: AudioSource, reason: string): void;
 }
 
 export interface CaptureSessionOptions {
@@ -40,6 +45,7 @@ export class CaptureSession {
   private readonly firstChunkOffsetMs = new Map<AudioSource, number>();
   private readonly clock: () => number;
   private segmentsStored = 0;
+  private closing = false;
 
   constructor(private readonly options: CaptureSessionOptions) {
     this.meetingId = options.meetingId;
@@ -50,13 +56,15 @@ export class CaptureSession {
     return this.segmentsStored;
   }
 
-  /** Open every stream. If one fails, the others are closed and the error is rethrown. */
+  /** Open every stream. If any fails, the ones that opened are closed and the first error is rethrown. */
   async open(): Promise<void> {
-    try {
-      await Promise.all(AUDIO_SOURCES.map((source) => this.openStream(source)));
-    } catch (error) {
+    const results = await Promise.allSettled(
+      AUDIO_SOURCES.map((source) => this.openStream(source)),
+    );
+    const failed = results.find((result) => result.status === 'rejected');
+    if (failed) {
       await this.close();
-      throw error;
+      throw failed.reason instanceof Error ? failed.reason : new Error(String(failed.reason));
     }
   }
 
@@ -64,16 +72,18 @@ export class CaptureSession {
     const stream = this.streams.get(source);
     if (!stream) return;
     if (!this.firstChunkOffsetMs.has(source)) {
-      // The vendor's clock starts at its first audio byte; remember where that falls in the meeting.
-      this.firstChunkOffsetMs.set(
-        source,
-        Math.max(0, this.clock() - this.options.meetingStartedAtMs),
-      );
+      // The vendor's clock starts at its first audio byte. That byte was captured one chunk
+      // before it reached us, so the offset is "now" minus the chunk's own duration.
+      const captured =
+        this.clock() -
+        pcmBytesToMs(pcm.byteLength, this.options.settings.sampleRate || PCM_SAMPLE_RATE);
+      this.firstChunkOffsetMs.set(source, Math.max(0, captured - this.options.meetingStartedAtMs));
     }
     stream.send(pcm);
   }
 
   async close(): Promise<void> {
+    this.closing = true;
     const streams = [...this.streams.entries()];
     this.streams.clear();
     const results = await Promise.allSettled(streams.map(([, stream]) => stream.close()));
@@ -90,21 +100,22 @@ export class CaptureSession {
   private async openStream(source: AudioSource): Promise<void> {
     const { listeners, stt, accessToken, settings } = this.options;
     listeners.onStreamState(source, 'connecting');
-    try {
-      const stream = await stt.openStream({ accessToken, settings, label: source });
-      stream.on((event) => {
-        this.handleEvent(source, event);
-      });
-      this.streams.set(source, stream);
-      listeners.onStreamState(source, 'open');
-    } catch (error) {
-      listeners.onStreamState(source, 'error');
-      throw error;
+    const stream = await stt.openStream({ accessToken, settings, label: source });
+    if (this.closing) {
+      // Another stream failed while this one was still connecting; do not leak it.
+      await stream.close();
+      return;
     }
+    stream.on((event) => {
+      this.handleEvent(source, event);
+    });
+    this.streams.set(source, stream);
+    listeners.onStreamState(source, 'open');
   }
 
   private handleEvent(source: AudioSource, event: SttEvent): void {
     const offset = this.firstChunkOffsetMs.get(source) ?? 0;
+    const { listeners, logger } = this.options;
     switch (event.type) {
       case 'final': {
         const segment: TranscriptSegment = {
@@ -125,11 +136,11 @@ export class CaptureSession {
         };
         this.options.store.appendSegment(segment);
         this.segmentsStored += 1;
-        this.options.listeners.onSegment(segment);
+        listeners.onSegment(segment);
         return;
       }
       case 'interim':
-        this.options.listeners.onInterim({
+        listeners.onInterim({
           meetingId: this.meetingId,
           source,
           text: event.text,
@@ -138,20 +149,34 @@ export class CaptureSession {
         });
         return;
       case 'error':
-        this.options.logger.error('speech-to-text error', {
+        logger.error('speech-to-text error', {
           source,
           message: event.message,
           fatal: event.fatal,
         });
-        if (event.fatal) this.options.listeners.onStreamState(source, 'error');
+        if (event.fatal && !this.closing) this.fail(source, event.message);
         return;
-      case 'closed':
-        this.options.logger.info('speech-to-text stream closed', {
-          source,
-          code: event.code,
-          reason: event.reason,
-        });
-        if (this.streams.has(source)) this.options.listeners.onStreamState(source, 'closed');
+      case 'closed': {
+        const reason = describeClose(event.code, event.reason);
+        logger.info('speech-to-text stream closed', { source, reason });
+        if (this.closing) return;
+        // Not asked to close: the vendor or the network ended the stream mid-call.
+        this.fail(source, `connection closed (${reason})`);
+      }
     }
   }
+
+  private fail(source: AudioSource, reason: string): void {
+    if (!this.streams.has(source)) return;
+    this.streams.delete(source);
+    this.options.listeners.onStreamState(source, 'closed');
+    this.options.listeners.onStreamFailure(source, reason);
+  }
+}
+
+function describeClose(code: number | null, reason: string | null): string {
+  if (code === null && reason === null) return 'no close code';
+  return [code === null ? null : `code ${code}`, reason]
+    .filter((part) => part !== null && part !== '')
+    .join(': ');
 }

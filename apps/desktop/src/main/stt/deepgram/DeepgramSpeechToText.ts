@@ -145,7 +145,15 @@ class DeepgramStream implements SttStream {
     });
     socket.on('message', (data, isBinary) => {
       if (isBinary) return;
-      this.handleMessage(rawDataToString(data));
+      try {
+        this.handleMessage(rawDataToString(data));
+      } catch (error) {
+        // A listener (store write, UI bridge) threw. Report it; an uncaught error here would kill main.
+        this.logger.error('error while handling a transcript message', {
+          error: errorMessage(error),
+        });
+        this.emitter.emit({ type: 'error', message: errorMessage(error), fatal: false });
+      }
     });
     socket.on('error', (error) => {
       this.logger.error('deepgram socket error', { error: errorMessage(error) });
@@ -207,9 +215,10 @@ class DeepgramStream implements SttStream {
         this.logger.debug('deepgram message ignored', { messageType: parsed.messageType });
         return;
       case 'invalid':
+        // No raw payload in the log: it may contain transcript text.
         this.logger.warn('deepgram message not understood', {
           reason: parsed.reason,
-          sample: raw.slice(0, 200),
+          bytes: raw.length,
         });
     }
   }

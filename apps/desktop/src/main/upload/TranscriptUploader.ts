@@ -109,7 +109,16 @@ export class TranscriptUploader {
     if (meetings.length > 0)
       this.setStatus({ state: 'uploading', lastError: null, nextAttemptAt: null });
     try {
-      for (const meeting of meetings) await this.syncMeeting(meeting);
+      // One meeting's problem must not hold the others hostage; the first error is still reported.
+      let firstError: Error | null = null;
+      for (const meeting of meetings) {
+        try {
+          await this.syncMeeting(meeting);
+        } catch (error) {
+          firstError ??= error instanceof Error ? error : new Error(String(error));
+        }
+      }
+      if (firstError !== null) throw firstError;
       this.failures = 0;
       this.setStatus({ state: 'idle', lastError: null, nextAttemptAt: null });
       this.schedule(this.intervalMs);
@@ -154,9 +163,12 @@ export class TranscriptUploader {
         store.setMeetingRemoteState(meeting.id, 'ended');
       }
     } catch (error) {
-      // Postgres no longer knows the meeting (for example a reset dev database): recreate it next tick.
-      if (error instanceof ApiError && error.isNotFound)
+      // Postgres no longer knows the meeting (for example a reset dev database): recreate it and
+      // re-send every line next tick.
+      if (error instanceof ApiError && error.isNotFound) {
+        store.resetSyncForMeeting(meeting.id);
         store.setMeetingRemoteState(meeting.id, 'pending');
+      }
       throw error;
     }
   }

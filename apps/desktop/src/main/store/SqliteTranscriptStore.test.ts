@@ -79,6 +79,35 @@ describe('SqliteTranscriptStore', () => {
     store.close();
   });
 
+  it('ends meetings a crash left open at their last line, and can forget uploads for a lost meeting', () => {
+    const store = new SqliteTranscriptStore(':memory:');
+    store.createMeeting({ id: 'with-lines', title: 'T', startedAt: '2026-10-05T10:00:00Z' });
+    store.appendSegment(
+      segment(1, { meetingId: 'with-lines', createdAt: '2026-10-05T10:05:00.000Z' }),
+    );
+    store.appendSegment(
+      segment(2, { meetingId: 'with-lines', createdAt: '2026-10-05T10:09:00.000Z' }),
+    );
+    store.createMeeting({ id: 'silent', title: 'T', startedAt: '2026-10-05T11:00:00Z' });
+    store.createMeeting({ id: 'done', title: 'T', startedAt: '2026-10-05T09:00:00Z' });
+    store.markMeetingEnded('done', '2026-10-05T09:30:00Z');
+
+    expect(store.endMeetingsLeftOpen('2026-10-05T12:00:00Z')).toBe(2);
+    expect(store.getMeeting('with-lines')?.endedAt).toBe('2026-10-05T10:09:00.000Z');
+    expect(store.getMeeting('silent')?.endedAt).toBe('2026-10-05T11:00:00Z');
+    expect(store.getMeeting('done')?.endedAt).toBe('2026-10-05T09:30:00Z');
+
+    store.markSegmentsSynced(['seg-1', 'seg-2'], '2026-10-05T10:10:00Z');
+    store.markSegmentRejected('seg-2', 'bad', '2026-10-05T10:11:00Z'); // no-op: already synced
+    expect(store.countUnsyncedSegments()).toBe(0);
+    store.resetSyncForMeeting('with-lines');
+    expect(store.listUnsyncedSegments('with-lines', 10).map((s) => s.id)).toEqual([
+      'seg-1',
+      'seg-2',
+    ]);
+    store.close();
+  });
+
   it('deletes only meetings with no lines', () => {
     const store = new SqliteTranscriptStore(':memory:');
     store.createMeeting({ id: 'empty', title: 'T', startedAt: '2026-10-05T10:00:00Z' });

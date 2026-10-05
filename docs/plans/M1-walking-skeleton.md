@@ -38,7 +38,7 @@ speech-to-text, saved on the Mac, uploaded to Postgres through the API, read bac
 | Decision | Choice | Alternative | Why |
 | --- | --- | --- | --- |
 | System audio capture | Electron's built-in `desktopCapturer` path (Chromium Core Audio tap on macOS 14.2+, needs `NSAudioCaptureUsageDescription`) | Swift helper using `AudioHardwareCreateProcessTap` (openwhispr, anarlog, meetily all do this) | Zero native code to start. The capture layer is behind a `SystemAudioSource` seam so the helper can replace it if prompts or reliability are wrong. M1 must record which prompts macOS shows. |
-| Where audio is turned into PCM | Renderer, one `AudioContext({sampleRate: 16000})` per stream feeding an `AudioWorklet` that emits Int16 chunks of 1600 samples (100 ms) | `MediaRecorder` with WebM | Vendors want raw linear16 at 16 kHz; letting Chromium resample avoids a hand-written resampler. Pattern from openwhispr. |
+| Where audio is turned into PCM | Renderer, one `AudioContext({sampleRate: 16000})` per stream feeding an `AudioWorklet` that emits Int16 chunks of 1600 samples (100 ms). The worklet module is compiled by its own tsconfig and only ever loaded through `addModule`; page code shares a side-effect-free contract module with it. | `MediaRecorder` with WebM | Vendors want raw linear16 at 16 kHz; letting Chromium resample avoids a hand-written resampler. Pattern from openwhispr. |
 | Where STT and persistence live | Main process | Renderer | Main owns secrets, sockets and files. Renderer stays display-only (house rule 5). |
 | STT event shape | Our own `SttEvent` union (`interim`, `final`, `error`, `closed`), vendor messages parsed inside the adapter | Pass vendor JSON through | One normalised shape keeps the session, store and UI vendor-free (anarlog's `StreamResponse`). |
 | STT vendor for M1 | Deepgram nova-3 streaming (`linear16`, 16 kHz, `interim_results`, `KeepAlive` every 5 s, `Finalize` then `CloseStream` on stop) | AssemblyAI, OpenAI Realtime | Documented short-lived token grant and a simple binary websocket. Bake-off is M3. |
@@ -79,12 +79,13 @@ getDisplayMedia ───┤ worklet  ├─ SttStream(mic)  ──┐  final �
 | API auth, meetings, idempotent segments, transcript ordering, end, health | `apps/api/tests/test_meetings.py`, `test_health.py` |
 | STT token issuing (fake and Deepgram via mocked HTTP) | `apps/api/tests/test_stt_token.py` |
 | MCP tool through the SDK client, including auth rejection | `apps/api/tests/test_mcp.py` |
-| PCM conversion and downsampling | `apps/desktop/src/shared/pcm.test.ts` |
+| PCM conversion and chunking | `apps/desktop/src/shared/pcm.test.ts`, `src/renderer/src/audio/PcmChunker.test.ts` |
 | Deepgram message parsing to `SttEvent` | `apps/desktop/src/main/stt/deepgram/messages.test.ts` |
 | Deepgram adapter against a local fake websocket server | `apps/desktop/src/main/stt/deepgram/DeepgramSpeechToText.test.ts` |
-| Capture session state machine with fake STT and in-memory store | `apps/desktop/src/main/capture/CaptureSession.test.ts` |
-| SQLite store append, unsynced query, mark synced, restart recovery | `apps/desktop/src/main/store/SqliteTranscriptStore.test.ts` |
-| Uploader batching, retry, ordering | `apps/desktop/src/main/upload/TranscriptUploader.test.ts` |
+| Capture state machine, partial-open cleanup, mid-call stream failure, finals during close | `apps/desktop/src/main/capture/CaptureService.test.ts`, `CaptureSession.test.ts` |
+| SQLite store append, unsynced query, mark synced, rejected lines, crash recovery, restart | `apps/desktop/src/main/store/SqliteTranscriptStore.test.ts` |
+| Uploader batching, retry, ordering, 422 quarantine, lost-meeting resync | `apps/desktop/src/main/upload/TranscriptUploader.test.ts` |
+| Renderer payload validation (odd-length and oversized chunks) | `apps/desktop/src/main/ipc-validation.test.ts` |
 | API client request shapes and error mapping | `apps/desktop/src/main/api/ApiClient.test.ts` |
 
 ## Risks
@@ -98,8 +99,23 @@ getDisplayMedia ───┤ worklet  ├─ SttStream(mic)  ──┐  final �
 
 ## Exit check log
 
-Pending: needs a Mac with macOS 14.2+ and a Deepgram key on the API. Record the macOS permission
-prompts shown (Microphone, System Audio Recording, Screen Recording?) here when it runs.
+**2026-10-05, automated checks (Linux, Postgres 16):** `make check` green.
+
+| App | Lint and format | Typecheck | Tests |
+| --- | --- | --- | --- |
+| api | ruff: all checks passed, 51 files formatted | mypy strict: no issues in 50 files | 142 passed |
+| desktop | eslint clean, prettier clean | tsc clean for node, web and worklet configs | 59 passed |
+
+Also done: `electron-vite build` succeeds and the page bundle contains no worklet code (the
+worklet ships as its own asset); the API ran live with health, meetings, segments, transcript,
+STT token and MCP (initialize, tools/list, tools/call) exercised over HTTP; an independent code
+review of the desktop app found one blocker (worklet code pulled into the page bundle) and five
+should-fixes, all fixed with regression tests.
+
+**Pending: the real-call check.** Needs a Mac with macOS 14.2+ and a Deepgram key on the API.
+Record here the macOS permission prompts shown (Microphone, System Audio Recording, Screen
+Recording?), whether the system audio track survives stopping the desktop video track, and the
+line Claude quoted.
 
 ## Review
 

@@ -30,6 +30,13 @@ export interface TranscriptStore {
   setMeetingRemoteState(id: string, state: RemoteState): void;
   /** Delete a meeting that never produced a line (for example a failed start). */
   deleteMeetingIfEmpty(id: string): boolean;
+  /**
+   * Close meetings a crash left open: `ended_at` becomes the last line's time, or the start.
+   * Only safe when no session is running (startup). Returns how many were closed.
+   */
+  endMeetingsLeftOpen(updatedAt: string): number;
+  /** Forget that a meeting's lines were uploaded, so they are sent again (Postgres lost the meeting). */
+  resetSyncForMeeting(id: string): void;
   /** Meetings not yet fully in Postgres, oldest first. */
   listMeetingsNeedingSync(): LocalMeeting[];
   /** Idempotent on `segment.id`. */

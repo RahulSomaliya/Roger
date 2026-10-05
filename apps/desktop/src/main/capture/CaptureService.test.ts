@@ -22,10 +22,22 @@ class ScriptedStream implements SttStream {
   readonly emitter = new SttEventEmitter();
   readonly sent: Uint8Array[] = [];
   closed = false;
+  /** Emitted while closing, like a vendor flushing its last final after CloseStream. */
+  finalOnClose: string | null = null;
   send(pcm: Uint8Array): void {
     this.sent.push(pcm);
   }
   close(): Promise<void> {
+    if (this.finalOnClose !== null) {
+      this.emitter.emit({
+        type: 'final',
+        text: this.finalOnClose,
+        startMs: 0,
+        endMs: 100,
+        confidence: 1,
+        words: [],
+      });
+    }
     this.closed = true;
     return Promise.resolve();
   }
@@ -39,10 +51,13 @@ class ScriptedSpeechToText implements SpeechToText {
   readonly streams = new Map<string, ScriptedStream>();
   readonly opened: OpenStreamOptions[] = [];
   failWith: Error | null = null;
+  /** Applied to every stream this double opens. */
+  finalOnClose: string | null = null;
   openStream(options: OpenStreamOptions): Promise<SttStream> {
     this.opened.push(options);
     if (this.failWith) return Promise.reject(this.failWith);
     const stream = new ScriptedStream();
+    stream.finalOnClose = this.finalOnClose;
     this.streams.set(options.label, stream);
     return Promise.resolve(stream);
   }
@@ -116,10 +131,11 @@ describe('CaptureService', () => {
       source: 'system',
       speaker: 'them',
       text: 'Hi Rahul',
-      startMs: 2500,
-      endMs: 3200,
+      // The 100 ms chunk arrived 2.0 s in, so its audio started at 1.9 s; vendor offsets add to that.
+      startMs: 2400,
+      endMs: 3100,
     });
-    expect(h.segments[0]?.words?.[0]).toMatchObject({ startMs: 2500, endMs: 2700 });
+    expect(h.segments[0]?.words?.[0]).toMatchObject({ startMs: 2400, endMs: 2600 });
     expect(h.store.countUnsyncedSegments()).toBe(1);
     expect(h.service.getStatus().segmentsStored).toBe(1);
 
@@ -135,14 +151,54 @@ describe('CaptureService', () => {
     );
   });
 
+  it('stores finals that arrive while closing before the meeting is ended, and stop() waits for a start in flight', async () => {
+    const h = harness();
+    h.stt.finalOnClose = 'last words';
+    const starting = h.service.start();
+    const stopping = h.service.stop(); // queued behind start
+    await starting;
+    const stopped = await stopping;
+    expect(stopped.phase).toBe('idle');
+    // One final per stream, both emitted during close, both stored and uploaded before the meeting ends.
+    expect(h.segments.map((s) => s.text)).toEqual(['last words', 'last words']);
+    const batches = h.api.appendSegments.mock.calls.map((call) =>
+      (call[1] as TranscriptSegment[]).map((s) => s.text),
+    );
+    expect(batches).toEqual([['last words', 'last words']]);
+    expect(h.api.endMeeting).toHaveBeenCalledTimes(1);
+    expect(h.api.appendSegments.mock.invocationCallOrder[0]!).toBeLessThan(
+      h.api.endMeeting.mock.invocationCallOrder[0]!,
+    );
+  });
+
+  it('leaves no empty meeting behind when nothing was said and Postgres never heard of it', async () => {
+    const h = harness();
+    await h.service.start();
+    await h.service.stop();
+    expect(h.store.meetings.size).toBe(0);
+    expect(h.api.createMeeting).not.toHaveBeenCalled();
+    expect(h.api.endMeeting).not.toHaveBeenCalled();
+  });
+
+  it('surfaces a stream that dies mid-call as an error the user can read', async () => {
+    const h = harness();
+    await h.service.start();
+    h.stt.streams.get('system')!.emitter.emit({ type: 'closed', code: 1011, reason: 'timeout' });
+    const status = h.service.getStatus();
+    expect(status.phase).toBe('recording');
+    expect(status.streams.system).toBe('error');
+    expect(status.error).toContain('Transcription of Them (them) stopped');
+    expect(status.error).toContain('code 1011');
+    await h.service.stop();
+  });
+
   it('returns to idle with an error and no stray meeting when speech-to-text cannot connect', async () => {
     const h = harness();
     h.stt.failWith = new SttConnectError('rejected with HTTP 401', 401);
     const status = await h.service.start();
     expect(status.phase).toBe('idle');
     expect(status.error).toContain('401');
-    expect(h.store.listMeetingsNeedingSync()).toEqual([]);
-    expect(h.api.createMeeting).not.toHaveBeenCalled();
+    expect(h.store.meetings.size).toBe(0);
   });
 
   it('refuses to start without microphone access or with a startup configuration error', async () => {

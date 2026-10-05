@@ -1,6 +1,7 @@
 {
   "name": "@roger/desktop",
   "version": "0.1.0",
+  "productName": "Roger",
   "private": true,
   "description": "Roger desktop app: captures mic and call audio, streams it to speech-to-text, shows the live transcript.",
   "main": "./out/main/index.js",
@@ -15,7 +16,7 @@
     "preview": "electron-vite preview",
     "start": "electron-vite preview",
     "package:mac": "electron-vite build && electron-builder --mac --config electron-builder.yml",
-    "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
+    "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json && tsc --noEmit -p tsconfig.worklet.json",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "format": "prettier --write .",

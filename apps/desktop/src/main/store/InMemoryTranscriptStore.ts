@@ -38,6 +38,27 @@ export class InMemoryTranscriptStore implements TranscriptStore {
     return this.meetings.delete(id);
   }
 
+  endMeetingsLeftOpen(_updatedAt: string): number {
+    let closed = 0;
+    for (const meeting of this.meetings.values()) {
+      if (meeting.endedAt !== null) continue;
+      const lines = [...this.segments.values()].filter((s) => s.meetingId === meeting.id);
+      meeting.endedAt =
+        lines
+          .map((s) => s.createdAt)
+          .sort()
+          .at(-1) ?? meeting.startedAt;
+      closed += 1;
+    }
+    return closed;
+  }
+
+  resetSyncForMeeting(id: string): void {
+    for (const segment of this.segments.values()) {
+      if (segment.meetingId === id && segment.rejectedAt === null) segment.syncedAt = null;
+    }
+  }
+
   listMeetingsNeedingSync(): LocalMeeting[] {
     return [...this.meetings.values()]
       .filter((meeting) => meeting.remoteState !== 'ended')

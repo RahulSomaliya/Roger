@@ -155,6 +155,26 @@ describe('TranscriptUploader', () => {
     expect(uploader.getStatus()).toMatchObject({ state: 'idle', pending: 0, rejected: 1 });
   });
 
+  it('does not reschedule after stop() even if a tick was in flight', async () => {
+    const store = new InMemoryTranscriptStore();
+    const api = fakeApi();
+    store.createMeeting({ id: 'm1', title: 'T', startedAt: '2026-10-05T10:00:00Z' });
+    let resolveCreate: () => void = () => undefined;
+    api.createMeeting.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveCreate = resolve;
+        }),
+    );
+    const uploader = new TranscriptUploader({ store, api: asClient(api), logger, intervalMs: 10 });
+    uploader.start();
+    await vi.advanceTimersByTimeAsync(0);
+    uploader.stop();
+    resolveCreate();
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(api.createMeeting).toHaveBeenCalledTimes(1);
+  });
+
   it('runs only one tick at a time', async () => {
     const store = new InMemoryTranscriptStore();
     const api = fakeApi();

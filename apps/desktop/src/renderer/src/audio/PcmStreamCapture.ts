@@ -1,7 +1,11 @@
 import type { AudioSourceState } from '../../../shared/capture';
 import type { AudioSource } from '../../../shared/transcript';
 import workletUrl from './pcm-worklet.ts?worker&url';
-import { PCM_WORKLET_NAME, type PcmWorkletOptions } from './pcm-worklet';
+import {
+  PCM_WORKLET_NAME,
+  type PcmWorkletCommand,
+  type PcmWorkletOptions,
+} from './pcm-worklet-contract';
 
 export interface PcmStreamCaptureOptions {
   source: AudioSource;
@@ -29,12 +33,15 @@ export class PcmStreamCapture {
     this.stream = stream;
     const context = new AudioContext({ sampleRate: this.options.sampleRate });
     this.context = context;
+    if (context.sampleRate !== this.options.sampleRate) {
+      // Chromium resamples to the requested rate on every supported platform; refusing is a real fault.
+      throw new Error(
+        `AudioContext runs at ${context.sampleRate} Hz, not ${this.options.sampleRate} Hz`,
+      );
+    }
     await detachFromOutputDevice(context);
     await context.audioWorklet.addModule(workletUrl);
-    const processorOptions: PcmWorkletOptions = {
-      chunkSamples: this.options.chunkSamples,
-      outputSampleRate: this.options.sampleRate,
-    };
+    const processorOptions: PcmWorkletOptions = { chunkSamples: this.options.chunkSamples };
     const node = new AudioWorkletNode(context, PCM_WORKLET_NAME, {
       numberOfInputs: 1,
       numberOfOutputs: 1,
@@ -58,7 +65,8 @@ export class PcmStreamCapture {
   }
 
   async stop(): Promise<void> {
-    this.node?.port.postMessage('flush');
+    const flush: PcmWorkletCommand = 'flush';
+    this.node?.port.postMessage(flush);
     // Give the worklet one render quantum to post its last partial chunk before the graph goes away.
     await new Promise((resolve) => setTimeout(resolve, 50));
     this.node?.disconnect();

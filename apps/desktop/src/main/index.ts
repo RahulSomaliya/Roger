@@ -1,6 +1,7 @@
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { app, ipcMain, type BrowserWindow } from 'electron';
+import { parseEnv } from 'node:util';
+import { app, dialog, ipcMain, type BrowserWindow } from 'electron';
 import { ApiClient } from './api/ApiClient';
 import { CaptureService } from './capture/CaptureService';
 import { loadConfig, readConfigFile } from './config';
@@ -16,6 +17,11 @@ const MISSING_TOKEN =
   'No API token. Set ROGER_DESKTOP_API_TOKEN (or "apiToken" in config.json in the app data folder) and restart.';
 
 async function main(): Promise<void> {
+  if (!app.requestSingleInstanceLock()) {
+    // A second copy would fight over the SQLite file and the microphone.
+    app.quit();
+    return;
+  }
   await app.whenReady();
   loadDevEnv();
 
@@ -34,6 +40,11 @@ async function main(): Promise<void> {
   }
 
   const store = new SqliteTranscriptStore(join(userData, 'roger.sqlite'));
+  // No session can be running at startup, so any open meeting was cut off by a crash or force-quit.
+  const recovered = store.endMeetingsLeftOpen(new Date().toISOString());
+  if (recovered > 0)
+    logger.warn('ended meetings left open by a previous run', { count: recovered });
+
   const api = new ApiClient({ baseUrl: config.apiUrl, token: config.apiToken ?? '' });
   const uploader = new TranscriptUploader({
     store,
@@ -65,6 +76,12 @@ async function main(): Promise<void> {
   window.on('closed', () => {
     window = null;
   });
+  app.on('second-instance', () => {
+    if (window) {
+      if (window.isMinimized()) window.restore();
+      window.focus();
+    }
+  });
   logger.info('roger started', { apiUrl: config.apiUrl, userData, packaged: app.isPackaged });
 
   let quitting = false;
@@ -74,7 +91,8 @@ async function main(): Promise<void> {
     event.preventDefault();
     void (async () => {
       try {
-        await capture.stop();
+        // No upload flush on quit: lines are safe in SQLite and the uploader resumes next launch.
+        await capture.stop({ flushUploads: false });
       } catch (error) {
         logger.error('stop on quit failed', { error: errorMessage(error) });
       } finally {
@@ -89,14 +107,23 @@ async function main(): Promise<void> {
   });
 }
 
-/** In development the repo-root `.env` is the single place for local settings. */
+/**
+ * In development the repo-root `.env` is the single place for local settings. Only the desktop's
+ * own `ROGER_*` keys are taken: the API's vendor keys in that file must not enter this process.
+ */
 function loadDevEnv(): void {
   if (app.isPackaged) return;
   const envPath = resolve(app.getAppPath(), '../../.env');
-  if (existsSync(envPath)) process.loadEnvFile(envPath);
+  if (!existsSync(envPath)) return;
+  for (const [key, value] of Object.entries(parseEnv(readFileSync(envPath, 'utf8')))) {
+    if (key.startsWith('ROGER_') && process.env[key] === undefined) process.env[key] = value;
+  }
 }
 
 void main().catch((error: unknown) => {
-  process.stderr.write(`fatal: ${errorMessage(error)}\n`);
+  const message = errorMessage(error);
+  process.stderr.write(`fatal: ${message}\n`);
+  // A packaged app opened from Finder has no terminal; without this it would just vanish.
+  dialog.showErrorBox('Roger could not start', message);
   app.exit(1);
 });

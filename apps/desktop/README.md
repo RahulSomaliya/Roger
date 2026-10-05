@@ -22,7 +22,8 @@ from `config.json` in the app data folder (`~/Library/Application Support/Roger/
 | `ROGER_STT_PROVIDER`      | `sttProvider`   | Set to `fake` to run without the API choosing a vendor (development). |
 | `ROGER_LOG_LEVEL`         | `logLevel`      | `debug`, `info`, `warn` or `error`.                                   |
 
-The local safety copy lives at `roger.sqlite` in the same app data folder.
+The local safety copy lives at `roger.sqlite` in the same app data folder. On launch, any meeting a
+crash or force-quit left open is ended at its last line, and the uploader resumes where it stopped.
 
 ## Layout
 
