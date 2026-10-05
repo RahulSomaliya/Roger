@@ -39,11 +39,19 @@ describe('isPermissionAllowed', () => {
   });
 
   it('allows desktop capture (system audio with its required video track) for the app page', () => {
-    for (const mediaTypes of [['audio', 'video'], ['video'], []]) {
+    // Electron 44 lists only real devices: chromeMediaSource "desktop" arrives with no types.
+    const desktop = { permission: 'media', url: PAGE_URL, mediaTypes: [] };
+    expect(isPermissionAllowed(desktop, packaged)).toBe(true);
+  });
+
+  it('denies the camera, which capture never asks for, even to the app page', () => {
+    for (const mediaTypes of [['video'], ['audio', 'video']]) {
       expect(
         isPermissionAllowed({ permission: 'media', url: PAGE_URL, mediaTypes }, packaged),
-      ).toBe(true);
+      ).toBe(false);
     }
+    const cameraCheck = { permission: 'media', url: PAGE_URL, mediaTypes: ['video'] };
+    expect(isPermissionAllowed(cameraCheck, packaged)).toBe(false);
   });
 
   it('allows media permission checks, which Electron may type as unknown', () => {
@@ -52,6 +60,7 @@ describe('isPermissionAllowed', () => {
   });
 
   it('denies every other permission, even for the app page', () => {
+    // Electron 45 sends desktop capture as display-capture: see page-policy.ts before upgrading.
     for (const permission of [
       'display-capture',
       'notifications',

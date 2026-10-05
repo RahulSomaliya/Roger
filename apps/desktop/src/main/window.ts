@@ -15,7 +15,7 @@ export function resolveAppPage(): AppPage {
 /**
  * Web permissions for the whole session: `media` for the app's own page (mic and system audio),
  * nothing else, for no other origin. Electron's default with no handler is to grant everything.
- * The decision lives in page-policy.ts; read its CAPTURE_MEDIA_TYPES note before narrowing it.
+ * The decision lives in page-policy.ts; read its notes before changing it or the Electron version.
  */
 export function installPermissionHandlers(session: Session, page: AppPage, logger: Logger): void {
   session.setPermissionRequestHandler((webContents, permission, callback, details) => {

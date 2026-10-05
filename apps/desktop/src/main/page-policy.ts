@@ -40,16 +40,19 @@ export interface PermissionQuery {
 }
 
 /**
- * Media types `media` may cover. The mic arrives as `audio`. System audio is getUserMedia with
- * chromeMediaSource "desktop", which must also request a video track (stopped at once) and may be
- * listed as `audio` + `video` or with no types at all. Checks (enumerateDevices) may say `unknown`.
- * Dropping `video` here kills system audio capture with no visible error.
+ * Media types `media` may cover, as Electron 44 reports them (web_contents_permission_helper.cc).
+ * Requests list real devices only: the mic is `audio`, a camera `video`. System audio is
+ * getUserMedia with chromeMediaSource "desktop" (sources.ts); its audio and its required video
+ * track are desktop types, so that request arrives with no types at all and its checks say
+ * `unknown`. Bare `video` is therefore only ever the camera, which capture never needs.
  */
-const CAPTURE_MEDIA_TYPES: ReadonlySet<string> = new Set(['audio', 'video', 'unknown']);
+const CAPTURE_MEDIA_TYPES: ReadonlySet<string> = new Set(['audio', 'unknown']);
 
 /**
  * The only permission the app needs is `media`, for its own page. Everything else (notifications,
  * geolocation, display-capture, clipboard, openExternal, ...) is denied, and so is any other origin.
+ * Electron's 45 branch reports desktop capture as `display-capture` with `audio` + `video` instead:
+ * moving off 44 without changing this fails every system audio start with "Permission denied".
  */
 export function isPermissionAllowed(query: PermissionQuery, page: AppPage): boolean {
   return (
