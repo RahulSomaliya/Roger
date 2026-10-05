@@ -51,6 +51,12 @@ async function main(): Promise<void> {
     api,
     logger: logger.child({ component: 'uploader' }),
   });
+  // An unreadable config.json is the likely reason for a missing token, so the UI names both.
+  const missingToken = config.apiToken
+    ? null
+    : configFile.error === null
+      ? MISSING_TOKEN
+      : `${MISSING_TOKEN} (${configFile.error})`;
   const capture = new CaptureService({
     store,
     api,
@@ -59,7 +65,7 @@ async function main(): Promise<void> {
     ensureMicrophoneAccess: () => ensureMicrophoneAccess(),
     logger: logger.child({ component: 'capture' }),
     sttProviderOverride: config.sttProviderOverride,
-    startupError: config.apiToken ? null : MISSING_TOKEN,
+    startupError: missingToken,
   });
 
   let window: BrowserWindow | null = null;
@@ -69,8 +75,8 @@ async function main(): Promise<void> {
     getWindow: () => window,
     logger: logger.child({ component: 'ipc' }),
   });
-  if (config.apiToken) uploader.start();
-  else logger.error(MISSING_TOKEN);
+  if (missingToken === null) uploader.start();
+  else logger.error(missingToken);
 
   window = createMainWindow(join(__dirname, '../preload/index.js'));
   window.on('closed', () => {

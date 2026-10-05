@@ -35,6 +35,21 @@ describe('readConfigFile', () => {
     expect(readConfigFile('/definitely/missing/config.json')).toEqual({ config: {}, error: null });
   });
 
+  it('reports a config file that exists but cannot be read, naming the error code only', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'roger-config-'));
+    expect(readConfigFile(dir)).toEqual({
+      config: {},
+      error: `${dir} could not be read (EISDIR)`,
+    });
+    const denied = Object.assign(new Error("EACCES: permission denied, open 'x'"), {
+      code: 'EACCES',
+    });
+    const result = readConfigFile('/x/config.json', () => {
+      throw denied;
+    });
+    expect(result).toEqual({ config: {}, error: '/x/config.json could not be read (EACCES)' });
+  });
+
   it('reports malformed JSON instead of throwing', () => {
     const dir = mkdtempSync(join(tmpdir(), 'roger-config-'));
     const path = join(dir, 'config.json');
