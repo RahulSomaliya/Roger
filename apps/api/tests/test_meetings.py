@@ -143,12 +143,15 @@ async def test_paging_keeps_meetings_that_share_a_started_at(client: httpx.Async
 
 async def test_paging_with_microsecond_start_times(client: httpx.AsyncClient) -> None:
     # The cursor is the started_at the API returned, so it must round-trip at full precision.
-    for _ in range(3):
-        await create_meeting(client)
+    # All three start inside one millisecond: a started_at cut to milliseconds sorts before every
+    # one of them, so page 2 comes back empty and the oldest meeting is never listed.
+    starts = [f"2026-10-05T10:00:00.000{n}00Z" for n in (1, 2, 3)]
+    created = [await create_meeting(client, started_at=start) for start in starts]
 
     paged = await page_through(client, limit=2)
 
-    assert len({m["id"] for m in paged}) == len(paged) == 3
+    assert [m["id"] for m in paged] == [m["id"] for m in reversed(created)]
+    assert [m["started_at"] for m in paged] == starts[::-1]
 
 
 @pytest.mark.parametrize(
