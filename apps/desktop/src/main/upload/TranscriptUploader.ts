@@ -110,9 +110,10 @@ export class TranscriptUploader {
   }
 
   /**
-   * One sync pass. Never rejects: every failure, the local store's included, is logged, shown in
-   * the status and retried with backoff, then handed back for `flush` to rethrow. Anything that can
-   * throw belongs inside the try; a throw outside it once ended the loop with no log and no retry.
+   * One sync pass. Never rejects: every failure, the local store's included, is logged, retried
+   * with backoff and shown in the status, then handed back for `flush` to rethrow. Anything that can
+   * throw belongs inside the try, or inside the catch's own try; a throw outside them once ended the
+   * loop with no log and no retry.
    */
   private async tick(): Promise<Error | null> {
     try {
@@ -142,12 +143,23 @@ export class TranscriptUploader {
         delayMs: delay,
         error: message,
       });
-      this.setStatus({
-        state: 'backoff',
-        lastError: message,
-        nextAttemptAt: this.clock().getTime() + delay,
-      });
+      // Retry first, then report: setStatus reads the store's counts and runs the status
+      // listeners, which read them again. A store that fails every call (closed at quit, corrupt,
+      // I/O errors) throws there too, and that throw once rejected tick() before the retry was
+      // set, so the loop stopped for good right after logging that it was backing off.
       this.schedule(delay);
+      try {
+        this.setStatus({
+          state: 'backoff',
+          lastError: message,
+          nextAttemptAt: this.clock().getTime() + delay,
+        });
+      } catch (statusError) {
+        this.options.logger.error('upload status could not be updated', {
+          error: errorMessage(statusError),
+          uploadError: message,
+        });
+      }
       return error instanceof Error ? error : new Error(message);
     }
   }
@@ -228,9 +240,11 @@ export class TranscriptUploader {
   }
 
   private setStatus(patch: Partial<UploadStatus>): void {
+    // Kept before the counts are read: when the store fails them, the backoff and its error still
+    // show as soon as the store reads again.
+    this.status = { ...this.status, ...patch };
     this.status = {
       ...this.status,
-      ...patch,
       pending: this.options.store.countUnsyncedSegments(),
       rejected: this.options.store.countRejectedSegments(),
     };

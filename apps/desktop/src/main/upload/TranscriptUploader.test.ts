@@ -71,6 +71,29 @@ class FlakyStore extends InMemoryTranscriptStore {
   }
 }
 
+/**
+ * A store that throws on every call while failing, the counts the status reads included, like a
+ * SQLite file closed at quit, corrupt or hitting I/O errors ('database is not open').
+ */
+function failingStore(): { store: InMemoryTranscriptStore; setFailing: (on: boolean) => void } {
+  let failing = false;
+  const store = new Proxy(new InMemoryTranscriptStore(), {
+    get(target, key, receiver) {
+      const value: unknown = Reflect.get(target, key, receiver);
+      if (!failing || typeof value !== 'function') return value;
+      return () => {
+        throw new Error('database is not open');
+      };
+    },
+  });
+  return {
+    store,
+    setFailing: (on) => {
+      failing = on;
+    },
+  };
+}
+
 describe('TranscriptUploader', () => {
   beforeEach(() => {
     vi.useFakeTimers();
@@ -286,6 +309,48 @@ describe('TranscriptUploader', () => {
     expect(api.appendSegments).toHaveBeenCalledTimes(1);
     expect(uploader.getStatus()).toMatchObject({ state: 'idle', pending: 0 });
     uploader.stop();
+  });
+
+  it('still retries when the store also fails the counts the status reads', async () => {
+    const { store, setFailing } = failingStore();
+    const api = fakeApi();
+    const lines: string[] = [];
+    const warnLogger = createLogger({ level: 'warn', format: 'json', sink: (l) => lines.push(l) });
+    store.createMeeting({ id: 'm1', title: 'T', startedAt: '2026-10-05T10:00:00Z' });
+    store.appendSegment(segment('m1', 0));
+    const uploader = new TranscriptUploader({
+      store,
+      api,
+      logger: warnLogger,
+      baseBackoffMs: 500,
+    });
+    // Like CaptureService, which answers every uploader status with a full status read.
+    uploader.onStatus(() => uploader.getStatus());
+    setFailing(true);
+    uploader.start();
+
+    // A rejected tick would surface here as an unhandled rejection and fail the run.
+    await vi.advanceTimersByTimeAsync(0);
+    expect(
+      lines.some((l) => l.includes('upload failed') && l.includes('database is not open')),
+    ).toBe(true);
+
+    setFailing(false);
+    expect(uploader.getStatus()).toMatchObject({
+      state: 'backoff',
+      lastError: 'database is not open',
+    });
+    await vi.advanceTimersByTimeAsync(500);
+    expect(api.appendSegments).toHaveBeenCalledTimes(1);
+    expect(uploader.getStatus()).toMatchObject({ state: 'idle', pending: 0 });
+    uploader.stop();
+  });
+
+  it('flush rejects with the store error when the store fails every call', async () => {
+    const { store, setFailing } = failingStore();
+    const uploader = new TranscriptUploader({ store, api: fakeApi(), logger });
+    setFailing(true);
+    await expect(uploader.flush()).rejects.toThrow('database is not open');
   });
 
   it('flush waits out a failing tick in flight, then reports the result of its own run', async () => {

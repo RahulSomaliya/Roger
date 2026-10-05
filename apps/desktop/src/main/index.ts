@@ -113,6 +113,8 @@ async function main(): Promise<void> {
         logger.error('stop on quit failed', { error: errorMessage(error) });
       } finally {
         uploader.stop();
+        // A tick still awaiting the API meets the closed store next ('database is not open').
+        // TranscriptUploader.tick logs that and never rejects; a rejection would be unhandled here.
         store.close();
         app.quit();
       }
