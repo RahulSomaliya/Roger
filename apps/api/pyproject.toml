@@ -1,0 +1,86 @@
+[project]
+name = "roger-api"
+version = "0.1.0"
+description = "Roger API: meetings, transcripts and the MCP server."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "alembic>=1.20",
+    "asyncpg>=0.31",
+    "fastapi>=0.142",
+    "httpx>=0.28",
+    "mcp>=2.3.0",
+    "pydantic>=2.13",
+    "pydantic-settings>=2.15",
+    "sqlalchemy[asyncio]>=2.1",
+    "structlog>=26.1",
+    "uvicorn[standard]>=0.54",
+]
+
+[build-system]
+requires = ["uv_build>=0.8.17,<0.9"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "asgi-lifespan>=2.1",
+    "mypy>=2.4",
+    "pytest>=9.1",
+    "pytest-asyncio>=1.4",
+    "ruff>=0.16",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E",     # pycodestyle errors
+    "W",     # pycodestyle warnings
+    "F",     # pyflakes
+    "I",     # isort
+    "B",     # bugbear
+    "UP",    # pyupgrade
+    "S",     # bandit (security)
+    "N",     # pep8-naming
+    "C4",    # comprehensions
+    "SIM",   # simplify
+    "RUF",   # ruff-specific
+    "ASYNC", # async pitfalls
+    "DTZ",   # timezone-aware datetimes only
+    "T20",   # no print
+    "PT",    # pytest style
+    "RET",   # return consistency
+    "TID",   # tidy imports
+    "PGH",   # no blanket type: ignore / noqa
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests assert, and use fixed fake tokens.
+"tests/**" = ["S101", "S105", "S106"]
+
+[tool.ruff.lint.flake8-tidy-imports]
+ban-relative-imports = "all"
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+files = ["src", "tests"]
+plugins = ["pydantic.mypy"]
+warn_unreachable = true
+enable_error_code = ["ignore-without-code", "redundant-expr", "truthy-bool"]
+
+[tool.pydantic-mypy]
+init_forbid_extra = true
+init_typed = true
+warn_required_dynamic_aliases = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+asyncio_default_test_loop_scope = "function"
+addopts = ["--strict-markers", "--strict-config", "-ra"]
+filterwarnings = ["error::pytest.PytestUnraisableExceptionWarning"]
