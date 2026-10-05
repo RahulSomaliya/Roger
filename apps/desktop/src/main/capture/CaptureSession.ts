@@ -20,7 +20,7 @@ export interface CaptureSessionListeners {
   onStreamState(source: AudioSource, state: SessionStreamState): void;
   /** A stream died while the session was still recording. The session keeps the other stream. */
   onStreamFailure(source: AudioSource, reason: string): void;
-  /** A final line could not be written to the local store. It still reached onSegment. */
+  /** A final line could not be written to the local store. onSegment still gets it right after. */
   onSaveFailure(source: AudioSource, reason: string): void;
 }
 
