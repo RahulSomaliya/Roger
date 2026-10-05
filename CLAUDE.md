@@ -92,3 +92,23 @@ milestone plan.
 - Do not change the API contract on one side only.
 - Do not skip, disable or quarantine a test to get green.
 - Do not put a model name or agent name in code, commits or docs.
+
+## Failure log
+
+Each line is a trap someone already hit. Add one when you hit a new one.
+
+- `uv run` without `--frozen` re-resolves when the machine has a global `exclude-newer` in
+  `~/.config/uv/uv.toml`, and fails on deps newer than the cutoff (`mcp>=2.3`). Use
+  `UV_FROZEN=1` or `uv run --frozen` (first Mac run, 2026-10-05).
+- `pnpm install --frozen-lockfile` fails with `ERR_PNPM_LOCKFILE_CONFIG_MISMATCH` when the global
+  pnpm rc sets `auto-install-peers=false`; the lockfile was made with `true`. Pass
+  `--config.auto-install-peers=true`. With a global `ignore-scripts=true` the Electron binary is
+  missing afterwards: run `node install.js` inside `apps/desktop/node_modules/electron`.
+- In `make dev-desktop` the terminal is the app macOS asks for capture permission. cmux, iTerm2 and
+  Terminal.app have no `NSAudioCaptureUsageDescription`, so the system audio ("Them") stream is
+  dead with no error. Test call audio from the packaged `Roger.app`, which carries the key.
+- An unsigned `electron-builder --mac` build re-signed ad hoc with `--options runtime` dies at
+  launch (`Electron Framework ... not valid for use in process`: library validation needs a team
+  id). For a local install sign ad hoc without hardened runtime: `codesign --force --deep --sign -`.
+- A packaged app logs to stderr only. Launch it with
+  `open --stderr <file> --stdout <file> /Applications/Roger.app` to read its log.
