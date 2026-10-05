@@ -15,12 +15,12 @@ make dev-desktop             # this app, with hot reload
 Settings come from environment variables, with `.env` at the repo root loaded in development, or
 from `config.json` in the app data folder (`~/Library/Application Support/Roger/` on macOS):
 
-| Variable | config.json key | Meaning |
-| --- | --- | --- |
-| `ROGER_API_URL` | `apiUrl` | Roger API base URL. Default `http://127.0.0.1:8000`. |
-| `ROGER_DESKTOP_API_TOKEN` | `apiToken` | Bearer token for the API. Required. |
-| `ROGER_STT_PROVIDER` | `sttProvider` | Set to `fake` to run without the API choosing a vendor (development). |
-| `ROGER_LOG_LEVEL` | `logLevel` | `debug`, `info`, `warn` or `error`. |
+| Variable                  | config.json key | Meaning                                                               |
+| ------------------------- | --------------- | --------------------------------------------------------------------- |
+| `ROGER_API_URL`           | `apiUrl`        | Roger API base URL. Default `http://127.0.0.1:8000`.                  |
+| `ROGER_DESKTOP_API_TOKEN` | `apiToken`      | Bearer token for the API. Required.                                   |
+| `ROGER_STT_PROVIDER`      | `sttProvider`   | Set to `fake` to run without the API choosing a vendor (development). |
+| `ROGER_LOG_LEVEL`         | `logLevel`      | `debug`, `info`, `warn` or `error`.                                   |
 
 The local safety copy lives at `roger.sqlite` in the same app data folder.
 
