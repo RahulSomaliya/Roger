@@ -24,8 +24,13 @@ same change as the code on both sides. Base URL in development: `http://127.0.0.
   | 401 | `unauthorized` | Missing or wrong bearer token |
   | 404 | `not_found` | Unknown id, or an id in another workspace |
   | 409 | `conflict` | An id exists with different immutable fields (for example the same meeting id in a different workspace is reported as 404, never 409) |
+  | 405 | `method_not_allowed` | Known path, wrong method |
   | 422 | `validation_error` | Body or query failed validation; `message` lists the fields |
   | 500 | `internal_error` | Unexpected; details only in server logs |
+  | 502 | `stt_provider_error` | The speech-to-text vendor refused or failed a token request |
+
+  A 401 carries `WWW-Authenticate: Bearer`. Every response carries `X-Request-ID` (echoed when the
+  caller sends a safe one, generated otherwise); the same id is on every log line for the request.
 
 ## Entities
 
