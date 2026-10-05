@@ -126,6 +126,13 @@ export class ApiClient {
   }
 }
 
+/**
+ * The slices of the client each service uses. Services take these instead of `ApiClient`, so a test
+ * fake typed by them needs no cast (ApiClient's private members make it nominal).
+ */
+export type UploadApi = Pick<ApiClient, 'createMeeting' | 'appendSegments' | 'endMeeting'>;
+export type SttTokenApi = Pick<ApiClient, 'getSttToken'>;
+
 function segmentToWire(segment: TranscriptSegment): Record<string, unknown> {
   return {
     id: segment.id,

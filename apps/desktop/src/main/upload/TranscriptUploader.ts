@@ -1,13 +1,13 @@
 import type { UploadStatus } from '../../shared/capture';
 import type { TranscriptSegment } from '../../shared/transcript';
-import { ApiError, type ApiClient } from '../api/ApiClient';
+import { ApiError, type UploadApi } from '../api/ApiClient';
 import { errorMessage, type Logger } from '../logger';
 import type { LocalMeeting, TranscriptStore } from '../store/TranscriptStore';
 import { Emitter } from '../util/emitter';
 
 export interface TranscriptUploaderOptions {
   store: TranscriptStore;
-  api: ApiClient;
+  api: UploadApi;
   logger: Logger;
   /** Poll interval while healthy. */
   intervalMs?: number;
@@ -37,7 +37,7 @@ export class TranscriptUploader {
   private readonly clock: () => Date;
   private timer: NodeJS.Timeout | null = null;
   private running = false;
-  private inflight: Promise<void> | null = null;
+  private inflight: Promise<Error | null> | null = null;
   private failures = 0;
   private status: UploadStatus;
 
@@ -68,10 +68,13 @@ export class TranscriptUploader {
     this.timer = null;
   }
 
-  /** Run one full sync now (after any tick in flight). Rejects if the sync fails. */
+  /** Run one full sync now (after any tick in flight). Rejects if this sync fails. */
   async flush(): Promise<void> {
-    if (this.inflight) await this.inflight.catch(() => undefined);
-    await this.runTick();
+    // A tick already in flight has reported its own outcome (log line, status, backoff); its
+    // result is not this flush's answer, so wait for it and then run a fresh tick.
+    if (this.inflight) await this.inflight;
+    const error = await this.runTick();
+    if (error !== null) throw error;
   }
 
   getStatus(): UploadStatus {
@@ -92,11 +95,12 @@ export class TranscriptUploader {
     if (!this.running) return;
     this.timer = setTimeout(() => {
       this.timer = null;
-      void this.runTick().catch(() => undefined);
+      // Never rejects: tick() logs a failure, shows it in the status and schedules the retry.
+      void this.runTick();
     }, delayMs);
   }
 
-  private runTick(): Promise<void> {
+  private runTick(): Promise<Error | null> {
     if (this.inflight) return this.inflight;
     this.inflight = this.tick().finally(() => {
       this.inflight = null;
@@ -104,11 +108,16 @@ export class TranscriptUploader {
     return this.inflight;
   }
 
-  private async tick(): Promise<void> {
-    const meetings = this.options.store.listMeetingsNeedingSync();
-    if (meetings.length > 0)
-      this.setStatus({ state: 'uploading', lastError: null, nextAttemptAt: null });
+  /**
+   * One sync pass. Never rejects: every failure, the local store's included, is logged, shown in
+   * the status and retried with backoff, then handed back for `flush` to rethrow. Anything that can
+   * throw belongs inside the try; a throw outside it once ended the loop with no log and no retry.
+   */
+  private async tick(): Promise<Error | null> {
     try {
+      const meetings = this.options.store.listMeetingsNeedingSync();
+      if (meetings.length > 0)
+        this.setStatus({ state: 'uploading', lastError: null, nextAttemptAt: null });
       // One meeting's problem must not hold the others hostage; the first error is still reported.
       let firstError: Error | null = null;
       for (const meeting of meetings) {
@@ -122,6 +131,7 @@ export class TranscriptUploader {
       this.failures = 0;
       this.setStatus({ state: 'idle', lastError: null, nextAttemptAt: null });
       this.schedule(this.intervalMs);
+      return null;
     } catch (error) {
       this.failures += 1;
       const delay = Math.min(this.maxBackoffMs, this.baseBackoffMs * 2 ** (this.failures - 1));
@@ -137,7 +147,7 @@ export class TranscriptUploader {
         nextAttemptAt: this.clock().getTime() + delay,
       });
       this.schedule(delay);
-      throw error;
+      return error instanceof Error ? error : new Error(message);
     }
   }
 

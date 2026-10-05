@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { CaptureStatus } from '../../shared/capture';
 import type { TranscriptSegment } from '../../shared/transcript';
-import type { ApiClient } from '../api/ApiClient';
+import type { MeetingDto, SttTokenApi, UploadApi } from '../api/ApiClient';
 import { createLogger } from '../logger';
 import { InMemoryTranscriptStore } from '../store/InMemoryTranscriptStore';
 import {
@@ -16,6 +16,20 @@ import { TranscriptUploader } from '../upload/TranscriptUploader';
 import { CaptureService, defaultMeetingTitle } from './CaptureService';
 
 const logger = createLogger({ level: 'error', format: 'json', sink: () => undefined });
+
+function meetingDto(id: string): MeetingDto {
+  return {
+    id,
+    workspace_id: 'w1',
+    title: 'T',
+    status: 'recording',
+    started_at: '2026-10-05T10:00:00Z',
+    ended_at: null,
+    segment_count: 0,
+    created_at: '2026-10-05T10:00:00Z',
+    updated_at: '2026-10-05T10:00:00Z',
+  };
+}
 
 /** A speech-to-text double the test drives by hand. */
 class ScriptedStream implements SttStream {
@@ -71,23 +85,30 @@ function harness(
   } = {},
 ) {
   const store = new InMemoryTranscriptStore();
+  // Typed by the narrow views the services take (SttTokenApi, UploadApi), so no cast is needed.
   const api = {
-    getSttToken: vi.fn().mockResolvedValue({
+    getSttToken: vi.fn<SttTokenApi['getSttToken']>().mockResolvedValue({
       provider: 'scripted',
       access_token: 'tok',
       expires_in: 30,
       stream: { model: 'm', language: 'en', sample_rate: 16000, encoding: 'linear16' },
     }),
-    createMeeting: vi.fn().mockResolvedValue({}),
-    appendSegments: vi.fn().mockResolvedValue({ accepted: 1, duplicates: 0 }),
-    endMeeting: vi.fn().mockResolvedValue({}),
+    createMeeting: vi.fn<UploadApi['createMeeting']>((input) =>
+      Promise.resolve(meetingDto(input.id)),
+    ),
+    appendSegments: vi.fn<UploadApi['appendSegments']>((_meetingId, segments) =>
+      Promise.resolve({ accepted: segments.length, duplicates: 0 }),
+    ),
+    endMeeting: vi.fn<UploadApi['endMeeting']>((meetingId) =>
+      Promise.resolve(meetingDto(meetingId)),
+    ),
   };
   const stt = new ScriptedSpeechToText();
-  const uploader = new TranscriptUploader({ store, api: api as unknown as ApiClient, logger });
+  const uploader = new TranscriptUploader({ store, api, logger });
   let now = 1_000_000;
   const service = new CaptureService({
     store,
-    api: api as unknown as ApiClient,
+    api,
     uploader,
     createSpeechToText: () => stt,
     ensureMicrophoneAccess: () => Promise.resolve(overrides.mic ?? 'granted'),
@@ -161,9 +182,7 @@ describe('CaptureService', () => {
     expect(stopped.phase).toBe('idle');
     // One final per stream, both emitted during close, both stored and uploaded before the meeting ends.
     expect(h.segments.map((s) => s.text)).toEqual(['last words', 'last words']);
-    const batches = h.api.appendSegments.mock.calls.map((call) =>
-      (call[1] as TranscriptSegment[]).map((s) => s.text),
-    );
+    const batches = h.api.appendSegments.mock.calls.map((call) => call[1].map((s) => s.text));
     expect(batches).toEqual([['last words', 'last words']]);
     expect(h.api.endMeeting).toHaveBeenCalledTimes(1);
     expect(h.api.appendSegments.mock.invocationCallOrder[0]!).toBeLessThan(

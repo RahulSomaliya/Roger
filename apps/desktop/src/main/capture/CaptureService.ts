@@ -15,7 +15,7 @@ import {
   type InterimTranscript,
   type TranscriptSegment,
 } from '../../shared/transcript';
-import type { ApiClient } from '../api/ApiClient';
+import type { SttTokenApi } from '../api/ApiClient';
 import { errorMessage, type Logger } from '../logger';
 import type { MicrophoneAccess } from '../permissions';
 import type { TranscriptStore } from '../store/TranscriptStore';
@@ -29,7 +29,7 @@ import { CaptureSession } from './CaptureSession';
 
 export interface CaptureServiceOptions {
   store: TranscriptStore;
-  api: ApiClient;
+  api: SttTokenApi;
   uploader: TranscriptUploader;
   createSpeechToText: SpeechToTextFactory;
   ensureMicrophoneAccess: () => Promise<MicrophoneAccess>;
