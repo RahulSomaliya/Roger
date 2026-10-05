@@ -22,7 +22,6 @@ from roger_api.config import Settings
 from roger_api.db.engine import Database
 from roger_api.error_handlers import unauthorized_response
 from roger_api.errors import NotFoundError
-from roger_api.schemas.segments import TranscriptOut
 from roger_api.services import meetings, segments
 from roger_api.services.transcript_render import render_transcript
 
@@ -72,10 +71,10 @@ async def read_transcript_text(
         except ValueError as exc:
             raise ToolError(MEETING_NOT_FOUND) from exc
     try:
-        transcript = await segments.get_transcript(session, principal, target)
+        transcript = await segments.get_transcript_lines(session, principal, target)
     except NotFoundError as exc:
         raise ToolError(MEETING_NOT_FOUND) from exc
-    return render_transcript(TranscriptOut.from_transcript(transcript))
+    return render_transcript(transcript)
 
 
 def build_mcp_server(dependencies: McpDependencies) -> MCPServer[McpDependencies]:
@@ -92,6 +91,8 @@ def build_mcp_server(dependencies: McpDependencies) -> MCPServer[McpDependencies
         annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False),
         structured_output=False,
     )
+    # Returns every line in one text block, so a multi-hour call can exceed an MCP client's
+    # output cap and get cut off. "Full or a slice" is an M7 item (docs/roadmap.md).
     async def get_transcript(
         ctx: Context[McpDependencies],
         meeting_id: Annotated[

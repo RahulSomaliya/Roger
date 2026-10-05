@@ -87,6 +87,9 @@ claude mcp add --transport http roger http://127.0.0.1:8000/mcp \
 
 Then ask, for example, "Quote the first thing the other person said in my last meeting."
 
+The tool returns the whole meeting in one text block, so a very long call can exceed an MCP
+client's output cap. Slicing arrives in M7.
+
 Behind a real hostname, set `MCP_ALLOWED_HOSTS` (see above) or the endpoint answers `421`.
 Behind a TLS-terminating proxy, run uvicorn with `--proxy-headers --forwarded-allow-ips=...`.
 

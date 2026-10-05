@@ -3,8 +3,8 @@ from uuid import UUID, uuid4
 
 import pytest
 
-from roger_api.schemas.meetings import MeetingOut
-from roger_api.schemas.segments import SegmentOut, TranscriptOut
+from roger_api.db.models import Meeting
+from roger_api.services.records import MeetingRecord, TranscriptLine, TranscriptLines
 from roger_api.services.transcript_render import format_offset, render_transcript, speaker_label
 
 MEETING_ID = UUID("7f3c2d1e-0000-4000-8000-000000000001")
@@ -12,31 +12,22 @@ STARTED = datetime(2026, 10, 5, 10, 0, tzinfo=UTC)
 ENDED = datetime(2026, 10, 5, 10, 31, 12, 500_000, tzinfo=UTC)
 
 
-def meeting(*, ended_at: datetime | None = ENDED, segment_count: int = 0) -> MeetingOut:
-    return MeetingOut(
+def transcript(*lines: TranscriptLine, ended_at: datetime | None = ENDED) -> TranscriptLines:
+    meeting = Meeting(
         id=MEETING_ID,
         workspace_id=uuid4(),
         title="Weekly sync with Acme",
         status="ended" if ended_at else "recording",
         started_at=STARTED,
         ended_at=ended_at,
-        segment_count=segment_count,
-        created_at=STARTED,
-        updated_at=STARTED,
+    )
+    return TranscriptLines(
+        meeting=MeetingRecord(meeting=meeting, segment_count=len(lines)), lines=lines
     )
 
 
-def segment(start_ms: int, speaker: str, text: str) -> SegmentOut:
-    return SegmentOut(
-        id=uuid4(),
-        meeting_id=MEETING_ID,
-        source="mic" if speaker == "me" else "system",
-        speaker=speaker,
-        start_ms=start_ms,
-        end_ms=start_ms + 500,
-        text=text,
-        created_at=STARTED,
-    )
+def line(start_ms: int, speaker: str, text: str) -> TranscriptLine:
+    return TranscriptLine(start_ms=start_ms, speaker=speaker, text=text)
 
 
 @pytest.mark.parametrize(
@@ -67,16 +58,13 @@ def test_speaker_label(speaker: str, expected: str) -> None:
 
 
 def test_render_matches_the_contract_format() -> None:
-    transcript = TranscriptOut(
-        meeting=meeting(segment_count=3),
-        segments=[
-            segment(3_000, "me", "Hi everyone, thanks for joining."),
-            segment(7_000, "them", "Hi Rahul, good to see you."),
-            segment(3_725_000, "me", "Let's wrap up."),
-        ],
+    three_lines = transcript(
+        line(3_000, "me", "Hi everyone, thanks for joining."),
+        line(7_000, "them", "Hi Rahul, good to see you."),
+        line(3_725_000, "me", "Let's wrap up."),
     )
 
-    assert render_transcript(transcript) == (
+    assert render_transcript(three_lines) == (
         "Meeting: Weekly sync with Acme\n"
         "Meeting ID: 7f3c2d1e-0000-4000-8000-000000000001\n"
         "Started: 2026-10-05T10:00:00Z   Ended: 2026-10-05T10:31:12Z   Segments: 3\n"
@@ -88,7 +76,7 @@ def test_render_matches_the_contract_format() -> None:
 
 
 def test_render_a_meeting_still_recording_with_no_lines() -> None:
-    text = render_transcript(TranscriptOut(meeting=meeting(ended_at=None), segments=[]))
+    text = render_transcript(transcript(ended_at=None))
 
     assert text.splitlines() == [
         "Meeting: Weekly sync with Acme",

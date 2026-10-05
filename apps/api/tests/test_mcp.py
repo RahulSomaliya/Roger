@@ -12,8 +12,10 @@ from fastapi import FastAPI
 from mcp import Client
 from mcp.client.streamable_http import streamable_http_client
 from mcp.types import TextContent
+from sqlalchemy import Connection, event
 
 from roger_api.app import create_app
+from roger_api.db.engine import Database
 from roger_api.mcp_server import GET_TRANSCRIPT_DESCRIPTION
 from tests.conftest import make_settings
 from tests.helpers import AUTH_HEADERS, BASE_URL, append_segments, create_meeting, segment_payload
@@ -120,6 +122,40 @@ async def test_transcript_by_id(connect: Connect, client: httpx.AsyncClient) -> 
         "[00:00:03] Me: Hi everyone, thanks for joining.\n"
         "[00:00:07] Them: Hi Rahul, good to see you."
     )
+
+
+async def test_transcript_text_never_reads_word_timings(
+    connect: Connect, client: httpx.AsyncClient, app: FastAPI
+) -> None:
+    # `words` dominates a segment row and the text never shows it. Reading it here made a long
+    # call's MCP read load and validate every word only to drop it.
+    meeting_id = await seed_weekly_sync(client)
+    database = app.state.database
+    assert isinstance(database, Database)
+    statements: list[str] = []
+
+    def record(
+        conn: Connection,
+        cursor: object,
+        statement: str,
+        parameters: object,
+        context: object,
+        executemany: bool,
+    ) -> None:
+        statements.append(statement)
+
+    event.listen(database.engine.sync_engine, "before_cursor_execute", record)
+    try:
+        async with connect() as mcp:
+            text, is_error = await call_get_transcript(mcp, meeting_id=meeting_id)
+    finally:
+        event.remove(database.engine.sync_engine, "before_cursor_execute", record)
+
+    assert not is_error
+    assert "Hi everyone, thanks for joining." in text
+    segment_reads = [s for s in statements if "FROM transcript_segments" in s]
+    assert segment_reads, statements
+    assert not [s for s in segment_reads if "words" in s]
 
 
 async def test_omitted_id_returns_the_latest_meeting(

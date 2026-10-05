@@ -2,7 +2,7 @@
 
 from datetime import UTC, datetime
 
-from roger_api.schemas.segments import TranscriptOut
+from roger_api.services.records import TranscriptLines
 
 NO_LINES_YET = "(No transcript lines yet.)"
 
@@ -23,18 +23,18 @@ def speaker_label(speaker: str) -> str:
     return speaker[:1].upper() + speaker[1:]
 
 
-def render_transcript(transcript: TranscriptOut) -> str:
-    meeting = transcript.meeting
+def render_transcript(transcript: TranscriptLines) -> str:
+    meeting = transcript.meeting.meeting
     ended = format_instant(meeting.ended_at) if meeting.ended_at else "still recording"
     header = [
         f"Meeting: {meeting.title}",
         f"Meeting ID: {meeting.id}",
         f"Started: {format_instant(meeting.started_at)}   Ended: {ended}   "
-        f"Segments: {len(transcript.segments)}",
+        f"Segments: {len(transcript.lines)}",
         "",
     ]
     lines = [
-        f"[{format_offset(segment.start_ms)}] {speaker_label(segment.speaker)}: {segment.text}"
-        for segment in transcript.segments
+        f"[{format_offset(line.start_ms)}] {speaker_label(line.speaker)}: {line.text}"
+        for line in transcript.lines
     ]
     return "\n".join([*header, *(lines or [NO_LINES_YET])])

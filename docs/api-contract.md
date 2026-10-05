@@ -190,6 +190,10 @@ Started: 2026-10-05T10:00:00Z   Ended: 2026-10-05T10:31:12Z   Segments: 412
 Timestamps are `hh:mm:ss` offsets from `started_at`. A missing id returns a tool error
 "Meeting not found". An empty workspace returns "No meetings yet".
 
+The tool returns every line of the meeting in one text block, so a very long call produces a very
+large output that an MCP client may cut off at its output cap. Slicing by time range arrives in
+M7. The text never includes word timings; read them from `GET /v1/meetings/{id}/transcript`.
+
 ## Database (Postgres)
 
 Every table carries `workspace_id` from day one.

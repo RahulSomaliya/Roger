@@ -1,7 +1,7 @@
 from collections.abc import Sequence
 from uuid import UUID
 
-from sqlalchemy import case, select
+from sqlalchemy import ColumnElement, case, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -10,10 +10,20 @@ from roger_api.db.models import TranscriptSegment
 from roger_api.errors import ConflictError
 from roger_api.schemas.segments import SegmentIn
 from roger_api.services.meetings import require_meeting
-from roger_api.services.records import AppendResult, MeetingRecord, Transcript
+from roger_api.services.records import (
+    AppendResult,
+    MeetingRecord,
+    Transcript,
+    TranscriptLine,
+    TranscriptLines,
+)
 
-# Transcript order at equal start_ms: the mic ("me") line before the system ("them") line.
-_SOURCE_ORDER = case({"mic": 0}, value=TranscriptSegment.source, else_=1)
+# Transcript order: start_ms, then the mic ("me") line before the system ("them") line, then id.
+_TRANSCRIPT_ORDER = (
+    TranscriptSegment.start_ms,
+    case({"mic": 0}, value=TranscriptSegment.source, else_=1),
+    TranscriptSegment.id,
+)
 
 
 async def append_segments(
@@ -57,21 +67,50 @@ async def _any_stored_elsewhere(
     return found is not None
 
 
+def _segments_of(principal: Principal, meeting_id: UUID) -> tuple[ColumnElement[bool], ...]:
+    return (
+        TranscriptSegment.meeting_id == meeting_id,
+        TranscriptSegment.workspace_id == principal.workspace_id,
+    )
+
+
 async def get_transcript(
     session: AsyncSession, principal: Principal, meeting_id: UUID
 ) -> Transcript:
-    """The meeting and its segments ordered by `start_ms`, then source (mic first), then id."""
+    """The meeting and its full segment rows (words included), in transcript order."""
     meeting = await require_meeting(session, principal, meeting_id)
     segments = (
         await session.scalars(
             select(TranscriptSegment)
-            .where(
-                TranscriptSegment.meeting_id == meeting_id,
-                TranscriptSegment.workspace_id == principal.workspace_id,
-            )
-            .order_by(TranscriptSegment.start_ms, _SOURCE_ORDER, TranscriptSegment.id)
+            .where(*_segments_of(principal, meeting_id))
+            .order_by(*_TRANSCRIPT_ORDER)
         )
     ).all()
     return Transcript(
         meeting=MeetingRecord(meeting=meeting, segment_count=len(segments)), segments=segments
+    )
+
+
+async def get_transcript_lines(
+    session: AsyncSession, principal: Principal, meeting_id: UUID
+) -> TranscriptLines:
+    """The meeting and the columns a plain-text transcript shows, in transcript order.
+
+    Never select `words` here. Per-word timings are most of a row, and the text never shows
+    them: loading full rows made a long call's MCP read fetch and validate every word only to
+    drop it (`test_transcript_text_never_reads_word_timings` pins this). Use `get_transcript`
+    when the caller needs the words.
+    """
+    meeting = await require_meeting(session, principal, meeting_id)
+    rows = await session.execute(
+        select(TranscriptSegment.start_ms, TranscriptSegment.speaker, TranscriptSegment.text)
+        .where(*_segments_of(principal, meeting_id))
+        .order_by(*_TRANSCRIPT_ORDER)
+    )
+    lines = [
+        TranscriptLine(start_ms=start_ms, speaker=speaker, text=text)
+        for start_ms, speaker, text in rows
+    ]
+    return TranscriptLines(
+        meeting=MeetingRecord(meeting=meeting, segment_count=len(lines)), lines=lines
     )
