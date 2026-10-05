@@ -78,7 +78,7 @@ getDisplayMedia ───┤ worklet  ├─ SttStream(mic)  ──┐  final �
 | --- | --- |
 | API auth on every non-public route, meetings, idempotent segments, transcript ordering, end, health | `apps/api/tests/test_auth.py`, `test_meetings.py`, `test_health.py` |
 | STT token issuing (fake and Deepgram via mocked HTTP) | `apps/api/tests/test_stt_token.py` |
-| MCP tool through the SDK client, including auth rejection | `apps/api/tests/test_mcp.py` |
+| MCP tool through the SDK client, both handshakes; the text read never selects word timings | `apps/api/tests/test_mcp.py` |
 | PCM conversion and chunking | `apps/desktop/src/shared/pcm.test.ts`, `src/renderer/src/audio/PcmChunker.test.ts` |
 | Deepgram message parsing to `SttEvent` | `apps/desktop/src/main/stt/deepgram/messages.test.ts` |
 | Deepgram adapter against a local fake websocket server | `apps/desktop/src/main/stt/deepgram/DeepgramSpeechToText.test.ts` |

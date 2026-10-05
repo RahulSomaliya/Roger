@@ -1,4 +1,4 @@
-"""Read models the services return: ORM rows plus the values computed alongside them."""
+"""Read models the services return: ORM rows or selected columns, plus computed values."""
 
 from collections.abc import Sequence
 from dataclasses import dataclass
