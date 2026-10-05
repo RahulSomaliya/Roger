@@ -5,6 +5,8 @@ from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from uuid import UUID, uuid4
 
 import httpx
+
+# Undeclared, arrives with mcp: its HTTP client takes only httpx2. Declare it at the next re-lock.
 import httpx2
 import pytest
 from asgi_lifespan import LifespanManager
