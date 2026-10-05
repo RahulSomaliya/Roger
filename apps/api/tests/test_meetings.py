@@ -262,6 +262,21 @@ async def test_segments_are_idempotent(client: httpx.AsyncClient) -> None:
     assert counted["segment_count"] == 3
 
 
+async def test_resent_segment_with_new_text_is_a_duplicate_and_keeps_the_stored_text(
+    client: httpx.AsyncClient,
+) -> None:
+    # The contract matches re-sends by id alone: no 409 for a changed body.
+    meeting = await create_meeting(client)
+    original = segment_payload(text="First take.")
+    await append_segments(client, meeting["id"], original)
+
+    resent = await append_segments(client, meeting["id"], {**original, "text": "Second take."})
+
+    assert resent == {"accepted": 0, "duplicates": 1}
+    transcript = (await client.get(f"/v1/meetings/{meeting['id']}/transcript")).json()
+    assert [s["text"] for s in transcript["segments"]] == ["First take."]
+
+
 async def test_segment_id_from_another_meeting_is_409_and_nothing_is_stored(
     client: httpx.AsyncClient,
 ) -> None:

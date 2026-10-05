@@ -221,6 +221,14 @@ async def post_initialize(app: FastAPI, host: str) -> httpx.Response:
         return await http.post("/mcp", json=INITIALIZE, headers=MCP_HEADERS)
 
 
+async def test_delete_is_405_because_no_session_lives_on_the_server(app: FastAPI) -> None:
+    # The contract lists DELETE /mcp as a 405: a stateless server has no session to end.
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url=BASE_URL) as http:
+        response = await http.delete("/mcp", headers=MCP_HEADERS)
+
+    assert response.status_code == 405
+
+
 async def test_unknown_host_is_refused_by_default(client: httpx.AsyncClient, app: FastAPI) -> None:
     assert (await post_initialize(app, "localhost:8000")).status_code == 200
     assert (await post_initialize(app, "roger.example.com")).status_code == 421

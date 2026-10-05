@@ -61,8 +61,6 @@ otherwise; it is also on every log line for that request).
 | 500 | `internal_error` | Unexpected. Details go to the server log only, under the same request id. |
 | 502 | `stt_provider_error` | `POST /v1/stt/token`: the speech-to-text vendor refused, failed or was unreachable. |
 
-`405` and `502` are additions to the contract table.
-
 ## MCP
 
 The MCP server is mounted in the same app at exactly `/mcp` (Streamable HTTP, stateless, so any

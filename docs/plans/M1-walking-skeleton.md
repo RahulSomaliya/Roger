@@ -45,9 +45,9 @@ speech-to-text, saved on the Mac, uploaded to Postgres through the API, read bac
 | Token flow | `POST /v1/stt/token` returns provider + 30 s token + stream settings | Key in the desktop `.env` | House rule 3. Also makes "swap vendor" an API config change. |
 | Local safety copy | `node:sqlite` (built into Electron 44's Node), WAL, append-only `segments` rows with `synced_at` | `better-sqlite3` | No native rebuild, no ABI mismatch between vitest and Electron. |
 | Upload | `TranscriptUploader` polls unsynced rows every 2 s, batches up to 200, exponential backoff on failure, marks `synced_at` | Upload each segment as it arrives | Fewer requests, same guarantee: nothing is lost locally. |
-| Ids | Desktop generates UUIDv4 for meetings and segments; API upserts | Server ids | Retries and replays are safe (house rule 7). |
+| Ids | Desktop generates UUIDv4 for meetings and segments; the API inserts and ignores ids it already has | Server ids | Retries and replays are safe (house rule 7). |
 | MCP auth | Bearer middleware with the shared secret on `/mcp` | SDK `TokenVerifier` + OAuth | OAuth is M7. A plain header works with `claude mcp add --header` today. |
-| MCP mounting | `mcp.streamable_http_app()` mounted at `/` after the REST routes, session manager entered in the FastAPI lifespan | Separate process | One deploy, one auth story. |
+| MCP mounting | `mcp.streamable_http_app(stateless_http=True)` behind the bearer middleware, added as an exact `Route("/mcp")` after the REST routes; session manager entered in the FastAPI lifespan | A mount at `/`; a separate process | One deploy, one auth story. An exact route serves `/mcp` with no slash redirect and leaves every other path to FastAPI, so unknown paths keep the 404 envelope. |
 
 ### Data flow
 
@@ -76,7 +76,7 @@ getDisplayMedia ───┤ worklet  ├─ SttStream(mic)  ──┐  final �
 
 | What | Test |
 | --- | --- |
-| API auth, meetings, idempotent segments, transcript ordering, end, health | `apps/api/tests/test_meetings.py`, `test_health.py` |
+| API auth on every non-public route, meetings, idempotent segments, transcript ordering, end, health | `apps/api/tests/test_auth.py`, `test_meetings.py`, `test_health.py` |
 | STT token issuing (fake and Deepgram via mocked HTTP) | `apps/api/tests/test_stt_token.py` |
 | MCP tool through the SDK client, including auth rejection | `apps/api/tests/test_mcp.py` |
 | PCM conversion and chunking | `apps/desktop/src/shared/pcm.test.ts`, `src/renderer/src/audio/PcmChunker.test.ts` |

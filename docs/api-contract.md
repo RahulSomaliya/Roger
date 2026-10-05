@@ -1,7 +1,8 @@
 # Roger API contract (M1)
 
 The desktop app and every MCP client talk to the API through this contract. It is updated in the
-same change as the code on both sides. Base URL in development: `http://127.0.0.1:8000`.
+same change as the code on both sides. Base URL in development: `http://127.0.0.1:8000` (the port
+`make dev-api` serves, and the desktop's default `ROGER_API_URL`).
 
 ## Conventions
 
@@ -11,8 +12,12 @@ same change as the code on both sides. Base URL in development: `http://127.0.0.
   In M1 the token is the shared secret `ROGER_API_TOKEN`; it resolves to one `Principal`
   (workspace, user). M6 replaces the secret with Google sign-in, M7 adds OAuth for MCP, M14 adds
   project keys. Callers never change.
-- **Idempotency:** the client generates meeting and segment ids. Re-sending any create or append is
-  safe and returns the same result.
+- **Idempotency:** the client generates meeting and segment ids. Re-sending a create, append or end
+  is safe: it never stores a second copy. The response is not identical: a re-sent create answers
+  `200` instead of `201`, and a re-sent append counts the stored ids under `duplicates` instead of
+  `accepted`. Re-sends are matched by id alone. A meeting re-sent with a different `title` returns
+  `200` with the stored row, unchanged; a segment re-sent with different `text` counts as a
+  duplicate and the stored text stays.
 - **Errors** use one envelope:
 
   ```json
@@ -23,7 +28,7 @@ same change as the code on both sides. Base URL in development: `http://127.0.0.
   | --- | --- | --- |
   | 401 | `unauthorized` | Missing or wrong bearer token |
   | 404 | `not_found` | Unknown id, or an id in another workspace |
-  | 409 | `conflict` | An id exists with different immutable fields (for example the same meeting id in a different workspace is reported as 404, never 409) |
+  | 409 | `conflict` | A segment id is already stored under a different meeting. Nothing in that batch is stored. This is the only `409`. |
   | 405 | `method_not_allowed` | Known path, wrong method |
   | 422 | `validation_error` | Body or query failed validation; `message` lists the fields |
   | 500 | `internal_error` | Unexpected; details only in server logs |
@@ -31,6 +36,9 @@ same change as the code on both sides. Base URL in development: `http://127.0.0.
 
   A 401 carries `WWW-Authenticate: Bearer`. Every response carries `X-Request-ID` (echoed when the
   caller sends a safe one, generated otherwise); the same id is on every log line for the request.
+  A meeting id that exists in another workspace is a `404`, never a `409`. On `/mcp` only the `401`
+  uses this envelope. The MCP SDK answers the rest itself: `405` as a JSON-RPC error object, `421`
+  (a `Host` outside `MCP_ALLOWED_HOSTS`) as plain text.
 
 ## Entities
 
@@ -89,7 +97,8 @@ Request:
 { "id": "uuid (optional)", "title": "string (optional, default \"Untitled meeting\")", "started_at": "instant (optional, default now)" }
 ```
 
-Response: `201 Meeting` when created, `200 Meeting` when `id` already exists in this workspace.
+Response: `201 Meeting` when created, `200 Meeting` when `id` already exists in this workspace. The
+`200` is the stored meeting as it is: a different `title` or `started_at` in the re-send is ignored.
 
 ### `GET /v1/meetings?limit=50&before=<instant>&before_id=<uuid>`
 
@@ -107,7 +116,9 @@ Response: `200 Meeting`.
 
 ### `POST /v1/meetings/{meeting_id}/segments`
 
-Append transcript segments. Idempotent on segment `id`; duplicates are counted and ignored.
+Append transcript segments. Idempotent on segment `id`; duplicates are counted and ignored. A
+re-sent id is a duplicate even when its text or timings changed: the stored segment is kept. An id
+already stored under a different meeting is a `409`, and nothing in that batch is stored.
 
 Request:
 
@@ -159,7 +170,9 @@ and the desktop uses its built-in fake adapter (useful for development without a
 
 ## MCP
 
-Endpoint: `POST|GET|DELETE /mcp` (MCP Streamable HTTP). Same bearer token. Connect from Claude Code:
+Endpoint: `POST /mcp` and `GET /mcp` (MCP Streamable HTTP, stateless). Same bearer token.
+`DELETE /mcp` is a `405`: the server keeps no sessions, so there is none to end. Connect from Claude
+Code:
 
 ```bash
 claude mcp add --transport http roger http://127.0.0.1:8000/mcp --header "Authorization: Bearer $ROGER_API_TOKEN"
