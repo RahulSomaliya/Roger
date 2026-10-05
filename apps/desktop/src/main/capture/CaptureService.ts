@@ -8,7 +8,7 @@ import {
   type SourceStatus,
   type SttStreamState,
 } from '../../shared/capture';
-import { PCM_SAMPLE_RATE } from '../../shared/ipc';
+import { PCM_ENCODING, PCM_SAMPLE_RATE } from '../../shared/ipc';
 import {
   SPEAKER_FOR_SOURCE,
   type AudioSource,
@@ -21,6 +21,7 @@ import type { MicrophoneAccess } from '../permissions';
 import type { TranscriptStore } from '../store/TranscriptStore';
 import type { SpeechToTextFactory } from '../stt/createSpeechToText';
 import type { SttStreamSettings } from '../stt/SpeechToText';
+import { streamSettingsMismatch } from '../stt/streamSettings';
 import type { TranscriptUploader } from '../upload/TranscriptUploader';
 import { Emitter } from '../util/emitter';
 import { withTimeout } from '../util/time';
@@ -57,7 +58,7 @@ const FAKE_STREAM_SETTINGS: SttStreamSettings = {
   model: 'fake',
   language: 'en',
   sampleRate: PCM_SAMPLE_RATE,
-  encoding: 'linear16',
+  encoding: PCM_ENCODING,
 };
 
 /** How often chunk counters are pushed to the UI while recording. */
@@ -178,6 +179,9 @@ export class CaptureService {
         );
       }
       const { provider, accessToken, settings } = await this.resolveStt();
+      // Checked before the meeting exists: a session on the wrong format would store nonsense lines.
+      const mismatch = streamSettingsMismatch(settings);
+      if (mismatch !== null) throw new Error(mismatch);
       const stt = this.options.createSpeechToText(provider);
       this.sttProvider = provider;
       this.startedAt = new Date(startedAtMs).toISOString();

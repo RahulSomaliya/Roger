@@ -212,6 +212,22 @@ describe('CaptureService', () => {
     expect(misconfigured.api.getSttToken).not.toHaveBeenCalled();
   });
 
+  it('refuses to start when the API asks for audio the renderer does not send', async () => {
+    const h = harness();
+    h.api.getSttToken.mockResolvedValueOnce({
+      provider: 'scripted',
+      access_token: 'tok',
+      expires_in: 30,
+      stream: { model: 'm', language: 'en', sample_rate: 48000, encoding: 'linear16' },
+    });
+    const status = await h.service.start();
+    expect(status.phase).toBe('idle');
+    expect(status.error).toContain('48000 Hz');
+    expect(status.error).toContain('16000 Hz');
+    expect(h.stt.opened).toHaveLength(0);
+    expect(h.store.meetings.size).toBe(0);
+  });
+
   it('uses the fake adapter without asking the API for a token when overridden', async () => {
     const h = harness({ override: 'fake' });
     const status = await h.service.start();
