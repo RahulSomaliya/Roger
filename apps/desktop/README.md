@@ -31,8 +31,8 @@ In dev mode settings come from environment variables, with the `ROGER_*` keys of
 { "apiUrl": "http://127.0.0.1:8000", "apiToken": "<the API's ROGER_API_TOKEN>" }
 ```
 
-A `config.json` that exists but cannot be read or parsed is logged and named in the start-up
-error. The keys:
+A `config.json` that exists but cannot be read or parsed is logged, and named in the start-up
+error when it leaves Roger without an API token. The keys:
 
 | Variable                  | config.json key | Meaning                                                               |
 | ------------------------- | --------------- | --------------------------------------------------------------------- |
@@ -84,7 +84,9 @@ response names the provider; `createSpeechToText` picks the adapter. Shipping ad
   `electron-builder.yml`; without it macOS hands over a dead track and no error.
 - In dev mode (`make dev-desktop`) the process macOS checks is the terminal, not Roger. cmux,
   iTerm2 and Terminal.app have no `NSAudioCaptureUsageDescription`, so the system audio ("Them")
-  stream is dead with no error from macOS; the status panel shows it as "no audio for over 5 s".
+  stream is dead with no error from macOS. Its row may well keep counting "s captured": the
+  "no audio for over 5 s" warning fires only when no audio arrives at all (the renderer, its
+  worklet or IPC stopped), not for a live stream of silence, which is M2's silence warning.
   Test call audio with `make install-desktop`: the packaged app carries the key.
 - Verified on 2026-10-05: the packaged, ad hoc signed Roger.app on macOS 26.6.2 (Apple Silicon)
   captured both streams, with the API on `STT_PROVIDER=fake`.

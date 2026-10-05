@@ -373,10 +373,12 @@ export class CaptureService {
   }
 
   /**
-   * The M1 plan's no-audio check: a source that has sent no chunk for NO_AUDIO_WARNING_MS while
-   * recording is marked stalled and logged once; its next chunk clears it (pushAudio). Without
-   * this a dead system-audio track (no capture permission) looked healthy for a whole call.
-   * Sources already `ended` or in `error` keep that more specific state.
+   * The M1 plan's no-audio check: a source that has sent no chunk at all for NO_AUDIO_WARNING_MS
+   * while recording is marked stalled and logged once; its next chunk clears it (pushAudio). It
+   * sees a capture path that stopped (renderer, worklet or IPC), not a live track of silence: that
+   * still sends chunks of zeros, as system audio without its macOS permission most likely does,
+   * and is M2's silence warning (see pushAudio). Sources already `ended` or in `error` keep that
+   * more specific state.
    */
   private checkAudioFlow(): void {
     if (this.phase !== 'recording' || this.recordingSinceMs === null) return;

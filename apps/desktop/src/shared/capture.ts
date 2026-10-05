@@ -7,8 +7,9 @@ export type CapturePhase = 'idle' | 'starting' | 'recording' | 'stopping';
 export type AudioSourceState = 'active' | 'ended' | 'error';
 
 /**
- * `stalled`: recording, but no PCM chunk from this source for NO_AUDIO_WARNING_MS (a dead track, a
- * missing permission, a stuck worklet). Main sets it and clears it on the next chunk.
+ * `stalled`: recording, but no PCM chunk at all from this source for NO_AUDIO_WARNING_MS (the
+ * renderer, its worklet or the IPC path stopped). A live track of silence still sends chunks and
+ * stays `active` until M2's silence warning. Main sets it and clears it on the next chunk.
  */
 export type SourceHealth = 'pending' | 'active' | 'stalled' | 'ended' | 'error';
 
