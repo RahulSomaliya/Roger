@@ -2,6 +2,7 @@ from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Body, Query, Response, status
+from fastapi.exceptions import RequestValidationError
 
 from roger_api.auth import PrincipalDep
 from roger_api.dependencies import SessionDep
@@ -39,8 +40,15 @@ async def list_meetings(
     session: SessionDep,
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
     before: Annotated[UtcDatetime | None, Query()] = None,
+    before_id: Annotated[UUID | None, Query()] = None,
 ) -> MeetingList:
-    records = await meetings.list_meetings(session, principal, limit=limit, before=before)
+    if before_id is not None and before is None:
+        raise RequestValidationError(
+            [{"type": "missing", "loc": ("query", "before"), "msg": "Required with before_id"}]
+        )
+    records = await meetings.list_meetings(
+        session, principal, limit=limit, before=before, before_id=before_id
+    )
     return MeetingList(items=[MeetingOut.from_record(record) for record in records])
 
 

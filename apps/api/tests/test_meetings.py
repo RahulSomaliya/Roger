@@ -111,12 +111,48 @@ async def test_list_is_newest_first_and_pages_with_before(client: httpx.AsyncCli
     assert [m["title"] for m in second_page] == ["Meeting 1"]
 
 
+async def page_through(client: httpx.AsyncClient, *, limit: int) -> list[Json]:
+    """Every meeting, following the contract's cursor: the last item's started_at and id."""
+    params: dict[str, str | int] = {"limit": limit}
+    seen: list[Json] = []
+    for _ in range(20):
+        page: list[Json] = (await client.get("/v1/meetings", params=params)).json()["items"]
+        if not page:
+            return seen
+        seen.extend(page)
+        params = {"limit": limit, "before": page[-1]["started_at"], "before_id": page[-1]["id"]}
+    raise AssertionError(f"paging did not end after 20 pages: {[m['id'] for m in seen]}")
+
+
+async def test_paging_keeps_meetings_that_share_a_started_at(client: httpx.AsyncClient) -> None:
+    # A cursor of started_at alone skipped the second of two meetings that started together.
+    created = [await create_meeting(client, started_at=STARTED_AT) for _ in range(3)]
+    later = await create_meeting(client, started_at="2026-10-05T11:00:00Z")
+
+    paged = await page_through(client, limit=1)
+
+    same_start_newest_id_first = sorted((m["id"] for m in created), reverse=True)
+    assert [m["id"] for m in paged] == [later["id"], *same_start_newest_id_first]
+
+
+async def test_paging_with_microsecond_start_times(client: httpx.AsyncClient) -> None:
+    # The cursor is the started_at the API returned, so it must round-trip at full precision.
+    for _ in range(3):
+        await create_meeting(client)
+
+    paged = await page_through(client, limit=2)
+
+    assert len({m["id"] for m in paged}) == len(paged) == 3
+
+
 @pytest.mark.parametrize(
     ("params", "field"),
     [
         ({"limit": 0}, "query.limit"),
         ({"limit": 201}, "query.limit"),
         ({"before": "yesterday"}, "query.before"),
+        ({"before": STARTED_AT, "before_id": "not-a-uuid"}, "query.before_id"),
+        ({"before_id": "7f3c2d1e-0000-4000-8000-000000000001"}, "query.before"),
     ],
 )
 async def test_list_validation_errors(

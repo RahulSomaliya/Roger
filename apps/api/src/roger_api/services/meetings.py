@@ -1,7 +1,7 @@
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
-from sqlalchemy import Select, func, select, update
+from sqlalchemy import Select, func, select, tuple_, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -84,11 +84,24 @@ async def create_meeting(
 
 
 async def list_meetings(
-    session: AsyncSession, principal: Principal, *, limit: int, before: datetime | None = None
+    session: AsyncSession,
+    principal: Principal,
+    *,
+    limit: int,
+    before: datetime | None = None,
+    before_id: UUID | None = None,
 ) -> list[MeetingRecord]:
-    """Newest first by `started_at`; `before` pages backwards."""
+    """Newest first by `started_at`, then `id`. Pages backwards from a keyset cursor.
+
+    The next page starts after the last item: pass its `started_at` as `before` and its `id` as
+    `before_id`. `before` alone keeps only meetings that started strictly earlier.
+    """
     query = _with_segment_count(principal)
-    if before is not None:
+    if before is not None and before_id is not None:
+        # The cursor must cover the whole sort key. With `started_at < before` alone, meetings
+        # sharing the last item's started_at fell between two pages and were never listed.
+        query = query.where(tuple_(Meeting.started_at, Meeting.id) < tuple_(before, before_id))
+    elif before is not None:
         query = query.where(Meeting.started_at < before)
     rows = await session.execute(
         query.order_by(Meeting.started_at.desc(), Meeting.id.desc()).limit(limit)

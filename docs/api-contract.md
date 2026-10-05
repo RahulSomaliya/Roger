@@ -91,10 +91,15 @@ Request:
 
 Response: `201 Meeting` when created, `200 Meeting` when `id` already exists in this workspace.
 
-### `GET /v1/meetings?limit=50&before=<instant>`
+### `GET /v1/meetings?limit=50&before=<instant>&before_id=<uuid>`
 
-Newest first by `started_at`. `limit` 1..200, default 50. `before` pages backwards.
+Newest first by `started_at`, then `id`. `limit` 1..200, default 50.
 Response: `200 { "items": Meeting[] }`.
+
+Paging: for the next page, pass the last item's `started_at` as `before` and its `id` as
+`before_id`. An empty `items` means there are no more. `before` alone is a time filter, not a
+cursor: it lists meetings that started strictly before that instant, so meetings that share the
+last item's `started_at` would be skipped. `before_id` without `before` is a `422`.
 
 ### `GET /v1/meetings/{meeting_id}`
 
