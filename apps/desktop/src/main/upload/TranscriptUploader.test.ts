@@ -89,7 +89,7 @@ describe('TranscriptUploader', () => {
 
     const uploader = new TranscriptUploader({
       store,
-      api,
+      api: asClient(api),
       logger,
       intervalMs: 1000,
       baseBackoffMs: 500,
