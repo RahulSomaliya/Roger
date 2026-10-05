@@ -16,6 +16,10 @@ REPO_ROOT_ENV_FILE = Path(__file__).resolve().parents[4] / ".env"
 # The single workspace every M1 request resolves to. Fixed so that every install agrees on it.
 DEFAULT_WORKSPACE_ID = UUID("805dd994-ff52-405c-a3cc-58f09b32a2dd")
 MIN_API_TOKEN_LENGTH = 16
+# `.env.example` ships `ROGER_API_TOKEN=change-me-to-a-real-secret`. That value is public and long
+# enough to pass the length check, so a `.env` copied without editing would serve every transcript
+# behind a token anyone can read. Keep the example value starting with this prefix.
+ENV_EXAMPLE_PLACEHOLDER_PREFIX = "change-me"
 
 type SttProvider = Literal["fake", "deepgram"]
 
@@ -64,10 +68,16 @@ class Settings(DatabaseSettings):
 
     @field_validator("roger_api_token")
     @classmethod
-    def _token_is_long_enough(cls, value: SecretStr) -> SecretStr:
-        if len(value.get_secret_value()) < MIN_API_TOKEN_LENGTH:
+    def _token_is_a_real_secret(cls, value: SecretStr) -> SecretStr:
+        token = value.get_secret_value()
+        if len(token) < MIN_API_TOKEN_LENGTH:
             raise ValueError(
                 f"must be at least {MIN_API_TOKEN_LENGTH} characters (try: openssl rand -hex 32)"
+            )
+        if token.lower().startswith(ENV_EXAMPLE_PLACEHOLDER_PREFIX):
+            raise ValueError(
+                "is still the placeholder from .env.example; set a real secret "
+                "(try: openssl rand -hex 32)"
             )
         return value
 
