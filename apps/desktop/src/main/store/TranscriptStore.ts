@@ -34,9 +34,13 @@ export interface TranscriptStore {
   listMeetingsNeedingSync(): LocalMeeting[];
   /** Idempotent on `segment.id`. */
   appendSegment(segment: TranscriptSegment): void;
+  /** Lines not yet uploaded and not rejected, oldest first. */
   listUnsyncedSegments(meetingId: string, limit: number): TranscriptSegment[];
   markSegmentsSynced(ids: string[], syncedAt: string): void;
+  /** Set a line aside after the API rejected it as invalid, so it never blocks the queue. */
+  markSegmentRejected(id: string, reason: string, rejectedAt: string): void;
   countUnsyncedSegments(): number;
+  countRejectedSegments(): number;
   countSegments(meetingId: string): number;
   close(): void;
 }

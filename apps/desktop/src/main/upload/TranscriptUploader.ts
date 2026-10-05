@@ -1,4 +1,5 @@
 import type { UploadStatus } from '../../shared/capture';
+import type { TranscriptSegment } from '../../shared/transcript';
 import { ApiError, type ApiClient } from '../api/ApiClient';
 import { errorMessage, type Logger } from '../logger';
 import type { LocalMeeting, TranscriptStore } from '../store/TranscriptStore';
@@ -49,6 +50,7 @@ export class TranscriptUploader {
     this.status = {
       state: 'idle',
       pending: options.store.countUnsyncedSegments(),
+      rejected: options.store.countRejectedSegments(),
       lastError: null,
       nextAttemptAt: null,
     };
@@ -73,7 +75,11 @@ export class TranscriptUploader {
   }
 
   getStatus(): UploadStatus {
-    return { ...this.status, pending: this.options.store.countUnsyncedSegments() };
+    return {
+      ...this.status,
+      pending: this.options.store.countUnsyncedSegments(),
+      rejected: this.options.store.countRejectedSegments(),
+    };
   }
 
   onStatus(listener: (status: UploadStatus) => void): () => void {
@@ -140,12 +146,7 @@ export class TranscriptUploader {
       for (;;) {
         const batch = store.listUnsyncedSegments(meeting.id, this.batchSize);
         if (batch.length === 0) break;
-        const result = await api.appendSegments(meeting.id, batch);
-        store.markSegmentsSynced(
-          batch.map((segment) => segment.id),
-          this.clock().toISOString(),
-        );
-        this.options.logger.debug('segments uploaded', { meetingId: meeting.id, ...result });
+        await this.uploadBatch(meeting.id, batch);
         this.setStatus({});
       }
       if (meeting.endedAt !== null) {
@@ -160,8 +161,44 @@ export class TranscriptUploader {
     }
   }
 
+  /**
+   * One request per batch. A 422 means at least one line is invalid; retrying would block the
+   * queue forever, so the batch is retried line by line and the rejected lines are set aside.
+   */
+  private async uploadBatch(meetingId: string, batch: TranscriptSegment[]): Promise<void> {
+    const { store, api, logger } = this.options;
+    try {
+      const result = await api.appendSegments(meetingId, batch);
+      store.markSegmentsSynced(
+        batch.map((segment) => segment.id),
+        this.clock().toISOString(),
+      );
+      logger.debug('segments uploaded', { meetingId, ...result });
+    } catch (error) {
+      if (!(error instanceof ApiError && error.status === 422)) throw error;
+      if (batch.length === 1) {
+        const [segment] = batch;
+        if (segment) {
+          store.markSegmentRejected(segment.id, error.message, this.clock().toISOString());
+          logger.error('segment rejected by the API and set aside', {
+            meetingId,
+            segmentId: segment.id,
+            reason: error.message,
+          });
+        }
+        return;
+      }
+      for (const segment of batch) await this.uploadBatch(meetingId, [segment]);
+    }
+  }
+
   private setStatus(patch: Partial<UploadStatus>): void {
-    this.status = { ...this.status, ...patch, pending: this.options.store.countUnsyncedSegments() };
+    this.status = {
+      ...this.status,
+      ...patch,
+      pending: this.options.store.countUnsyncedSegments(),
+      rejected: this.options.store.countRejectedSegments(),
+    };
     this.events.emit('status', this.status);
   }
 }

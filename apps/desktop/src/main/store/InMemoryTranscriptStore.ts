@@ -9,7 +9,10 @@ import type {
 /** Reference implementation used by unit tests of the services around the store. */
 export class InMemoryTranscriptStore implements TranscriptStore {
   readonly meetings = new Map<string, LocalMeeting>();
-  readonly segments = new Map<string, TranscriptSegment & { syncedAt: string | null }>();
+  readonly segments = new Map<
+    string,
+    TranscriptSegment & { syncedAt: string | null; rejectedAt: string | null }
+  >();
 
   createMeeting(meeting: NewLocalMeeting): void {
     if (this.meetings.has(meeting.id)) return;
@@ -43,18 +46,23 @@ export class InMemoryTranscriptStore implements TranscriptStore {
 
   appendSegment(segment: TranscriptSegment): void {
     if (this.segments.has(segment.id)) return;
-    this.segments.set(segment.id, { ...segment, syncedAt: null });
+    this.segments.set(segment.id, { ...segment, syncedAt: null, rejectedAt: null });
   }
 
   listUnsyncedSegments(meetingId: string, limit: number): TranscriptSegment[] {
     return [...this.segments.values()]
-      .filter((segment) => segment.meetingId === meetingId && segment.syncedAt === null)
+      .filter(
+        (segment) =>
+          segment.meetingId === meetingId &&
+          segment.syncedAt === null &&
+          segment.rejectedAt === null,
+      )
       .sort(
         (a, b) =>
           a.startMs - b.startMs || a.source.localeCompare(b.source) || a.id.localeCompare(b.id),
       )
       .slice(0, limit)
-      .map(({ syncedAt: _syncedAt, ...segment }) => segment);
+      .map(({ syncedAt: _syncedAt, rejectedAt: _rejectedAt, ...segment }) => segment);
   }
 
   markSegmentsSynced(ids: string[], syncedAt: string): void {
@@ -64,8 +72,18 @@ export class InMemoryTranscriptStore implements TranscriptStore {
     }
   }
 
+  markSegmentRejected(id: string, _reason: string, rejectedAt: string): void {
+    const segment = this.segments.get(id);
+    if (segment?.syncedAt === null) segment.rejectedAt = rejectedAt;
+  }
+
   countUnsyncedSegments(): number {
-    return [...this.segments.values()].filter((segment) => segment.syncedAt === null).length;
+    return [...this.segments.values()].filter((s) => s.syncedAt === null && s.rejectedAt === null)
+      .length;
+  }
+
+  countRejectedSegments(): number {
+    return [...this.segments.values()].filter((segment) => segment.rejectedAt !== null).length;
   }
 
   countSegments(meetingId: string): number {

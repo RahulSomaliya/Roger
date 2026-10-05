@@ -66,6 +66,19 @@ describe('SqliteTranscriptStore', () => {
     store.close();
   });
 
+  it('excludes rejected lines from the upload queue and counts them', () => {
+    const store = new SqliteTranscriptStore(':memory:');
+    store.createMeeting({ id: 'm1', title: 'T', startedAt: '2026-10-05T10:00:00Z' });
+    store.appendSegment(segment(1));
+    store.appendSegment(segment(2));
+    store.markSegmentRejected('seg-1', 'text too short', '2026-10-05T10:01:00Z');
+    expect(store.listUnsyncedSegments('m1', 10).map((s) => s.id)).toEqual(['seg-2']);
+    expect(store.countUnsyncedSegments()).toBe(1);
+    expect(store.countRejectedSegments()).toBe(1);
+    expect(store.countSegments('m1')).toBe(2);
+    store.close();
+  });
+
   it('deletes only meetings with no lines', () => {
     const store = new SqliteTranscriptStore(':memory:');
     store.createMeeting({ id: 'empty', title: 'T', startedAt: '2026-10-05T10:00:00Z' });

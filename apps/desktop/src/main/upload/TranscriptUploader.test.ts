@@ -129,6 +129,32 @@ describe('TranscriptUploader', () => {
     expect(api.endMeeting).toHaveBeenCalledTimes(1);
   });
 
+  it('sets aside lines the API rejects as invalid instead of retrying the batch forever', async () => {
+    const store = new InMemoryTranscriptStore();
+    const api = fakeApi();
+    store.createMeeting({ id: 'm1', title: 'T', startedAt: '2026-10-05T10:00:00Z' });
+    for (let n = 0; n < 3; n += 1) store.appendSegment(segment('m1', n));
+    store.markMeetingEnded('m1', '2026-10-05T10:30:00Z');
+    const invalid = new ApiError(422, 'validation_error', 'body.segments[0].text: too short');
+    api.appendSegments.mockImplementation((_meetingId: unknown, batch: unknown) => {
+      const ids = (batch as TranscriptSegment[]).map((s) => s.id);
+      return ids.includes('m1-seg-1')
+        ? Promise.reject(invalid)
+        : Promise.resolve({ accepted: ids.length, duplicates: 0 });
+    });
+
+    const uploader = new TranscriptUploader({ store, api: asClient(api), logger });
+    await uploader.flush();
+
+    expect(api.appendSegments).toHaveBeenCalledTimes(4); // the batch, then each of its three lines
+    expect(store.countUnsyncedSegments()).toBe(0);
+    expect(store.countRejectedSegments()).toBe(1);
+    expect(store.segments.get('m1-seg-1')?.rejectedAt).not.toBeNull();
+    expect(store.segments.get('m1-seg-0')?.syncedAt).not.toBeNull();
+    expect(api.endMeeting).toHaveBeenCalledTimes(1);
+    expect(uploader.getStatus()).toMatchObject({ state: 'idle', pending: 0, rejected: 1 });
+  });
+
   it('runs only one tick at a time', async () => {
     const store = new InMemoryTranscriptStore();
     const api = fakeApi();

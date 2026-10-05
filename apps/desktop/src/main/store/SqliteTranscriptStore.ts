@@ -43,6 +43,10 @@ const MIGRATIONS: readonly string[] = [
   CREATE INDEX segments_by_meeting ON segments (meeting_id, start_ms);
   CREATE INDEX segments_unsynced ON segments (meeting_id, start_ms) WHERE synced_at IS NULL;
   `,
+  `
+  ALTER TABLE segments ADD COLUMN rejected_at TEXT;
+  ALTER TABLE segments ADD COLUMN rejected_reason TEXT;
+  `,
 ];
 
 type Row = Record<string, SQLOutputValue>;
@@ -59,7 +63,9 @@ export class SqliteTranscriptStore implements TranscriptStore {
     insertSegment: StatementSync;
     unsyncedSegments: StatementSync;
     markSynced: StatementSync;
+    markRejected: StatementSync;
     countUnsynced: StatementSync;
+    countRejected: StatementSync;
     countSegments: StatementSync;
   };
 
@@ -97,13 +103,21 @@ export class SqliteTranscriptStore implements TranscriptStore {
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
       ),
       unsyncedSegments: this.db.prepare(
-        `SELECT * FROM segments WHERE meeting_id = ? AND synced_at IS NULL
+        `SELECT * FROM segments WHERE meeting_id = ? AND synced_at IS NULL AND rejected_at IS NULL
          ORDER BY start_ms ASC, source ASC, id ASC LIMIT ?`,
       ),
       markSynced: this.db.prepare(
         `UPDATE segments SET synced_at = ? WHERE id = ? AND synced_at IS NULL`,
       ),
-      countUnsynced: this.db.prepare(`SELECT COUNT(*) AS n FROM segments WHERE synced_at IS NULL`),
+      markRejected: this.db.prepare(
+        `UPDATE segments SET rejected_at = ?, rejected_reason = ? WHERE id = ? AND synced_at IS NULL`,
+      ),
+      countUnsynced: this.db.prepare(
+        `SELECT COUNT(*) AS n FROM segments WHERE synced_at IS NULL AND rejected_at IS NULL`,
+      ),
+      countRejected: this.db.prepare(
+        `SELECT COUNT(*) AS n FROM segments WHERE rejected_at IS NOT NULL`,
+      ),
       countSegments: this.db.prepare(`SELECT COUNT(*) AS n FROM segments WHERE meeting_id = ?`),
     };
   }
@@ -160,8 +174,16 @@ export class SqliteTranscriptStore implements TranscriptStore {
     });
   }
 
+  markSegmentRejected(id: string, reason: string, rejectedAt: string): void {
+    this.statements.markRejected.run(rejectedAt, reason, id);
+  }
+
   countUnsyncedSegments(): number {
     return Number(this.statements.countUnsynced.get()?.n ?? 0);
+  }
+
+  countRejectedSegments(): number {
+    return Number(this.statements.countRejected.get()?.n ?? 0);
   }
 
   countSegments(meetingId: string): number {

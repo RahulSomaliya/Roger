@@ -36,8 +36,10 @@ export function describeStream(state: SttStreamState): string {
 }
 
 export function describeUpload(upload: UploadStatus): string {
-  if (upload.state === 'backoff')
-    return `${upload.pending} lines waiting, retrying (${upload.lastError ?? 'error'})`;
-  if (upload.pending > 0) return `${upload.pending} lines uploading`;
-  return 'all lines uploaded';
+  const rejected = upload.rejected > 0 ? ` · ${upload.rejected} rejected by the API` : '';
+  if (upload.state === 'backoff') {
+    return `${upload.pending} lines waiting, retrying (${upload.lastError ?? 'error'})${rejected}`;
+  }
+  if (upload.pending > 0) return `${upload.pending} lines uploading${rejected}`;
+  return `all lines uploaded${rejected}`;
 }

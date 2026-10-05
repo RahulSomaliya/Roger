@@ -23,6 +23,8 @@ export interface UploadStatus {
   state: 'idle' | 'uploading' | 'backoff';
   /** Segments saved locally that are not yet in Postgres. */
   pending: number;
+  /** Segments the API rejected as invalid. They stay local and never block the queue. */
+  rejected: number;
   lastError: string | null;
   /** Epoch ms of the next attempt while backing off. */
   nextAttemptAt: number | null;
