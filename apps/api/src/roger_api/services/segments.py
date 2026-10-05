@@ -33,6 +33,8 @@ async def append_segments(
 
     Raises `ConflictError` when an id is already stored under a different meeting.
     """
+    # A segment always lands in its meeting's workspace. The meetings list counts segments by
+    # meeting_id alone (`_with_segment_count` in services/meetings.py) and relies on this.
     await require_meeting(session, principal, meeting_id)
     rows = [
         {**segment.model_dump(), "meeting_id": meeting_id, "workspace_id": principal.workspace_id}

@@ -16,13 +16,16 @@ def meeting_not_found(meeting_id: UUID) -> NotFoundError:
 
 
 def _with_segment_count(principal: Principal) -> Select[Meeting, int]:
+    # Counted by meeting_id alone so Postgres counts entries of the (meeting_id, start_ms) index
+    # (an index-only scan). Adding `workspace_id == Meeting.workspace_id` here forced a fetch of
+    # every segment row of every listed meeting (the plan is pinned by
+    # test_segment_counts_are_read_from_the_meeting_index). Isolation still holds: the outer query
+    # only returns meetings in the caller's workspace, and append_segments stores a segment only
+    # under a meeting it has checked belongs to that same workspace.
     segment_count = (
         select(func.count())
         .select_from(TranscriptSegment)
-        .where(
-            TranscriptSegment.meeting_id == Meeting.id,
-            TranscriptSegment.workspace_id == Meeting.workspace_id,
-        )
+        .where(TranscriptSegment.meeting_id == Meeting.id)
         .correlate(Meeting)
         .scalar_subquery()
     )

@@ -3,7 +3,13 @@ from uuid import UUID, uuid4
 
 import httpx
 import pytest
+from fastapi import FastAPI
+from sqlalchemy import text
 
+from roger_api.auth import default_principal
+from roger_api.config import Settings
+from roger_api.db.engine import Database
+from roger_api.services.meetings import _with_segment_count
 from tests.helpers import Json, append_segments, assert_error, create_meeting, segment_payload
 
 STARTED_AT = "2026-10-05T10:00:00Z"
@@ -161,6 +167,27 @@ async def test_list_validation_errors(
     response = await client.get("/v1/meetings", params=params)
 
     assert field in assert_error(response, 422, "validation_error")
+
+
+async def test_segment_counts_are_read_from_the_meeting_index(
+    app: FastAPI, settings: Settings, client: httpx.AsyncClient
+) -> None:
+    # Pins the plan, not the numbers: joining on workspace_id in the count made Postgres read
+    # every segment row of every listed meeting instead of counting index entries.
+    meeting = await create_meeting(client)
+    await append_segments(client, meeting["id"], segment_payload(), segment_payload())
+    database = app.state.database
+    assert isinstance(database, Database)
+    query = _with_segment_count(default_principal(settings))
+    sql = query.compile(dialect=database.engine.dialect, compile_kwargs={"literal_binds": True})
+
+    async with database.session() as session:
+        # A test table is tiny, so without these the planner scans it whole and proves nothing.
+        await session.execute(text("SET LOCAL enable_seqscan = off"))
+        await session.execute(text("SET LOCAL enable_bitmapscan = off"))
+        plan = "\n".join((await session.execute(text(f"EXPLAIN {sql}"))).scalars())
+
+    assert "Index Only Scan using ix_transcript_segments_meeting_id_start_ms" in plan, plan
 
 
 async def test_get_meeting(client: httpx.AsyncClient) -> None:
