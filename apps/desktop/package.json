@@ -16,6 +16,7 @@
     "preview": "electron-vite preview",
     "start": "electron-vite preview",
     "package:mac": "electron-vite build && electron-builder --mac --config electron-builder.yml",
+    "install:mac": "bash scripts/install-mac.sh",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json && tsc --noEmit -p tsconfig.worklet.json",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
