@@ -1,0 +1,43 @@
+import type { SourceHealth, SttStreamState, UploadStatus } from '../../shared/capture';
+
+/** `hh:mm:ss` for an offset in milliseconds. */
+export function formatOffset(ms: number): string {
+  const total = Math.max(0, Math.floor(ms / 1000));
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const seconds = total % 60;
+  return [hours, minutes, seconds].map((n) => String(n).padStart(2, '0')).join(':');
+}
+
+export function describeHealth(health: SourceHealth, chunks: number): string {
+  switch (health) {
+    case 'pending':
+      return 'waiting for audio';
+    case 'active':
+      return chunks === 0 ? 'open, no audio yet' : `${(chunks / 10).toFixed(0)}s captured`;
+    case 'ended':
+      return 'stopped';
+    case 'error':
+      return 'error';
+  }
+}
+
+export function describeStream(state: SttStreamState): string {
+  switch (state) {
+    case 'closed':
+      return 'closed';
+    case 'connecting':
+      return 'connecting';
+    case 'open':
+      return 'transcribing';
+    case 'error':
+      return 'error';
+  }
+}
+
+export function describeUpload(upload: UploadStatus): string {
+  if (upload.state === 'backoff')
+    return `${upload.pending} lines waiting, retrying (${upload.lastError ?? 'error'})`;
+  if (upload.pending > 0) return `${upload.pending} lines uploading`;
+  return 'all lines uploaded';
+}
