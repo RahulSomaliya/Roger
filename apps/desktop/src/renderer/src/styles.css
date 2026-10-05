@@ -130,10 +130,11 @@ body {
   margin: 0;
 }
 
-/* A source with no audio, a dead track or an error is a problem with the call itself. */
+/* No audio, a dead track, a source error or a line not saved: the call is being lost. */
 .health-stalled dd,
 .health-ended dd,
-.health-error dd {
+.health-error dd,
+.save-failed dd {
   color: var(--danger);
 }
 

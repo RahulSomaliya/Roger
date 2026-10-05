@@ -1,6 +1,6 @@
 import { AUDIO_SOURCE_LABEL, type CaptureStatus } from '../../../shared/capture';
 import { AUDIO_SOURCES } from '../../../shared/transcript';
-import { describeHealth, describeStream, describeUpload } from '../format';
+import { describeHealth, describeSaved, describeStream, describeUpload } from '../format';
 
 export function StatusPanel({ status }: { status: CaptureStatus }) {
   return (
@@ -19,9 +19,9 @@ export function StatusPanel({ status }: { status: CaptureStatus }) {
             </div>
           );
         })}
-        <div className="status-row">
+        <div className={`status-row${status.segmentsUnsaved > 0 ? ' save-failed' : ''}`}>
           <dt>Saved locally</dt>
-          <dd>{status.segmentsStored} lines</dd>
+          <dd>{describeSaved(status.segmentsStored, status.segmentsUnsaved)}</dd>
         </div>
         <div className={`status-row upload-${status.upload.state}`}>
           <dt>Postgres</dt>

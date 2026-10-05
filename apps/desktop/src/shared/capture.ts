@@ -53,6 +53,8 @@ export interface CaptureStatus {
   streams: Record<AudioSource, SttStreamState>;
   /** Final segments stored locally in this session. */
   segmentsStored: number;
+  /** Final segments this session that the local store refused (shown live, not saved). */
+  segmentsUnsaved: number;
   upload: UploadStatus;
   /** Last error worth showing the user, or null. */
   error: string | null;
@@ -71,6 +73,7 @@ export function idleCaptureStatus(upload: UploadStatus): CaptureStatus {
     sources: { mic: emptySourceStatus(), system: emptySourceStatus() },
     streams: { mic: 'closed', system: 'closed' },
     segmentsStored: 0,
+    segmentsUnsaved: 0,
     upload,
     error: null,
   };

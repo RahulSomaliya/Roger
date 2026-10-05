@@ -42,6 +42,11 @@ export function describeStream(state: SttStreamState): string {
   }
 }
 
+export function describeSaved(stored: number, unsaved: number): string {
+  const lines = `${stored} lines`;
+  return unsaved > 0 ? `${lines} · ${unsaved} could not be saved` : lines;
+}
+
 export function describeUpload(upload: UploadStatus): string {
   const rejected = upload.rejected > 0 ? ` · ${upload.rejected} rejected by the API` : '';
   if (upload.state === 'backoff') {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { AudioSource } from '../../shared/transcript';
+import type { AudioSource, TranscriptSegment } from '../../shared/transcript';
 import { createLogger } from '../logger';
 import { InMemoryTranscriptStore } from '../store/InMemoryTranscriptStore';
 import {
@@ -54,16 +54,38 @@ class ControlledSpeechToText implements SpeechToText {
   }
 }
 
+/** A store whose next `appendSegment` throws, like a full disk or SQLite busy past its timeout. */
+class FailingStore extends InMemoryTranscriptStore {
+  failNext: Error | null = null;
+  override appendSegment(segment: TranscriptSegment): void {
+    const error = this.failNext;
+    this.failNext = null;
+    if (error) throw error;
+    super.appendSegment(segment);
+  }
+}
+
 function listeners(): CaptureSessionListeners & {
   failures: [AudioSource, string][];
+  saveFailures: [AudioSource, string][];
+  shown: string[];
   states: string[];
 } {
   const failures: [AudioSource, string][] = [];
+  const saveFailures: [AudioSource, string][] = [];
+  const shown: string[] = [];
   const states: string[] = [];
   return {
     failures,
+    saveFailures,
+    shown,
     states,
-    onSegment: () => undefined,
+    onSegment: (segment) => {
+      shown.push(segment.text);
+    },
+    onSaveFailure: (source, reason) => {
+      saveFailures.push([source, reason]);
+    },
     onInterim: () => undefined,
     onStreamState: (source, state) => {
       states.push(`${source}:${state}`);
@@ -78,6 +100,7 @@ function session(
   stt: SpeechToText,
   l: CaptureSessionListeners,
   clock: () => number = () => 10_000,
+  store: InMemoryTranscriptStore = new InMemoryTranscriptStore(),
 ) {
   return new CaptureSession({
     meetingId: 'm1',
@@ -85,7 +108,7 @@ function session(
     stt,
     accessToken: 't',
     settings,
-    store: new InMemoryTranscriptStore(),
+    store,
     logger,
     listeners: l,
     clock,
@@ -136,6 +159,33 @@ describe('CaptureSession', () => {
     await s.close();
     mic.emitter.emit({ type: 'closed', code: 1000, reason: null });
     expect(l.failures).toEqual([]);
+  });
+
+  it('reports a line it could not save locally, still shows it, and keeps recording', async () => {
+    const stt = new ControlledSpeechToText();
+    const l = listeners();
+    const store = new FailingStore();
+    const s = session(stt, l, () => 10_000, store);
+    const opening = s.open();
+    const mic = stt.succeed('mic');
+    stt.succeed('system');
+    await opening;
+    const final = (text: string) => {
+      mic.emitter.emit({ type: 'final', text, startMs: 0, endMs: 100, confidence: 1, words: [] });
+    };
+
+    store.failNext = new Error('database or disk is full');
+    final('lost line');
+    expect(l.saveFailures).toEqual([['mic', 'database or disk is full']]);
+    expect(l.shown).toEqual(['lost line']);
+    expect(s.storedSegmentCount).toBe(0);
+    expect(store.countSegments('m1')).toBe(0);
+
+    final('kept line');
+    expect(s.storedSegmentCount).toBe(1);
+    expect(store.countSegments('m1')).toBe(1);
+    expect(l.failures).toEqual([]);
+    await s.close();
   });
 
   it('dates the first chunk from when its audio was captured, not when it arrived', async () => {

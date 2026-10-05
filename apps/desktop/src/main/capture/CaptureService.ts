@@ -87,6 +87,7 @@ export class CaptureService {
   };
   private streams: Record<AudioSource, SttStreamState> = { mic: 'closed', system: 'closed' };
   private error: string | null = null;
+  private segmentsUnsaved = 0;
   private transition: Promise<CaptureStatus> | null = null;
   private monitorTimer: NodeJS.Timeout | null = null;
   /** Clock time the session started recording; the no-audio check counts from it until a chunk. */
@@ -120,6 +121,7 @@ export class CaptureService {
       sources: { mic: { ...this.sources.mic }, system: { ...this.sources.system } },
       streams: { ...this.streams },
       segmentsStored: this.session?.storedSegmentCount ?? 0,
+      segmentsUnsaved: this.segmentsUnsaved,
       upload,
       error: this.error,
     };
@@ -243,6 +245,16 @@ export class CaptureService {
             logger.error('speech-to-text stream failed mid-call', { meetingId, source, reason });
             this.emitStatus();
           },
+          onSaveFailure: (source, reason) => {
+            // Recording goes on. The likely causes (disk full, the file locked past SQLite's 5 s
+            // busy timeout) are often brief or fixable mid-call, and M1 keeps no audio to
+            // re-transcribe from (that is M2), so stopping would lose every later line as well.
+            // The count and this error stay on screen so the person can decide to stop.
+            this.segmentsUnsaved += 1;
+            const lines = this.segmentsUnsaved === 1 ? '1 line' : `${this.segmentsUnsaved} lines`;
+            this.error = `${lines} could not be saved on this Mac (latest from ${AUDIO_SOURCE_LABEL[source]}, meeting ${meetingId}): ${reason}. Recording continues; free disk space, or press Stop if this keeps happening.`;
+            this.emitStatus();
+          },
         },
       });
       await session.open();
@@ -339,6 +351,7 @@ export class CaptureService {
     this.sttProvider = null;
     this.startedAt = null;
     this.recordingSinceMs = null;
+    this.segmentsUnsaved = 0;
   }
 
   private setPhase(phase: CapturePhase): void {

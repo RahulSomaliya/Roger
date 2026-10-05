@@ -20,6 +20,8 @@ export interface CaptureSessionListeners {
   onStreamState(source: AudioSource, state: SessionStreamState): void;
   /** A stream died while the session was still recording. The session keeps the other stream. */
   onStreamFailure(source: AudioSource, reason: string): void;
+  /** A final line could not be written to the local store. It still reached onSegment. */
+  onSaveFailure(source: AudioSource, reason: string): void;
 }
 
 export interface CaptureSessionOptions {
@@ -134,8 +136,22 @@ export class CaptureSession {
           })),
           createdAt: new Date(this.clock()).toISOString(),
         };
-        this.options.store.appendSegment(segment);
-        this.segmentsStored += 1;
+        try {
+          this.options.store.appendSegment(segment);
+          this.segmentsStored += 1;
+        } catch (error) {
+          // Disk full, or SQLite busy past its timeout. Uncaught, this became a non-fatal vendor
+          // error that was only logged: the line was gone and the screen said nothing. The session
+          // keeps recording (see CaptureService's onSaveFailure for why) and still shows the line.
+          const reason = errorMessage(error);
+          logger.error('line not saved locally', {
+            meetingId: this.meetingId,
+            source,
+            segmentId: segment.id,
+            reason,
+          });
+          listeners.onSaveFailure(source, reason);
+        }
         listeners.onSegment(segment);
         return;
       }

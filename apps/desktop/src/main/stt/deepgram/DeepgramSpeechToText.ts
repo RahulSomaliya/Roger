@@ -148,7 +148,8 @@ class DeepgramStream implements SttStream {
       try {
         this.handleMessage(rawDataToString(data));
       } catch (error) {
-        // A listener (store write, UI bridge) threw. Report it; an uncaught error here would kill main.
+        // A listener (the UI bridge, say) threw. Report it; an uncaught error here would kill main.
+        // A failed local save never lands here: CaptureSession reports it as a visible error.
         this.logger.error('error while handling a transcript message', {
           error: errorMessage(error),
         });

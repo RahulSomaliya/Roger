@@ -83,9 +83,10 @@ function harness(
     override?: string | null;
     mic?: 'granted' | 'denied';
     logger?: Logger;
+    store?: InMemoryTranscriptStore;
   } = {},
 ) {
-  const store = new InMemoryTranscriptStore();
+  const store = overrides.store ?? new InMemoryTranscriptStore();
   // Typed by the narrow views the services take (SttTokenApi, UploadApi), so no cast is needed.
   const api = {
     getSttToken: vi.fn<SttTokenApi['getSttToken']>().mockResolvedValue({
@@ -143,6 +144,17 @@ function harness(
 }
 
 type Harness = ReturnType<typeof harness>;
+
+/** A store whose next `appendSegment` throws, like a full disk or SQLite busy past its timeout. */
+class FailingStore extends InMemoryTranscriptStore {
+  failNext: Error | null = null;
+  override appendSegment(segment: TranscriptSegment): void {
+    const error = this.failNext;
+    this.failNext = null;
+    if (error) throw error;
+    super.appendSegment(segment);
+  }
+}
 
 /** A final line from one stream, as the vendor would send it. */
 function sayFinal(h: Harness, source: AudioSource, text: string): void {
@@ -241,6 +253,35 @@ describe('CaptureService', () => {
     expect(status.error).toContain('Transcription of Them (them) stopped');
     expect(status.error).toContain('code 1011');
     await h.service.stop();
+  });
+
+  it('makes a line it could not save locally a visible error, and keeps recording', async () => {
+    const store = new FailingStore();
+    const h = harness({ store });
+    const { meetingId } = await h.service.start();
+    store.failNext = new Error('database or disk is full');
+    sayFinal(h, 'mic', 'lost line');
+
+    let status = h.service.getStatus();
+    expect(status.phase).toBe('recording');
+    expect(status.segmentsStored).toBe(0);
+    expect(status.segmentsUnsaved).toBe(1);
+    expect(status.error).toContain('1 line could not be saved on this Mac');
+    expect(status.error).toContain('Mic (me)');
+    expect(status.error).toContain(meetingId!);
+    expect(status.error).toContain('database or disk is full');
+    expect(h.statuses.at(-1)?.error).toBe(status.error);
+    expect(h.segments.map((s) => s.text)).toEqual(['lost line']);
+
+    sayFinal(h, 'system', 'kept line');
+    status = h.service.getStatus();
+    expect(status.segmentsStored).toBe(1);
+    expect(status.segmentsUnsaved).toBe(1);
+    expect(status.error).toContain('database or disk is full');
+
+    const stopped = await h.service.stop();
+    expect(stopped.segmentsUnsaved).toBe(0);
+    expect(h.store.getMeeting(meetingId!)?.remoteState).toBe('ended');
   });
 
   it('returns to idle with an error and no stray meeting when speech-to-text cannot connect', async () => {
