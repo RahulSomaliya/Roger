@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { parseEnv } from 'node:util';
-import { app, dialog, ipcMain, type BrowserWindow } from 'electron';
+import { app, dialog, ipcMain, session, type BrowserWindow } from 'electron';
 import { ApiClient } from './api/ApiClient';
 import { CaptureService } from './capture/CaptureService';
 import { loadConfig, readConfigFile } from './config';
@@ -11,7 +11,7 @@ import { ensureMicrophoneAccess } from './permissions';
 import { SqliteTranscriptStore } from './store/SqliteTranscriptStore';
 import { createSpeechToText } from './stt/createSpeechToText';
 import { TranscriptUploader } from './upload/TranscriptUploader';
-import { createMainWindow } from './window';
+import { createMainWindow, installPermissionHandlers, resolveAppPage } from './window';
 
 const MISSING_TOKEN =
   'No API token. Set ROGER_DESKTOP_API_TOKEN (or "apiToken" in config.json in the app data folder) and restart.';
@@ -78,7 +78,17 @@ async function main(): Promise<void> {
   if (missingToken === null) uploader.start();
   else logger.error(missingToken);
 
-  window = createMainWindow(join(__dirname, '../preload/index.js'));
+  const page = resolveAppPage();
+  installPermissionHandlers(
+    session.defaultSession,
+    page,
+    logger.child({ component: 'permissions' }),
+  );
+  window = createMainWindow(
+    join(__dirname, '../preload/index.js'),
+    page,
+    logger.child({ component: 'window' }),
+  );
   window.on('closed', () => {
     window = null;
   });
