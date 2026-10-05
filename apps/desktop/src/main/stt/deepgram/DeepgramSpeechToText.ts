@@ -209,6 +209,9 @@ class DeepgramStream implements SttStream {
     const parsed = parseDeepgramMessage(raw);
     switch (parsed.kind) {
       case 'event':
+        if (parsed.warning !== undefined) {
+          this.logger.warn('deepgram message partly understood', { warning: parsed.warning });
+        }
         this.emitter.emit(parsed.event);
         return;
       case 'ignored':
@@ -219,6 +222,12 @@ class DeepgramStream implements SttStream {
         this.logger.warn('deepgram message not understood', {
           reason: parsed.reason,
           bytes: raw.length,
+        });
+        // Non-fatal: one unreadable message (vendor format drift) must not end the stream.
+        this.emitter.emit({
+          type: 'error',
+          message: `Deepgram sent a message Roger could not read (${parsed.reason})`,
+          fatal: false,
         });
     }
   }

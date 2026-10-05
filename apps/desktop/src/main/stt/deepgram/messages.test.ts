@@ -85,4 +85,59 @@ describe('parseDeepgramMessage', () => {
     expect(parseDeepgramMessage('{nope')).toEqual({ kind: 'invalid', reason: 'not JSON' });
     expect(parseDeepgramMessage('[]')).toEqual({ kind: 'invalid', reason: 'missing type' });
   });
+
+  it('reports a malformed Results message as invalid instead of throwing', () => {
+    const malformed: Record<string, unknown>[] = [
+      { type: 'Results' },
+      { type: 'Results', start: 1, duration: 1, channel: null },
+      { type: 'Results', start: 1, duration: 1, channel: { alternatives: 'nope' } },
+      { type: 'Results', start: 1, duration: 1, channel: { alternatives: [] } },
+      { type: 'Results', start: 1, duration: 1, channel: { alternatives: [null] } },
+      { type: 'Results', start: 1, duration: 1, channel: { alternatives: [{ transcript: 5 }] } },
+      {
+        type: 'Results',
+        start: '1.5',
+        duration: 1,
+        channel: { alternatives: [{ transcript: 'hi' }] },
+      },
+      {
+        type: 'Results',
+        start: 1,
+        duration: null,
+        channel: { alternatives: [{ transcript: 'hi' }] },
+      },
+    ];
+    for (const message of malformed) {
+      const parsed = parseDeepgramMessage(JSON.stringify(message));
+      expect(parsed.kind, JSON.stringify(message)).toBe('invalid');
+    }
+  });
+
+  it('keeps the line but drops the word timings when the word list is malformed, and says so', () => {
+    for (const words of [[{ word: 1, start: 0, end: 1 }], [null], 'nope']) {
+      const parsed = parseDeepgramMessage(
+        results({
+          is_final: true,
+          channel: { alternatives: [{ transcript: 'hello there', confidence: 0.9, words }] },
+        }),
+      );
+      expect(parsed).toMatchObject({
+        kind: 'event',
+        event: { type: 'final', text: 'hello there', words: [] },
+        warning: 'word timings dropped: malformed word list',
+      });
+    }
+  });
+
+  it('reads only string text from Error messages', () => {
+    expect(
+      parseDeepgramMessage(
+        JSON.stringify({ type: 'Error', description: { nested: true }, message: 'quota' }),
+      ),
+    ).toEqual({ kind: 'event', event: { type: 'error', message: 'quota', fatal: true } });
+    expect(parseDeepgramMessage(JSON.stringify({ type: 'Error', description: 5 }))).toEqual({
+      kind: 'event',
+      event: { type: 'error', message: 'Deepgram error', fatal: true },
+    });
+  });
 });
