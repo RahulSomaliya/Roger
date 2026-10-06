@@ -38,9 +38,9 @@ struct HostClock {
 }
 
 extension TapFormat {
-  /// The IO block's work: hands one input buffer list to the ring as mono Float32, mixing
-  /// several channels down into `scratch` (sized to the ring's span). Real-time safe: no
-  /// allocation, no lock but the ring's.
+  /// The IO block's copy (TapInput.receive): hands one input buffer list to the ring as mono
+  /// Float32, mixing several channels down into `scratch` (sized to the ring's span). Real-time
+  /// safe: no allocation, no lock but the ring's.
   func deliver(
     _ buffers: UnsafeMutableAudioBufferListPointer, captureWallMs: Double,
     scratch: UnsafeMutableBufferPointer<Float>, to ring: AudioRing
@@ -84,6 +84,69 @@ extension TapFormat {
         captureWallMs: captureWallMs + Double(done) / sampleRate * 1_000)
       done += count
     }
+  }
+}
+
+/// The IO block's half of one built tap: stamps each input buffer with its capture time and hands
+/// it to the ring in the format the tap had when it was built, until `close()`. Every build makes a
+/// new one, with the format it read.
+///
+/// WHY it can be closed: AirPods and sample-rate switches change the tap's format in place, and
+/// the debounced rebuild comes 300 ms or more later. Until then audio that is really 24 kHz would
+/// go out labelled 48 kHz: converted at twice the speed and an octave up, with each span half as
+/// long as the gap to the next, so FramePipeline would split the run on every callback and main
+/// would get a dozen short, garbled frames per switch. The tap's format listener closes the input
+/// at once (`SystemAudioTap.formatListener`), the audio until the rebuild is dropped, and the
+/// rebuild's discontinuity starts the next run at its true time: main sees a gap, never wrong
+/// audio. A callback or two may still slip out between the switch and the listener's turn on the
+/// control queue. Not relabelled with the new format instead: whether the aggregate passes the
+/// tap's new format through or resamples to its old rate cannot be told from here, and a wrong
+/// guess is the same garble.
+final class TapInput: @unchecked Sendable {
+  let format: TapFormat
+  private let ring: AudioRing
+  private let clock: HostClock
+  /// The mixdown buffer, owned by SystemAudioTap: one IO proc runs at a time, so one is enough.
+  private let scratch: UnsafeMutableBufferPointer<Float>
+  /// Guards `open`. Held across the copy into the ring on purpose, unlike the ring's own lock:
+  /// `close()` holds it only to flip the flag, so the IO thread never waits on more than that, and
+  /// once `close()` returns no audio in the old format can still be on its way into the ring.
+  private let lock: UnsafeMutablePointer<os_unfair_lock>
+  private var open = true
+
+  init(
+    format: TapFormat, ring: AudioRing, clock: HostClock, scratch: UnsafeMutableBufferPointer<Float>
+  ) {
+    self.format = format
+    self.ring = ring
+    self.clock = clock
+    self.scratch = scratch
+    lock = .allocate(capacity: 1)
+    lock.initialize(to: os_unfair_lock())
+  }
+
+  deinit { lock.deallocate() }
+
+  /// The IO block's work, on Core Audio's real-time thread: no allocation, no lock but this one
+  /// and the ring's, no Swift runtime calls that could take one.
+  func receive(_ inputData: UnsafePointer<AudioBufferList>, at time: AudioTimeStamp) {
+    os_unfair_lock_lock(lock)
+    defer { os_unfair_lock_unlock(lock) }
+    guard open else { return }
+    let wallMs =
+      time.mFlags.contains(.hostTimeValid)
+      ? clock.wallMs(hostTime: time.mHostTime) : clock.nowWallMs()
+    format.deliver(
+      UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: inputData)),
+      captureWallMs: wallMs, scratch: scratch, to: ring)
+  }
+
+  /// Drops every later buffer. The tap's format no longer matches `format`; only a rebuild, with a
+  /// new input, brings the audio back.
+  func close() {
+    os_unfair_lock_lock(lock)
+    open = false
+    os_unfair_lock_unlock(lock)
   }
 }
 
@@ -476,7 +539,8 @@ protocol TapDevice: AnyObject {
 /// shuts everything down on any of the exits in Lifecycle.swift. Control queue only.
 final class TapSession {
   struct Timing {
-    /// A route change waits this long for the next one (see RebuildDebouncer).
+    /// A route change waits this long for the next one (see RebuildDebouncer). A tap format change
+    /// silences the tap for as long (TapInput), so a longer wait costs call audio at every switch.
     var debounce: DispatchTimeInterval = .milliseconds(300)
     /// A failed rebuild is retried after this long, up to `maxBuildAttempts` in all: right after
     /// a device switch the new output may not be ready for a tap yet.
@@ -692,7 +756,8 @@ final class SystemAudioTap: TapDevice {
       "could not create the system audio tap")
     tapID = tap
     let format = try TapFormat(readFormat(of: tap))
-    listenForFormatChanges(of: tap)
+    let input = TapInput(format: format, ring: ring, clock: clock, scratch: scratch)
+    listenForFormatChanges(of: tap, closing: input)
 
     // Only the tap, no sub-device: with the output device in it too, an output that also has
     // inputs (AirPods, a USB headset) would add its mic to the aggregate's input. Values are
@@ -717,7 +782,7 @@ final class SystemAudioTap: TapDevice {
 
     var proc: AudioDeviceIOProcID?
     try check(
-      AudioDeviceCreateIOProcIDWithBlock(&proc, aggregate, nil, ioBlock(for: format)),
+      AudioDeviceCreateIOProcIDWithBlock(&proc, aggregate, nil, ioBlock(for: input)),
       "io_proc_failed", "could not attach to the tap's aggregate device")
     procID = proc
     try check(
@@ -725,21 +790,10 @@ final class SystemAudioTap: TapDevice {
     return format
   }
 
-  /// Runs on Core Audio's real-time IO thread (queue nil): copy into the ring and nothing else.
-  /// No allocation, no lock but the ring's, no Swift runtime calls that could take one.
-  private func ioBlock(for format: TapFormat) -> AudioDeviceIOBlock {
-    let ring = self.ring
-    let clock = self.clock
-    let scratch = self.scratch
-    return { _, inputData, inputTime, _, _ in
-      let time = inputTime.pointee
-      let wallMs =
-        time.mFlags.contains(.hostTimeValid)
-        ? clock.wallMs(hostTime: time.mHostTime) : clock.nowWallMs()
-      format.deliver(
-        UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: inputData)),
-        captureWallMs: wallMs, scratch: scratch, to: ring)
-    }
+  /// Runs on Core Audio's real-time IO thread (queue nil): hands the buffer to the input and
+  /// nothing else. What may run there is listed at `TapInput.receive`.
+  private func ioBlock(for input: TapInput) -> AudioDeviceIOBlock {
+    { _, inputData, inputTime, _, _ in input.receive(inputData, at: inputTime.pointee) }
   }
 
   func teardown() {
@@ -791,11 +845,11 @@ final class SystemAudioTap: TapDevice {
   }
 
   /// AirPods and sample-rate switches change the tap's format in place; the IO block was built for
-  /// the old one, so the tap is rebuilt. Not fatal when it fails: the output device listener
-  /// still catches most route changes.
-  private func listenForFormatChanges(of tap: AudioObjectID) {
+  /// the old one, so its input is closed at once and the tap is rebuilt (TapInput says why). Not
+  /// fatal when it fails: the output device listener still catches most route changes.
+  private func listenForFormatChanges(of tap: AudioObjectID, closing input: TapInput) {
     var address = Self.address(kAudioTapPropertyFormat)
-    let listener: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
+    let listener = Self.formatListener(closing: input) { [weak self] in
       self?.onChange?(.tapFormatChanged)
     }
     let status = AudioObjectAddPropertyListenerBlock(tap, &address, queue, listener)
@@ -806,6 +860,19 @@ final class SystemAudioTap: TapDevice {
         .warning(
           code: "format_watch_failed",
           message: "could not watch the tap's format (OSStatus \(status) \(fourCharCode(UInt32(bitPattern: status))))"))
+    }
+  }
+
+  /// One build's tap format listener, called on the control queue: closes that build's input, then
+  /// asks for the rebuild. The two go together, since a closed input with no rebuild after it is a
+  /// tap that stays silent. The input is captured, not read from `self`, so a notice still queued
+  /// when a rebuild runs closes only the input it was about, never the new one.
+  static func formatListener(
+    closing input: TapInput, reportChange: @escaping () -> Void
+  ) -> AudioObjectPropertyListenerBlock {
+    { _, _ in
+      input.close()
+      reportChange()
     }
   }
 

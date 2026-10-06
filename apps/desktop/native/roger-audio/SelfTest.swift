@@ -6,10 +6,12 @@ import Foundation
 // They cover everything that needs no audio permission: the frame header and capture times, the
 // ring and its overflow count, the converter, the writer thread, the IO block's mixdown, stdin
 // commands, the parent watch, signals, the rebuild debounce, and the tap session driven through a
-// fake TapDevice. Nothing here creates a process tap or opens an audio device, so it never raises
-// a macOS privacy prompt and runs unattended; keep it that way, since `make check` runs it on
-// every pass. The real tap is exercised by `selftest --route-switch` (`make test-native-route`:
-// opt-in, audible, M2-T7b) and by the probe.
+// fake TapDevice. The IO block's shut-off on a tap format change is checked through TapInput and
+// the format listener's block, called by hand. Nothing here creates a process tap, registers a
+// Core Audio listener or opens an audio device, so it never raises a macOS privacy prompt and
+// runs unattended; keep it that way, since `make check` runs it on every pass. The real tap is
+// exercised by `selftest --route-switch` (`make test-native-route`: opt-in, audible, M2-T7b) and
+// by the probe.
 
 func runSelfTest(arguments: [String]) -> Int32 {
   switch arguments {
@@ -561,6 +563,68 @@ private func tapInputCases(_ suite: inout SelfTestSuite) {
     }
     t.expectEqual(got, [[0.5, -0.5, 1], [0.5, 0.5, 0], [0.5, 0.5, 0]], "mono, then two mixdowns")
     t.expectEqual(times, [1_000, 2_000, 3_000], "capture times")
+  }
+
+  suite.run("tap input: a format change shuts the IO block at once, not at the debounced rebuild") {
+    t in
+    let ring = AudioRing()
+    let clock = HostClock()
+    let scratch = UnsafeMutableBufferPointer<Float>.allocate(capacity: ring.maxSpanFrames)
+    defer { scratch.deallocate() }
+    let read = UnsafeMutableBufferPointer<Float>.allocate(capacity: ring.maxSpanFrames)
+    defer { read.deallocate() }
+    let list = AudioBufferList.allocate(maximumBuffers: 1)
+    defer { free(list.unsafeMutablePointer) }
+    var samples = [Float](repeating: 0.25, count: 480)
+    var timebase = mach_timebase_info_data_t()
+    mach_timebase_info(&timebase)
+    let ticksPerSecond = UInt64(1e9 * Double(timebase.denom) / Double(timebase.numer))
+    /// One IO callback, as Core Audio makes it: 480 mono frames whose first sample is 1 s old.
+    func callback(_ input: TapInput) {
+      samples.withUnsafeMutableBytes { bytes in
+        list.count = 1
+        list[0] = AudioBuffer(mNumberChannels: 1, mDataByteSize: UInt32(bytes.count), mData: bytes.baseAddress)
+        var time = AudioTimeStamp()
+        time.mHostTime = mach_absolute_time() - ticksPerSecond
+        time.mFlags = .hostTimeValid
+        input.receive(list.unsafePointer, at: time)
+      }
+    }
+    func input(_ rate: Double) -> TapInput {
+      TapInput(
+        format: TapFormat(sampleRate: rate, channels: 1, interleaved: true), ring: ring,
+        clock: clock, scratch: scratch)
+    }
+
+    let built = input(48_000)
+    callback(built)
+    let first = ring.read(into: read)
+    t.expectEqual(first?.sampleRate, 48_000, "delivered in the format the tap was built with")
+    t.expectEqual(first?.frameCount, 480, "all of it")
+    t.expectNear(
+      first?.captureWallMs ?? 0, clock.nowWallMs() - 1_000, within: 5, "stamped by its host time")
+
+    // AirPods take the tap from 48 to 24 kHz: Core Audio calls the tap's format listener.
+    var rebuildsAsked = 0
+    let listener = SystemAudioTap.formatListener(closing: built) { rebuildsAsked += 1 }
+    var address = AudioObjectPropertyAddress(
+      mSelector: kAudioTapPropertyFormat, mScope: kAudioObjectPropertyScopeGlobal,
+      mElement: kAudioObjectPropertyElementMain)
+    withUnsafePointer(to: &address) { listener(1, $0) }
+    t.expectEqual(rebuildsAsked, 1, "the listener asks for the rebuild")
+    callback(built)
+    callback(built)
+    t.expect(
+      ring.read(into: read) == nil,
+      "the IO block built for 48 kHz writes nothing more: its audio would be labelled 48 kHz")
+    t.expectEqual(ring.takeDroppedMs(), 0, "not counted as ring overflow: `restarted` explains it")
+
+    // What the rebuild does: a discontinuity, then a new input in the format it reads.
+    ring.markDiscontinuity()
+    callback(input(24_000))
+    let next = ring.read(into: read)
+    t.expectEqual(next?.sampleRate, 24_000, "the rebuilt tap's audio carries the new rate")
+    t.expectEqual(next?.discontinuity, true, "and starts a new run")
   }
 }
 
