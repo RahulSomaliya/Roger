@@ -24,6 +24,11 @@ import Foundation
 //   recording  {on}: main's last `recording on` or `recording off`, sent when it changes the state.
 //   relaunch   {dryRun: true, command}: only with --relaunch-dry-run, in place of running
 //              `command` (ParentWatch.swift).
+//   alive      {}: after every poll, changed or not, so once a second. While nothing changes it
+//              is the only line, and HelperProcess (M2-T10) SIGKILLs a helper that writes no stdout
+//              byte and no event for 3 s: a change-only monitor on a quiet Mac would be killed
+//              every 3 s and spend its 5 restarts in about 15 s, leaving no call detection and no
+//              relaunch. A monitor stuck in a Core Audio read sends none and is killed as hung.
 //
 // stderr carries HelperEvent lines (Protocol.swift): `warning` when a read fails (once until it
 // works again) or for an unknown stdin command, `error` before a failed exit.
@@ -298,6 +303,7 @@ enum MonitorLine {
   case recording(on: Bool)
   case relaunch(command: [String])
   case process(MicUser)
+  case alive
 
   var jsonLine: String {
     MonitorJSON.object(fields).encoded + "\n"
@@ -325,6 +331,8 @@ enum MonitorLine {
       ]
     case .process(let user):
       return [("event", .string("process"))] + user.fields
+    case .alive:
+      return [("event", .string("alive"))]
     }
   }
 }
@@ -381,7 +389,8 @@ enum MonitorJSON {
 /// leaves the end to ParentWatch. Control queue only.
 final class MonitorSession {
   /// How often Core Audio is read. Main's call detection counts in seconds (5 s of mic use before
-  /// an offer, M2 D6), so a second is the coarsest that keeps those numbers honest.
+  /// an offer, M2 D6), so a second is the coarsest that keeps those numbers honest. It is also how
+  /// often `alive` goes out, which must stay well under HelperProcess's 3 s watchdog.
   static let pollInterval: DispatchTimeInterval = .seconds(1)
 
   private let queue: DispatchQueue
@@ -441,6 +450,9 @@ final class MonitorSession {
       lastRoute = route
       publish(.route(route))
     }
+    // Every poll, even one whose reads failed: the watchdog asks whether the monitor runs, and the
+    // warnings say how well (top of this file).
+    publish(.alive)
   }
 
   /// Runs one read; on failure warns once per spell and keeps the last value, which the next poll

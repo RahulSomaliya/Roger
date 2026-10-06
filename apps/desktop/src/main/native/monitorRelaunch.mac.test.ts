@@ -99,6 +99,8 @@ function isAlive(pid: number): boolean {
 /** The JSON lines a process writes, as they arrive, and whether every writer closed the pipe. */
 class LineLog {
   readonly lines: Line[] = [];
+  /** When each of `lines` arrived, in `Date.now()` ms. */
+  readonly arrivals: number[] = [];
   /** Lines that are not a JSON object with an `event`: the protocol allows none. */
   readonly junk: string[] = [];
   ended = false;
@@ -108,8 +110,12 @@ class LineLog {
     const reader = createInterface({ input: stream });
     reader.on('line', (text) => {
       const line = parseLine(text);
-      if (line) this.lines.push(line);
-      else this.junk.push(text);
+      if (line) {
+        this.lines.push(line);
+        this.arrivals.push(Date.now());
+      } else {
+        this.junk.push(text);
+      }
       this.notify();
     });
     reader.on('close', () => {
@@ -486,6 +492,33 @@ describe('roger-audio monitor: watching', { timeout: 20_000 }, () => {
     monitor.child.stdin?.end();
     expect(await exited(monitor.child)).toEqual({ code: 0, signal: null });
     expect(Date.now() - started).toBeLessThan(1_500);
+  });
+
+  it('says alive after every poll, so a Mac where nothing changes still feeds the watchdog', async () => {
+    // HelperProcess (M2-T10) kills a helper that writes no stdout byte and no event for 3 s. With
+    // no change in mic users or route, `alive` is the only line the monitor writes.
+    const monitor = await startMonitor(process.pid);
+    await monitor.out.waitFor('three alive lines', () => monitor.out.events('alive').length >= 3);
+
+    const { lines, arrivals } = monitor.out;
+    const alive = monitor.out.events('alive');
+    expect(alive).toEqual(alive.map(() => ({ event: 'alive' })));
+    const first = lines.findIndex((line) => line.event === 'alive');
+    expect(
+      lines
+        .slice(0, first)
+        .map((line) => line.event)
+        .sort(),
+      'the first poll reports, then says alive',
+    ).toEqual(['mic_users', 'route']);
+    let previous: number | undefined;
+    for (const [index, at] of arrivals.entries()) {
+      if (lines[index]?.event !== 'alive') continue;
+      // One a second; the margin is for a loaded Mac, and stays well under the 3 s watchdog.
+      if (previous !== undefined) expect(at - previous).toBeLessThan(2_000);
+      previous = at;
+    }
+    expect(monitor.err.lines).toEqual([]);
   });
 
   it('acknowledges recording on and off, and warns about an unknown command', async () => {
