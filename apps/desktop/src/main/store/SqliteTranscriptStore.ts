@@ -33,6 +33,13 @@ import type {
 /**
  * Ordered, forward-only migrations tracked with `PRAGMA user_version`.
  * Add a new entry for every schema change; never edit an applied one.
+ *
+ * Each upgrade test winds a file back to the schema before its migration, and `migrate()` then
+ * re-runs every entry above `user_version`. So a wind-back must also undo every later migration,
+ * or an `ALTER TABLE ... ADD COLUMN` runs twice and fails with "duplicate column name". With a new
+ * migration, add its wind-back to the test file, call it first in the one before (as
+ * `windBackToSchema3` must then call `windBackToSchema4`), and raise the `user_version` the
+ * upgrade tests expect.
  */
 const MIGRATIONS: readonly string[] = [
   `

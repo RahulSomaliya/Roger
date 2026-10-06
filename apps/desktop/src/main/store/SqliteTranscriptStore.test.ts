@@ -29,7 +29,12 @@ function segment(n: number, overrides: Partial<TranscriptSegment> = {}): Transcr
   };
 }
 
-/** Undo migration 4 on a file, leaving it as the cost-guard build (schema 3) wrote it. */
+/**
+ * Undo migration 4 on a file, leaving it as the cost-guard build (schema 3) wrote it. Every older
+ * wind-back calls this first: `migrate()` re-runs each migration above `user_version`, and one
+ * left in place fails with "duplicate column name". When migration 5 lands, write
+ * `windBackToSchema4` and call it at the top of this one (see MIGRATIONS).
+ */
 function windBackToSchema3(path: string): void {
   const raw = new DatabaseSync(path);
   raw.exec(`
@@ -166,7 +171,8 @@ describe('SqliteTranscriptStore', () => {
     const first = new SqliteTranscriptStore(path);
     first.createMeeting({ id: 'm1', title: 'T', startedAt: '2026-10-05T10:00:00Z' });
     first.close();
-    // Wind the file back to schema 2, as a Mac that ran the app before this change has it.
+    // Wind the file back to schema 2, as a Mac that ran the app before this change has it: every
+    // later migration first, or migrate() would add their columns twice.
     windBackToSchema3(path);
     const raw = new DatabaseSync(path);
     raw.exec('DROP TABLE stt_usage; PRAGMA user_version = 2');
