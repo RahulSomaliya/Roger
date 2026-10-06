@@ -111,6 +111,13 @@ export interface RecordingEnded {
   reason: StopReason;
   /** True when the meeting had no line and was deleted: nothing to upload, nothing to write up. */
   discarded: boolean;
+  /**
+   * True when Stop threw before it ended the meeting (a store write refused: full disk, SQLite
+   * busy). Its `ended_at` may still be NULL, so it stays resumable and CrashRecovery (M2-T23)
+   * decides at the next launch; the error is in the status. A listener that acts on an ended
+   * meeting (notes after Stop, the last usage upload) checks this first.
+   */
+  stopFailed: boolean;
 }
 
 /**
@@ -124,8 +131,10 @@ export interface RecordingListener {
    */
   started?(recording: RecordingStarted): void;
   /**
-   * Stop closed both streams, saved the last lines and ended (or discarded) the meeting; the upload
-   * flush may still run. Every `started` gets exactly one `ended`; a Start that failed gets neither.
+   * Stop closed both streams, saved the last lines and ended (or discarded) the meeting, unless
+   * `stopFailed` says it threw first; the upload flush may still run. Every `started` gets exactly
+   * one `ended`, a failed Stop included (a listener holding something for the recording must let it
+   * go); a Start that failed gets neither.
    */
   ended?(recording: RecordingEnded): void;
 }
@@ -674,7 +683,7 @@ export class CaptureService {
         } else {
           store.markMeetingEnded(meetingId, new Date(this.clock()).toISOString());
         }
-        this.endRecording(reason, discarded);
+        this.endRecording({ reason, discarded, stopFailed: false });
         if (options.flushUploads !== false) {
           try {
             await withTimeout(uploader.flush(), stopFlushTimeoutMs, 'upload on stop');
@@ -694,8 +703,10 @@ export class CaptureService {
       logger.error('capture stop failed', { error: this.error, reason });
     } finally {
       // Also after a stop that failed: a listener holding something for the recording (a power
-      // save blocker, the helper's "recording on") must hear that it is over.
-      this.endRecording(reason, discarded);
+      // save blocker, the helper's "recording on") must hear that it is over. The try tells the
+      // listeners itself once the meeting is ended or discarded, so this call only speaks when the
+      // try threw first, with the meeting maybe still open: `stopFailed`, never a plain end.
+      this.endRecording({ reason, discarded, stopFailed: true });
       this.notice = stopNotice(reason, new Date(this.clock()), this.guards, options.detail ?? null);
       this.session = null;
       this.resetSessionState();
@@ -723,11 +734,11 @@ export class CaptureService {
   }
 
   /** Tells the listeners the recording is over, once per recording. */
-  private endRecording(reason: StopReason, discarded: boolean): void {
+  private endRecording(outcome: Omit<RecordingEnded, 'meetingId'>): void {
     const live = this.live;
     if (live === null) return;
     this.live = null;
-    const ended: RecordingEnded = { meetingId: live.meetingId, reason, discarded };
+    const ended: RecordingEnded = { meetingId: live.meetingId, ...outcome };
     for (const listener of [...this.recordingListeners]) {
       this.tell('ended', live.meetingId, () => listener.ended?.(ended));
     }

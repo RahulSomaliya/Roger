@@ -1194,7 +1194,7 @@ describe('CaptureService recording listeners', () => {
     sayFinal(h, 'mic', 'hello');
     await h.service.stop({ reason: 'no-speech' });
     expect(calls.slice(1)).toEqual([
-      ['ended', { meetingId, reason: 'no-speech', discarded: false }],
+      ['ended', { meetingId, reason: 'no-speech', discarded: false, stopFailed: false }],
     ]);
   });
 
@@ -1204,11 +1204,33 @@ describe('CaptureService recording listeners', () => {
     h.service.onRecording({ ended: (recording) => calls.push(['ended', recording]) });
     const { meetingId } = await h.service.start();
     await h.service.stop();
-    expect(calls).toEqual([['ended', { meetingId, reason: 'user', discarded: true }]]);
+    expect(calls).toEqual([
+      ['ended', { meetingId, reason: 'user', discarded: true, stopFailed: false }],
+    ]);
 
     h.stt.failWith = new SttConnectError('rejected with HTTP 401', 401);
     await h.service.start();
     expect(calls).toHaveLength(1);
+  });
+
+  it('still tells a listener of a Stop that failed, and says its meeting may not be ended', async () => {
+    const h = harness();
+    const { calls } = listener();
+    h.service.onRecording({ ended: (recording) => calls.push(['ended', recording]) });
+    const { meetingId } = await h.service.start();
+    sayFinal(h, 'mic', 'hello');
+    // A full disk or SQLite busy past its timeout: node:sqlite's run() throws.
+    vi.spyOn(h.store, 'markMeetingEnded').mockImplementation(() => {
+      throw new Error('database or disk is full');
+    });
+
+    const stopped = await h.service.stop();
+
+    expect(stopped).toMatchObject({ phase: 'idle', error: 'database or disk is full' });
+    expect(h.store.getMeeting(meetingId!)?.endedAt).toBeNull();
+    expect(calls).toEqual([
+      ['ended', { meetingId, reason: 'user', discarded: false, stopFailed: true }],
+    ]);
   });
 
   it('tells a listener added mid-recording about it at once, and a removed one nothing', async () => {
