@@ -8,7 +8,7 @@ import base64
 import json
 import shutil
 import subprocess
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -16,12 +16,11 @@ from urllib.parse import parse_qs, urlsplit
 
 import httpx
 import pytest
-import structlog
-from structlog.testing import CapturedCall, CapturingLogger
+from structlog.testing import capture_logs
+from structlog.typing import EventDict
 
 import roger_api
 from roger_api.errors import AppError, CalendarProviderError, CalendarReconnectRequiredError
-from roger_api.services.calendar import google
 from roger_api.services.calendar.google import (
     CALENDAR_SCOPE,
     GOOGLE_AUTHORIZATION_URL,
@@ -198,16 +197,9 @@ def not_json(request: httpx.Request) -> httpx.Response:
 
 
 @pytest.fixture
-def google_logs(monkeypatch: pytest.MonkeyPatch) -> list[CapturedCall]:
-    # The module's own logger, swapped: create_app configures structlog with
-    # cache_logger_on_first_use, so a logger an earlier test used would bypass `capture_logs`.
-    capturing = CapturingLogger()
-    monkeypatch.setattr(
-        google,
-        "logger",
-        structlog.wrap_logger(capturing, processors=[], wrapper_class=structlog.stdlib.BoundLogger),
-    )
-    return capturing.calls
+def google_logs() -> Iterator[list[EventDict]]:
+    with capture_logs() as entries:
+        yield entries
 
 
 def test_google_provider_is_a_calendar_provider() -> None:
@@ -611,7 +603,7 @@ async def test_list_events_failures_are_provider_errors(handler: Handler) -> Non
 
 
 async def test_list_events_skips_an_unreadable_event_and_logs_its_id(
-    google_logs: list[CapturedCall],
+    google_logs: list[EventDict],
 ) -> None:
     broken = event_item("broken-1", "2026-10-06T04:00:00Z", "2026-10-06T04:30:00Z")
     broken["summary"] = "Private: salary review"
@@ -623,11 +615,11 @@ async def test_list_events_skips_an_unreadable_event_and_logs_its_id(
     )
 
     assert [event.id for event in events] == ["ok-1"]
-    [call] = google_logs
-    assert call.method_name == "warning"
-    assert call.kwargs["event"] == "calendar_event_skipped"
-    assert call.kwargs["event_id"] == "broken-1"
-    assert "salary" not in repr(call)
+    [entry] = google_logs
+    assert entry["log_level"] == "warning"
+    assert entry["event"] == "calendar_event_skipped"
+    assert entry["event_id"] == "broken-1"
+    assert "salary" not in repr(entry)
 
 
 @pytest.mark.parametrize(
@@ -651,7 +643,7 @@ async def test_list_events_refuses_a_naive_bound(time_min: datetime, time_max: d
 # Logs --------------------------------------------------------------------------------------------
 
 
-async def test_logs_hold_no_secret(google_logs: list[CapturedCall]) -> None:
+async def test_logs_hold_no_secret(google_logs: list[EventDict]) -> None:
     # A success body Google sends holds tokens, so an unreadable one must be logged without it.
     unreadable_token = {"access_token": ACCESS_TOKEN, "refresh_token": REFRESH_TOKEN}
     refusals: list[Handler] = [
