@@ -318,7 +318,110 @@ so the stored list is always one of the lists sent, never a mix.
 
 ### STT usage
 
-Not built yet. Owner: M3-T19a, which writes its routes here, with their `409`s.
+What each meeting's speech-to-text sessions used, as the desktop metered them, and what that comes
+to per meeting hour. The desktop keeps the numbers in its local `stt_usage` table and uploads a
+meeting's row each time it changes (M3-T19b). The API stores one row per workspace and meeting and
+never recomputes a cost: the estimate is the desktop's, the connected time of each session at the
+price its token named (see `POST /v1/stt/token`).
+
+```ts
+interface SttSourceUsage {
+  sessions_opened: number;           // sockets that completed the handshake; each may be billed
+  connected_ms: number;              // open time summed over sessions: what the vendor bills
+  audio_sent_ms: number;             // audio sent, in ms of PCM; a fraction is rounded (PUT below)
+  dropped_chunks: number;            // chunks dropped because their stream was not open
+  gated_ms: number;                  // stream time the silence gate kept closed (M3-T20)
+  estimated_cost_usd: number | null; // null when a session opened with no known price, never 0
+}
+
+interface SttUsage {
+  meeting_id: string;
+  provider: string;                  // the token's `provider`, such as "assemblyai"
+  sessions_opened: number;           // these six: both sources summed
+  connected_ms: number;
+  audio_sent_ms: number;
+  dropped_chunks: number;
+  gated_ms: number;
+  estimated_cost_usd: number | null;
+  by_source: { mic: SttSourceUsage; system: SttSourceUsage };
+  stop_reason: string | null;        // why the recording stopped; null while it still runs
+  created_at: string;                // the first upload
+  updated_at: string;                // the last
+}
+```
+
+#### `PUT /v1/stt-usage/meetings/{meeting_id}`
+
+Stores the meeting's whole usage so far, replacing what was stored. Request: an `SttUsage` without
+`meeting_id`, `created_at` and `updated_at`. Response: `200` with the `SttUsage` as stored, whether
+the row was created or replaced.
+
+- Idempotent: the same body again stores the same row, and only `updated_at` moves. A later body
+  replaces the row whole and never adds to it: the desktop sends a meeting's totals, not increments.
+- No meeting row is needed, and the API never looks for one: the desktop deletes a meeting that got
+  no line, but its sessions were billed. A meeting id another workspace also uses is a row of its
+  own: no workspace ever reads or overwrites another's.
+- `provider` and `stop_reason` are free text, 1 to 64 characters after trimming, never a fixed
+  list: the desktop's stop reasons change across releases (`page-reloaded` is retired,
+  `start-failed` is not a stop at all, `call-ended` arrives later), and its vendors may too.
+  `stop_reason` may also be `null` or left out. U+0000 is dropped from both.
+- `gated_ms`, at the top and in each source, reads as `0` when left out. Every other field is
+  required: `estimated_cost_usd` is `null` when the price is unknown, never left out.
+- Counts (`sessions_opened`, `dropped_chunks`) are whole numbers. A time (every `*_ms` field) may
+  carry a fraction, which is rounded to the nearest ms before the rules below check it and the
+  row stores it: the desktop computes audio time from PCM bytes in floating point, so whole
+  chunks can sum to `16100.000000000002`. The response carries the rounded times.
+
+Breaking a rule is a `422 validation_error` whose message names the field (`body.stop_reason`,
+`body.by_source.system.connected_ms`), and nothing is stored: a negative number, a count with a
+fraction, a count over 2147483647 or a time over 9223372036854775807 ms, a time or cost that is
+not a finite number, a cost over 1000000 USD (a day-long call at today's dearest list price costs
+under 30), a source missing from `by_source`, a blank or over-long `provider` or `stop_reason`.
+The desktop treats a `422` as a rejected row and sends it again only after the meeting's usage
+changes (M3-T19b), so nothing a Mac of another release could hold is refused. There is no `409`: a
+`PUT` replaces whatever is stored.
+
+#### `GET /v1/stt-usage/summary?since=<instant>`
+
+Totals over the caller's meetings held at or after `since`, or over every meeting without it. A
+meeting is held at its `started_at`; one the API has no meeting row for counts from its usage's
+`created_at` (the desktop uploads usage while the meeting records, so the two are minutes apart).
+`since` is an instant with an offset (`2026-10-01T00:00:00Z`); one without is a
+`422 validation_error`. No `409`s.
+
+Response:
+
+```json
+{
+  "meetings": 3,
+  "stream_hours": 3.1667,
+  "meeting_hours": 1.5,
+  "estimated_cost_usd": 0.41,
+  "cost_per_meeting_hour": 0.38,
+  "gated_hours": 0.5,
+  "estimated_saved_usd": 0.095,
+  "unpriced_meetings": 1,
+  "unpriced_meeting_ids": ["7f3c..."]
+}
+```
+
+| Field | What it is |
+| --- | --- |
+| `meetings` | Meetings with usage in the window |
+| `stream_hours` | `connected_ms` summed: the open time the vendor bills. A meeting opens two streams, so an hour's call is about 2 stream hours. |
+| `meeting_hours` | From `started_at` to `ended_at`, for meetings that have a meeting row and have ended (an end before the start counts 0). A meeting without a row, or still recording, adds none. |
+| `estimated_cost_usd` | The known costs summed. `null` when every meeting in the window has an unknown price; `0` when the window has no meetings. |
+| `cost_per_meeting_hour` | The cost of the meetings with both a known price and meeting hours, over those meetings' hours. `null` when there are none. |
+| `gated_hours` | `gated_ms` summed: stream time the silence gate kept closed |
+| `estimated_saved_usd` | Each meeting's `gated_ms` at that meeting's own price per stream hour (its `estimated_cost_usd` over its `connected_ms`), summed over meetings with a known price. `null` exactly when `estimated_cost_usd` is. |
+| `unpriced_meetings` | Meetings whose `estimated_cost_usd` is `null` |
+| `unpriced_meeting_ids` | Their ids, newest first, at most 100 |
+
+A meeting with an unknown price is counted and named, never summed as `0`: its time counts in
+`stream_hours`, `meeting_hours` and `gated_hours`, its cost nowhere, and `cost_per_meeting_hour`
+leaves it out of both sides of the division (counted as free, it would make an hour look cheaper).
+Hours and USD are rounded to 4 decimal places, at any size: a meeting gated nearly throughout can
+show a saving far above its cost (1 ms connected and hours gated), and the summary still answers.
 
 ### Note templates
 
@@ -704,4 +807,15 @@ fills its migration:
                        unique (meeting_id, position)
   ```
 
-- STT usage (`stt_usage`, revision `0005`): M3-T19a.
+- STT usage (revision `0005`, M3-T19a). One row per workspace and meeting, with no foreign key to
+  `meetings`: a meeting deleted for having no lines was still billed.
+
+  ```sql
+  stt_usage            (workspace_id uuid fk, meeting_id uuid, provider text check (char_length between 1 and 64),
+                        sessions_opened int, connected_ms bigint, audio_sent_ms bigint, dropped_chunks int,
+                        gated_ms bigint default 0, estimated_cost_usd numeric null, by_source jsonb,
+                        stop_reason text null check (char_length between 1 and 64),
+                        created_at timestamptz, updated_at timestamptz,
+                        check (every count, time and cost >= 0))
+                       primary key (workspace_id, meeting_id)
+  ```
