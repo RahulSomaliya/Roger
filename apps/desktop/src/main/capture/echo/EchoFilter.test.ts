@@ -249,12 +249,13 @@ describe('filterEcho', () => {
     expect(filterEcho(me, [before, main], speakers)).toEqual({ action: 'hide', echoOf: 'them-2' });
   });
 
-  it('names the first call-audio line passed when two supplied as many words', () => {
+  it('names the line matched earliest in the mic line when two supplied as many words', () => {
     const first = line('them-1', spoken('we ship', 0));
     const second = line('them-2', spoken('on time', 600));
     const me = line('me-1', spoken('we ship on time', 40));
 
-    expect(filterEcho(me, [first, second], speakers)).toEqual({ action: 'hide', echoOf: 'them-1' });
+    // Passed in reverse: the tie goes by the mic line's word order, not the order of the array.
+    expect(filterEcho(me, [second, first], speakers)).toEqual({ action: 'hide', echoOf: 'them-1' });
   });
 
   it('ignores call-audio lines far from the mic line', () => {

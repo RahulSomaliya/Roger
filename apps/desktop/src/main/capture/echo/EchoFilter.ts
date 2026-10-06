@@ -265,7 +265,11 @@ function overlapShare(micTokens: readonly Token[], twins: readonly Token[]): num
   return Math.max(0, overlap) / (micEnd - micStart);
 }
 
-/** The call-audio line most of these words came from; ties go to the line seen first. */
+/**
+ * The call-audio line most of these words came from. `twins` is in mic-line order and a Map
+ * iterates in insertion order, so a tie goes to the line whose word matched earliest in the mic
+ * line, whatever order the caller passed the call-audio lines in.
+ */
 function mostMatchedLine(twins: readonly Token[]): string {
   const counts = new Map<string, number>();
   for (const twin of twins) counts.set(twin.lineId, (counts.get(twin.lineId) ?? 0) + 1);
