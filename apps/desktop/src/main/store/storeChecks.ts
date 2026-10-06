@@ -2,9 +2,21 @@ import { isAbsolute } from 'node:path';
 import type { SegmentTrim } from './TranscriptStore';
 
 /**
- * Checks both stores run before a write, so the in-memory store refuses what SQLite refuses and
- * the tests of the services around the store see the same errors.
+ * Checks both stores run before a write or a list, so the in-memory store refuses what SQLite
+ * refuses and the tests of the services around the store see the same errors.
  */
+
+/**
+ * A list's limit is a whole number from 1. SQLite reads a negative LIMIT as no limit at all and
+ * `Array.slice(0, -1)` drops the last row, so without this check the two stores disagree.
+ */
+export function checkListLimit(limit: number, what: string): void {
+  if (!Number.isInteger(limit) || limit < 1) {
+    throw new Error(
+      `could not list ${what}: the limit must be a whole number from 1 (got ${limit})`,
+    );
+  }
+}
 
 /** An audio path is relative to userData and never climbs out of it (see `NewAudioFile.path`). */
 export function checkAudioPath(path: string): string {

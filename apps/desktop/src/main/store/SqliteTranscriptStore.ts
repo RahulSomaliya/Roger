@@ -6,7 +6,13 @@ import {
   type TranscriptWord,
 } from '../../shared/transcript';
 import type { SttUsage } from '../stt/usage';
-import { canonicalInstant, checkAudioPath, checkGapWindow, checkTrim } from './storeChecks';
+import {
+  canonicalInstant,
+  checkAudioPath,
+  checkGapWindow,
+  checkListLimit,
+  checkTrim,
+} from './storeChecks';
 import type {
   AppStateEntry,
   AudioFile,
@@ -231,6 +237,8 @@ export class SqliteTranscriptStore implements TranscriptStore {
     getAppState: StatementSync;
     setAppState: StatementSync;
     deleteAppState: StatementSync;
+    recentMeetings: StatementSync;
+    meetingLines: StatementSync;
   };
 
   /** `path` may be `:memory:` for tests. */
@@ -429,6 +437,18 @@ export class SqliteTranscriptStore implements TranscriptStore {
          ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
       ),
       deleteAppState: this.db.prepare(`DELETE FROM app_state WHERE key = ?`),
+      // Text order on started_at: see NewLocalMeeting.startedAt. The sort in
+      // InMemoryTranscriptStore.listMeetings is its twin: change both.
+      recentMeetings: this.db.prepare(
+        `SELECT * FROM meetings ORDER BY started_at DESC, id DESC LIMIT ?`,
+      ),
+      // compareTranscriptOrder (src/shared/meetings.ts) in SQL: `source ASC` puts the mic first
+      // only because 'mic' sorts before 'system', and BINARY order on these ASCII ids is JS `<`.
+      // segments_by_meeting (meeting_id, start_ms) serves it.
+      meetingLines: this.db.prepare(
+        `SELECT * FROM segments WHERE meeting_id = ? AND suppressed_reason IS NULL
+         ORDER BY start_ms ASC, source ASC, id ASC`,
+      ),
     };
   }
 
@@ -725,6 +745,15 @@ export class SqliteTranscriptStore implements TranscriptStore {
     this.statements.deleteAppState.run(key);
   }
 
+  listMeetings(limit: number): LocalMeeting[] {
+    checkListLimit(limit, 'meetings');
+    return this.statements.recentMeetings.all(limit).map(rowToMeeting);
+  }
+
+  listSegments(meetingId: string): TranscriptSegment[] {
+    return this.statements.meetingLines.all(meetingId).map(rowToSegment);
+  }
+
   close(): void {
     this.db.close();
   }
@@ -769,8 +798,10 @@ function rowToSegment(row: Row): TranscriptSegment {
   const source = row.source;
   if (!isAudioSource(source)) throw new Error(`corrupt segment row: source=${String(source)}`);
   const speaker = text(row, 'speaker');
+  // Not the value: unlike source, speaker has no CHECK in the schema, so a bad row can hold any
+  // text, and every reader logs a failed read's message (the uploader's tick, meetings-ipc.ts).
   if (speaker !== 'me' && speaker !== 'them')
-    throw new Error(`corrupt segment row: speaker=${speaker}`);
+    throw new Error(`corrupt segment row ${String(row.id)}: speaker is not me or them`);
   return {
     id: text(row, 'id'),
     meetingId: text(row, 'meeting_id'),
@@ -781,7 +812,7 @@ function rowToSegment(row: Row): TranscriptSegment {
     text: text(row, 'text'),
     confidence:
       row.confidence === null || row.confidence === undefined ? null : Number(row.confidence),
-    words: parseWords(row.words_json),
+    words: parseWords(row, 'words_json'),
     createdAt: text(row, 'created_at'),
   };
 }
@@ -793,7 +824,7 @@ function rowToStoredSegment(row: Row): StoredSegment {
     suppressedReason: suppressedReason(row.suppressed_reason),
     echoOf: optionalText(row, 'echo_of'),
     originalText: optionalText(row, 'original_text'),
-    originalWords: parseWords(row.original_words_json),
+    originalWords: parseWords(row, 'original_words_json'),
     uploadAfter: optionalText(row, 'upload_after'),
     syncedAt: optionalText(row, 'synced_at'),
   };
@@ -867,10 +898,19 @@ function rowToSttUsage(row: Row): MeetingSttUsage {
   };
 }
 
-function parseWords(value: SQLOutputValue | undefined): TranscriptWord[] | null {
+function parseWords(row: Row, key: 'words_json' | 'original_words_json'): TranscriptWord[] | null {
+  const value = row[key];
   if (typeof value !== 'string') return null;
-  // Written by appendSegment from a typed TranscriptWord[]; the cast restores that type.
-  return JSON.parse(value) as TranscriptWord[];
+  let words: unknown;
+  try {
+    words = JSON.parse(value);
+  } catch {
+    // Not the SyntaxError's message: V8 quotes the text near the fault, words someone said, and
+    // every reader logs a failed read's message (the uploader's tick, meetings-ipc.ts).
+    throw new Error(`corrupt segment row ${String(row.id)}: ${key} is not JSON`);
+  }
+  // Written by appendSegment or trimSegment from a typed TranscriptWord[]; the cast restores it.
+  return words as TranscriptWord[];
 }
 
 function parseDetail(json: string): JsonObject {

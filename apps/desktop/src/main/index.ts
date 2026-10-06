@@ -11,6 +11,7 @@ import { createCaptureRuntime } from './capture/createCaptureRuntime';
 import { loadConfig, readConfigFile } from './config';
 import { RecordingLifecycle, watchApp, watchWindow } from './lifecycle';
 import { createLogger, errorMessage } from './logger';
+import { registerMeetingsIpc } from './meetings/meetings-ipc';
 import { registerNavigation } from './navigation';
 import { ensureMicrophoneAccess } from './permissions';
 import { PreferencesStore } from './preferences/PreferencesStore';
@@ -193,6 +194,15 @@ async function main(): Promise<void> {
   Menu.setApplicationMenu(Menu.buildFromTemplate(appMenu));
 
   // [slot M4-S4b] meetings IPC
+
+  // The sidebar's recent meetings and the meeting page read roger.sqlite, never the API: both work
+  // offline. A read after the quit hook closed the store rejects, and the page shows why.
+  registerMeetingsIpc({
+    ipcMain,
+    store,
+    getWindow: () => window,
+    logger: logger.child({ component: 'meetings' }),
+  });
 
   // [slot M3-T8] vocabulary IPC
 
