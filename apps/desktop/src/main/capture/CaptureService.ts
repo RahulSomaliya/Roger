@@ -41,6 +41,11 @@ import { type StopReason, stopNotice } from './stopReasons';
 export interface CaptureServiceOptions {
   store: TranscriptStore;
   api: SttTokenApi;
+  /**
+   * Also the notes check both delete sites ask (`TranscriptUploader.hasNotes`). There is no
+   * `hasNotes` option here on purpose: wired into the uploader once, it cannot disagree with the
+   * uploader's pending rule.
+   */
   uploader: TranscriptUploader;
   createSpeechToText: SpeechToTextFactory;
   ensureMicrophoneAccess: () => Promise<MicrophoneAccess>;
@@ -109,7 +114,10 @@ export interface RecordingStarted {
 export interface RecordingEnded {
   meetingId: string;
   reason: StopReason;
-  /** True when the meeting had no line and was deleted: nothing to upload, nothing to write up. */
+  /**
+   * True when the meeting had no line and no notes and was deleted: nothing to upload, nothing to
+   * write up. A meeting nobody spoke in that has notes is kept and ended (`discarded` false).
+   */
   discarded: boolean;
   /**
    * True when Stop threw before it ended the meeting (a store write refused: full disk, SQLite
@@ -640,7 +648,20 @@ export class CaptureService {
           this.recordMeter(meetingId, 'start-failed', null);
         }
         // A failed resume leaves its meeting open as it was: CrashRecovery (M2-T23) decides.
-        if (meetingCreated) store.deleteMeetingIfEmpty(meetingId);
+        //
+        // Trap: one of the three sites that decide which meetings no one spoke in are kept, with
+        // the Stop below and the pending rule in TranscriptUploader.syncMeeting; all three ask the
+        // uploader's hasNotes. The uploader is the only code that creates meetings in Postgres, and
+        // NotesSync waits for it, so a meeting deleted here with notes strands them for good. One
+        // with notes is ended instead, which lets the pending rule create it; left open, it would
+        // never be created and would read as a crash at the next launch.
+        if (meetingCreated) {
+          if (this.keepsForNotes(meetingId)) {
+            store.markMeetingEnded(meetingId, new Date(this.clock()).toISOString());
+          } else {
+            store.deleteMeetingIfEmpty(meetingId);
+          }
+        }
       } catch (cleanupError) {
         logger.error('cleanup after failed start failed', {
           meetingId,
@@ -671,11 +692,18 @@ export class CaptureService {
         this.recordMeter(meetingId, reason, null);
         if (this.stt !== null) this.lastMeter = this.meterStatus(this.stt);
         // A meeting with no line was never sent to Postgres: TranscriptUploader.syncMeeting creates
-        // it only once it holds one, and lines are never deleted, so this delete cannot race an
-        // upload. If the uploader ever creates meetings earlier again, this leaves Postgres a
-        // meeting stuck in "recording".
+        // it only once it holds one, or once it has ended with notes (not before this Stop ends
+        // it), and lines are never deleted, so this delete cannot race an upload. If the uploader
+        // ever creates meetings earlier again, this leaves Postgres a meeting stuck in "recording".
+        //
+        // Trap: one of the three sites that decide which meetings no one spoke in are kept, with
+        // the failed Start above and the pending rule in TranscriptUploader.syncMeeting; all three
+        // ask the uploader's hasNotes, before the delete. The uploader is the only code that creates
+        // meetings in Postgres and NotesSync waits for it, so a meeting deleted here with notes
+        // strands them for good. One with notes is ended below, and the pending rule creates it.
         if (
           store.getMeeting(meetingId)?.remoteState === 'pending' &&
+          !this.keepsForNotes(meetingId) &&
           store.deleteMeetingIfEmpty(meetingId)
         ) {
           discarded = true;
@@ -730,6 +758,25 @@ export class CaptureService {
         reason,
         error: errorMessage(error),
       });
+    }
+  }
+
+  /**
+   * Whether a meeting no one spoke in is kept for its notes, by the uploader's check
+   * (`TranscriptUploader.hasNotes`), so both delete sites here and its pending rule always agree.
+   * A check that fails keeps the meeting: a delete could strand notes for good, while a kept
+   * meeting is decided again by the uploader, which repeats the check on every tick and shows its
+   * failure in the upload status until notes.sqlite reads again.
+   */
+  private keepsForNotes(meetingId: string): boolean {
+    try {
+      return this.options.uploader.hasNotes(meetingId);
+    } catch (error) {
+      this.options.logger.error('kept a meeting whose notes could not be read', {
+        meetingId,
+        error: errorMessage(error),
+      });
+      return true;
     }
   }
 

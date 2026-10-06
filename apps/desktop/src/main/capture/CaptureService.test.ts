@@ -132,6 +132,8 @@ function harness(
     guards?: Partial<CostGuards>;
     /** Built on the harness clock: `(clock) => new SttOpenBudget(limits, clock)`. */
     budget?: (clock: () => number) => SttOpenBudget;
+    /** notes.sqlite's check, handed to the uploader as main wires it (M4-T16). */
+    hasNotes?: (meetingId: string) => boolean;
   } = {},
 ) {
   const store = overrides.store ?? new InMemoryTranscriptStore();
@@ -162,7 +164,12 @@ function harness(
   };
   let now = 1_000_000;
   const stt = new ScriptedSpeechToText(() => now);
-  const uploader = new TranscriptUploader({ store, api, logger });
+  const uploader = new TranscriptUploader({
+    store,
+    api,
+    logger,
+    ...(overrides.hasNotes === undefined ? {} : { hasNotes: overrides.hasNotes }),
+  });
   const budget = overrides.budget?.(() => now);
   const service = new CaptureService({
     store,
@@ -1599,5 +1606,62 @@ describe('defaultMeetingTitle', () => {
     expect(defaultMeetingTitle(new Date('2026-10-05T10:05:00Z'))).toMatch(
       /^Meeting 5 Oct 2026 \d\d:\d\d$/,
     );
+  });
+});
+
+describe('CaptureService meetings with notes (M4)', () => {
+  it('Stop keeps a meeting with notes when nobody spoke', async () => {
+    const h = harness({ hasNotes: () => true });
+    const ended: RecordingEnded[] = [];
+    h.service.onRecording({ ended: (recording) => ended.push(recording) });
+    const { meetingId } = await h.service.start();
+    await h.service.stop();
+
+    expect(h.store.getMeeting(meetingId!)?.endedAt).not.toBeNull();
+    expect(ended).toEqual([{ meetingId, reason: 'user', discarded: false, stopFailed: false }]);
+    // Stop's upload flush creates it and ends it in one pass, with no line.
+    expect(h.api.createMeeting).toHaveBeenCalledTimes(1);
+    expect(h.api.appendSegments).not.toHaveBeenCalled();
+    expect(h.api.endMeeting).toHaveBeenCalledTimes(1);
+    expect(h.store.getMeeting(meetingId!)?.remoteState).toBe('ended');
+  });
+
+  it('a failed start keeps a meeting that has notes', async () => {
+    const h = harness({ hasNotes: () => true });
+    h.stt.failWith = new SttConnectError('rejected with HTTP 401', 401);
+    const status = await h.service.start();
+    expect(status.phase).toBe('idle');
+    expect(status.error).toContain('401');
+
+    const kept = [...h.store.meetings.values()];
+    expect(kept).toHaveLength(1);
+    // Ended, so the uploader's pending rule creates it rather than wait for an end that never comes.
+    expect(kept[0]?.endedAt).not.toBeNull();
+    await h.uploader.flush();
+    expect(h.api.createMeeting).toHaveBeenCalledTimes(1);
+    expect(h.api.endMeeting).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the meeting at Stop when its notes cannot be read, and logs why', async () => {
+    const lines: string[] = [];
+    const h = harness({
+      hasNotes: () => {
+        throw new Error('database is locked');
+      },
+      logger: createLogger({ level: 'error', format: 'json', sink: (line) => lines.push(line) }),
+    });
+    const { meetingId } = await h.service.start();
+    const stopped = await h.service.stop();
+
+    // The Stop itself went through: the uploader asks again on every tick and says so there.
+    expect(stopped).toMatchObject({ phase: 'idle', error: null });
+    expect(h.store.getMeeting(meetingId!)?.endedAt).not.toBeNull();
+    expect(
+      lines.some(
+        (line) =>
+          line.includes('kept a meeting whose notes could not be read') &&
+          line.includes(`could not read the notes of meeting ${meetingId!}: database is locked`),
+      ),
+    ).toBe(true);
   });
 });
