@@ -137,8 +137,8 @@ otherwise; it is also on every log line for that request).
 ## MCP
 
 The MCP server is mounted in the same app at exactly `/mcp` (Streamable HTTP, stateless, so any
-worker can serve any request). It needs the same bearer token as the REST API and exposes one
-tool, `get_transcript(meeting_id?)`, which returns the transcript as plain text:
+worker can serve any request). It needs the same bearer token as the REST API and exposes two
+read-only tools. `get_transcript(meeting_id?)` returns the transcript as plain text:
 
 ```
 Meeting: Weekly sync with Acme
@@ -149,7 +149,11 @@ Started: 2026-10-05T10:00:00Z   Ended: 2026-10-05T10:31:12Z   Segments: 412
 [00:00:07] Them: Hi Rahul, good to see you.
 ```
 
-Add it to Claude Code:
+`get_notes(meeting_id?)` returns the meeting's AI notes, their "From your notes" list and the
+user's own notes as Markdown, each AI line ending with the transcript times it came from, like
+`[00:03:12]`. The contract shows its output.
+
+Add the server to Claude Code:
 
 ```bash
 claude mcp add --transport http roger http://127.0.0.1:8000/mcp \
@@ -158,7 +162,7 @@ claude mcp add --transport http roger http://127.0.0.1:8000/mcp \
 
 Then ask, for example, "Quote the first thing the other person said in my last meeting."
 
-The tool returns the whole meeting in one text block, so a very long call can exceed an MCP
+Each tool returns the whole meeting in one text block, so a very long call can exceed an MCP
 client's output cap. Slicing arrives in M7.
 
 Behind a real hostname, set `MCP_ALLOWED_HOSTS` (see above) or the endpoint answers `421`.
@@ -234,7 +238,7 @@ src/roger_api/
   auth.py              Principal, verify_bearer, get_principal
   dependencies.py      FastAPI dependencies for app state (settings, database, sessions)
   domain.py            shared vocabulary (statuses, sources, limits)
-  mcp_server.py        MCP server, get_transcript tool, bearer middleware
+  mcp_server.py        MCP server, get_transcript and get_notes tools, bearer middleware
   db/                  engine wrapper, declarative base, models (one module per Phase 2 domain)
   migrations/          Alembic environment and revisions
   schemas/             pydantic models at the HTTP edge
