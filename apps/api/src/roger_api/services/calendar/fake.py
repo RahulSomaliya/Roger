@@ -11,7 +11,7 @@ Every screen, test and demo runs with no Google client (M5 plan, constraint C4):
   start with its path named.
 """
 
-from datetime import UTC, date, datetime, time, timedelta, tzinfo
+from datetime import date, datetime, time, timedelta, tzinfo
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
@@ -50,8 +50,9 @@ class FakeCalendarProvider:
     ) -> None:
         anchor = require_aware(started_at, "started_at").replace(microsecond=0)
         # All-day dates are read in this zone, as Google reads them in the calendar's: the
-        # machine's own unless a test pins one. `astimezone()` with no argument always sets it.
-        self._zone: tzinfo = local_zone or anchor.astimezone().tzinfo or UTC
+        # machine's own (None) unless a test pins one. Never `anchor.astimezone().tzinfo`: that is
+        # the offset at start-up, so a date past a daylight-saving change began an hour off.
+        self._zone = local_zone
         # The local date of the start: the built-in all-day item is on it.
         self.today = anchor.astimezone(self._zone).date()
         if events_file is None:
@@ -115,6 +116,9 @@ class FakeCalendarProvider:
     def _midnight(self, day: date | None) -> datetime:
         if day is None:  # CalendarEvent's own check makes this unreachable.
             raise ValueError("an all-day event without its dates")
+        if self._zone is None:
+            # A naive time read in the machine's zone, with that date's daylight-saving rule.
+            return datetime.combine(day, time()).astimezone()
         return datetime.combine(day, time(), tzinfo=self._zone)
 
 

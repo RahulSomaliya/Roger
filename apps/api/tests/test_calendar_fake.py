@@ -5,6 +5,8 @@ Design, "Fake provider").
 """
 
 import json
+import time
+from collections.abc import Iterator
 from datetime import UTC, date, datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
@@ -236,6 +238,41 @@ def test_local_zone_defaults_to_the_machines() -> None:
     calendar = FakeCalendarProvider(started_at=STARTED_AT)
 
     assert calendar.today == STARTED_AT.astimezone().date()
+
+
+@pytest.fixture
+def machine_in_los_angeles(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    monkeypatch.setenv("TZ", "America/Los_Angeles")
+    time.tzset()
+    # Proof the switch took, or the test passes with nothing to prove.
+    assert datetime(2026, 7, 1, tzinfo=UTC).astimezone().utcoffset() == timedelta(hours=-7)
+    yield
+    monkeypatch.undo()
+    time.tzset()
+
+
+@pytest.mark.usefixtures("machine_in_los_angeles")
+async def test_default_zone_reads_each_date_with_its_own_daylight_saving(tmp_path: Path) -> None:
+    # Started on 2026-10-31 (PDT, -07:00). 2026-11-02 falls after the change to PST (-08:00), so
+    # its local midnight is 08:00Z; the offset at start-up would put it at 07:00Z.
+    path = tmp_path / "calendar.json"
+    holiday = {"id": "holiday", "start": {"date": "2026-11-02"}, "end": {"date": "2026-11-03"}}
+    path.write_text(json.dumps({"items": [holiday]}), encoding="utf-8")
+    calendar = FakeCalendarProvider(
+        started_at=datetime(2026, 10, 31, 18, 0, tzinfo=UTC), events_file=path
+    )
+    midnight = datetime(2026, 11, 2, 8, 0, tzinfo=UTC)
+    window_start = midnight - timedelta(hours=36)
+
+    before = await calendar.list_events(
+        "t", time_min=window_start, time_max=midnight - timedelta(minutes=30)
+    )
+    after = await calendar.list_events(
+        "t", time_min=window_start, time_max=midnight + timedelta(minutes=30)
+    )
+
+    assert before == []
+    assert [event.id for event in after] == ["holiday"]
 
 
 # FAKE_CALENDAR_FILE ------------------------------------------------------------------------------
