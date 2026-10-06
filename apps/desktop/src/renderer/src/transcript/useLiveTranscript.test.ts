@@ -1,7 +1,11 @@
 import { createElement } from 'react';
 import { renderToString } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
-import type { TranscriptSegmentChange } from '../../../shared/capture';
+import {
+  type CaptureStatus,
+  idleCaptureStatus,
+  type TranscriptSegmentChange,
+} from '../../../shared/capture';
 import type { InterimTranscript, TranscriptSegment } from '../../../shared/transcript';
 import { openMeeting, type TranscriptAction, type TranscriptItem } from './liveTranscriptModel';
 import {
@@ -108,6 +112,7 @@ describe('subscribeToTranscript', () => {
       segment: new Set<(segment: TranscriptSegment) => void>(),
       interim: new Set<(interim: InterimTranscript) => void>(),
       changed: new Set<(change: TranscriptSegmentChange) => void>(),
+      status: new Set<(status: CaptureStatus) => void>(),
     };
     const subscribe =
       <T>(set: Set<(value: T) => void>) =>
@@ -121,6 +126,7 @@ describe('subscribeToTranscript', () => {
       onTranscriptSegment: subscribe(listeners.segment),
       onTranscriptInterim: subscribe(listeners.interim),
       onTranscriptSegmentChanged: subscribe(listeners.changed),
+      onCaptureStatus: subscribe(listeners.status),
     };
     return { events, listeners };
   }
@@ -150,14 +156,34 @@ describe('subscribeToTranscript', () => {
     for (const listener of listeners.segment) listener(segment);
     for (const listener of listeners.interim) listener(interim);
     for (const listener of listeners.changed) listener(change);
+    // The capture status too: it is the only word that a source's session failed or stopped,
+    // which ends that source's interim.
+    const stopping: CaptureStatus = {
+      ...idleCaptureStatus({
+        state: 'idle',
+        pending: 0,
+        rejected: 0,
+        lastError: null,
+        nextAttemptAt: null,
+      }),
+      phase: 'stopping',
+      meetingId: MEETING,
+    };
+    for (const listener of listeners.status) listener(stopping);
     expect(actions).toEqual([
       { type: 'final', segment },
       { type: 'interim', interim },
       { type: 'segmentChanged', change },
+      { type: 'captureStatus', status: stopping },
     ]);
 
     unsubscribe();
-    expect(listeners.segment.size + listeners.interim.size + listeners.changed.size).toBe(0);
+    expect(
+      listeners.segment.size +
+        listeners.interim.size +
+        listeners.changed.size +
+        listeners.status.size,
+    ).toBe(0);
   });
 });
 

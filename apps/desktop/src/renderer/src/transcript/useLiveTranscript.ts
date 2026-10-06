@@ -15,13 +15,15 @@ import {
 /** The part of `window.roger` the panel listens to. */
 export type TranscriptEvents = Pick<
   CaptureApi,
-  'onTranscriptSegment' | 'onTranscriptInterim' | 'onTranscriptSegmentChanged'
+  'onTranscriptSegment' | 'onTranscriptInterim' | 'onTranscriptSegmentChanged' | 'onCaptureStatus'
 >;
 
 /**
  * Listens to main's three transcript events (a final line, an interim, a line the echo filter
- * changed) and hands each on as a model action. Every event goes on: the model ignores those of
- * another meeting. Returns the function that stops all three.
+ * changed) and its capture status, and hands each on as a model action. The status is the only
+ * word that a source's session failed, paused or stopped: main sends no transcript event then, and
+ * an interim of a session that is gone would stay on screen (the model's `captureStatus`). Every
+ * event goes on: the model ignores those of another meeting. Returns the function that stops all.
  */
 export function subscribeToTranscript(
   events: TranscriptEvents,
@@ -36,6 +38,9 @@ export function subscribeToTranscript(
     }),
     events.onTranscriptSegmentChanged((change) => {
       push({ type: 'segmentChanged', change });
+    }),
+    events.onCaptureStatus((status) => {
+      push({ type: 'captureStatus', status });
     }),
   ];
   return () => {

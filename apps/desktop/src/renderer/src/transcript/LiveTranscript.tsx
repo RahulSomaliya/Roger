@@ -20,7 +20,11 @@ import './transcript.css';
  */
 
 export interface LiveTranscriptProps extends LiveTranscriptOptions {
-  /** True while this meeting records: the panel follows new lines and offers "Jump to live". */
+  /**
+   * True while this meeting records: the panel follows new lines and offers "Jump to live".
+   * Interims do not end on it: main's capture status ends them (useLiveTranscript.ts), as it also
+   * says when one source's stream fails mid-call, which this flag never shows.
+   */
   live: boolean;
 }
 

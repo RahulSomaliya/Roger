@@ -1,11 +1,16 @@
 import { describe, expect, it } from 'vitest';
-import type { TranscriptSegmentChange } from '../../../shared/capture';
+import type {
+  CapturePhase,
+  SttStreamState,
+  TranscriptSegmentChange,
+} from '../../../shared/capture';
 import type { AudioSource, InterimTranscript, TranscriptSegment } from '../../../shared/transcript';
 import { SPEAKER_FOR_SOURCE } from '../../../shared/transcript';
 import {
   addFinal,
   addStoredLines,
   applyTranscriptActions,
+  type CaptureSessions,
   followScroll,
   isFollowing,
   jumpToLive,
@@ -107,6 +112,14 @@ describe('the live transcript model', () => {
     state = setInterim(state, interim('mic', 1000, 2400, 'so the'));
     state = addFinal(state, final('a', 'mic', 1000, 3100, 'So the price moved.'));
     expect(rows(state)).toEqual(['final mic So the price moved.', 'interim system legal wants']);
+  });
+
+  it('a final that ends before its own interim does still replaces it', () => {
+    // AssemblyAI's last partial can end on a trailing guessed word, or on the audio sent so far
+    // when it has no words, so the turn's final ends earlier. Kept, it sat grey under its own line.
+    let state = setInterim(openMeeting(MEETING), interim('mic', 1000, 3400, 'so the plan is to'));
+    state = addFinal(state, final('a', 'mic', 1000, 3100, 'So the plan is.'));
+    expect(rows(state)).toEqual(['final mic So the plan is.']);
   });
 
   it('the next turn interim survives a late final of the turn before', () => {
@@ -273,6 +286,70 @@ describe('the live transcript model', () => {
       );
     }
     expect(ids(state)).toEqual(expected);
+  });
+});
+
+describe('interims whose session ended (main capture status)', () => {
+  // Main sends no blank interim and nothing to the panel when a stream fails or stops: only its
+  // capture status says a source's session is gone, so the words it was guessing never come final.
+  const sessions = (
+    streams: Partial<Record<AudioSource, SttStreamState>> = {},
+    phase: CapturePhase = 'recording',
+    meetingId: string | null = MEETING,
+  ): CaptureSessions => ({
+    phase,
+    meetingId,
+    streams: { mic: 'open', system: 'open', ...streams },
+  });
+
+  const statusOf = (state: LiveTranscriptState, status: CaptureSessions) =>
+    applyTranscriptActions(state, [{ type: 'captureStatus', status }]);
+
+  /** Mid-call: a stored line, then both speakers mid-sentence. */
+  const speaking = (): LiveTranscriptState => {
+    let state = openMeeting(MEETING, [final('a', 'system', 0, 900, 'Morning, everyone.')]);
+    state = setInterim(state, interim('mic', 12_000, 12_400, 'so the plan is'));
+    return setInterim(state, interim('system', 12_100, 12_600, 'right and the'));
+  };
+
+  it('keeps both interims, and the state itself, while both sessions are open', () => {
+    const before = speaking();
+    expect(statusOf(before, sessions())).toBe(before);
+  });
+
+  it.each<SttStreamState>(['retrying', 'paused', 'offline', 'connecting', 'closed', 'error'])(
+    'a source whose session is %s loses its interim; the other keeps its own',
+    (state) => {
+      expect(rows(statusOf(speaking(), sessions({ mic: state })))).toEqual([
+        'final system Morning, everyone.',
+        'interim system right and the',
+      ]);
+    },
+  );
+
+  it('Stop clears every interim and keeps every line, also when no final came for them', () => {
+    const stopping = statusOf(speaking(), sessions({}, 'stopping'));
+    expect(rows(stopping)).toEqual(['final system Morning, everyone.']);
+    // Main's idle status comes last, after the lines the stop flush saved, and names no meeting.
+    const lateGuess = setInterim(stopping, interim('mic', 12_000, 12_800, 'so the plan is to'));
+    expect(rows(statusOf(lateGuess, sessions({}, 'idle', null)))).toEqual([
+      'final system Morning, everyone.',
+    ]);
+  });
+
+  it('a session that reopens shows its new interims again', () => {
+    let state = statusOf(speaking(), sessions({ mic: 'retrying' }));
+    state = statusOf(state, sessions());
+    state = setInterim(state, interim('mic', 15_000, 15_500, 'as I was saying'));
+    expect(rows(state)).toContain('interim mic as I was saying');
+  });
+
+  it('a status for another meeting, or one still starting, says nothing of this one', () => {
+    const before = speaking();
+    expect(statusOf(before, sessions({ mic: 'connecting' }, 'starting', null))).toBe(before);
+    expect(statusOf(before, sessions({ mic: 'retrying' }, 'recording', OTHER_MEETING))).toBe(
+      before,
+    );
   });
 });
 

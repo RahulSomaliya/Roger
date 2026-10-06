@@ -1,4 +1,4 @@
-import type { TranscriptSegmentChange } from '../../../shared/capture';
+import type { CaptureStatus, TranscriptSegmentChange } from '../../../shared/capture';
 import {
   AUDIO_SOURCES,
   type AudioSource,
@@ -17,8 +17,11 @@ import {
  *   line is inserted where it belongs (a binary search), never by sorting the whole list again, so
  *   a 2-hour call stays cheap.
  * - Each source has at most one interim, replaced whole by the next. It shows only while it holds
- *   audio past that source's last final: a final that reaches its end clears it, and an interim
- *   that arrives no newer than the last final is dropped (it was already finalised).
+ *   audio past that source's last final: a same-source final that reaches into it clears it, and
+ *   an interim that arrives no newer than the last final is dropped (it was already finalised).
+ * - An interim also ends with its vendor session. Main sends no blank interim and nothing to the
+ *   panel when a stream fails, pauses or stops; only its capture status says so (`captureStatus`),
+ *   and the words of a session that is gone never come final, so they would stay on screen.
  * - M2's echo filter changes lines after they were shown (`transcript:segment-changed`): `hidden`
  *   hides one but keeps it, `trimmed` replaces its text, `unhidden` shows it again. A change can
  *   come before its line (main holds mic lines for the echo check), so it waits for the line.
@@ -44,7 +47,7 @@ export interface FinalLine {
   readonly hidden: boolean;
 }
 
-/** Words that may still change: shown grey until the final line replaces them. No id. */
+/** Words that may still change: grey until their final comes or their session ends. No id. */
 export interface InterimLine {
   readonly kind: 'interim';
   readonly source: AudioSource;
@@ -68,12 +71,16 @@ export interface LiveTranscriptState {
   readonly heldChanges: ReadonlyMap<string, TranscriptSegmentChange>;
 }
 
+/** The part of main's capture status that says which of a meeting's sessions are open. */
+export type CaptureSessions = Pick<CaptureStatus, 'phase' | 'meetingId' | 'streams'>;
+
 /** One event from main, or the meeting's stored lines read from main's store. */
 export type TranscriptAction =
   | { type: 'final'; segment: TranscriptSegment }
   | { type: 'interim'; interim: InterimTranscript }
   | { type: 'segmentChanged'; change: TranscriptSegmentChange }
-  | { type: 'stored'; lines: readonly TranscriptSegment[] };
+  | { type: 'stored'; lines: readonly TranscriptSegment[] }
+  | { type: 'captureStatus'; status: CaptureSessions };
 
 /** A meeting's panel before any event: its stored lines (none for a meeting just started). */
 export function openMeeting(
@@ -186,6 +193,31 @@ function toLine(segment: TranscriptSegment): FinalLine {
   };
 }
 
+/**
+ * Whether an interim holds only audio after `endMs`, a final's end: the next turn's words, which
+ * that final must leave. Any overlap is the final's own turn, even where the final ends first
+ * (AssemblyAI's last partial can end on a trailing guess, or on the audio sent so far).
+ */
+function liesAfter(interim: InterimLine, endMs: number): boolean {
+  return interim.startMs >= endMs && interim.endMs > endMs;
+}
+
+/**
+ * The sources of `meetingId` whose interim a capture status ends: those with no open session.
+ * Main sends a status at every stream state change (CaptureService's onStreamState) and its idle
+ * status after the lines Stop flushed, so a stale interim goes with the next status. It only
+ * clears, never blocks: a reopened session's first interim comes after the status that says it
+ * opened, and shows at once.
+ */
+function sourcesWithoutSession(meetingId: string, status: CaptureSessions): readonly AudioSource[] {
+  // Nothing records: Stop, or a failed Start, ended every session.
+  if (status.phase === 'idle') return AUDIO_SOURCES;
+  // Another meeting, or one still starting (main names it once both streams opened).
+  if (status.meetingId !== meetingId) return [];
+  if (status.phase === 'stopping') return AUDIO_SOURCES;
+  return AUDIO_SOURCES.filter((source) => status.streams[source] !== 'open');
+}
+
 /** The line as the change says it now reads; the same object when nothing differs. */
 function withChange(line: FinalLine, change: TranscriptSegmentChange): FinalLine {
   const hidden = change.change === 'hidden';
@@ -224,6 +256,11 @@ class TranscriptDraft {
       case 'stored':
         for (const segment of action.lines) this.addFinal(segment);
         return;
+      case 'captureStatus':
+        for (const source of sourcesWithoutSession(this.base.meetingId, action.status)) {
+          this.clearInterim(source);
+        }
+        return;
     }
   }
 
@@ -260,30 +297,35 @@ class TranscriptDraft {
     const source = line.source;
     this.lastFinalEndMs[source] = Math.max(this.lastFinalEndMs[source], line.endMs);
     const interim = this.interims[source];
-    if (interim !== null && interim.endMs <= this.lastFinalEndMs[source]) {
-      this.interims[source] = null;
-    }
+    if (interim !== null && !liesAfter(interim, line.endMs)) this.interims[source] = null;
+    this.changed = true;
+  }
+
+  private clearInterim(source: AudioSource): void {
+    if (this.interims[source] === null) return;
+    this.interims[source] = null;
     this.changed = true;
   }
 
   private setInterim(next: InterimTranscript): void {
     if (next.meetingId !== this.base.meetingId) return;
     const source = next.source;
+    // Only a guard, so no row is drawn with no words: main's adapters drop empty partials, and a
+    // session that ends says so through the capture status instead (`captureStatus`).
     if (next.text.trim() === '') {
-      if (this.interims[source] === null) return;
-      this.interims[source] = null;
-    } else {
-      // Already finalised: showing it would print those words twice.
-      if (next.endMs <= this.lastFinalEndMs[source]) return;
-      this.interims[source] = {
-        kind: 'interim',
-        source,
-        speaker: SPEAKER_FOR_SOURCE[source],
-        startMs: next.startMs,
-        endMs: next.endMs,
-        text: next.text,
-      };
+      this.clearInterim(source);
+      return;
     }
+    // Already finalised: showing it would print those words twice.
+    if (next.endMs <= this.lastFinalEndMs[source]) return;
+    this.interims[source] = {
+      kind: 'interim',
+      source,
+      speaker: SPEAKER_FOR_SOURCE[source],
+      startMs: next.startMs,
+      endMs: next.endMs,
+      text: next.text,
+    };
     this.changed = true;
   }
 
