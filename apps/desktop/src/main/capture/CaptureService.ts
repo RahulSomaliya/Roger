@@ -57,7 +57,7 @@ export interface CaptureServiceOptions {
 export interface StopOptions {
   /** Wait for the uploader to drain. Off when quitting: the uploader resumes on next launch. */
   flushUploads?: boolean;
-  /** Why it stops; anything but `user` (the default) leaves a notice on screen. */
+  /** Why it stops (default `user`): logged and kept with the meeting's usage; see stopNotice. */
   reason?: StopReason;
   /** Extra words for the notice, e.g. how the renderer crashed. */
   detail?: string;

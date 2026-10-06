@@ -2,8 +2,9 @@ import type { CostGuards } from '../costGuards';
 
 /**
  * Why a recording stopped. Only `user` is a Stop someone pressed; every other reason is Roger
- * stopping on its own so no vendor session outlives the person's attention (cost guards G4, G5),
- * and the status shows a notice saying why.
+ * stopping on its own so no vendor session outlives the person's attention (cost guards G4, G5).
+ * Each is logged and kept as the meeting's `stt_usage.stop_reason`; stopNotice says which also
+ * leave a notice on screen.
  */
 export type StopReason =
   | 'user'
@@ -22,7 +23,10 @@ export type StopReason =
   /** G4: the Mac is going to sleep; a socket left open bills until the vendor's idle timeout. */
   | 'system-sleep';
 
-/** What the status shows after Roger stopped a recording itself; null for a Stop someone pressed. */
+/**
+ * What the status shows after Roger stopped a recording itself. Null for a Stop someone pressed,
+ * and for a stop that leaves no window to show it (quit, window-closed).
+ */
 export function stopNotice(
   reason: StopReason,
   at: Date,
@@ -38,9 +42,11 @@ export function stopNotice(
     case 'max-duration':
       return `Stopped at ${time}: one recording is capped at ${spell(guards.maxRecordingMs)}.`;
     case 'quit':
-      return `Stopped at ${time} because Roger quit.`;
     case 'window-closed':
-      return `Stopped at ${time} because the Roger window closed.`;
+      // The notice lives in memory and Roger is exiting: a closed window quits it (index.ts,
+      // window-all-closed). Cmd+Q showed it for one frame at most. Keeping one across launches
+      // would need it saved and read back at startup; the log and stt_usage.stop_reason have it.
+      return null;
     case 'renderer-gone':
       return `Stopped at ${time} because the Roger window crashed${detail === null ? '' : ` (${detail})`}.`;
     case 'page-reloaded':

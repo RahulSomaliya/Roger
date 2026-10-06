@@ -14,13 +14,18 @@ describe('stopNotice', () => {
       stopNotice(reason, at, DEFAULT_COST_GUARDS, detail);
     expect(notice('no-speech')).toBe('Stopped at 14:32 after 15 minutes with no speech.');
     expect(notice('max-duration')).toBe('Stopped at 14:32: one recording is capped at 4 hours.');
-    expect(notice('quit')).toBe('Stopped at 14:32 because Roger quit.');
-    expect(notice('window-closed')).toBe('Stopped at 14:32 because the Roger window closed.');
     expect(notice('renderer-gone', 'oom')).toBe(
       'Stopped at 14:32 because the Roger window crashed (oom).',
     );
     expect(notice('page-reloaded')).toBe('Stopped at 14:32 because the Roger window reloaded.');
     expect(notice('system-sleep')).toBe('Stopped at 14:32 because the Mac went to sleep.');
+  });
+
+  it('has no notice for a stop that leaves no window to show it: quit and a closed window', () => {
+    // A closed window quits Roger (index.ts, window-all-closed), and nothing keeps a notice across
+    // launches: the reason is in the log and the meeting's stt_usage row instead.
+    expect(stopNotice('quit', at, DEFAULT_COST_GUARDS)).toBeNull();
+    expect(stopNotice('window-closed', at, DEFAULT_COST_GUARDS)).toBeNull();
   });
 
   it('spells configured limits in the largest whole unit', () => {
