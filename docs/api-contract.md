@@ -700,4 +700,15 @@ fills its migration:
                        unique (meeting_id, position)
   ```
 
-- STT usage (`stt_usage`, revision `0005`): M3-T19a.
+- STT usage (revision `0005`, M3-T19a). One row per workspace and meeting, with no foreign key to
+  `meetings`: a meeting deleted for having no lines was still billed.
+
+  ```sql
+  stt_usage            (workspace_id uuid fk, meeting_id uuid, provider text check (char_length between 1 and 64),
+                        sessions_opened int, connected_ms bigint, audio_sent_ms bigint, dropped_chunks int,
+                        gated_ms bigint default 0, estimated_cost_usd numeric null, by_source jsonb,
+                        stop_reason text null check (char_length between 1 and 64),
+                        created_at timestamptz, updated_at timestamptz,
+                        check (every count, time and cost >= 0))
+                       primary key (workspace_id, meeting_id)
+  ```
