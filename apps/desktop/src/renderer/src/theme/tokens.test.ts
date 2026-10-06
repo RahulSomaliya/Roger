@@ -57,29 +57,57 @@ const THEMES = [
   ['forced dark', forcedDark],
 ] as const;
 
-/** WCAG 2 relative luminance of a `#rrggbb` token in one theme's block. */
-function luminance(block: Map<string, string>, token: string): number {
-  const value = block.get(token);
-  const pairs = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(value ?? '')?.slice(1);
-  if (!pairs) throw new Error(`${token} must be a #rrggbb colour (got ${String(value)})`);
-  const [red = 0, green = 0, blue = 0] = pairs.map((pair) => {
-    const channel = parseInt(pair, 16) / 255;
+/** A colour as 0 to 255 red, green and blue channels. */
+type Rgb = readonly [number, number, number];
+
+/**
+ * A token's colour as the page paints it: a `#rrggbb` value, or an `rgb(r g b / alpha)` tint drawn
+ * over the `surface` token beneath it (the error box's --danger-bg over the page's --bg).
+ */
+function colour(block: Map<string, string>, token: string, surface?: string): Rgb {
+  const value = block.get(token) ?? '';
+  const hex = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(value);
+  if (hex) {
+    const [, red = '', green = '', blue = ''] = hex;
+    return [parseInt(red, 16), parseInt(green, 16), parseInt(blue, 16)];
+  }
+  const tint = /^rgb\((\d+) (\d+) (\d+) \/ ([\d.]+)\)$/.exec(value);
+  if (tint && surface !== undefined) {
+    const [, red = '', green = '', blue = '', alpha = ''] = tint;
+    const [underRed, underGreen, underBlue] = colour(block, surface);
+    const opacity = Number(alpha);
+    const mix = (channel: string, under: number): number =>
+      opacity * Number(channel) + (1 - opacity) * under;
+    return [mix(red, underRed), mix(green, underGreen), mix(blue, underBlue)];
+  }
+  throw new Error(`${token} must be a #rrggbb colour, or a tint over a surface (got ${value})`);
+}
+
+/** WCAG 2 relative luminance. */
+function luminance(rgb: Rgb): number {
+  const [red = 0, green = 0, blue = 0] = rgb.map((value) => {
+    const channel = value / 255;
     return channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4;
   });
   return 0.2126 * red + 0.7152 * green + 0.0722 * blue;
 }
 
 /**
- * The pairs, `[text, background]` token names, whose WCAG contrast in `block` is under 4.5:1
- * (AA for text under 18.66px bold), as "text on background: ratio".
+ * The pairs whose WCAG contrast in `block` is under 4.5:1 (AA for text under 18.66px bold), as
+ * "text on background: ratio". A pair is `[text, background]` token names, or `[text, tint,
+ * surface]` for text on a tint drawn over a surface.
  */
-function underAA(block: Map<string, string>, pairs: [string, string][]): string[] {
-  return pairs.flatMap(([text, background]) => {
-    const [lighter, darker] = [text, background]
-      .map((token) => luminance(block, token))
+function underAA(
+  block: Map<string, string>,
+  pairs: (readonly [text: string, background: string, surface?: string])[],
+): string[] {
+  return pairs.flatMap(([text, background, surface]) => {
+    const [lighter = 0, darker = 0] = [colour(block, text), colour(block, background, surface)]
+      .map((rgb) => luminance(rgb))
       .sort((a, b) => b - a);
-    const ratio = ((lighter ?? 0) + 0.05) / ((darker ?? 0) + 0.05);
-    return ratio < 4.5 ? [`${text} on ${background}: ${ratio.toFixed(2)}`] : [];
+    const ratio = (lighter + 0.05) / (darker + 0.05);
+    const under = surface === undefined ? background : `${background} over ${surface}`;
+    return ratio < 4.5 ? [`${text} on ${under}: ${ratio.toFixed(2)}`] : [];
   });
 }
 
@@ -128,11 +156,26 @@ describe('the theme tokens', () => {
     },
   );
 
-  it.each(THEMES)('keep accent and danger text readable on --panel (%s)', (_, block) => {
+  // Text in these hues sits on cards (--panel) and on the page itself (--bg).
+  it.each(THEMES)('keep accent and danger text readable on --panel and --bg (%s)', (_, block) => {
     expect(
       underAA(block, [
         ['--accent-ink', '--panel'],
         ['--danger-ink', '--panel'],
+        ['--accent-ink', '--bg'],
+        ['--danger-ink', '--bg'],
+      ]),
+    ).toEqual([]);
+  });
+
+  // The error box (`.error` in styles.css) is --danger-ink on the --danger-bg tint, which is drawn
+  // over the page in the banner and over --panel inside a card. The tint darkens a light page, so
+  // an ink that passes on --bg alone can fail inside the box.
+  it.each(THEMES)('keep error text readable inside its --danger-bg box (%s)', (_, block) => {
+    expect(
+      underAA(block, [
+        ['--danger-ink', '--danger-bg', '--bg'],
+        ['--danger-ink', '--danger-bg', '--panel'],
       ]),
     ).toEqual([]);
   });

@@ -21,6 +21,7 @@
    * Fills, such as the Start and Stop buttons, under --on-accent text. Text in these hues reads
    * --accent-ink and --danger-ink: in dark, a fill dark enough for a white label is too dark to
    * read as text on --panel, so one token cannot do both (tokens.test.ts checks both contrasts).
+   * In light, --danger as text is 4.46:1 on --bg and 3.7:1 inside the error box's --danger-bg.
    */
   --accent: #2563eb;
   --danger: #dc2626;
@@ -47,7 +48,7 @@
   --on-accent: #ffffff;
   /* Text in the accent and danger hues: a speaker name, an error, a failing status row. */
   --accent-ink: #2563eb;
-  --danger-ink: #dc2626;
+  --danger-ink: #b91c1c;
 }
 
 /* Dark: macOS in dark mode, unless `theme: light` forces light. Same values as forced dark. */
