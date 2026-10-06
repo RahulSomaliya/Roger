@@ -99,16 +99,30 @@ export interface CalendarSyncState {
 // Instants -------------------------------------------------------------------------------------
 
 /** ISO 8601 with seconds and a zone. `Date.parse` would also take a local time, in this Mac's zone. */
-const INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/;
+const INSTANT = /^(\d{4})-(\d{2})-(\d{2})T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
 
 /**
  * Epoch ms of an instant with a zone (`Z` or an offset). Throws on anything else: an instant read
  * in the wrong zone moves every prompt by hours, so a bad value must fail where it enters.
  */
 export function parseInstant(value: string): number {
-  const ms = INSTANT.test(value) ? Date.parse(value) : Number.NaN;
+  const fields = INSTANT.exec(value);
+  const ms =
+    fields !== null && dayExists(Number(fields[1]), Number(fields[2]), Number(fields[3]))
+      ? Date.parse(value)
+      : Number.NaN;
   if (!Number.isFinite(ms)) throw new Error(`Not an ISO 8601 instant with a zone: "${value}"`);
   return ms;
+}
+
+/**
+ * Whether the date names a real day. `Date.parse` checks only the ranges (month 1 to 12, day 1 to
+ * 31) and rolls the rest over: "2026-02-30" reads as 2 March, a prompt days late with no error.
+ */
+function dayExists(year: number, month: number, day: number): boolean {
+  const leapYear = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+  const daysInMonth = [31, leapYear ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1];
+  return daysInMonth !== undefined && day >= 1 && day <= daysInMonth;
 }
 
 /** The stored form, `YYYY-MM-DDTHH:MM:SS.sssZ`: one spelling per instant, and it sorts as text. */

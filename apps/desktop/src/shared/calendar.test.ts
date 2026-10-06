@@ -50,11 +50,18 @@ describe('parseInstant', () => {
     expect(parseInstant('2026-10-06T02:00:00-07:00')).toBe(Date.UTC(2026, 9, 6, 9));
   });
 
+  it('reads 29 February in a leap year', () => {
+    expect(parseInstant('2028-02-29T10:00:00Z')).toBe(Date.UTC(2028, 1, 29, 10));
+  });
+
   it.each([
     ['2026-10-06T09:00:00', 'no zone: it would be read in this Mac’s zone'],
     ['2026-10-06', 'a plain date'],
     ['Tue Oct 06 2026 09:00:00 GMT+0000', 'not ISO 8601'],
     ['2026-13-01T09:00:00Z', 'no such month'],
+    ['2026-02-30T10:00:00Z', 'no such day: Date.parse alone reads 2 March'],
+    ['2026-02-29T10:00:00Z', 'no such day: 2026 is not a leap year'],
+    ['2026-04-31T10:00:00+02:00', 'no such day: April has 30'],
     ['', 'empty'],
   ])('refuses %s (%s) and names the value', (value) => {
     expect(() => parseInstant(value)).toThrow(`"${value}"`);
