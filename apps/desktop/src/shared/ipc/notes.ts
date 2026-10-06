@@ -119,7 +119,8 @@ export interface NotesApi {
   /**
    * Writes the doc to notes.sqlite before it answers, as a new local revision (`revisionId`).
    * NotesSync uploads it later. Rejects a doc `noteDocProblem` refuses. A save on a stale `base`
-   * is kept as the conflict copy instead: the answer then holds main's doc, not this one, and
+   * is kept as the conflict copy instead, or, while the copy holds other typing, held on disk
+   * until the user has picked for that copy: the answer then holds main's doc, not this one, and
    * its `revisionId` is not this save's.
    */
   saveNote(request: SaveNoteRequest): Promise<LocalNote>;

@@ -399,7 +399,7 @@ describe('SqliteNotesStore: the base a save builds on', () => {
     store.close();
   });
 
-  it('never replaces a conflict copy that holds other typing: the save is refused', () => {
+  it('never replaces a conflict copy that holds other typing: the save is held, past a quit', () => {
     const path = tempPath();
     const before = openStore(path);
     before.applyServerNote(MEETING, serverNote('user', 1, paragraphs('Base')));
@@ -411,15 +411,82 @@ describe('SqliteNotesStore: the base a save builds on', () => {
     const store = openStore(path);
     const loaded = store.getNote(MEETING, 'user');
     const newer = store.applyServerNote(MEETING, serverNote('user', 3, paragraphs('Theirs 2')));
+    const listener = vi.fn();
+    store.onNoteChanged(listener);
 
-    expect(() =>
-      store.saveLocal(MEETING, 'user', paragraphs('Theirs', 'typed'), noteSaveBase(loaded)),
-    ).toThrow(
-      `note not saved for the user notes of meeting ${MEETING}: they changed elsewhere while a ` +
-        'copy of yours is kept aside; choose a version first',
+    const held = store.saveLocal(
+      MEETING,
+      'user',
+      paragraphs('Theirs', 'typed'),
+      noteSaveBase(loaded),
     );
-    expect(store.getNote(MEETING, 'user')).toEqual(newer);
-    expect(newer.conflictCopy).toEqual(paragraphs('Mine, from last week'));
+
+    // The doc and the copy stay. The change tells the editor to show main's doc, which its
+    // typing never saw: it then builds on that doc, not on the old one again.
+    expect(held).toEqual({ ...newer, updatedAt: held.updatedAt } satisfies LocalNote);
+    expect(listener).toHaveBeenCalledWith(held);
+    // The same editor's later typing, on the same base, holds that typing and more.
+    store.saveLocal(MEETING, 'user', paragraphs('Theirs', 'typed more'), noteSaveBase(loaded));
+    // The quit closes notes.sqlite with the typing in it.
+    store.close();
+    const reopened = openStore(path);
+    expect(reopened.getNote(MEETING, 'user')).toMatchObject({
+      doc: paragraphs('Theirs 2'),
+      conflictCopy: paragraphs('Mine, from last week'),
+    });
+
+    // Once the user picks for the copy, the held typing is the copy: nothing goes until picked.
+    expect(reopened.resolveConflict(MEETING, 'user', 'theirs')).toMatchObject({
+      doc: paragraphs('Theirs 2'),
+      conflictCopy: paragraphs('Theirs', 'typed more'),
+      dirty: false,
+      sync: 'conflict',
+    });
+    expect(reopened.resolveConflict(MEETING, 'user', 'mine')).toMatchObject({
+      doc: paragraphs('Theirs', 'typed more'),
+      conflictCopy: null,
+      dirty: true,
+      sync: 'saved_locally',
+    });
+    expect(() => reopened.resolveConflict(MEETING, 'user', 'mine')).toThrow(
+      `no conflict to resolve on the user notes of meeting ${MEETING}`,
+    );
+    reopened.close();
+  });
+
+  it('"Use mine" on the copy before held typing puts that copy back, then offers the typing', () => {
+    const store = openStore();
+    const loaded = store.applyServerNote(MEETING, serverNote('user', 1, paragraphs('Base')));
+    store.saveLocal(MEETING, 'user', paragraphs('Base', 'mine'), noteSaveBase(loaded));
+    // A 409's server doc: the typing is the copy. Another editor shows it, then a newer one comes.
+    const shown = store.applyServerNote(MEETING, serverNote('user', 2, paragraphs('Theirs')));
+    store.applyServerNote(MEETING, serverNote('user', 3, paragraphs('Theirs 2')));
+    store.saveLocal(MEETING, 'user', paragraphs('Theirs', 'other'), noteSaveBase(shown));
+
+    expect(store.resolveConflict(MEETING, 'user', 'mine')).toMatchObject({
+      doc: paragraphs('Base', 'mine'),
+      conflictCopy: paragraphs('Theirs', 'other'),
+      dirty: true,
+      sync: 'conflict',
+    });
+    store.close();
+  });
+
+  it('drops held typing that says what the doc says once the user picked', () => {
+    const store = openStore();
+    const loaded = store.applyServerNote(MEETING, serverNote('user', 1, paragraphs('Base')));
+    store.saveLocal(MEETING, 'user', paragraphs('Base', 'mine'), noteSaveBase(loaded));
+    const shown = store.applyServerNote(MEETING, serverNote('user', 2, paragraphs('Theirs')));
+    store.applyServerNote(MEETING, serverNote('user', 3, paragraphs('Theirs 2')));
+    store.saveLocal(MEETING, 'user', paragraphs('Theirs', 'other'), noteSaveBase(shown));
+    // The same text then reaches the server from elsewhere.
+    store.applyServerNote(MEETING, serverNote('user', 4, paragraphs('Theirs', 'other')));
+
+    expect(store.resolveConflict(MEETING, 'user', 'theirs')).toMatchObject({
+      doc: paragraphs('Theirs', 'other'),
+      conflictCopy: null,
+      sync: 'synced',
+    });
     store.close();
   });
 
@@ -603,6 +670,41 @@ describe('SqliteNotesStore: hasNotes', () => {
       }),
     );
     expect(store.hasNotes(OTHER_MEETING)).toBe(true);
+    store.close();
+  });
+
+  it('a notes.sqlite made before held saves gains their table, its notes kept', () => {
+    const path = tempPath();
+    const first = openStore(path);
+    first.saveLocal(MEETING, 'user', paragraphs('Before'));
+    first.close();
+    // Wound back to schema 1, as an earlier build left it.
+    const raw = new DatabaseSync(path);
+    raw.exec('DROP TABLE held_saves; PRAGMA user_version = 1');
+    raw.close();
+
+    const store = openStore(path);
+    expect(store.getNote(MEETING, 'user')?.doc).toEqual(paragraphs('Before'));
+    expect(store.hasNotes(MEETING)).toBe(true);
+    expect(store.hasNotes(OTHER_MEETING)).toBe(false);
+    store.close();
+  });
+
+  it('counts held typing, which also keeps its note from being deleted as empty', () => {
+    const store = openStore();
+    store.saveLocal(MEETING, 'user', paragraphs(''), null);
+    // The server's doc replaced the cleared one, which is the copy now: neither holds text.
+    store.applyServerNote(MEETING, serverNote('user', 1, paragraphs('', '')));
+    expect(store.hasNotes(MEETING)).toBe(false);
+
+    // Typing from an editor on a doc main has replaced, while the copy holds other typing.
+    store.saveLocal(MEETING, 'user', paragraphs('Typed'), {
+      revisionId: 'rev-elsewhere',
+      version: 0,
+    });
+
+    expect(store.hasNotes(MEETING)).toBe(true);
+    expect(store.deleteNoteIfEmpty(MEETING, 'user')).toBe(false);
     store.close();
   });
 

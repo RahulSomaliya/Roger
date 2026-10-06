@@ -134,9 +134,10 @@ export class NoteDocument {
         doc,
         base: this.base,
       });
-      // A save on a doc main had replaced is kept as the conflict copy, and main answers with its
-      // own doc under a revision this editor never made (one "Use mine" made, say). Taken as this
-      // editor's, that doc's changes would count as its own saves coming back and never be shown.
+      // A save on a doc main had replaced is kept as the conflict copy (or held behind one), and
+      // main answers with its own doc under a revision this editor never made (one "Use mine"
+      // made, say). Taken as this editor's, that doc's changes would count as its own saves coming
+      // back and never be shown.
       if (saved.revisionId !== null && JSON.stringify(saved.doc) === sent) {
         this.ownRevisions.add(saved.revisionId);
       }
@@ -259,10 +260,11 @@ export function followNoteDocument(
     shown = docGeneration;
     // Edits main does not have: the editor never drops them for a doc from elsewhere (loading it
     // here would lose the typing for good). It sends them on the base of the doc they were typed
-    // on, which main has replaced, so main keeps them as the conflict copy and answers with its
-    // doc, which this branch then shows. Trap: the base moves only in `editorShows`, below, once
-    // the doc is on screen. Moved when the doc arrived, these edits would go out on the doc they
-    // never saw, and main would store them over it (the server's version then kept nowhere).
+    // on, which main has replaced, so main keeps them as the conflict copy (or holds them behind
+    // a copy of other typing, NotesStore.saveLocal) and answers with its doc, which this branch
+    // then shows. Trap: the base moves only in `editorShows`, below, once the doc is on screen.
+    // Moved when the doc arrived, these edits would go out on the doc they never saw, and main
+    // would store them over it (the server's version then kept nowhere).
     if (saves.unsaved) {
       void saves.flush();
       return;

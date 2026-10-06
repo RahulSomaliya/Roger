@@ -8,9 +8,11 @@ import { describeError } from '../app/describeError';
  * is lost until the user picks: "Use mine" puts the copy back as the doc; "Keep this version"
  * drops the copy and keeps what the editor shows. Typing the editor had not saved when the 409
  * landed is kept the same way: it goes out on the doc it was typed on, and main keeps a save on a
- * replaced doc as the copy (followNoteDocument in useNoteDocument.ts). When the server's doc is
- * one this build cannot show, NoteEditor shows no editor but still this banner: "Use mine" is
- * then the only way back to the user's own notes.
+ * replaced doc as the copy (followNoteDocument in useNoteDocument.ts). When the copy already holds
+ * other typing, main holds the save on disk and makes it the copy once the user has picked here,
+ * so the banner comes back for it. When the server's doc is one this build cannot show,
+ * NoteEditor shows no editor but still this banner: "Use mine" is then the only way back to the
+ * user's own notes.
  */
 
 export interface ConflictBannerProps {

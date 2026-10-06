@@ -163,7 +163,7 @@ export class NotesSync {
   /**
    * The page's save (`notes.save`): on disk before it returns, uploaded 1.5 s after the last. A
    * save on a doc main has replaced since (`base`, NotesStore.saveLocal) is kept as the conflict
-   * copy instead, which does not upload until the user picks.
+   * copy instead, or held behind a copy of other typing, and does not upload until the user picks.
    */
   save(meetingId: string, kind: NoteKind, doc: NoteDoc, base?: NoteSaveBase | null): LocalNote {
     const note = this.options.store.saveLocal(meetingId, kind, doc, base);

@@ -25,6 +25,8 @@ import type { NotesStore, StoredNoteSyncState, StoredPendingGenerate } from './N
  *   (`dirty`), the conflict copy, the stored sync state, and `has_text` for `hasNotes`.
  * - `pending_generate`: at most one per meeting; the run id is made before the first attempt.
  * - `template_choices`: the template last picked per normalised meeting title.
+ * - `held_saves`: page saves on a replaced doc while the conflict copy holds other typing, one
+ *   per base, each the copy in turn once the user has picked (keepStaleSave).
  *
  * No `workspace_id` column: one user per Mac, like M2's local tables (M4 known gaps, M6).
  * Instants are stored as `YYYY-MM-DDTHH:MM:SS.sssZ`, so they sort as text.
@@ -70,6 +72,18 @@ const MIGRATIONS: readonly string[] = [
     chosen_at TEXT NOT NULL
   );
   `,
+  `
+  CREATE TABLE held_saves (
+    meeting_id TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('user', 'ai')),
+    -- saveBaseKey of the doc the typing was built on: one editor's later saves replace its own.
+    base_key TEXT NOT NULL,
+    doc_json TEXT NOT NULL,
+    has_text INTEGER NOT NULL CHECK (has_text IN (0, 1)),
+    held_at TEXT NOT NULL,
+    PRIMARY KEY (meeting_id, kind, base_key)
+  );
+  `,
 ];
 
 const STORED_SYNC_STATES: ReadonlySet<string> = new Set<StoredNoteSyncState>([
@@ -113,7 +127,8 @@ export class SqliteNotesStore implements NotesStore {
   /**
    * Per note, the base of the editor whose typing the conflict copy holds: a later stale save on
    * that base holds the same typing and more, and may replace it. Unknown (another editor's, a
-   * previous launch's), the copy is the only place some text lives, and is never replaced.
+   * previous launch's), the copy is the only place some text lives, and is never replaced: a
+   * stale save on another base is held instead (`held_saves`, keepStaleSave).
    */
   private readonly copyBases = new Map<string, string>();
 
@@ -278,16 +293,28 @@ export class SqliteNotesStore implements NotesStore {
     if (local?.conflictCopy == null) {
       throw new Error(`no conflict to resolve on the ${kind} notes of meeting ${meetingId}`);
     }
-    this.copyBases.delete(noteKey(meetingId, kind));
-    if (keep === 'theirs') return this.update(local, { conflictCopy: null });
-    return this.update(local, {
-      doc: local.conflictCopy,
-      conflictCopy: null,
-      revisionId: this.newRevisionId(),
-      dirty: true,
-      sync: 'saved_locally',
-      updatedAt: this.now(),
-    });
+    const key = noteKey(meetingId, kind);
+    const doc = keep === 'mine' ? local.conflictCopy : local.doc;
+    // Typing held while the copy had the slot is the copy now, the oldest first: the user picks
+    // for each in turn, and none is dropped but by a choice.
+    const { next, spent } = this.nextHeldSave(meetingId, kind, doc);
+    if (next === null) this.copyBases.delete(key);
+    else this.copyBases.set(key, next.baseKey);
+    const conflictCopy = next?.doc ?? null;
+    const resolved =
+      keep === 'theirs'
+        ? this.update(local, { conflictCopy })
+        : this.update(local, {
+            doc,
+            conflictCopy,
+            revisionId: this.newRevisionId(),
+            dirty: true,
+            sync: 'saved_locally',
+            updatedAt: this.now(),
+          });
+    // Only once the note holds it: a crash between the two offers the typing again, never loses it.
+    this.deleteHeldSaves(meetingId, kind, spent);
+    return resolved;
   }
 
   listDirtyNotes(): LocalNote[] {
@@ -311,18 +338,32 @@ export class SqliteNotesStore implements NotesStore {
   }
 
   hasNotes(meetingId: string): boolean {
+    // Held typing counts: it is the copy once the user has picked for the one before it.
     const row = this.database
-      .prepare('SELECT 1 AS found FROM notes WHERE meeting_id = ? AND has_text = 1 LIMIT 1')
-      .get(meetingId);
+      .prepare(
+        `SELECT 1 AS found FROM notes WHERE meeting_id = :meetingId AND has_text = 1
+         UNION ALL
+         SELECT 1 FROM held_saves WHERE meeting_id = :meetingId AND has_text = 1
+         LIMIT 1`,
+      )
+      .get({ meetingId });
     return row !== undefined;
   }
 
   deleteNoteIfEmpty(meetingId: string, kind: NoteKind): boolean {
     const result = this.database
-      .prepare('DELETE FROM notes WHERE meeting_id = ? AND kind = ? AND has_text = 0')
-      .run(meetingId, kind);
+      .prepare(
+        `DELETE FROM notes WHERE meeting_id = :meetingId AND kind = :kind AND has_text = 0
+           AND NOT EXISTS (SELECT 1 FROM held_saves WHERE meeting_id = :meetingId
+             AND kind = :kind AND has_text = 1)`,
+      )
+      .run({ meetingId, kind });
     const deleted = Number(result.changes) > 0;
     if (deleted) {
+      // What is left held holds no text either.
+      this.database
+        .prepare('DELETE FROM held_saves WHERE meeting_id = ? AND kind = ?')
+        .run(meetingId, kind);
       this.saveBases.delete(noteKey(meetingId, kind));
       this.copyBases.delete(noteKey(meetingId, kind));
     }
@@ -448,15 +489,68 @@ export class SqliteNotesStore implements NotesStore {
     }
     const copy = local.conflictCopy;
     if (copy !== null && !sameJson(doc, copy) && this.copyBases.get(key) !== baseKey) {
-      // Two local docs and one slot, as in applyServerNote: either choice would lose text, so the
-      // save is refused and its typing stays in the editor until the user picks a version.
-      throw new Error(
-        `note not saved for the ${local.kind} notes of meeting ${local.meetingId}: they changed ` +
-          'elsewhere while a copy of yours is kept aside; choose a version first',
-      );
+      // Two local docs and one slot, as in applyServerNote: either one in it would lose the other.
+      // Trap: never refuse it. The typing would then live only in the editor, whose every later
+      // save goes out on the same base and is refused the same way; the quit's flush too, and
+      // notes.sqlite closes with the typing lost for good. Held here, it is on disk.
+      return this.holdSave(local, doc, baseKey);
     }
     this.copyBases.set(key, baseKey);
     return this.update(local, { conflictCopy: doc, updatedAt: this.now() });
+  }
+
+  /**
+   * Keeps a stale save the conflict copy has no room for in `held_saves`, one per base: a later
+   * save of the same editor replaces its own (the same typing and more). It becomes the copy once
+   * the user has picked for the ones before it (resolveConflict). The note is written again, the
+   * same but for `updatedAt`, so the page is told main's doc: its editor shows that doc and builds
+   * on it from then, rather than send every later save on the replaced one.
+   */
+  private holdSave(local: StoredNote, doc: NoteDoc, baseKey: string): LocalNote {
+    const now = this.now();
+    this.database
+      .prepare(
+        `INSERT INTO held_saves (meeting_id, kind, base_key, doc_json, has_text, held_at)
+         VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT (meeting_id, kind, base_key) DO UPDATE SET
+           doc_json = excluded.doc_json, has_text = excluded.has_text`,
+      )
+      .run(local.meetingId, local.kind, baseKey, JSON.stringify(doc), docHasText(doc) ? 1 : 0, now);
+    return this.update(local, { updatedAt: now });
+  }
+
+  /**
+   * The oldest held save that says something other than `doc` (the next conflict copy), or null,
+   * and the bases of the held saves it uses up: that one and those before it that say what `doc`
+   * says, which need no choice.
+   */
+  private nextHeldSave(
+    meetingId: string,
+    kind: NoteKind,
+    doc: NoteDoc,
+  ): { next: { baseKey: string; doc: NoteDoc } | null; spent: string[] } {
+    const rows = this.database
+      .prepare(
+        `SELECT base_key, doc_json FROM held_saves WHERE meeting_id = ? AND kind = ?
+         ORDER BY held_at, base_key`,
+      )
+      .all(meetingId, kind);
+    const spent: string[] = [];
+    for (const row of rows) {
+      const baseKey = text(row, 'base_key');
+      // Written by holdSave from a doc noteDocProblem accepted; the cast restores that type.
+      const held = JSON.parse(text(row, 'doc_json')) as NoteDoc;
+      spent.push(baseKey);
+      if (!sameJson(held, doc)) return { next: { baseKey, doc: held }, spent };
+    }
+    return { next: null, spent };
+  }
+
+  private deleteHeldSaves(meetingId: string, kind: NoteKind, baseKeys: readonly string[]): void {
+    const statement = this.database.prepare(
+      'DELETE FROM held_saves WHERE meeting_id = ? AND kind = ? AND base_key = ?',
+    );
+    for (const baseKey of baseKeys) statement.run(meetingId, kind, baseKey);
   }
 
   /** Upsert the whole row, then answer and emit the note as stored (as a later read returns it). */
