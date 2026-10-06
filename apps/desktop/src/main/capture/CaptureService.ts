@@ -19,6 +19,7 @@ import {
   type TranscriptSegment,
 } from '../../shared/transcript';
 import type { SttTokenApi } from '../api/ApiClient';
+import { type CostGuards, DEFAULT_COST_GUARDS } from '../costGuards';
 import { errorMessage, type Logger } from '../logger';
 import type { MicrophoneAccess } from '../permissions';
 import type { TranscriptStore } from '../store/TranscriptStore';
@@ -28,7 +29,7 @@ import { streamSettingsMismatch } from '../stt/streamSettings';
 import type { TranscriptUploader } from '../upload/TranscriptUploader';
 import { Emitter } from '../util/emitter';
 import { withTimeout } from '../util/time';
-import { CaptureSession } from './CaptureSession';
+import { CaptureSession, type StreamCredentials } from './CaptureSession';
 
 export interface CaptureServiceOptions {
   store: TranscriptStore;
@@ -43,6 +44,8 @@ export interface CaptureServiceOptions {
   startupError: string | null;
   /** How long Stop waits for the uploader to drain before giving up (lines stay local). */
   stopFlushTimeoutMs?: number;
+  /** Bounds on billed speech-to-text time (costGuards.ts). Defaults to the defaults. */
+  guards?: CostGuards;
   clock?: () => number;
 }
 
@@ -78,6 +81,7 @@ const SPEAKER_TITLE: Record<AudioSource, string> = { mic: 'Me', system: 'Them' }
 export class CaptureService {
   private readonly events = new Emitter<CaptureEvents>();
   private readonly clock: () => number;
+  private readonly guards: CostGuards;
   private phase: CapturePhase = 'idle';
   private session: CaptureSession | null = null;
   private sttProvider: string | null = null;
@@ -87,6 +91,7 @@ export class CaptureService {
     system: emptySourceStatus(),
   };
   private streams: Record<AudioSource, SttStreamState> = { mic: 'closed', system: 'closed' };
+  private streamMessages: Record<AudioSource, string | null> = { mic: null, system: null };
   private error: string | null = null;
   private segmentsUnsaved = 0;
   private transition: Promise<CaptureStatus> | null = null;
@@ -96,6 +101,7 @@ export class CaptureService {
 
   constructor(private readonly options: CaptureServiceOptions) {
     this.clock = options.clock ?? (() => Date.now());
+    this.guards = options.guards ?? DEFAULT_COST_GUARDS;
     this.error = options.startupError;
     options.uploader.onStatus(() => {
       this.emitStatus();
@@ -121,6 +127,7 @@ export class CaptureService {
       sttProvider: this.sttProvider,
       sources: { mic: { ...this.sources.mic }, system: { ...this.sources.system } },
       streams: { ...this.streams },
+      streamMessages: { ...this.streamMessages },
       segmentsStored: this.session?.storedSegmentCount ?? 0,
       segmentsUnsaved: this.segmentsUnsaved,
       upload,
@@ -227,6 +234,8 @@ export class CaptureService {
         stt,
         accessToken,
         settings,
+        refreshCredentials: () => this.freshCredentials(provider),
+        reopenBufferMs: this.guards.sttReopenBufferMs,
         store,
         logger: logger.child({ meetingId }),
         clock: this.clock,
@@ -238,8 +247,9 @@ export class CaptureService {
           onInterim: (interim) => {
             this.events.emit('interim', interim);
           },
-          onStreamState: (source, state) => {
+          onStreamState: (source, state, message) => {
             this.streams[source] = state;
+            this.streamMessages[source] = message;
             this.emitStatus();
           },
           onStreamFailure: (source, reason) => {
@@ -349,9 +359,27 @@ export class CaptureService {
     };
   }
 
+  /**
+   * Credentials for a reopen, mid-meeting. The vendor and the audio format must be the ones the
+   * meeting started with: the session's adapter cannot switch vendor, and another format would be
+   * transcribed as garbage with no error.
+   */
+  private async freshCredentials(provider: string): Promise<StreamCredentials> {
+    const { provider: issued, accessToken, settings } = await this.resolveStt();
+    if (issued !== provider) {
+      throw new Error(
+        `the API now names speech-to-text provider "${issued}", not "${provider}"; press Stop, then Start to switch`,
+      );
+    }
+    const mismatch = streamSettingsMismatch(settings);
+    if (mismatch !== null) throw new Error(mismatch);
+    return { accessToken, settings };
+  }
+
   private resetSessionState(): void {
     this.sources = { mic: emptySourceStatus(), system: emptySourceStatus() };
     this.streams = { mic: 'closed', system: 'closed' };
+    this.streamMessages = { mic: null, system: null };
     this.sttProvider = null;
     this.startedAt = null;
     this.recordingSinceMs = null;
@@ -383,15 +411,27 @@ export class CaptureService {
    * still sends chunks of zeros, as system audio without its macOS permission most likely does,
    * and is M2's silence warning (see pushAudio). Sources already `ended` or in `error` keep that
    * more specific state.
+   *
+   * Cost guard G2: past sttStallCloseMs with no chunk, the source's vendor session closes (it
+   * bills silence otherwise, $0.15 an hour on AssemblyAI) and reopens with its next chunk.
    */
   private checkAudioFlow(): void {
     if (this.phase !== 'recording' || this.recordingSinceMs === null) return;
     const now = this.clock();
     for (const source of AUDIO_SOURCES) {
       const status = this.sources[source];
-      if (status.health !== 'pending' && status.health !== 'active') continue;
+      if (
+        status.health !== 'pending' &&
+        status.health !== 'active' &&
+        status.health !== 'stalled'
+      ) {
+        continue;
+      }
       const silentForMs = now - (status.lastChunkAt ?? this.recordingSinceMs);
-      if (silentForMs < NO_AUDIO_WARNING_MS) continue;
+      if (silentForMs >= this.guards.sttStallCloseMs) {
+        this.session?.pauseSource(source, silentForMs);
+      }
+      if (status.health === 'stalled' || silentForMs < NO_AUDIO_WARNING_MS) continue;
       status.health = 'stalled';
       this.options.logger.warn('no audio from source', {
         source,

@@ -8,6 +8,7 @@ export function StatusPanel({ status }: { status: CaptureStatus }) {
       <dl className="status-grid">
         {AUDIO_SOURCES.map((source) => {
           const health = status.sources[source];
+          const streamMessage = status.streamMessages[source];
           return (
             <div key={source} className={`status-row health-${health.health}`}>
               <dt>{AUDIO_SOURCE_LABEL[source]}</dt>
@@ -15,6 +16,9 @@ export function StatusPanel({ status }: { status: CaptureStatus }) {
                 {describeHealth(health.health, health.chunks)}
                 {health.message ? <span className="muted"> · {health.message}</span> : null}
                 <span className="muted"> · {describeStream(status.streams[source])}</span>
+                {streamMessage !== null && streamMessage !== health.message ? (
+                  <span className="muted"> ({streamMessage})</span>
+                ) : null}
               </dd>
             </div>
           );

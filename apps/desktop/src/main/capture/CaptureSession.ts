@@ -31,10 +31,34 @@ export interface CaptureSessionOptions {
   stt: SpeechToText;
   accessToken: string;
   settings: SttStreamSettings;
+  /**
+   * A fresh token for a reopen. Start's token is only good for opening within its TTL (AssemblyAI:
+   * 30 s by default), so a source that reopens minutes later needs a new one from the API.
+   */
+  refreshCredentials: () => Promise<StreamCredentials>;
+  /** Audio held while a source reopens (costGuards: sttReopenBufferMs). */
+  reopenBufferMs: number;
   store: TranscriptStore;
   logger: Logger;
   listeners: CaptureSessionListeners;
   clock?: () => number;
+}
+
+export interface StreamCredentials {
+  accessToken: string;
+  settings: SttStreamSettings;
+}
+
+/**
+ * Buffered audio is dropped when chunks stop for longer than this: the vendor hears its audio as
+ * one continuous stream, so a gap kept in the buffer would date every later line too early.
+ */
+const BUFFER_GAP_MS = 1_000;
+
+interface HeldChunk {
+  pcm: Uint8Array;
+  /** Clock time it arrived, which dates it once it is sent. */
+  atMs: number;
 }
 
 /** One vendor stream, from its open until its close settles. */
@@ -56,6 +80,11 @@ interface SourceLink {
   current: StreamHandle | null;
   /** Bumped by every open and every close, so an open that lands late knows it is stale. */
   attempt: number;
+  /** Audio that arrived while the source reconnects, oldest first, sent once it is open. */
+  held: HeldChunk[];
+  heldMs: number;
+  /** Chunks dropped from `held` (over the bound, or before a gap) since the last flush. */
+  heldDropped: number;
 }
 
 /**
@@ -63,15 +92,22 @@ interface SourceLink {
  * local store the moment they arrive (house rule 1), interims passed straight to the UI.
  *
  * Vendors bill every second a session is open, silent or not, so a source that has no audio must
- * not hold one: a source that fails or ends closes its own session at once (closeSource), and the
- * other keeps going. Every stream this class ever opened is tracked until its close settles, and
- * close() waits for all of them.
+ * not hold one: a source that fails or ends closes its own session at once (closeSource), one that
+ * sends nothing for the stall window closes it until its audio returns (pauseSource), and the other
+ * source keeps going either way. A paused source reopens on its next chunk with a fresh token; the
+ * chunks that arrive meanwhile are held (bounded) and sent in order once it is open, so the chunk
+ * that woke it is not lost and each stream's clock starts at its own first byte.
+ *
+ * Every stream this class ever opened is tracked until its close settles, and close() waits for
+ * all of them, and for reopens still connecting.
  */
 export class CaptureSession {
   readonly meetingId: string;
   private readonly links: Record<AudioSource, SourceLink> = { mic: newLink(), system: newLink() };
   /** Every stream not yet closed, the ones closing included: close() waits for each. */
   private readonly handles = new Set<StreamHandle>();
+  /** Reopens in flight: close() waits for them, so a late stream cannot outlive Stop. */
+  private readonly reopening = new Set<Promise<void>>();
   private readonly clock: () => number;
   private segmentsStored = 0;
   private closing = false;
@@ -105,7 +141,42 @@ export class CaptureSession {
   pushAudio(source: AudioSource, pcm: Uint8Array): void {
     if (this.closing) return;
     const link = this.links[source];
-    if (link.state === 'open' && link.current !== null) this.send(link.current, pcm, this.clock());
+    const now = this.clock();
+    switch (link.state) {
+      case 'open':
+        if (link.current !== null) this.send(link.current, pcm, now);
+        return;
+      case 'connecting':
+        this.hold(link, pcm, now);
+        return;
+      case 'paused':
+        this.hold(link, pcm, now);
+        this.startReopen(source);
+        return;
+      case 'closed':
+      case 'error':
+        // No session for this source and none coming: a failed source never reopens itself.
+        return;
+    }
+  }
+
+  /**
+   * The source sent no audio for the stall window (CaptureService decides when): close its session
+   * so it stops billing, and reopen it with the next chunk. Only an open or connecting source
+   * pauses; one already closed or failed stays as it is.
+   */
+  pauseSource(source: AudioSource, silentForMs: number): void {
+    if (this.closing) return;
+    const link = this.links[source];
+    if (link.state !== 'open' && link.state !== 'connecting') return;
+    link.attempt += 1;
+    const handle = link.current;
+    link.current = null;
+    this.dropHeld(link);
+    const seconds = Math.round(silentForMs / 1000);
+    this.options.logger.info('speech-to-text stream paused: no audio', { source, silentForMs });
+    this.setState(source, 'paused', `no audio for ${seconds} s; reconnects when audio returns`);
+    if (handle !== null) void this.retire(handle);
   }
 
   /**
@@ -120,6 +191,7 @@ export class CaptureSession {
     link.attempt += 1;
     const handle = link.current;
     link.current = null;
+    this.dropHeld(link);
     if (link.state === 'closed') return;
     this.setState(source, 'closed', reason);
     if (handle !== null) {
@@ -137,7 +209,10 @@ export class CaptureSession {
       link.attempt += 1;
       if (link.current !== null) void this.retire(link.current);
       link.current = null;
+      this.dropHeld(link);
     }
+    // A reopen still connecting closes its stream itself once it lands (it is stale now).
+    await Promise.all([...this.reopening]);
     await Promise.all([...this.handles].map((handle) => this.retire(handle)));
   }
 
@@ -155,8 +230,99 @@ export class CaptureSession {
       await this.retire(handle);
       return;
     }
+    this.attach(source, handle);
+  }
+
+  private startReopen(source: AudioSource): void {
+    const reopen = this.reopen(source);
+    this.reopening.add(reopen);
+    void reopen.finally(() => {
+      this.reopening.delete(reopen);
+    });
+  }
+
+  /** Never rejects: a failure becomes the source's state, and the stream it may have opened closes. */
+  private async reopen(source: AudioSource): Promise<void> {
+    const link = this.links[source];
+    const attempt = (link.attempt += 1);
+    const stale = (): boolean => this.closing || link.attempt !== attempt;
+    this.setState(source, 'connecting', null);
+    let handle: StreamHandle;
+    try {
+      const { accessToken, settings } = await this.options.refreshCredentials();
+      if (stale()) return;
+      handle = this.track(
+        source,
+        await this.options.stt.openStream({ accessToken, settings, label: source }),
+      );
+    } catch (error) {
+      if (stale()) return;
+      this.reopenFailed(source, errorMessage(error));
+      return;
+    }
+    if (stale()) {
+      await this.retire(handle);
+      return;
+    }
+    this.attach(source, handle);
+    this.options.logger.info('speech-to-text stream reopened', { source });
+  }
+
+  private reopenFailed(source: AudioSource, reason: string): void {
+    const link = this.links[source];
+    this.dropHeld(link);
+    const message = `could not reconnect: ${reason}`;
+    this.options.logger.warn('speech-to-text stream did not reopen', { source, reason });
+    this.setState(source, 'error', message);
+    this.options.listeners.onStreamFailure(source, message);
+  }
+
+  /** The stream now carries the source: send what was held while it connected, in order. */
+  private attach(source: AudioSource, handle: StreamHandle): void {
+    const link = this.links[source];
     link.current = handle;
     this.setState(source, 'open', null);
+    const held = link.held;
+    if (link.heldDropped > 0) {
+      this.options.logger.warn('audio dropped while reconnecting', {
+        source,
+        chunks: link.heldDropped,
+      });
+    }
+    this.dropHeld(link);
+    for (const chunk of held) this.send(handle, chunk.pcm, chunk.atMs);
+  }
+
+  /**
+   * Keeps the newest reopenBufferMs of audio. It is sent all at once when the stream opens, and
+   * AssemblyAI closes a session sent audio faster than real time (3007), so the bound stays a few
+   * seconds (costGuards.sttReopenBufferMs); a connect takes about one.
+   */
+  private hold(link: SourceLink, pcm: Uint8Array, now: number): void {
+    const last = link.held.at(-1);
+    if (last !== undefined && now - last.atMs > BUFFER_GAP_MS) {
+      link.heldDropped += link.held.length;
+      link.held = [];
+      link.heldMs = 0;
+    }
+    link.held.push({ pcm, atMs: now });
+    link.heldMs += this.chunkMs(pcm);
+    while (link.heldMs > this.options.reopenBufferMs && link.held.length > 1) {
+      const oldest = link.held.shift();
+      if (oldest === undefined) break;
+      link.heldMs -= this.chunkMs(oldest.pcm);
+      link.heldDropped += 1;
+    }
+  }
+
+  private dropHeld(link: SourceLink): void {
+    link.held = [];
+    link.heldMs = 0;
+    link.heldDropped = 0;
+  }
+
+  private chunkMs(pcm: Uint8Array): number {
+    return pcmBytesToMs(pcm.byteLength, this.options.settings.sampleRate || PCM_SAMPLE_RATE);
   }
 
   /** Every stream is tracked from the moment it exists, so close() can never miss one. */
@@ -188,9 +354,7 @@ export class CaptureSession {
       // before it reached us, so the offset is its arrival minus the chunk's own duration.
       // Adapters must hand the vendor every byte, in order (AssemblyAI regroups them; see
       // SttConnection.sendFrame).
-      const captured =
-        arrivedAtMs -
-        pcmBytesToMs(pcm.byteLength, this.options.settings.sampleRate || PCM_SAMPLE_RATE);
+      const captured = arrivedAtMs - this.chunkMs(pcm);
       handle.offsetMs = Math.max(0, captured - this.options.meetingStartedAtMs);
     }
     handle.stream.send(pcm);
@@ -284,7 +448,7 @@ export class CaptureSession {
 }
 
 function newLink(): SourceLink {
-  return { state: 'closed', current: null, attempt: 0 };
+  return { state: 'closed', current: null, attempt: 0, held: [], heldMs: 0, heldDropped: 0 };
 }
 
 function describeClose(code: number | null, reason: string | null): string {

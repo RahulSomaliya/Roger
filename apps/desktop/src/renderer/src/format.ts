@@ -38,6 +38,8 @@ export function describeStream(state: SttStreamState): string {
       return 'connecting';
     case 'open':
       return 'transcribing';
+    case 'paused':
+      return 'paused, no audio';
     case 'error':
       return 'error';
   }

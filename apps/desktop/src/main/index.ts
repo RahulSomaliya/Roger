@@ -75,6 +75,7 @@ async function main(): Promise<void> {
     logger: logger.child({ component: 'capture' }),
     sttProviderOverride: config.sttProviderOverride,
     startupError,
+    guards: config.costGuards,
   });
 
   let window: BrowserWindow | null = null;

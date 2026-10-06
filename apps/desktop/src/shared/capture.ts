@@ -31,7 +31,13 @@ export interface SourceStatus {
   message: string | null;
 }
 
-export type SttStreamState = 'closed' | 'connecting' | 'open' | 'error';
+/**
+ * A source's speech-to-text session. Only `connecting` and `open` hold a socket the vendor bills.
+ * - closed: none (before Start, after Stop, or the source failed or ended)
+ * - paused: closed because the source sent no audio for the stall window; its next chunk reopens it
+ * - error: ended and not reopened; `streamMessages` says why
+ */
+export type SttStreamState = 'closed' | 'connecting' | 'open' | 'paused' | 'error';
 
 export interface UploadStatus {
   state: 'idle' | 'uploading' | 'backoff';
@@ -52,6 +58,8 @@ export interface CaptureStatus {
   sttProvider: string | null;
   sources: Record<AudioSource, SourceStatus>;
   streams: Record<AudioSource, SttStreamState>;
+  /** Why a source's session is not open (paused, failed), or null. */
+  streamMessages: Record<AudioSource, string | null>;
   /** Final segments stored locally in this session. */
   segmentsStored: number;
   /** Final segments this session that the local store refused (shown live, not saved). */
@@ -73,6 +81,7 @@ export function idleCaptureStatus(upload: UploadStatus): CaptureStatus {
     sttProvider: null,
     sources: { mic: emptySourceStatus(), system: emptySourceStatus() },
     streams: { mic: 'closed', system: 'closed' },
+    streamMessages: { mic: null, system: null },
     segmentsStored: 0,
     segmentsUnsaved: 0,
     upload,

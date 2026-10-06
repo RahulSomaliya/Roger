@@ -591,6 +591,88 @@ describe('CaptureService cost guards', () => {
   });
 });
 
+describe('CaptureService stall close', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const chunk = (fill = 0) => new Uint8Array(3200).fill(fill);
+
+  it('closes the session of a source silent for the stall window, and reopens it with a fresh token when audio returns', async () => {
+    const h = harness();
+    const { meetingId } = await h.service.start();
+    const meetingStart = 1_000_000;
+    const firstSystem = h.stt.streams.get('system')!;
+    const micChunk = () => {
+      h.service.pushAudio('mic', chunk());
+    };
+
+    await h.elapse(29_000, micChunk);
+    expect(firstSystem.closeCalls).toBe(0);
+    await h.elapse(1_500, micChunk);
+    expect(firstSystem.closed).toBe(true);
+    expect(h.stt.streams.get('mic')?.closeCalls).toBe(0);
+    let status = h.service.getStatus();
+    expect(status.streams).toEqual({ mic: 'open', system: 'paused' });
+    expect(status.streamMessages.system).toContain('no audio for 30 s');
+    expect(status.phase).toBe('recording');
+
+    h.api.getSttToken.mockResolvedValueOnce({
+      provider: 'scripted',
+      access_token: 'fresh-token',
+      expires_in: 30,
+      stream: {
+        model: 'm',
+        language: 'en',
+        sample_rate: 16000,
+        encoding: 'linear16',
+        price_per_hour_usd: 0.15,
+      },
+    });
+    const arrivedAt = 1_000_000 + 30_500;
+    const first = chunk(1);
+    const second = chunk(2);
+    h.service.pushAudio('system', first); // wakes the source: a reopen starts
+    h.service.pushAudio('system', second); // arrives while it connects
+    expect(h.service.getStatus().streams.system).toBe('connecting');
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(h.api.getSttToken).toHaveBeenCalledTimes(2);
+    expect(h.stt.opened.at(-1)).toMatchObject({ label: 'system', accessToken: 'fresh-token' });
+    const reopened = h.stt.streams.get('system')!;
+    expect(reopened).not.toBe(firstSystem);
+    // Nothing lost, nothing reordered: the chunk that woke it goes first.
+    expect(reopened.sent).toEqual([first, second]);
+    status = h.service.getStatus();
+    expect(status.streams.system).toBe('open');
+    expect(status.streamMessages.system).toBeNull();
+
+    // The new stream's clock starts at the first buffered chunk, so lines stay meeting-relative.
+    sayFinal(h, 'system', 'back again');
+    expect(h.segments.at(-1)).toMatchObject({
+      meetingId,
+      text: 'back again',
+      startMs: arrivedAt - 100 - meetingStart,
+    });
+    await h.service.stop();
+    expect(reopened.closed).toBe(true);
+  });
+
+  it('closes both sessions when no audio arrives at all, and keeps them closed without audio', async () => {
+    const h = harness();
+    await h.service.start();
+    await h.elapse(31_000);
+    expect(h.service.getStatus().streams).toEqual({ mic: 'paused', system: 'paused' });
+    await h.elapse(60_000);
+    expect(h.stt.opened).toHaveLength(2);
+    expect(h.api.getSttToken).toHaveBeenCalledTimes(1);
+    await h.service.stop();
+  });
+});
+
 describe('defaultMeetingTitle', () => {
   it('names a meeting after its start time', () => {
     expect(defaultMeetingTitle(new Date('2026-10-05T10:05:00Z'))).toMatch(
