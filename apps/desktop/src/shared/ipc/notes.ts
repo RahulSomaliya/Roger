@@ -11,7 +11,8 @@ import type {
 import type { Unsubscribe } from './unsubscribe';
 
 /**
- * Notes' channels: the user's and the AI notes of a meeting, their generation and the quit flush.
+ * Notes' channels: the user's and the AI notes of a meeting, their generation and the flush of
+ * the open editors main asks for (at quit, and at Stop).
  * Main registers them in src/main/notes/notes-ipc.ts (M4-T16), which validates every payload
  * before use (notes-ipc-validation.ts, with the guards in src/shared/notes.ts).
  */
@@ -103,7 +104,10 @@ export interface PendingGenerateChange {
   pending: PendingGenerateState | null;
 }
 
-/** Main's request to save every open editor now (quit), and the page's answer with the same id. */
+/**
+ * Main's request to save every open editor now, and the page's answer with the same id: at quit,
+ * and at Stop, before main decides a meeting nobody spoke in is empty (notesQuitGuard.ts).
+ */
 export interface NotesFlush {
   requestId: string;
 }
@@ -128,7 +132,9 @@ export interface NotesApi {
    * keeps its run id and reason: an attempt may already have reached the API, and a new id would
    * start a second paid run. A failed one, or none, gets a new run id with reason `button`: the
    * API replays a finished run's result to a re-sent id, the same failure again. Rejects while a
-   * run is streaming.
+   * run is streaming, and for another template while a run the API may hold has its own: the API
+   * answers a re-sent id in the template it started with (NotesGenerator.generate), so the page
+   * cancels first.
    */
   generateNotes(request: GenerateNotesRequest): Promise<PendingGenerateState>;
   /** Stops the meeting's run (its stream ends with a `cancelled` error) or drops a waiting one. */
@@ -146,8 +152,10 @@ export interface NotesApi {
   onNotesEvent(listener: (message: NotesStreamMessage) => void): Unsubscribe;
   onPendingGenerateChanged(listener: (change: PendingGenerateChange) => void): Unsubscribe;
   /**
-   * Main is about to quit: save every open editor, then `ackNotesFlush`. Main waits 1 s per
-   * window, because React does not unmount on Cmd-Q and a save left to unmount is lost.
+   * Main needs every open editor saved: it is about to quit, or Stop is about to ask whether a
+   * silent meeting has notes. Save, then `ackNotesFlush`. Main waits 1 s per window, because React
+   * does not unmount on Cmd-Q and a save left to unmount is lost, and a note still in the editor
+   * at Stop would not count.
    */
   onNotesFlushRequest(listener: (request: NotesFlush) => void): Unsubscribe;
 }

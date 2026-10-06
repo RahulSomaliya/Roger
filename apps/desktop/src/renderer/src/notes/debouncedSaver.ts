@@ -6,9 +6,10 @@ import { describeError } from '../app/describeError';
 /**
  * When an open note is written to the Mac (M4 plan, "Notes on the Mac"): 400 ms after the last
  * edit, and at once on blur, on unmount, on `pagehide` and `beforeunload`, and when main asks
- * before it quits (`notes:flush-request`). React does not unmount on Cmd-Q, so a save left to
- * unmount loses the last keystrokes while the page says "Saved on this Mac"; main's quit hook
- * (M4-T16, notesQuitGuard.ts) waits for this page's ack, or 1 s, before it closes notes.sqlite.
+ * (`notes:flush-request`): before it quits, and at Stop, before it decides whether a meeting
+ * nobody spoke in has notes. React does not unmount on Cmd-Q, so a save left to unmount loses the
+ * last keystrokes while the page says "Saved on this Mac"; main (M4-T16, notesQuitGuard.ts) waits
+ * for this page's ack, or 1 s, before it closes notes.sqlite or asks.
  */
 
 /** How long typing must pause before the note is written. */
@@ -41,7 +42,7 @@ export interface DebouncedSaverOptions {
   write: (doc: NoteDoc) => Promise<void>;
   /** The window, whose `pagehide` and `beforeunload` save at once. Left out, nothing listens. */
   page?: Pick<EventTarget, 'addEventListener' | 'removeEventListener'>;
-  /** The page's answer to main's flush request; left out, main's quit does not wait for this. */
+  /** The page's answer to main's flush requests (quit, Stop); left out, main never waits for it. */
   responder?: NotesFlushResponder;
   onState?: (state: SaverState) => void;
 }
@@ -206,11 +207,11 @@ export interface FlushableNote {
 }
 
 /**
- * The page's one answer to main's `notes:flush-request` (quit): flush every open note, then ack
- * once. One subscription for the page, never one per editor: main waits for one ack per window,
- * and a second editor acking first would let main close notes.sqlite under the other's save. It
- * subscribes as it is made and stays for the page's life, so a page with no editor open (none
- * yet, or all closed) answers at once instead of costing the quit main's 1 s wait.
+ * The page's one answer to main's `notes:flush-request` (quit, and Stop): flush every open note,
+ * then ack once. One subscription for the page, never one per editor: main waits for one ack per
+ * window, and a second editor acking first would let main close notes.sqlite under the other's
+ * save. It subscribes as it is made and stays for the page's life, so a page with no editor open
+ * (none yet, or all closed) answers at once instead of costing main's 1 s wait.
  */
 export class NotesFlushResponder {
   private readonly notes = new Set<FlushableNote>();
@@ -242,8 +243,8 @@ let pageResponder: NotesFlushResponder | undefined;
 /**
  * The page's responder, over `window.roger`, made and subscribed by the first call. Every
  * NoteEditor calls it; the app must also call it once as the page starts (M4-T20, which mounts the
- * editors), or a window where no meeting's notes were opened yet never acks and main's quit waits
- * its full 1 s for it.
+ * editors), or a window where no meeting's notes were opened yet never acks, and main's quit and
+ * every Stop of a silent meeting wait their full 1 s for it.
  */
 export function notesFlushResponder(): NotesFlushResponder {
   pageResponder ??= new NotesFlushResponder(window.roger);

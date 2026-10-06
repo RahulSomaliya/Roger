@@ -5,6 +5,8 @@ import { app, dialog, ipcMain, Menu, powerMonitor, session, type BrowserWindow }
 import { APP_PREFERENCES } from '../shared/preferences';
 import { ApiClient } from './api/ApiClient';
 import type { ApiConnection } from './api/http';
+import { NotesClient } from './api/notesClient';
+import { createStreamRequest } from './api/streamRequest';
 import { VocabularyClient } from './api/vocabularyClient';
 import { buildAppMenu } from './appMenu';
 import { createCaptureRuntime } from './capture/createCaptureRuntime';
@@ -13,6 +15,12 @@ import { RecordingLifecycle, watchApp, watchWindow } from './lifecycle';
 import { createLogger, errorMessage } from './logger';
 import { registerMeetingsIpc } from './meetings/meetings-ipc';
 import { registerNavigation } from './navigation';
+import { LlmStreams } from './notes/LlmStreams';
+import { registerNotesIpc } from './notes/notes-ipc';
+import { NotesGenerator } from './notes/NotesGenerator';
+import { NotesQuitGuard } from './notes/notesQuitGuard';
+import { NotesSync } from './notes/NotesSync';
+import { SqliteNotesStore } from './notes/SqliteNotesStore';
 import { ensureMicrophoneAccess } from './permissions';
 import { PreferencesStore } from './preferences/PreferencesStore';
 import { registerPreferencesIpc } from './preferences/preferences-ipc';
@@ -94,6 +102,16 @@ async function main(): Promise<void> {
 
   // [slot M4-T16 notes store] notes.sqlite. Before the runtime: the uploader and capture need it.
 
+  // Every meeting's notes as this Mac holds them (M4), in their own file beside roger.sqlite. The
+  // guard asks the windows to save the notes still in an editor: at quit, and at Stop, before the
+  // uploader is asked whether a meeting nobody spoke in has notes and must be kept.
+  const notesStore = new SqliteNotesStore(join(userData, 'notes.sqlite'));
+  const notesQuitGuard = new NotesQuitGuard({
+    store: notesStore,
+    windows: () => (window === null ? [] : [window]),
+    logger: logger.child({ component: 'notes' }),
+  });
+
   // [slot M2-T4 runtime] API client, uploader, capture, capture IPC, the recording lifecycle
 
   const api = new ApiClient(apiConnection);
@@ -101,6 +119,10 @@ async function main(): Promise<void> {
     store,
     api,
     logger: logger.child({ component: 'uploader' }),
+    // M4-T16: a meeting nobody spoke in is kept for its notes, asked once the open editors have
+    // saved; both delete sites in CaptureService ask through these (TranscriptUploader says why).
+    hasNotes: (meetingId) => notesStore.hasNotes(meetingId),
+    saveOpenNotes: () => notesQuitGuard.flushOpenNotes(),
   });
   // An unreadable config.json is the likely reason for a missing token, so the UI names both.
   const missingToken = config.apiToken
@@ -144,6 +166,8 @@ async function main(): Promise<void> {
     quitStopTimeoutMs: config.costGuards.quitStopTimeoutMs,
     quitHooks: [
       // [slot M4-T16 quit] ask each window to flush its notes (1 s), then close notes.sqlite
+
+      notesQuitGuard.quitHook,
 
       // [slot M2-T4 quit] stop the uploader and close the transcript store
 
@@ -215,6 +239,67 @@ async function main(): Promise<void> {
   });
 
   // [slot M4-T16 notes] notes and chat IPC, the notes generator and the notes sync
+
+  const notesLogger = logger.child({ component: 'notes' });
+  const notesClient = new NotesClient(apiConnection);
+  // Uploads notes.sqlite to Postgres. It never creates a meeting there: a note whose meeting is
+  // still pending waits for the uploader, and a 404 hands the meeting back to it (NotesSync.ts).
+  const notesSync = new NotesSync({
+    store: notesStore,
+    api: notesClient,
+    meetings: {
+      remoteState: (meetingId) => store.getMeeting(meetingId)?.remoteState ?? null,
+      onChange: (listener) =>
+        uploader.onStatus(() => {
+          listener();
+        }),
+    },
+    onMeetingMissing: (meetingId) => {
+      uploader.markMeetingMissing(meetingId);
+    },
+    logger: notesLogger,
+  });
+  const llmStreams = new LlmStreams({
+    stream: createStreamRequest(apiConnection),
+    cancelRun: (meetingId, runId) => notesClient.cancelRun(meetingId, runId),
+    logger: notesLogger,
+  });
+  const notesGenerator = new NotesGenerator({
+    store: notesStore,
+    sync: notesSync,
+    streams: llmStreams,
+    api: notesClient,
+    transcripts: store,
+    uploads: uploader,
+    recordings: capture,
+    preferences: {
+      autoGenerate: () => preferences.get('notes.autoGenerate'),
+      whenUnsure: () => preferences.get('notes.whenUnsure'),
+    },
+    // The same webContents object at every call: LlmStreams tracks a window by identity.
+    window: () => (window === null || window.isDestroyed() ? null : window.webContents),
+    logger: notesLogger,
+  });
+  const notesIpc = registerNotesIpc({
+    ipcMain,
+    getWindow: () => window,
+    store: notesStore,
+    sync: notesSync,
+    generator: notesGenerator,
+    streams: llmStreams,
+    api: notesClient,
+    flush: notesQuitGuard,
+    logger: logger.child({ component: 'ipc' }),
+  });
+  // At quit, once the open editors saved, in this order: nothing writes notes.sqlite after it
+  // closes, and the generator's flushes go through the sync.
+  notesQuitGuard.stopBeforeClose(notesGenerator, notesSync, notesIpc);
+  // As the uploader: without a token every request is refused, and the runtime says why. Saves
+  // still land in notes.sqlite and upload at the next launch that has one.
+  if (missingToken === null) {
+    notesSync.start();
+    notesGenerator.start();
+  }
 
   // [slot M5-T9c] the calendar runtime and the start-request enricher
 
