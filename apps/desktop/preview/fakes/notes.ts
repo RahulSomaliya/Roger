@@ -276,6 +276,7 @@ export function createNotesFake(hub: FakeHub): NotesApi {
         if (run?.meetingId !== meetingId) {
           throw new Error(`notes run ${runId} not found for meeting ${meetingId}`);
         }
+        // A snapshot, as main's answer is: the fake keeps updating its record as events arrive.
         return structuredClone(run);
       }),
     // The ack goes back through the hub, so a scenario can wait for it as main's quit hook does.

@@ -150,6 +150,25 @@ describe('notes docs', () => {
     }
   });
 
+  it('refuses values JSON cannot carry, which IPC can', () => {
+    // Structured clone carries these; JSON.stringify throws on a BigInt and turns the rest into
+    // something else (NaN into null, a Date into a string, a Map into {}) without a word.
+    const attrsValues: unknown[] = [
+      10n,
+      Number.NaN,
+      Number.POSITIVE_INFINITY,
+      new Date(0),
+      new Map(),
+    ];
+    for (const value of attrsValues) {
+      const doc = { type: 'doc', content: [{ type: 'paragraph', attrs: { value } }] };
+      expect(noteDocProblem(doc), String(value)).toBe('holds a value JSON cannot carry');
+    }
+    expect(
+      noteDocProblem({ type: 'doc', content: [{ type: 'paragraph', attrs: { a: null } }] }),
+    ).toBeNull();
+  });
+
   it(`accepts a doc nested ${MAX_NOTE_DOC_DEPTH} levels deep and refuses one level more`, () => {
     // Levels count every object and array: the doc is 1, its content list 2, a top node 3, and
     // each blockquote around a node adds its object and its content list.

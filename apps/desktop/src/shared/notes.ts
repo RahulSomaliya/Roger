@@ -42,7 +42,7 @@ export interface NoteDoc {
  */
 export const CITATION_NODE_TYPE = 'citation';
 
-/** `weak`: the line's numbers or words are not in its cited lines, so the chip says "check this". */
+/** `weak`: the line's numbers or words are not in its cited lines; the chip says "check this". */
 export type CitationSupport = 'ok' | 'weak';
 
 /** A `citation` node's attrs: one chip in the AI notes. */
@@ -77,7 +77,7 @@ export const NOT_SAID_ON_THE_CALL = 'Not said on the call';
 export const MAX_NOTE_DOC_BYTES = 512 * 1024;
 export const MAX_NOTE_DOC_DEPTH = 32;
 
-/** Keys that reach object prototypes when a doc is turned into DOM attributes (GHSA-cp6q-959q-f8rh). */
+/** Keys that reach prototypes when a doc becomes DOM attributes (GHSA-cp6q-959q-f8rh). */
 const FORBIDDEN_KEYS: ReadonlySet<string> = new Set(['__proto__', 'constructor', 'prototype']);
 
 /** Lower case only: the navigator matches ids as text against each line's `data-segment-id`. */
@@ -87,15 +87,17 @@ const SEGMENT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12
  * Why `value` is not a notes doc the API would store, or null when it is. The reason names the
  * rule, never the doc's text, so it can be logged. Checked: a `doc` root; every node an object
  * with a type, its `content` a list of nodes, `text` a string, `attrs` an object, `marks` a list
- * of typed marks; citation attrs (`isCitationAttrs`); no `__proto__`, `constructor` or
- * `prototype` key anywhere; at most MAX_NOTE_DOC_DEPTH levels, the doc being level 1 and every
- * object or array one level below its parent; at most MAX_NOTE_DOC_BYTES of JSON in UTF-8.
+ * of typed marks; citation attrs (`isCitationAttrs`); only values JSON carries as they are; no
+ * `__proto__`, `constructor` or `prototype` key anywhere; at most MAX_NOTE_DOC_DEPTH levels, the
+ * doc being level 1 and every object or array one level below its parent; at most
+ * MAX_NOTE_DOC_BYTES of JSON in UTF-8.
  */
 export function noteDocProblem(value: unknown): string | null {
   if (!isPlainObject(value) || value.type !== 'doc') return 'not a TipTap doc';
-  // Keys and depth first, without recursion: a payload nested thousands deep must be refused, not
-  // overflow the stack. The node walk below then recurses at most MAX_NOTE_DOC_DEPTH times.
-  const shape = keyOrDepthProblem(value);
+  // The JSON rules first, without recursion: a payload nested thousands deep must be refused, not
+  // overflow the stack. The node walk below then recurses at most MAX_NOTE_DOC_DEPTH times, and
+  // JSON.stringify meets nothing it would throw on (a BigInt) or silently change (NaN, a Date).
+  const shape = jsonProblem(value);
   if (shape !== null) return shape;
   const node = nodeProblem(value);
   if (node !== null) return node;
@@ -125,13 +127,22 @@ export function isCitationAttrs(value: unknown): value is CitationAttrs {
   );
 }
 
-function keyOrDepthProblem(doc: Record<string, unknown>): string | null {
+/**
+ * Whether the doc is JSON within the limits: plain objects, arrays, strings, finite numbers,
+ * booleans and null only (IPC's structured clone also carries BigInts, NaN, Dates and Maps), no
+ * forbidden key, at most MAX_NOTE_DOC_DEPTH levels. `undefined` passes: JSON leaves it out.
+ */
+function jsonProblem(doc: Record<string, unknown>): string | null {
   const stack: { value: unknown; level: number }[] = [{ value: doc, level: 1 }];
   for (let next = stack.pop(); next !== undefined; next = stack.pop()) {
     const { value, level } = next;
-    if (typeof value !== 'object' || value === null) continue;
+    if (value === null || value === undefined) continue;
+    if (typeof value === 'string' || typeof value === 'boolean') continue;
+    if (typeof value === 'number' && Number.isFinite(value)) continue;
+    const isArray = Array.isArray(value);
+    if (!isArray && !isPlainObject(value)) return 'holds a value JSON cannot carry';
     if (level > MAX_NOTE_DOC_DEPTH) return `nested deeper than ${MAX_NOTE_DOC_DEPTH} levels`;
-    if (!Array.isArray(value)) {
+    if (!isArray) {
       const forbidden = Object.keys(value).find((key) => FORBIDDEN_KEYS.has(key));
       if (forbidden !== undefined) return `holds a "${forbidden}" key`;
     }
@@ -231,7 +242,7 @@ export interface LocalNote {
   revisionId: string | null;
   /** `doc` holds edits the server has not stored yet. */
   dirty: boolean;
-  /** The server version `doc` builds on (the `PUT`'s `base_version`); 0 while the server has none. */
+  /** The server version `doc` builds on (a `PUT`'s `base_version`); 0 while the server has none. */
   baseVersion: number;
   templateId: string | null;
   lastRunId: string | null;

@@ -64,7 +64,7 @@ export interface NotesStreamMessage {
   event: NotesStreamEvent;
 }
 
-/** A meeting's pending generate changed; null once it is gone (done, cancelled, or ended by an error). */
+/** A meeting's pending generate changed; null once it is gone (done, cancelled, or an error). */
 export interface PendingGenerateChange {
   meetingId: string;
   pending: PendingGenerateState | null;
