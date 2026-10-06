@@ -5,6 +5,7 @@ import { app, dialog, ipcMain, Menu, powerMonitor, session, type BrowserWindow }
 import { APP_PREFERENCES } from '../shared/preferences';
 import { ApiClient } from './api/ApiClient';
 import type { ApiConnection } from './api/http';
+import { VocabularyClient } from './api/vocabularyClient';
 import { buildAppMenu } from './appMenu';
 import { CaptureService } from './capture/CaptureService';
 import { loadConfig, readConfigFile } from './config';
@@ -18,6 +19,7 @@ import { registerPreferencesIpc } from './preferences/preferences-ipc';
 import { SqliteTranscriptStore } from './store/SqliteTranscriptStore';
 import { createSpeechToText } from './stt/createSpeechToText';
 import { TranscriptUploader } from './upload/TranscriptUploader';
+import { registerVocabularyIpc } from './vocabulary/vocabularyIpc';
 import { createMainWindow, installPermissionHandlers, resolveAppPage } from './window';
 
 const MISSING_TOKEN =
@@ -192,6 +194,14 @@ async function main(): Promise<void> {
   // [slot M4-S4b] meetings IPC
 
   // [slot M3-T8] vocabulary IPC
+
+  // The jargon list in Settings: each read and save goes to the API, nothing is kept here.
+  registerVocabularyIpc({
+    ipcMain,
+    client: new VocabularyClient(apiConnection),
+    getWindow: () => window,
+    logger: logger.child({ component: 'vocabulary' }),
+  });
 
   // [slot M4-T16 notes] notes and chat IPC, the notes generator and the notes sync
 
