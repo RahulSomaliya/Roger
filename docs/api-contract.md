@@ -366,8 +366,9 @@ the row was created or replaced.
 
 Breaking a rule is a `422 validation_error` whose message names the field (`body.stop_reason`,
 `body.by_source.system.connected_ms`), and nothing is stored: a negative number, a count over
-2147483647 or a time over 9223372036854775807 ms, a cost that is not a finite number, a source
-missing from `by_source`, a blank or over-long `provider` or `stop_reason`. The desktop treats a
+2147483647 or a time over 9223372036854775807 ms, a cost that is not a finite number or is over
+1000000 USD (a day-long call at today's dearest list price costs under 30), a source missing from
+`by_source`, a blank or over-long `provider` or `stop_reason`. The desktop treats a
 `422` as a rejected row and sends it again only after the meeting's usage changes (M3-T19b), so
 nothing a Mac of another release could hold is refused. There is no `409`: a `PUT` replaces
 whatever is stored.
@@ -411,7 +412,8 @@ Response:
 A meeting with an unknown price is counted and named, never summed as `0`: its time counts in
 `stream_hours`, `meeting_hours` and `gated_hours`, its cost nowhere, and `cost_per_meeting_hour`
 leaves it out of both sides of the division (counted as free, it would make an hour look cheaper).
-Hours and USD are rounded to 4 decimal places.
+Hours and USD are rounded to 4 decimal places, at any size: a meeting gated nearly throughout can
+show a saving far above its cost (1 ms connected and hours gated), and the summary still answers.
 
 ### Note templates
 

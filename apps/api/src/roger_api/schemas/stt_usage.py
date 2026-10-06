@@ -17,8 +17,14 @@ from roger_api.schemas.common import UtcDatetime
 # Postgres `integer` and `bigint`: a larger number would fail the insert with a 500.
 UsageCount = Annotated[int, Field(ge=0, le=2_147_483_647)]
 UsageMs = Annotated[int, Field(ge=0, le=9_223_372_036_854_775_807)]
+# No Mac meters a million dollars of speech-to-text for one meeting: a day-long call at the
+# dearest list price in stt_vendors.py, keyterms included, costs under $30. The cap keeps every
+# summary figure a finite float. The saving multiplies a cost by up to 9.2e18 (gated_ms over
+# connected_ms), so an uncapped cost such as 1e300 sums to more than a float holds: float() makes
+# it inf, which pydantic writes as null, the summary's answer for "every price unknown".
+MAX_USAGE_COST_USD = 1_000_000
 # Python's json reads NaN and Infinity; neither is a cost.
-UsageUsd = Annotated[float, Field(ge=0, allow_inf_nan=False)]
+UsageUsd = Annotated[float, Field(ge=0, le=MAX_USAGE_COST_USD, allow_inf_nan=False)]
 
 
 def _without_nul(value: object) -> object:

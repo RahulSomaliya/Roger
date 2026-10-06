@@ -7,7 +7,7 @@ here, from connected time, would drift from it.
 """
 
 from datetime import datetime
-from decimal import ROUND_HALF_UP, Decimal
+from decimal import MAX_PREC, ROUND_HALF_UP, Context, Decimal
 from typing import Any
 from uuid import UUID
 
@@ -26,6 +26,11 @@ MAX_NAMED_UNPRICED_MEETINGS = 100
 _SECONDS_PER_HOUR = Decimal(3600)
 _MS_PER_HOUR = Decimal(3_600_000)
 _PLACES = Decimal("0.0001")
+# Rounding to _PLACES needs the value's integer digits plus four. Under Python's default context
+# (28 digits) any figure of 1e24 or more raised InvalidOperation, a 500 on every later summary of
+# the workspace, and the saving reaches 9.2e24 from usage the PUT accepts (a cost at the cap, 1 ms
+# connected, the most gated time). quantize allocates the result's digits, never MAX_PREC's.
+_EXACT = Context(prec=MAX_PREC)
 
 # When a meeting happened, for `since`: its start, or, with no meeting row (the desktop deletes a
 # meeting that got no line), when its usage first arrived. The uploader sends usage while the
@@ -165,4 +170,5 @@ def _in_window[*Columns](
 
 
 def _rounded(value: Decimal) -> float:
-    return float(value.quantize(_PLACES, rounding=ROUND_HALF_UP))
+    # A finite float because schemas/stt_usage.py caps each cost (MAX_USAGE_COST_USD).
+    return float(value.quantize(_PLACES, rounding=ROUND_HALF_UP, context=_EXACT))

@@ -22,6 +22,8 @@ from tests.helpers import TEST_TOKEN, Json, assert_error, create_meeting
 SUMMARY_PATH = "/v1/stt-usage/summary"
 INT4_MAX = 2_147_483_647
 INT8_MAX = 9_223_372_036_854_775_807
+# The contract's cap on a cost, in USD.
+MAX_COST_USD = 1_000_000
 ROW_FIELDS = {
     "meeting_id",
     "provider",
@@ -324,6 +326,18 @@ def _bad_bodies() -> list[Any]:
         pytest.param(
             usage_body(estimated_cost_usd=float("nan")), "body.estimated_cost_usd", id="nan-cost"
         ),
+        pytest.param(
+            usage_body(estimated_cost_usd=MAX_COST_USD + 0.01),
+            "body.estimated_cost_usd",
+            id="cost-over-the-cap",
+        ),
+        pytest.param(
+            usage_body(
+                by_source={"mic": source_usage(estimated_cost_usd=1e24), "system": source_usage()}
+            ),
+            "body.by_source.mic.estimated_cost_usd",
+            id="source-cost-over-the-cap",
+        ),
         pytest.param(without_system, "body.by_source.system", id="one-source-missing"),
         pytest.param(
             usage_body(by_source={"mic": source_usage(), "system": source_usage(connected_ms=-1)}),
@@ -447,6 +461,33 @@ async def test_summary_with_only_unknown_prices_has_no_cost(client: httpx.AsyncC
         "estimated_saved_usd": None,
         "unpriced_meetings": 1,
         "unpriced_meeting_ids": [str(meeting)],
+    }
+
+
+async def test_summary_answers_for_the_largest_usage_the_put_accepts(
+    client: httpx.AsyncClient,
+) -> None:
+    # The saving is the meeting's cost over its connected time, times its gated time: a meeting
+    # gated nearly throughout makes it huge. Rounded under Python's default 28 digits, any figure
+    # of 1e24 or more raised InvalidOperation, a 500 on every later summary of the workspace.
+    start = datetime(2026, 10, 5, 10, 0, tzinfo=UTC)
+    # One microsecond long, the shortest meeting Postgres can time: the most cost per hour.
+    meeting = await add_meeting(client, start, start + timedelta(microseconds=1))
+    await put_usage(
+        client,
+        meeting,
+        usage_body(connected_ms=1, gated_ms=INT8_MAX, estimated_cost_usd=MAX_COST_USD),
+    )
+
+    summary = await get_summary(client)
+
+    assert summary == {
+        **EMPTY_SUMMARY,
+        "meetings": 1,
+        "estimated_cost_usd": MAX_COST_USD,
+        "cost_per_meeting_hour": 3.6e15,  # the cap over a microsecond
+        "gated_hours": 2_562_047_788_015.2155,
+        "estimated_saved_usd": float(MAX_COST_USD * INT8_MAX),  # about 9.2e24
     }
 
 
