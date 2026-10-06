@@ -68,6 +68,11 @@ export interface CaptureStatus {
   upload: UploadStatus;
   /** Last error worth showing the user, or null. */
   error: string | null;
+  /**
+   * Why Roger stopped the last recording on its own (no speech, the length cap, quit, sleep, the
+   * window closing or crashing), or null. Cleared by the next Start.
+   */
+  notice: string | null;
 }
 
 export function emptySourceStatus(): SourceStatus {
@@ -87,5 +92,6 @@ export function idleCaptureStatus(upload: UploadStatus): CaptureStatus {
     segmentsUnsaved: 0,
     upload,
     error: null,
+    notice: null,
   };
 }

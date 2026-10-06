@@ -31,6 +31,7 @@ import { Emitter } from '../util/emitter';
 import { withTimeout } from '../util/time';
 import { CaptureSession, type StreamCredentials } from './CaptureSession';
 import { SttOpenBudget } from './SttOpenBudget';
+import { type StopReason, stopNotice } from './stopReasons';
 
 export interface CaptureServiceOptions {
   store: TranscriptStore;
@@ -53,6 +54,10 @@ export interface CaptureServiceOptions {
 export interface StopOptions {
   /** Wait for the uploader to drain. Off when quitting: the uploader resumes on next launch. */
   flushUploads?: boolean;
+  /** Why it stops; anything but `user` (the default) leaves a notice on screen. */
+  reason?: StopReason;
+  /** Extra words for the notice, e.g. how the renderer crashed. */
+  detail?: string;
 }
 
 interface CaptureEvents extends Record<string, unknown> {
@@ -101,11 +106,14 @@ export class CaptureService {
   /** The error text each source's last failure set, so its recovery can clear exactly that. */
   private streamErrors: Record<AudioSource, string | null> = { mic: null, system: null };
   private error: string | null = null;
+  private notice: string | null = null;
   private segmentsUnsaved = 0;
   private transition: Promise<CaptureStatus> | null = null;
   private monitorTimer: NodeJS.Timeout | null = null;
   /** Clock time the session started recording; the no-audio check counts from it until a chunk. */
   private recordingSinceMs: number | null = null;
+  /** Clock time of the last final line from either source; the no-speech stop counts from it. */
+  private lastFinalAtMs: number | null = null;
 
   constructor(private readonly options: CaptureServiceOptions) {
     this.clock = options.clock ?? (() => Date.now());
@@ -130,7 +138,7 @@ export class CaptureService {
   getStatus(): CaptureStatus {
     const upload = this.options.uploader.getStatus();
     if (this.phase === 'idle' && !this.session) {
-      return { ...idleCaptureStatus(upload), error: this.error };
+      return { ...idleCaptureStatus(upload), error: this.error, notice: this.notice };
     }
     return {
       phase: this.phase,
@@ -144,6 +152,7 @@ export class CaptureService {
       segmentsUnsaved: this.segmentsUnsaved,
       upload,
       error: this.error,
+      notice: this.notice,
     };
   }
 
@@ -215,6 +224,7 @@ export class CaptureService {
     }
     const { logger, store } = this.options;
     this.error = null;
+    this.notice = null;
     this.resetSessionState();
     this.budget.beginMeeting();
     this.setPhase('starting');
@@ -257,6 +267,7 @@ export class CaptureService {
         clock: this.clock,
         listeners: {
           onSegment: (segment) => {
+            this.lastFinalAtMs = this.clock();
             this.events.emit('segment', segment);
             this.emitStatus();
           },
@@ -330,6 +341,7 @@ export class CaptureService {
 
   private async doStop(options: StopOptions): Promise<CaptureStatus> {
     const { logger, store, uploader, stopFlushTimeoutMs = 15_000 } = this.options;
+    const reason = options.reason ?? 'user';
     const session = this.session;
     this.setPhase('stopping');
     this.stopMonitor();
@@ -357,12 +369,17 @@ export class CaptureService {
             logger.warn('upload did not finish on stop', { error: errorMessage(error) });
           }
         }
-        logger.info('capture stopped', { meetingId, segments: session.storedSegmentCount });
+        logger.info('capture stopped', {
+          meetingId,
+          segments: session.storedSegmentCount,
+          reason,
+        });
       }
     } catch (error) {
       this.error = errorMessage(error);
-      logger.error('capture stop failed', { error: this.error });
+      logger.error('capture stop failed', { error: this.error, reason });
     } finally {
+      this.notice = stopNotice(reason, new Date(this.clock()), this.guards, options.detail ?? null);
       this.session = null;
       this.resetSessionState();
       this.setPhase('idle');
@@ -417,6 +434,7 @@ export class CaptureService {
     this.sttProvider = null;
     this.startedAt = null;
     this.recordingSinceMs = null;
+    this.lastFinalAtMs = null;
     this.segmentsUnsaved = 0;
   }
 
@@ -429,6 +447,7 @@ export class CaptureService {
     this.stopMonitor();
     this.monitorTimer = setInterval(() => {
       this.checkAudioFlow();
+      this.checkForgottenStop();
       this.emitStatus();
     }, MONITOR_INTERVAL_MS);
   }
@@ -473,6 +492,31 @@ export class CaptureService {
         silentForMs,
       });
     }
+  }
+
+  /**
+   * Cost guard G5: a Stop nobody pressed. With silence still flowing (a muted mic, call audio
+   * without its permission) the stall close never fires and both sessions bill, $0.30 an hour on
+   * AssemblyAI, for as long as the app stays open: overnight is $4.20. So a recording with no final
+   * line from either source for noSpeechStopMs stops, and any recording stops at maxRecordingMs,
+   * both through the normal stop (last lines saved, sessions finished and closed).
+   */
+  private checkForgottenStop(): void {
+    if (this.phase !== 'recording' || this.recordingSinceMs === null) return;
+    const now = this.clock();
+    const recordingForMs = now - this.recordingSinceMs;
+    const quietForMs = now - (this.lastFinalAtMs ?? this.recordingSinceMs);
+    let reason: StopReason | null = null;
+    if (recordingForMs >= this.guards.maxRecordingMs) reason = 'max-duration';
+    else if (quietForMs >= this.guards.noSpeechStopMs) reason = 'no-speech';
+    if (reason === null) return;
+    this.options.logger.warn('stopping a recording nobody stopped', {
+      meetingId: this.session?.meetingId ?? null,
+      reason,
+      recordingForMs,
+      quietForMs,
+    });
+    void this.stop({ reason });
   }
 
   private emitStatus(): void {

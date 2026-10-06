@@ -14,8 +14,15 @@ export interface AudioStartResult {
 /** Runs both renderer-side captures and ships their chunks to main through the IPC contract. */
 export class AudioCaptureController {
   private readonly captures = new Map<AudioSource, PcmStreamCapture>();
+  /** Bumped by stop(), so a source still starting when Stop came stops itself instead of running on. */
+  private generation = 0;
 
   constructor(private readonly roger: RogerApi) {}
+
+  /** True while any source captures. */
+  get running(): boolean {
+    return this.captures.size > 0;
+  }
 
   async start(): Promise<AudioStartResult> {
     await this.startSource('mic', openMicrophoneStream);
@@ -41,12 +48,14 @@ export class AudioCaptureController {
   }
 
   async stop(): Promise<void> {
+    this.generation += 1;
     const captures = [...this.captures.values()];
     this.captures.clear();
     await Promise.allSettled(captures.map((capture) => capture.stop()));
   }
 
   private async startSource(source: AudioSource, open: () => Promise<MediaStream>): Promise<void> {
+    const generation = this.generation;
     const capture = new PcmStreamCapture({
       source,
       sampleRate: PCM_SAMPLE_RATE,
@@ -67,6 +76,11 @@ export class AudioCaptureController {
       for (const track of stream.getTracks()) track.stop();
       await capture.stop();
       throw error;
+    }
+    if (generation !== this.generation) {
+      // Main stopped the recording (sleep, no speech) while this source was starting.
+      await capture.stop();
+      return;
     }
     this.captures.set(source, capture);
   }

@@ -37,6 +37,9 @@ export function useCapture(): CaptureView {
           setInterim(NO_INTERIM);
         }
         setStatus(next);
+        // Main stopped on its own (no speech, the length cap, sleep, a reload): stop capturing too,
+        // or the microphone stays on with nothing listening.
+        if (next.phase === 'idle' && controller.current.running) void controller.current.stop();
       }),
       roger.onTranscriptSegment((segment) => {
         setSegments((previous) =>
@@ -49,8 +52,14 @@ export function useCapture(): CaptureView {
       }),
     ];
     void roger.getCaptureStatus().then(setStatus);
+    // A notice about a recording Roger stopped while the window was away is shown on next focus.
+    const refresh = (): void => {
+      void roger.getCaptureStatus().then(setStatus);
+    };
+    window.addEventListener('focus', refresh);
     return () => {
       for (const off of unsubscribe) off();
+      window.removeEventListener('focus', refresh);
     };
   }, [roger]);
 

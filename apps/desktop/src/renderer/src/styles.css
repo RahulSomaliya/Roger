@@ -104,6 +104,14 @@ body {
   color: var(--danger);
 }
 
+/* Roger stopped a recording on its own (no speech, the length cap, sleep, quit). */
+.notice {
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--warn) 14%, transparent);
+  color: var(--ink);
+}
+
 .panel {
   padding: 10px 12px;
   border: 1px solid var(--line);

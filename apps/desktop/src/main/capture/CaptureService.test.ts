@@ -157,12 +157,12 @@ function harness(
     statuses,
     segments,
     advance: (ms: number) => (now += ms),
-    /** Fake timers only: let `ms` pass in 100 ms steps, calling `each` after every step. */
-    elapse: async (ms: number, each: () => void = () => undefined) => {
-      for (let passed = 0; passed < ms; passed += 100) {
-        now += 100;
+    /** Fake timers only: let `ms` pass in `stepMs` steps, calling `each` after every step. */
+    elapse: async (ms: number, each: () => void = () => undefined, stepMs = 100) => {
+      for (let passed = 0; passed < ms; passed += stepMs) {
+        now += stepMs;
         each();
-        await vi.advanceTimersByTimeAsync(100);
+        await vi.advanceTimersByTimeAsync(stepMs);
       }
     },
   };
@@ -797,6 +797,80 @@ describe('CaptureService reopen budget', () => {
     expect(refused.error).toContain('the next may open in 50 s');
     expect(h.stt.opened).toHaveLength(4);
     expect(h.store.meetings.size).toBe(0);
+  });
+});
+
+describe('CaptureService forgotten Stop', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const SECOND = 1_000;
+  const MINUTE = 60 * SECOND;
+  /** Silence still flowing from both sources, a second at a time: no stall, no speech. */
+  const silence = (h: Harness) => () => {
+    h.service.pushAudio('mic', new Uint8Array(3200));
+    h.service.pushAudio('system', new Uint8Array(3200));
+  };
+
+  it('stops after 15 minutes with no final line from either source, through the normal stop', async () => {
+    const h = harness();
+    await h.service.start();
+    const mic = h.stt.streams.get('mic')!;
+
+    await h.elapse(14 * MINUTE + 50 * SECOND, silence(h), SECOND);
+    expect(h.service.getStatus().phase).toBe('recording');
+    await h.elapse(15 * SECOND, silence(h), SECOND);
+
+    const status = h.service.getStatus();
+    expect(status.phase).toBe('idle');
+    expect(status.notice).toMatch(/^Stopped at \d\d:\d\d after 15 minutes with no speech\.$/);
+    expect(mic.closed).toBe(true);
+    expect(h.stt.streams.get('system')?.closed).toBe(true);
+    expect(h.statuses.at(-1)?.notice).toBe(status.notice);
+  });
+
+  it('counts the 15 minutes from the last final line, from either source', async () => {
+    const h = harness();
+    await h.service.start();
+    await h.elapse(10 * MINUTE, silence(h), SECOND);
+    sayFinal(h, 'system', 'are you still there?');
+    await h.elapse(14 * MINUTE, silence(h), SECOND);
+    expect(h.service.getStatus().phase).toBe('recording');
+    await h.elapse(1 * MINUTE + SECOND, silence(h), SECOND);
+    expect(h.service.getStatus().phase).toBe('idle');
+  });
+
+  it('stops at the recording cap even while people talk, and both limits can be set', async () => {
+    const h = harness({ guards: { maxRecordingMs: 2 * MINUTE, noSpeechStopMs: 90 * SECOND } });
+    const { meetingId } = await h.service.start();
+    const talk = () => {
+      silence(h)();
+      sayFinal(h, 'mic', 'still talking');
+    };
+    await h.elapse(119 * SECOND, talk, SECOND);
+    expect(h.service.getStatus().phase).toBe('recording');
+    await h.elapse(2 * SECOND, talk, SECOND);
+
+    const status = h.service.getStatus();
+    expect(status.phase).toBe('idle');
+    expect(status.notice).toMatch(/^Stopped at \d\d:\d\d: one recording is capped at 2 minutes\.$/);
+    expect(h.store.getMeeting(meetingId!)?.endedAt).not.toBeNull();
+  });
+
+  it('shows no notice for a Stop the person pressed, and clears an old one on Start', async () => {
+    const h = harness({ guards: { noSpeechStopMs: MINUTE } });
+    await h.service.start();
+    await h.elapse(MINUTE + SECOND, silence(h), SECOND);
+    expect(h.service.getStatus().notice).toContain('after 1 minute with no speech');
+
+    await h.service.start();
+    expect(h.service.getStatus().notice).toBeNull();
+    await h.service.stop();
+    expect(h.service.getStatus().notice).toBeNull();
   });
 });
 
