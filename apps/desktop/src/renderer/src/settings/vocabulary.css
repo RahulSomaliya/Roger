@@ -1,0 +1,202 @@
+/*
+ * The jargon list section in Settings (VocabularySettings.tsx). It sits in the shell's .card and
+ * reuses styles.css's .button.start (Save), .error and app.css's .shell-button and
+ * .visually-hidden. Colours come only from the theme tokens (theme/tokens.css): text reads the ink
+ * tokens, never a fill (tokens.test.ts and noLiteralColours.test.ts fail otherwise).
+ */
+
+.vocabulary {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+.vocabulary-title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 650;
+}
+
+.vocabulary-intro,
+.vocabulary-status,
+.vocabulary-empty,
+.vocabulary-hint,
+.vocabulary-size,
+.vocabulary-save-status,
+.vocabulary-problem,
+.vocabulary-error-text {
+  margin: 0;
+}
+
+.vocabulary-intro,
+.vocabulary-status,
+.vocabulary-empty {
+  color: var(--muted);
+}
+
+.vocabulary-failed,
+.vocabulary-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+.vocabulary-failed .error,
+.vocabulary-editor .error {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  overflow-wrap: anywhere;
+}
+
+/* The box and its Add button share a row at every width; the box takes the rest. */
+.vocabulary-add {
+  display: flex;
+  gap: 8px;
+  min-width: 0;
+}
+
+.vocabulary-input {
+  flex: 1;
+  min-width: 0;
+  padding: 7px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  /* --panel, like the card: in light, --bg on the white card reads as a disabled box. */
+  background: var(--panel);
+  color: var(--ink);
+  font: inherit;
+}
+
+.vocabulary-input::placeholder {
+  color: var(--muted);
+}
+
+.vocabulary-input:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+
+.vocabulary-input[aria-invalid='true'] {
+  border-color: var(--danger);
+}
+
+.vocabulary-input:disabled {
+  opacity: 0.6;
+}
+
+.vocabulary-add .shell-button:disabled,
+.vocabulary-actions .shell-button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.vocabulary-hint,
+.vocabulary-size,
+.vocabulary-save-status {
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.vocabulary-size {
+  font-variant-numeric: tabular-nums;
+}
+
+.vocabulary-problem {
+  font-size: 13px;
+  color: var(--danger-ink);
+  overflow-wrap: anywhere;
+}
+
+/* Terms wrap like words; a 50-letter term with no space breaks inside rather than widen the page. */
+.vocabulary-terms {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.vocabulary-term {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  max-width: 100%;
+  min-width: 0;
+  padding: 3px 4px 3px 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--chip-bg);
+  color: var(--ink);
+}
+
+.vocabulary-term-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.vocabulary-remove {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.vocabulary-remove:hover:not(:disabled) {
+  background: var(--line);
+  color: var(--ink);
+}
+
+.vocabulary-remove:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+/*
+ * Status on the left, the buttons on the right. On a narrow window the buttons wrap below the
+ * status as one group, so Save never lands on a line of its own away from Discard.
+ */
+.vocabulary-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px 10px;
+}
+
+.vocabulary-buttons {
+  display: flex;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.vocabulary-save-status {
+  flex: 1 1 12rem;
+  min-width: 0;
+}
+
+.vocabulary-save-status:empty {
+  display: none;
+}
+
+/* styles.css's .button is sized for a lone Start; here Save sits in a row of buttons. */
+.vocabulary .vocabulary-save {
+  min-width: 0;
+  padding: 7px 18px;
+  font-size: 14px;
+  border-radius: 8px;
+}
