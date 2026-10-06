@@ -33,16 +33,22 @@ class ScriptedStream implements SttStream {
   closed = false;
   /** Dropped with no finish sequence (the offline suspend), rather than finished and closed. */
   terminated = false;
+  /**
+   * Set by a test to play a vendor still finishing: close() settles only when it does, or when a
+   * terminate cuts the finish short, as SttConnection's does.
+   */
+  finishing: Gate<undefined> | null = null;
   send(pcm: Uint8Array): void {
     this.sent.push(pcm);
   }
   close(): Promise<void> {
     this.closed = true;
-    return Promise.resolve();
+    return this.finishing?.promise ?? Promise.resolve();
   }
   terminate(): Promise<void> {
     this.terminated = true;
     this.closed = true;
+    this.finishing?.resolve(undefined);
     return Promise.resolve();
   }
   on(listener: SttEventListener): () => void {
@@ -176,8 +182,13 @@ function flush(): Promise<void> {
   return new Promise((resolve) => setImmediate(resolve));
 }
 
+interface Gate<T> {
+  promise: Promise<T>;
+  resolve(value: T): void;
+}
+
 /** A promise the test settles by hand. */
-function gate<T>(): { promise: Promise<T>; resolve(value: T): void } {
+function gate<T>(): Gate<T> {
   let resolve: (value: T) => void = () => undefined;
   const promise = new Promise<T>((res) => {
     resolve = res;
@@ -777,6 +788,122 @@ describe('CaptureSession', () => {
       expect(stt.opens).toEqual(['mic', 'system', 'mic']);
       stt.succeed('mic'); // Stop waits for a reopen still connecting
       await s.close();
+    });
+
+    /**
+     * A stream asked to finish (a sleep, a pause, a closed source, Stop) is no longer the source's,
+     * so a finish that never completes loses the lines of its last audio with nothing else to say
+     * so. Its tail, from its own last line to the end of the audio it was sent, is a gap.
+     */
+    describe('a finish cut short', () => {
+      it("records a sleep's unfinished tail when going offline on wake cuts its finish short", async () => {
+        const { stt, s, store, mic, at } = await recording();
+        pushContiguous(s, 'mic', 10_000, 150); // 0-15 s in
+        final(mic, 'last words', 9_000, 10_000); // its latest line ends 10 s in
+        const finishing = gate<undefined>();
+        mic.finishing = finishing; // no closing turn yet when the Mac sleeps
+        at(25_000);
+        s.suspendStreams('asleep');
+        // On wake the 1 s poll sees the network gone before the finish ran out of time.
+        s.suspendStreams('offline');
+        expect(mic.terminated).toBe(true);
+        await flush();
+        s.resumeStreams('offline');
+        s.resumeStreams('asleep');
+        at(30_000);
+        s.pushAudio('mic', chunk(), 30_000); // 20 s in
+        await flush();
+        stt.succeed('mic');
+        await flush();
+
+        expect(gaps(store)).toEqual([
+          { source: 'mic', startMs: 10_000, endMs: 15_000, reason: 'offline' },
+        ]);
+        await s.close();
+        expect(gaps(store)).toHaveLength(1);
+      });
+
+      it("records a sleep's unfinished tail when the vendor never finished, from the stream's own last line", async () => {
+        const { l, s, store, mic, system, at } = await recording();
+        pushContiguous(s, 'mic', 10_000, 150);
+        pushContiguous(s, 'system', 10_000, 150);
+        final(mic, 'last words', 9_000, 10_000);
+        final(system, 'them', 9_000, 11_000);
+        const finishing = gate<undefined>();
+        mic.finishing = finishing;
+        at(25_000);
+        s.suspendStreams('asleep'); // the call audio stream finishes; the mic's never does
+        await flush();
+        // Sockets do not survive sleep: on wake the finish runs out of time. The line the core
+        // held comes first, then its word that the rest is lost.
+        final(mic, 'held', 10_500, 12_000);
+        mic.emitter.emit({
+          type: 'error',
+          message: 'Scripted did not finish the stream (code 1006): its last lines are lost',
+          fatal: true,
+        });
+        mic.emitter.emit({ type: 'closed', code: 1006, reason: null });
+        finishing.resolve(undefined);
+        await flush();
+
+        expect(gaps(store)).toEqual([
+          { source: 'mic', startMs: 12_000, endMs: 15_000, reason: 'stt_failed' },
+        ]);
+        // The source had left that stream already: nothing to reopen or show.
+        expect(l.failures).toEqual([]);
+        expect(s.watermark('mic')).toEqual({ finalEndMs: 12_000, closed: true });
+        expect(store.listCaptureEvents('m1').at(-1)).toMatchObject({
+          source: 'mic',
+          kind: 'stt-failed',
+          detail: {
+            stage: 'finish',
+            reason: 'Scripted did not finish the stream (code 1006): its last lines are lost',
+          },
+        });
+        await s.close();
+      });
+
+      it("records a replaced stream's unfinished tail even after the new stream's lines", async () => {
+        const { stt, s, store, system, at } = await recording();
+        pushContiguous(s, 'system', 10_000, 100); // 0-10 s in
+        final(system, 'them', 1_000, 6_000);
+        const finishing = gate<undefined>();
+        system.finishing = finishing;
+        at(41_000);
+        s.pauseSource('system', 31_000);
+        // Audio returns while the old stream still finishes, and the new one says a line.
+        at(42_000);
+        s.pushAudio('system', chunk(), 42_000);
+        await flush();
+        const reopened = stt.succeed('system');
+        await flush();
+        final(reopened, 'later', 0, 100); // 32 s in: past the old stream's tail
+        system.emitter.emit({ type: 'error', message: 'did not finish', fatal: true });
+        finishing.resolve(undefined);
+        await flush();
+
+        expect(gaps(store)).toEqual([
+          { source: 'system', startMs: 6_000, endMs: 10_000, reason: 'stt_failed' },
+        ]);
+        await s.close();
+      });
+
+      it('records the tail of a Stop the vendor never finished', async () => {
+        const { s, store, mic } = await recording();
+        pushContiguous(s, 'mic', 10_000, 50); // 0-5 s in
+        final(mic, 'hello', 0, 2_000);
+        const finishing = gate<undefined>();
+        mic.finishing = finishing;
+
+        const stopping = s.close();
+        mic.emitter.emit({ type: 'error', message: 'did not finish', fatal: true });
+        finishing.resolve(undefined);
+        await stopping;
+
+        expect(gaps(store)).toEqual([
+          { source: 'mic', startMs: 2_000, endMs: 5_000, reason: 'stt_failed' },
+        ]);
+      });
     });
 
     it('opens nothing for a reopen caught mid-token by the offline suspend, and terminates one that lands late', async () => {

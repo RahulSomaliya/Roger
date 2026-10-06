@@ -125,6 +125,17 @@ interface StreamHandle {
   /** Dropped with no finish sequence (the offline suspend): never asked twice. */
   terminated: boolean;
   readonly openedAtMs: number;
+  /** Meeting offset where this stream's latest line ends, or null before its first (loseTail). */
+  lineEndMs: number | null;
+  /** Meeting offset just past the last audio this stream was sent, or null before any. */
+  audioEndMs: number | null;
+  /**
+   * Its lost audio is counted already, and never twice: in its source's window when it died as
+   * the source's stream (loseStream), or as its own tail when a finish was cut short.
+   */
+  lost: boolean;
+  /** Its finish was cut short: its tail becomes a gap once its close settles (loseTail). */
+  cutShort: GapReason | null;
 }
 
 /** What one audio source has with the vendor right now. */
@@ -195,9 +206,12 @@ interface SourceLink {
  * Audio that reached main and got no line (its stream failed or went offline, the budget refused
  * the reopen, the hold overflowed) becomes a transcript_gaps row, from the source's watermark to
  * the first audio its next stream carries, for M2-T16 to re-run from the audio backup; a window
- * with no audio at all (a stall) is only a capture event. Capture events record every pause,
- * failure, suspend and reopen for the capture report, and each source's watermark, the end of its
- * latest line, is published for the echo sink (onWatermark).
+ * with no audio at all (a stall) is only a capture event. A stream asked to finish (a pause, a
+ * closed source, the sleep, Stop) whose finish never completes (cut short offline, or a vendor
+ * that never sent its last lines) loses its tail, from its own latest line to its last audio: one
+ * row too, since the source has moved on and nothing else would count it. Capture events record
+ * every pause, failure, suspend and reopen for the capture report, and each source's watermark,
+ * the end of its latest line, is published for the echo sink (onWatermark).
  *
  * Every stream this class ever opened is tracked until its close settles, and close() waits for
  * all of them, and for reopens still connecting.
@@ -314,7 +328,9 @@ export class CaptureSession {
    * the Mac offline, `asleep` when it goes to sleep (M2-T18). Offline terminates each socket, with
    * no finish sequence (the network is gone: a finish could only wait out its deadline while a
    * half-open socket may still bill), and what its vendor had not turned into lines becomes a gap;
-   * asleep finishes and closes each stream, its last lines saved. Either way audio is held as for a
+   * asleep finishes and closes each stream, its last lines saved, unless the finish never completes
+   * (sockets do not survive sleep: its deadline runs out on wake, or going offline cuts it short),
+   * which leaves that stream's tail a gap (finishCutShort). Either way audio is held as for a
    * paused source (the newest reopenBufferMs), and no token is fetched and nothing opens until
    * resumeStreams() has lifted every reason: offline and asleep stack. A closed or failed source
    * stays as it is.
@@ -326,9 +342,15 @@ export class CaptureSession {
     this.recordEvent(null, 'stt-suspended', { reason });
     for (const source of AUDIO_SOURCES) this.suspendSource(source, reason);
     if (reason === 'offline') {
-      // Streams still finishing (a pause, a failure, the sleep's finish) would wait out their
-      // finish deadline on a network that is gone: drop them too.
-      for (const handle of this.handles) void this.retire(handle, 'terminate');
+      // Streams still finishing (a pause, a closed source, the sleep's finish) would wait out their
+      // finish deadline on a network that is gone: drop them too. A finish cut short never brings
+      // its last lines, so each one's tail is a gap; the streams just terminated above were counted
+      // already. A stream whose vendor had finished and only its close was still on the way is
+      // counted too: a few seconds of silence for M2-T16 to re-run, never lost speech.
+      for (const handle of this.handles) {
+        this.finishCutShort(handle, 'offline');
+        void this.retire(handle, 'terminate');
+      }
     }
   }
 
@@ -659,6 +681,10 @@ export class CaptureSession {
       closing: null,
       terminated: false,
       openedAtMs: this.clock(),
+      lineEndMs: null,
+      audioEndMs: null,
+      lost: false,
+      cutShort: null,
     };
     this.handles.add(handle);
     stream.on((event) => {
@@ -670,7 +696,8 @@ export class CaptureSession {
   /**
    * Asks the stream to close (idempotent); the handle is forgotten once it has. `terminate` drops
    * it with no finish sequence (the offline suspend), and also cuts short a finish asked for
-   * before; a stream with no socket to drop (the fake) closes as usual.
+   * before, whose tail the caller counts (finishCutShort); a stream with no socket to drop (the
+   * fake) closes as usual.
    */
   private retire(handle: StreamHandle, how: 'finish' | 'terminate' = 'finish'): Promise<void> {
     let dropping: Promise<void> | undefined;
@@ -685,6 +712,8 @@ export class CaptureSession {
         })
         .finally(() => {
           this.handles.delete(handle);
+          // Every line it will ever send is in: its tail starts after the last of them.
+          if (handle.cutShort !== null) this.loseTail(handle, handle.cutShort);
           // Stop meters every stream at once itself; mid-meeting closes are metered one by one.
           if (!this.closing) this.options.listeners.onStreamClosed(handle.source);
           // Its last lines are in: the source may have nothing left that could send one.
@@ -702,6 +731,7 @@ export class CaptureSession {
     // The timeline counts the vendor's clock in the samples sent here, so adapters must hand the
     // vendor every byte, in order (AssemblyAI regroups them; see SttConnection.sendFrame).
     const run = handle.timeline.append(capturedAtMs, pcm.byteLength / SAMPLE_BYTES);
+    handle.audioEndMs = this.meetingOffset(capturedAtMs + this.chunkMs(pcm));
     if (run !== null && run.jumpMs !== null) {
       this.options.logger.info('audio timeline: new run', {
         source: handle.source,
@@ -807,6 +837,7 @@ export class CaptureSession {
    * Mac went offline): what the vendor had not turned into lines by then is lost (gapStartMs).
    */
   private loseStream(link: SourceLink, handle: StreamHandle, reason: GapReason): void {
+    handle.lost = true;
     link.lostReason ??= reason;
     const first = handle.timeline.runs[0];
     if (first === undefined) return; // it was sent no audio, so it lost none
@@ -815,21 +846,58 @@ export class CaptureSession {
   }
 
   /**
-   * Where the source's gap starts (a meeting offset), or null when none of its audio is lost: the
-   * earlier of a lost stream's first audio and the first chunk held since, never before the
-   * watermark (audio up to the end of the source's latest line got its lines).
+   * `handle` was asked to finish (a pause, a closed source, the sleep, Stop) and that finish will
+   * not complete: the offline suspend cuts it short, or its vendor never sent the completion signal
+   * (the core's fatal error, finishFailed). The source has moved on, so no window of its counts this
+   * loss: the stream's tail becomes its own gap once its close settles (loseTail). Uncounted, a
+   * sleep's finish cut short on wake lost the last seconds before the lid closed, with no row.
+   */
+  private finishCutShort(handle: StreamHandle, reason: GapReason): void {
+    if (handle.lost) return;
+    handle.lost = true;
+    handle.cutShort = reason;
+  }
+
+  /**
+   * A fatal error from a stream that is no longer the source's (or arrives during Stop): its
+   * finish failed, and its last lines will not come. Never a reopen: the source left this stream.
+   */
+  private finishFailed(source: AudioSource, handle: StreamHandle, reason: string): void {
+    if (handle.lost) return;
+    this.finishCutShort(handle, 'stt_failed');
+    this.recordEvent(source, 'stt-failed', { stage: 'finish', reason });
+  }
+
+  /**
+   * A stream's cut-short tail as one gap: from its own latest line to the end of the audio it was
+   * sent. Its own line, not the source's watermark: a newer stream's lines lie past this tail and
+   * would hide it.
+   */
+  private loseTail(handle: StreamHandle, reason: GapReason): void {
+    const first = handle.timeline.runs[0];
+    if (first === undefined) return; // it was sent no audio, so it lost none
+    const startMs = this.gapStartMs([this.meetingOffset(first.capturedAtMs)], handle.lineEndMs);
+    this.recordGap(handle.source, startMs, handle.audioEndMs, reason);
+  }
+
+  /**
+   * Where a gap starts (a meeting offset), or null when nothing is lost: the earliest of `fromMs`
+   * (a lost stream's first audio, the first chunk held since), never before `watermarkMs` (audio up
+   * to the end of a line got its lines). endLoss asks it for a source's window, loseTail for a
+   * stream's cut-short tail.
    *
    * The one place a gap's start is decided. M3-T20 (wave 6) makes it the speech onset for a source
    * its silence gate had closed: a gated window is billed silence the gate chose to drop, never a
    * gap, or M2-T16 would re-run minutes of it. A copy of this rule elsewhere would miss that change.
    */
-  private gapStartMs(link: SourceLink): number | null {
-    const candidates = [link.lostStreamFromMs, link.heldFromMs].filter(
-      (ms): ms is number => ms !== null,
-    );
+  private gapStartMs(
+    fromMs: readonly (number | null)[],
+    watermarkMs: number | null,
+  ): number | null {
+    const candidates = fromMs.filter((ms): ms is number => ms !== null);
     if (candidates.length === 0) return null;
-    const fromMs = Math.min(...candidates);
-    return link.finalEndMs === null ? fromMs : Math.max(fromMs, link.finalEndMs);
+    const startMs = Math.min(...candidates);
+    return watermarkMs === null ? startMs : Math.max(startMs, watermarkMs);
   }
 
   /**
@@ -838,11 +906,21 @@ export class CaptureSession {
    */
   private endLoss(source: AudioSource, untilMs: number | null): void {
     const link = this.links[source];
-    const startMs = this.gapStartMs(link);
+    const startMs = this.gapStartMs([link.lostStreamFromMs, link.heldFromMs], link.finalEndMs);
     const reason = link.lostReason ?? 'stt_failed';
     link.lostStreamFromMs = null;
     link.heldFromMs = null;
     link.lostReason = null;
+    this.recordGap(source, startMs, untilMs, reason);
+  }
+
+  /** One transcript_gaps row, when the window holds any audio: never one that ends at its start. */
+  private recordGap(
+    source: AudioSource,
+    startMs: number | null,
+    untilMs: number | null,
+    reason: GapReason,
+  ): void {
     if (startMs === null || untilMs === null || untilMs <= startMs) return;
     const createdAt = new Date(this.clock()).toISOString();
     const gap = { meetingId: this.meetingId, source, startMs, endMs: untilMs, reason };
@@ -921,6 +999,7 @@ export class CaptureSession {
         };
         const link = this.links[source];
         link.finalEndMs = Math.max(link.finalEndMs ?? segment.endMs, segment.endMs);
+        handle.lineEndMs = Math.max(handle.lineEndMs ?? segment.endMs, segment.endMs);
         try {
           this.options.store.appendSegment(segment);
           this.segmentsStored += 1;
@@ -957,7 +1036,13 @@ export class CaptureSession {
           message: event.message,
           fatal: event.fatal,
         });
-        if (event.fatal) this.streamFailed(source, handle, event.message);
+        if (!event.fatal) return;
+        if (!this.closing && this.links[source].current === handle) {
+          this.streamFailed(source, handle, event.message);
+        } else {
+          // Asked to finish already: the core reports a finish that never completed (SttConnection).
+          this.finishFailed(source, handle, event.message);
+        }
         return;
       case 'closed': {
         const reason = describeClose(event.code, event.reason);
@@ -970,8 +1055,9 @@ export class CaptureSession {
 
   /**
    * The source's current stream died mid-call. A stream we asked to close (Stop, a failed source)
-   * is no longer current, so its "closed" is not a failure. The dead stream is closed too: the core
-   * closes itself after a fatal error, but a stream that only reported one must not stay open.
+   * is no longer current, so its "closed" is not a failure (its fatal error is: finishFailed). The
+   * dead stream is closed too: the core closes itself after a fatal error, but a stream that only
+   * reported one must not stay open.
    */
   private streamFailed(source: AudioSource, handle: StreamHandle, reason: string): void {
     const link = this.links[source];
