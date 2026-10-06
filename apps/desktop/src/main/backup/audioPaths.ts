@@ -8,10 +8,14 @@ import { isUuidV4 } from '../ipc-validation';
  * (`audio/<meeting>/<file>`, NewAudioFile.path), which M3's `bench clip` resolves against a
  * userData folder of its own choosing.
  *
- * Every path the backup deletes or writes through comes from here, and each is checked: a meeting
- * id is a lowercase UUIDv4 (a renderer-supplied `../x` would otherwise make delete-audio a
- * path-traversal delete), a stored path stays inside the audio root, and a folder that is a link
- * is never written or deleted through.
+ * Every path the backup writes or deletes through comes from here. A meeting id must be a
+ * lowercase UUIDv4 (a renderer-supplied `../x` would otherwise make delete-audio a path-traversal
+ * delete), and a stored path must stay inside the audio root, judged by its text. A folder that is
+ * a link is refused only where folders are made (ensureMeetingAudioDir, once per recording) and
+ * where one is deleted (removeMeetingAudioDir), since a recursive delete through a link empties
+ * whatever it points at. A recording's later files, the compressor and the launch repair go by the
+ * text alone, so they would write through a link swapped in later. That takes the same user's
+ * hand, and they only touch files an `audio_files` row names.
  */
 
 const AUDIO_DIR_NAME = 'audio';
@@ -44,7 +48,8 @@ export function storedAudioPath(meetingId: string, fileName: string): string {
 /**
  * The absolute path of a stored `audio_files.path`. Throws when it would point outside the audio
  * root (absolute, climbing with `..`, or another file of userData), so an edited database cannot
- * aim the compressor or a repair at anything else.
+ * aim the compressor or a repair at anything else. It reads the text only and never checks for a
+ * link (see the header).
  */
 export function resolveStoredAudioPath(userData: string, stored: string): string {
   const root = audioRoot(userData);
