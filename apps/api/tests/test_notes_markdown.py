@@ -276,6 +276,26 @@ def test_unknown_nodes_keep_their_text() -> None:
     )
 
 
+def test_unknown_inline_nodes_beside_text_stay_in_its_line() -> None:
+    # A mention with text in it, and TipTap's own Mention: an atom with no content at all.
+    mention: Json = {"type": "mention", "content": [text("Ann")]}
+    atom: Json = {"type": "mention", "attrs": {"id": "u1", "label": "Ann"}}
+    notes = doc(
+        {"type": "callout", "content": inline("Ping ", mention, " today")},
+        {"type": "callout", "content": inline("Call", atom, " back")},
+    )
+
+    assert render_markdown(notes) == "Ping Ann today\n\nCall back"
+    assert [block.text for block in split_note_blocks(notes)] == ["Ping Ann today", "Call back"]
+
+
+def test_known_blocks_beside_stray_text_keep_their_own_lines() -> None:
+    # Only a hand-made doc mixes text into a list of blocks; the blocks must not fold into it.
+    notes = doc(paragraph("One"), text("stray"), heading(2, "Two"))
+
+    assert render_markdown(notes) == "One\n\nstray\n\n## Two"
+
+
 def test_user_notes_split_into_numbered_blocks() -> None:
     user_doc = doc(
         heading(2, "Pricing"),

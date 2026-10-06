@@ -23,6 +23,20 @@ from roger_api.services.transcript_render import format_offset
 FROM_YOUR_NOTES_HEADING = "From your notes"
 
 _INLINE_TYPES = frozenset({"text", "hardBreak", "citation"})
+# Every block `_walk_node` renders by name; keep the two in step. A node of any other type is
+# unknown, and `_walk` reads it as inline or as a block from its siblings: a block missing here is
+# folded into the line of any stray text beside it, losing its heading marks or list markers.
+_BLOCK_TYPES = frozenset(
+    {
+        "paragraph",
+        "heading",
+        "codeBlock",
+        "horizontalRule",
+        "blockquote",
+        "bulletList",
+        "orderedList",
+    }
+)
 
 # Innermost first. Code is handled before these, and a link wraps them all.
 _MARK_DELIMITERS = (("strike", "~~"), ("italic", "*"), ("bold", "**"))
@@ -164,11 +178,23 @@ def _render(nodes: Sequence[_Node]) -> str:
     return out
 
 
-def _walk(nodes: Iterable[_Node], hang: str, *, joined: bool) -> Iterator[_Block]:
+def _walk(nodes: Sequence[_Node], hang: str, *, joined: bool) -> Iterator[_Block]:
     """The non-empty blocks of `nodes`, in order. Inline nodes outside a paragraph (in an unknown
-    container) read as one paragraph."""
-    for is_inline, group in groupby(nodes, key=lambda node: node.type in _INLINE_TYPES):
-        if is_inline:
+    container) read as one paragraph.
+
+    ProseMirror never mixes inline and block children in one node, so an unknown node beside text,
+    a hard break or a chip is inline (a mention): keyed on `_INLINE_TYPES` alone, it would break
+    the user's one line into three blocks, each with its own `N` ref. Beside blocks only, an
+    unknown node is a block (a task list). A known block is a block wherever it stands, so a
+    hand-made doc that mixes stray text into its blocks folds only its unknown nodes into lines.
+    """
+    has_inline = any(node.type in _INLINE_TYPES for node in nodes)
+
+    def is_inline(node: _Node) -> bool:
+        return node.type in _INLINE_TYPES or (has_inline and node.type not in _BLOCK_TYPES)
+
+    for inline, group in groupby(nodes, key=is_inline):
+        if inline:
             yield from _text_block(hang, hang, tuple(group), joined=joined)
         else:
             for node in group:
@@ -176,6 +202,7 @@ def _walk(nodes: Iterable[_Node], hang: str, *, joined: bool) -> Iterator[_Block
 
 
 def _walk_node(node: _Node, hang: str, *, joined: bool) -> Iterator[_Block]:
+    # A new case here belongs in `_BLOCK_TYPES` too, or `_walk` reads it as inline beside text.
     match node.type:
         case "paragraph":
             yield from _text_block(hang, hang, node.content, joined=joined)
