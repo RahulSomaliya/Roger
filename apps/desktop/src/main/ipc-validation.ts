@@ -9,6 +9,7 @@ import {
   isStartSource,
   MAX_MEETING_TITLE_LENGTH,
   type StartCaptureRequest,
+  storedMeetingText,
 } from '../shared/capture';
 import type { AudioSourceStateMessage } from '../shared/ipc';
 import type { MeetingRequest, SegmentRequest } from '../shared/ipc/capture';
@@ -215,14 +216,14 @@ function optionalCalendarText(value: unknown, name: string): string | null {
 }
 
 /**
- * Text measured as the API measures it before it stores it: U+0000 dropped (Postgres refuses it),
- * then trimmed, then counted in code points as Python's `len` counts (`Array.from`, never
- * `.length`: an emoji is one character to the API and two UTF-16 units here). JavaScript's trim
- * and Python's strip differ only on control characters no calendar or person writes.
+ * Text measured as the API measures it before it stores it: its storedMeetingText (U+0000 dropped,
+ * then trimmed as the API trims, never with trim()), counted in code points as Python's `len`
+ * counts (`Array.from`, never `.length`: an emoji is one character to the API and two UTF-16 units
+ * here).
  */
 function text(value: unknown, name: string, rules: { max: number; blank: boolean }): string {
   if (typeof value !== 'string') refuse(`${name} is not text`);
-  const length = Array.from(value.replaceAll('\u0000', '').trim()).length;
+  const length = Array.from(storedMeetingText(value)).length;
   if (length === 0 && !rules.blank) refuse(`${name} is blank`);
   if (length > rules.max) refuse(`${name} is over ${rules.max} characters`);
   return value;
@@ -230,23 +231,42 @@ function text(value: unknown, name: string, rules: { max: number; blank: boolean
 
 /** An instant with a zone, as the API requires: one without would be read in the Mac's zone. */
 function instant(value: unknown, name: string): string {
-  if (typeof value !== 'string' || !isInstant(value)) {
+  if (typeof value !== 'string' || !isApiInstant(value)) {
     refuse(`${name} is not an instant with a zone`);
   }
   return value;
 }
 
+/** Python's `datetime.min` and `datetime.max` in UTC, to the millisecond a Date keeps. */
+const PYTHON_FIRST_MS = Date.parse('0001-01-01T00:00:00.000Z');
+const PYTHON_LAST_MS = Date.parse('9999-12-31T23:59:59.999Z');
+
+/** The year and the hour as written, in parseInstant's form. */
+const WRITTEN_YEAR_AND_HOUR = /^(\d{4})-\d{2}-\d{2}T(\d{2}):/;
+
 /**
- * parseInstant as a yes or no. Its error quotes the value, which is the page's text and would
- * reach main's log through the refusal; the field's name in the refusal says enough.
+ * Whether the API reads `value` as an instant (`UtcDatetime`). parseInstant alone is not enough:
+ * its Date.parse also takes hour 24 (the next midnight) and year 0, which pydantic refuses (422),
+ * and a time near year 1 or 9999 whose zone moves it out of Python's years makes the API's
+ * conversion to UTC overflow (500). parseInstant's error is not passed on: it quotes the value,
+ * which is the page's text and would reach main's log through the refusal; the field's name in the
+ * refusal says enough.
  */
-function isInstant(value: string): boolean {
+function isApiInstant(value: string): boolean {
+  let ms: number;
   try {
-    parseInstant(value);
-    return true;
+    ms = parseInstant(value);
   } catch {
     return false;
   }
+  const written = WRITTEN_YEAR_AND_HOUR.exec(value);
+  return (
+    written !== null &&
+    Number(written[1]) >= 1 &&
+    Number(written[2]) <= 23 &&
+    ms >= PYTHON_FIRST_MS &&
+    ms <= PYTHON_LAST_MS
+  );
 }
 
 /** `name` null: the request itself. */

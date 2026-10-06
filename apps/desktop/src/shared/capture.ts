@@ -1,5 +1,6 @@
 import type { CallApp, MeetingCalendarEvent } from './calendar';
 import type { AudioSource } from './transcript';
+import { trimTerm } from './vocabulary';
 
 /** The capture state machine owned by the main process. */
 export type CapturePhase = 'idle' | 'starting' | 'recording' | 'stopping';
@@ -374,10 +375,25 @@ export function isStartSource(value: unknown): value is StartSource {
 }
 
 /**
- * The longest meeting title the API stores, in characters (code points, as Python counts) once
- * trimmed: `MeetingTitle` in apps/api/src/roger_api/schemas/meetings.py. Change the two together.
+ * The longest meeting title the API stores, in characters (code points, as Python counts) of its
+ * storedMeetingText: `MeetingTitle` in apps/api/src/roger_api/schemas/meetings.py. Change the two
+ * together.
  */
 export const MAX_MEETING_TITLE_LENGTH = 500;
+
+/**
+ * Meeting text (the title, each text field of a calendar link) as the API stores it: U+0000
+ * dropped (Postgres refuses it; `storable_input` in apps/api/src/roger_api/schemas/common.py), then
+ * trimmed as pydantic's `strip_whitespace` trims (trimTerm, the API's whitespace list). The API's
+ * `max_length` counts the result's code points (`Array.from`, never `.length`).
+ *
+ * Trap: never JavaScript's trim() for this. It also trims U+FEFF, which the API keeps and counts,
+ * and keeps U+0085, which the API trims: 500 characters and a byte order mark would pass a trim()
+ * measure and draw the API's 422, which keeps the meeting and its transcript off the server.
+ */
+export function storedMeetingText(value: string): string {
+  return trimTerm(value.replaceAll('\u0000', ''));
+}
 
 /**
  * What a Start asks for beyond "record" (M5): how it was started, the title and the calendar event

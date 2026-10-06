@@ -290,6 +290,24 @@ describe('parseStartCaptureRequest', () => {
     );
   });
 
+  // The API trims with pydantic's strip_whitespace, not JavaScript's trim() (storedMeetingText):
+  // a byte order mark counts there and U+0085 does not, so a trim() measure would pass a 422.
+  it('measures text as the API trims it, not as trim() does', () => {
+    const nextLine = String.fromCharCode(0x85);
+    const byteOrderMark = String.fromCharCode(0xfeff);
+    expect(() => parseStartCaptureRequest({ title: `${'a'.repeat(500)}${byteOrderMark}` })).toThrow(
+      'invalid start request: title is over 500 characters',
+    );
+    expect(() =>
+      parseStartCaptureRequest(withEvent({ eventId: `${'x'.repeat(2048)}${byteOrderMark}` })),
+    ).toThrow('invalid start request: calendarEvent.eventId is over 2048 characters');
+    expect(() => parseStartCaptureRequest(withEvent({ eventId: nextLine }))).toThrow(
+      'invalid start request: calendarEvent.eventId is blank',
+    );
+    const padded = `${nextLine}${'a'.repeat(500)}${nextLine}`;
+    expect(parseStartCaptureRequest({ title: padded })).toEqual({ title: padded });
+  });
+
   it('refuses an event link POST /v1/meetings would refuse with a 422', () => {
     const refusals: [unknown, string][] = [
       [{ calendarEvent: 'nope' }, 'calendarEvent is not an object'],
@@ -353,6 +371,31 @@ describe('parseStartCaptureRequest', () => {
       attendees: Array.from({ length: 200 }, (_, n) => attendee(n)),
     });
     expect(parseStartCaptureRequest(full)).toEqual(full);
+  });
+
+  // Date.parse reads all of these. pydantic refuses hour 24 and year 0 (422), and fails on a time
+  // whose zone moves it out of Python's years 1 to 9999 (an OverflowError, 500).
+  it('refuses an instant the API cannot read, though Date.parse can', () => {
+    for (const value of [
+      '2026-10-07T24:00:00Z',
+      '0000-06-01T10:00:00Z',
+      '0000-12-31T23:30:00-01:00',
+      '0001-01-01T00:00:00+01:00',
+      '9999-12-31T23:59:59-01:00',
+    ]) {
+      expect(() => parseStartCaptureRequest(withEvent({ scheduledStart: value })), value).toThrow(
+        'invalid start request: calendarEvent.scheduledStart is not an instant with a zone',
+      );
+    }
+    for (const value of [
+      '2026-10-07T23:59:59.999999Z',
+      '0001-01-01T01:00:00+01:00',
+      '9999-12-31T22:59:59-01:00',
+    ]) {
+      expect(parseStartCaptureRequest(withEvent({ scheduledEnd: value })), value).toEqual(
+        withEvent({ scheduledEnd: value }),
+      );
+    }
   });
 
   it('refuses a request that is not an object', () => {

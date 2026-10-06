@@ -10,6 +10,7 @@ import {
   MIC_DEAD_WARNING_MS,
   NO_AUDIO_WARNING_MS,
   START_SOURCES,
+  storedMeetingText,
 } from './capture';
 
 describe('the capture warning thresholds', () => {
@@ -73,5 +74,18 @@ describe('start sources', () => {
     for (const value of ['calendar', 'Manual', ' manual', '', 'toString', null, undefined, 3]) {
       expect(isStartSource(value)).toBe(false);
     }
+  });
+});
+
+describe('storedMeetingText', () => {
+  // The API drops U+0000 (Postgres refuses it), then trims with pydantic's strip_whitespace, which
+  // unlike trim() keeps a byte order mark and trims U+0085 (trimTerm in shared/vocabulary.ts).
+  it('is the text the API stores: U+0000 dropped, then trimmed as the API trims', () => {
+    const nul = String.fromCharCode(0);
+    const nextLine = String.fromCharCode(0x85);
+    const byteOrderMark = String.fromCharCode(0xfeff);
+    expect(storedMeetingText(`  Weekly${nul} sync ${nul}`)).toBe('Weekly sync');
+    expect(storedMeetingText(`${nul} ${nul}`)).toBe('');
+    expect(storedMeetingText(`${nextLine}Standup${byteOrderMark}`)).toBe(`Standup${byteOrderMark}`);
   });
 });
