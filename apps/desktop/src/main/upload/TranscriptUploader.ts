@@ -5,8 +5,13 @@ import { errorMessage, type Logger } from '../logger';
 import type { LocalMeeting, TranscriptStore } from '../store/TranscriptStore';
 import { Emitter } from '../util/emitter';
 
-/** What runs before the uploader's first tick (`TranscriptUploader.setBeforeFirstTick`). */
-export type BeforeFirstTick = () => void | Promise<void>;
+/**
+ * What runs before the uploader's first tick (`TranscriptUploader.setBeforeFirstTick`).
+ * `launchedAt` is when the uploader was built (ISO 8601, UTC), the same on every attempt: main
+ * builds it before anything can store a line (CaptureService takes it), so a line created before
+ * that instant is from an earlier run.
+ */
+export type BeforeFirstTick = (launchedAt: string) => void | Promise<void>;
 
 export interface TranscriptUploaderOptions {
   store: TranscriptStore;
@@ -50,6 +55,8 @@ export class TranscriptUploader {
   private beforeFirstTick: BeforeFirstTick | null = null;
   /** True from the moment the first tick starts: a hook set after that could not run first. */
   private ticked = false;
+  /** Handed to the hook on every attempt (`BeforeFirstTick`). */
+  private readonly launchedAt: string;
 
   constructor(private readonly options: TranscriptUploaderOptions) {
     this.intervalMs = options.intervalMs ?? 2_000;
@@ -57,6 +64,7 @@ export class TranscriptUploader {
     this.baseBackoffMs = options.baseBackoffMs ?? 2_000;
     this.maxBackoffMs = options.maxBackoffMs ?? 30_000;
     this.clock = options.clock ?? (() => new Date());
+    this.launchedAt = this.clock().toISOString();
     this.status = {
       state: 'idle',
       pending: options.store.countUnsyncedSegments(),
@@ -71,6 +79,14 @@ export class TranscriptUploader {
    * sink's startup settle (M2-T14b), so the holds a crash left are decided before any line goes
    * up. A failure is a failed tick (logged, backed off, shown in the status) and the hook runs
    * again on the next one: no line goes up before it succeeds, or one it would have hidden could.
+   *
+   * Trap for M2-T14b and M2-T23: the hook can run long after launch. The first attempt runs on
+   * start's 0 ms tick, before any window exists, but a failed one is retried on every later tick
+   * (2 s, doubling to 30 s), and a flush at Stop reaches it too. By then a Start, or an M2-T23
+   * resume, may hold mic lines for their call-audio twins. So the settle touches only holds on
+   * lines created before `launchedAt`, never every line `listHeldSegments()` lists: a live hold
+   * checked now finds no twin yet, is released, goes up in this same tick, and Postgres gets the
+   * echo text twice.
    *
    * A setter, not a constructor option: main builds the uploader before the capture runtime
    * (CaptureService takes it), and the echo sink that settles exists only inside that runtime's
@@ -203,7 +219,7 @@ export class TranscriptUploader {
 
   private async runBeforeFirstTick(hook: BeforeFirstTick): Promise<void> {
     try {
-      await hook();
+      await hook(this.launchedAt);
     } catch (error) {
       throw new Error(`could not run the step before the first upload: ${errorMessage(error)}`, {
         cause: error,

@@ -7,6 +7,7 @@ import { ApiError, type MeetingDto, type UploadApi } from '../api/ApiClient';
 import { createLogger } from '../logger';
 import { InMemoryTranscriptStore } from '../store/InMemoryTranscriptStore';
 import { SqliteTranscriptStore } from '../store/SqliteTranscriptStore';
+import type { TranscriptStore } from '../store/TranscriptStore';
 import { TranscriptUploader } from './TranscriptUploader';
 
 const logger = createLogger({ level: 'error', format: 'json', sink: () => undefined });
@@ -396,6 +397,19 @@ function manualClock(iso: string): { now: () => Date; set: (next: string) => voi
 
 const ENDED_AT = '2026-10-05T10:30:00Z';
 
+/**
+ * Stands in for the echo sink's settleAll (M2-T14b): each hold on a line stored before
+ * `launchedAt` is checked once against the stored call-audio lines, then released. A hold of this
+ * run is left alone: a retried settle can run while a capture holds lines for their twins.
+ */
+function settleHoldsBefore(store: TranscriptStore, launchedAt: string): void {
+  const launch = Date.parse(launchedAt);
+  const leftByACrash = store
+    .listHeldSegments()
+    .filter((held) => Date.parse(held.createdAt) < launch);
+  store.releaseSegments(leftByACrash.map((held) => held.id));
+}
+
 /** What each appendSegments call sent, as line ids. */
 function sentBatches(api: FakeApi): string[][] {
   return api.appendSegments.mock.calls.map((call) => call[1].map((s) => s.id));
@@ -561,12 +575,11 @@ describe('TranscriptUploader: no stranded lines (M2)', () => {
     // Built first and given the hook later, as main does: index.ts builds the uploader before the
     // capture runtime, whose M2-T14b slot sets the hook, then starts it.
     const uploader = new TranscriptUploader({ store, api, logger, clock: relaunched });
-    // Stands in for the echo sink's settleAll (M2-T14b): each hold is checked once against the
-    // stored call-audio lines, then released. Async, so a hook that is not awaited shows here.
-    uploader.setBeforeFirstTick(async () => {
+    // Async, so a hook that is not awaited shows here.
+    uploader.setBeforeFirstTick(async (launchedAt) => {
       await Promise.resolve();
       order.push('settle');
-      store.releaseSegments(store.listHeldSegments().map((s) => s.id));
+      settleHoldsBefore(store, launchedAt);
     });
     uploader.start();
     await vi.advanceTimersByTimeAsync(0);
@@ -614,6 +627,46 @@ describe('TranscriptUploader: no stranded lines (M2)', () => {
     await vi.advanceTimersByTimeAsync(1000);
     await uploader.flush();
     expect(settles).toBe(2);
+    uploader.stop();
+  });
+
+  it('hands a retried settle the instant it was built, so the holds of a capture started since stay held', async () => {
+    const clock = manualClock('2026-10-05T10:05:06.000Z');
+    const store = new InMemoryTranscriptStore(clock.now);
+    const api = fakeApi();
+    // Left by a kill -9: a mic line held for its call-audio twin, stored before this launch.
+    store.createMeeting({ id: 'm1', title: 'T', startedAt: '2026-10-05T10:00:00Z' });
+    store.appendSegment({ ...segment('m1', 2), createdAt: '2026-10-05T10:04:58.000Z' });
+    store.holdSegment('m1-seg-2', '2026-10-05T10:06:58.000Z');
+    store.markMeetingEnded('m1', ENDED_AT);
+    const uploader = new TranscriptUploader({
+      store,
+      api,
+      logger,
+      clock: clock.now,
+      baseBackoffMs: 3000,
+    });
+    const handed: string[] = [];
+    uploader.setBeforeFirstTick((launchedAt) => {
+      handed.push(launchedAt);
+      if (handed.length === 1) throw new Error('database is locked');
+      settleHoldsBefore(store, launchedAt);
+    });
+    uploader.start();
+    await vi.advanceTimersByTimeAsync(0);
+
+    // The user presses Start during the backoff, and a mic line waits for its call-audio twin.
+    clock.set('2026-10-05T10:05:08.000Z');
+    store.createMeeting({ id: 'm2', title: 'T', startedAt: '2026-10-05T10:05:07Z' });
+    store.appendSegment({ ...segment('m2', 2), createdAt: '2026-10-05T10:05:08.000Z' });
+    store.holdSegment('m2-seg-2', '2026-10-05T10:07:08.000Z');
+    clock.set('2026-10-05T10:05:09.000Z');
+    await vi.advanceTimersByTimeAsync(3000);
+
+    expect(handed).toEqual(['2026-10-05T10:05:06.000Z', '2026-10-05T10:05:06.000Z']);
+    expect(sentBatches(api)).toEqual([['m1-seg-2']]);
+    // Released now it would go up before its twin, and Postgres would get the echo text twice.
+    expect(store.listHeldSegments('m2').map((s) => s.id)).toEqual(['m2-seg-2']);
     uploader.stop();
   });
 

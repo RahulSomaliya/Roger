@@ -285,7 +285,10 @@ export interface TranscriptStore {
   releaseSegments(ids: readonly string[]): void;
   /**
    * Lines still held: not uploaded, not hidden, not rejected, with `upload_after` set, past or not.
-   * One meeting, or every meeting for the startup settle (holds a crash left behind).
+   * One meeting, or every meeting. Not only the holds a crash left: the startup settle (the
+   * uploader's `beforeFirstTick`) is retried after a failure and can run once a capture holds
+   * lines for their call-audio twins, so it keeps to lines created before the uploader's
+   * `launchedAt` (see `TranscriptUploader.setBeforeFirstTick`).
    */
   listHeldSegments(meetingId?: string): StoredSegment[];
   /**
