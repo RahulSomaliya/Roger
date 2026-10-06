@@ -12,7 +12,7 @@ import { AUDIO_SOURCES, type AudioSource } from '../../shared/transcript';
 import type { AudioSink } from '../capture/AudioFanout';
 import { AudioTimeline } from '../capture/AudioTimeline';
 import { errorMessage, type Logger } from '../logger';
-import type { JsonObject, TranscriptStore } from '../store/TranscriptStore';
+import type { CaptureEvent, JsonObject, TranscriptStore } from '../store/TranscriptStore';
 import { ensureMeetingAudioDir, resolveStoredAudioPath, storedAudioPath } from './audioPaths';
 import type { CompressJob } from './AudioCompressor';
 import { type FreeDiskBytes, freeDiskBytes, hasBackupRoom } from './diskGuard';
@@ -28,8 +28,18 @@ const MAX_FILE_BYTES = ((MAX_FILE_MS * PCM_SAMPLE_RATE) / 1_000) * BYTES_PER_SAM
 /** Readable by its owner only, in a 0700 folder (audioPaths.ts). */
 const PRIVATE_FILE_MODE = 0o600;
 
+/** The capture events saved when a recording's audio stops being kept: missedAudio reads them. */
+const BACKUP_PAUSED_EVENT = 'backup_paused';
+/** Its detail is `{ error: <code> }` (errorCode), never a path. */
+const BACKUP_FAILED_EVENT = 'backup_failed';
+/** errorCode's answer for an error with no Node code (a folder that is a link). */
+const UNKNOWN_ERROR_CODE = 'unknown';
+
+/** The free space the backup pauses below, for people: "2 GB". */
+const MIN_FREE_TEXT = `${BACKUP_MIN_FREE_BYTES / 1024 ** 3} GB`;
+
 const PAUSED_MESSAGE =
-  `Less than ${BACKUP_MIN_FREE_BYTES / 1024 ** 3} GB of disk is free, so Roger stopped keeping ` +
+  `Less than ${MIN_FREE_TEXT} of disk is free, so Roger stopped keeping ` +
   "this call's audio. The transcript goes on; free some space and the backup starts again.";
 
 /** What the backup needs of a recording that starts (CaptureService's RecordingStarted). */
@@ -398,7 +408,7 @@ export class AudioBackupWriter implements AudioSink {
         // Loud (M2 scope): the audio a gap re-run would need is not being kept.
         loud: true,
       };
-      this.event(rec, now, 'backup_paused', {
+      this.event(rec, now, BACKUP_PAUSED_EVENT, {
         freeBytes: free,
         minFreeBytes: BACKUP_MIN_FREE_BYTES,
       });
@@ -427,7 +437,7 @@ export class AudioBackupWriter implements AudioSink {
     rec.state = 'error';
     rec.message = `Roger stopped keeping this call's audio: ${errorMessage(error)}. The transcript goes on.`;
     rec.warning = null;
-    this.event(rec, now, 'backup_failed', { error: errorCode(error) });
+    this.event(rec, now, BACKUP_FAILED_EVENT, { error: errorCode(error) });
     this.options.logger.error('audio backup failed; the recording goes on without it', {
       meetingId: rec.meetingId,
       error: errorMessage(error),
@@ -497,5 +507,37 @@ function errorCode(error: unknown): string {
   if (error instanceof Error && 'code' in error && typeof error.code === 'string') {
     return error.code;
   }
-  return 'unknown';
+  return UNKNOWN_ERROR_CODE;
+}
+
+/** How a meeting's backup stopped keeping its audio, for its report. */
+export interface MissedAudio {
+  state: Extract<BackupState, 'paused' | 'error'>;
+  /** Ends a sentence: "less than 2 GB of disk was free". */
+  reason: string;
+}
+
+/**
+ * Whether a meeting's backup ever stopped keeping its audio, from the capture events the writer
+ * saved. AudioBackup.report reads it once the recording is over, after Stop and after a relaunch,
+ * when the writer's own state is gone: without it a backup that paused or failed before its first
+ * file reports `off`, which says config.json turned the backup off. A failure wins over a pause. A
+ * pause that ended (`backup_resumed`) still counts, as the minutes between were never kept; so do
+ * the events of every recording of a resumed meeting (M2 D7), as none marks where one starts.
+ */
+export function missedAudio(
+  events: readonly Pick<CaptureEvent, 'kind' | 'detail'>[],
+): MissedAudio | null {
+  let failed: Pick<CaptureEvent, 'detail'> | null = null;
+  let paused = false;
+  for (const event of events) {
+    if (event.kind === BACKUP_FAILED_EVENT) failed = event;
+    else if (event.kind === BACKUP_PAUSED_EVENT) paused = true;
+  }
+  if (failed !== null) {
+    const code = failed.detail.error;
+    const shown = typeof code === 'string' && code !== UNKNOWN_ERROR_CODE ? ` (${code})` : '';
+    return { state: 'error', reason: `Roger could not write it to disk${shown}` };
+  }
+  return paused ? { state: 'paused', reason: `less than ${MIN_FREE_TEXT} of disk was free` } : null;
 }

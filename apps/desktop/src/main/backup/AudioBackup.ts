@@ -1,11 +1,11 @@
-import type { BackupStatus } from '../../shared/capture';
+import type { BackupState, BackupStatus } from '../../shared/capture';
 import type { AudioSink } from '../capture/AudioFanout';
 import type { StatusContribution } from '../capture/CaptureService';
 import type { CaptureSettings } from '../config';
 import type { QuitHook } from '../lifecycle';
 import { errorMessage, type Logger } from '../logger';
 import type { TranscriptStore } from '../store/TranscriptStore';
-import { AudioBackupWriter, type BackupRecording } from './AudioBackupWriter';
+import { AudioBackupWriter, type BackupRecording, missedAudio } from './AudioBackupWriter';
 import { AudioCompressor, type RunTool } from './AudioCompressor';
 import { meetingAudioDir, removeMeetingAudioDir } from './audioPaths';
 import { audioKeep, AudioRetentionSweeper } from './AudioRetentionSweeper';
@@ -65,14 +65,9 @@ export class AudioBackup {
   private readonly compressor: AudioCompressor;
   private readonly sweeper: AudioRetentionSweeper;
   private launchWork: Promise<void> = Promise.resolve();
-  /** The meeting the status shows after Stop, until the next Start. */
+  /** The meeting the status shows after Stop, until the next Start: its report. */
   private lastMeetingId: string | null = null;
   private last: BackupStatus | null = null;
-  /**
-   * How the last recording's backup ended when that was not well (paused for a full disk, or a
-   * write failed): its status keeps saying so after Stop, though some audio may be kept.
-   */
-  private lastEnded: Pick<BackupStatus, 'state' | 'message'> | null = null;
 
   constructor(private readonly options: AudioBackupOptions) {
     const { capture, store, userData, settings, logger } = options;
@@ -139,7 +134,13 @@ export class AudioBackup {
     this.sweeper.start();
   }
 
-  /** One meeting's backup, for its capture report. */
+  /**
+   * One meeting's backup, for its capture report and, after Stop, the status: one answer, so the
+   * two never disagree. Once the recording is over it comes from the store alone, never from what
+   * this run remembers, so a relaunch says the same. A backup that paused or failed reads so from
+   * the writer's events (missedAudio): `off` would tell people config.json turned it off. Audio that
+   * is kept stays `kept`, so it can be seen and deleted, and its message says what is missing.
+   */
   report(meetingId: string): BackupStatus {
     const { store, settings } = this.options;
     if (this.writer.meetingId === meetingId) {
@@ -147,17 +148,14 @@ export class AudioBackup {
       if (live !== null) return live.status;
     }
     const files = store.listAudioFiles(meetingId);
+    const events = store.listCaptureEvents(meetingId);
+    const missed = missedAudio(events);
     if (files.length === 0) {
-      const deleted = store
-        .listCaptureEvents(meetingId)
-        .some((event) => event.kind === AUDIO_DELETED_EVENT);
-      return {
-        state: deleted ? 'deleted' : 'off',
-        bytes: 0,
-        keepUntil: null,
-        keptForRerun: false,
-        message: null,
-      };
+      const deleted = events.some((event) => event.kind === AUDIO_DELETED_EVENT);
+      if (deleted) return noAudio('deleted', null);
+      return missed === null
+        ? noAudio('off', null)
+        : noAudio(missed.state, `None of this call's audio was kept: ${missed.reason}.`);
     }
     const keep = audioKeep(
       store.getMeeting(meetingId)?.endedAt ?? null,
@@ -169,7 +167,7 @@ export class AudioBackup {
       bytes: files.reduce((sum, file) => sum + file.bytes, 0),
       keepUntil: keep.keepUntilMs === null ? null : new Date(keep.keepUntilMs).toISOString(),
       keptForRerun: keep.keptForRerun,
-      message: null,
+      message: missed === null ? null : `Part of this call's audio was not kept: ${missed.reason}.`,
     };
   }
 
@@ -187,7 +185,7 @@ export class AudioBackup {
    */
   refresh(meetingId: string): void {
     if (this.writer.meetingId !== null || this.lastMeetingId !== meetingId) return;
-    this.last = this.lastStatus(meetingId);
+    this.last = this.report(meetingId);
     this.options.capture.refreshStatus();
   }
 
@@ -244,20 +242,9 @@ export class AudioBackup {
   }
 
   private recordingEnded(meetingId: string): void {
-    const final = this.writer.live()?.status ?? null;
     this.writer.end(meetingId);
     this.lastMeetingId = meetingId;
-    this.lastEnded =
-      final !== null && (final.state === 'paused' || final.state === 'error')
-        ? { state: final.state, message: final.message }
-        : null;
-    this.last = this.lastStatus(meetingId);
-  }
-
-  private lastStatus(meetingId: string): BackupStatus {
-    const status = this.report(meetingId);
-    if (this.lastEnded === null || status.state === 'deleted') return status;
-    return { ...status, ...this.lastEnded };
+    this.last = this.report(meetingId);
   }
 
   /** Read twice a second while recording: memory only, never the store. */
@@ -271,4 +258,9 @@ export class AudioBackup {
     }
     return this.last === null ? {} : { backup: this.last };
   }
+}
+
+/** A meeting with no audio on disk. */
+function noAudio(state: BackupState, message: string | null): BackupStatus {
+  return { state, bytes: 0, keepUntil: null, keptForRerun: false, message };
 }

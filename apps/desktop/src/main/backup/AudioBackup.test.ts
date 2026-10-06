@@ -11,6 +11,7 @@ import { createLogger } from '../logger';
 import { InMemoryTranscriptStore } from '../store/InMemoryTranscriptStore';
 import type { TranscriptStore } from '../store/TranscriptStore';
 import { AudioBackup, type AudioBackupCapture } from './AudioBackup';
+import { DISK_CHECK_INTERVAL_MS } from './AudioBackupWriter';
 import type { RunTool } from './AudioCompressor';
 import { audioRoot, meetingAudioDir, storedAudioPath } from './audioPaths';
 import {
@@ -179,6 +180,85 @@ describe('AudioBackup', () => {
     expect(fake.status()).not.toHaveProperty('warnings');
     // Paused for the whole call: nothing is kept, and the status says why.
     expect(fake.status().backup).toMatchObject({ state: 'paused', bytes: 0 });
+  });
+
+  it('reports a backup paused for the whole call as paused, after Stop and after a relaunch', () => {
+    freeBytes = BACKUP_MIN_FREE_BYTES - 1;
+    const fake = fakeCapture();
+    const backup = backupFor(fake.capture);
+    backup.start();
+
+    record(fake);
+
+    const report = backup.report(MEETING);
+    // Never `off`: that says config.json turned the backup off.
+    expect(report).toEqual({
+      state: 'paused',
+      bytes: 0,
+      keepUntil: null,
+      keptForRerun: false,
+      message: "None of this call's audio was kept: less than 2 GB of disk was free.",
+    });
+    expect(fake.status().backup).toEqual(report);
+    // Read from the store, so the next launch says the same.
+    expect(backupFor(fakeCapture().capture).report(MEETING)).toEqual(report);
+  });
+
+  it('reports a backup that failed before its first file as an error, with its code', () => {
+    // mkdir of the audio root fails with EEXIST, as an unwritable userData would with EACCES.
+    writeFileSync(audioRoot(userData), 'in the way');
+    const fake = fakeCapture();
+    const backup = backupFor(fake.capture);
+    backup.start();
+
+    record(fake);
+
+    const report = backup.report(MEETING);
+    expect(report).toEqual({
+      state: 'error',
+      bytes: 0,
+      keepUntil: null,
+      keptForRerun: false,
+      message: "None of this call's audio was kept: Roger could not write it to disk (EEXIST).",
+    });
+    expect(fake.status().backup).toEqual(report);
+    expect(backupFor(fakeCapture().capture).report(MEETING)).toEqual(report);
+  });
+
+  it.each([
+    ['paused until Stop', false],
+    ['paused, then resumed', true],
+  ])('reports kept audio as missing part of the call when the backup %s', async (_how, resume) => {
+    const fake = fakeCapture();
+    const backup = backupFor(fake.capture);
+    backup.start();
+    store.createMeeting({ id: MEETING, title: 'T', startedAt: new Date(T0).toISOString() });
+    fake.start(MEETING, T0);
+    now = T0 + 100;
+    fake.chunk('mic', 100, T0);
+    freeBytes = BACKUP_MIN_FREE_BYTES - 1;
+    now = T0 + DISK_CHECK_INTERVAL_MS;
+    fake.chunk('mic', 100, now - 100);
+    if (resume) {
+      freeBytes = BACKUP_MIN_FREE_BYTES;
+      now = T0 + 2 * DISK_CHECK_INTERVAL_MS;
+      fake.chunk('mic', 100, now - 100);
+    }
+    store.markMeetingEnded(MEETING, new Date(now).toISOString());
+    fake.end(MEETING);
+    await backup.idle();
+
+    const report = backup.report(MEETING);
+    // Still `kept`, so the audio that is there can be seen and deleted.
+    expect(report).toEqual({
+      state: 'kept',
+      bytes: store.listAudioFiles(MEETING).reduce((sum, file) => sum + file.bytes, 0),
+      keepUntil: new Date(now + 7 * DAY_MS).toISOString(),
+      keptForRerun: false,
+      message: "Part of this call's audio was not kept: less than 2 GB of disk was free.",
+    });
+    expect(report.bytes).toBeGreaterThan(0);
+    expect(fake.status().backup).toEqual(report);
   });
 
   it('keeps no audio when config.json turns the backup off', () => {
