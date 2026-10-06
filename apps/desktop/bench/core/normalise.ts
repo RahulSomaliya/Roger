@@ -10,7 +10,9 @@
  *  2. Curly quotes become straight.
  *  3. A comma between digit groups goes: `1,000` becomes `1000`.
  *  4. `$5` becomes `5 dollars`, with a scale word kept by its number (`$5 million` becomes
- *     `5 million dollars`).
+ *     `5 million dollars`) and the suffixes `k`, `m`, `b` and `bn` read as scale words (`$5M` is
+ *     `5 million dollars` too). A letter or digit straight after the amount means it is none:
+ *     `$5s` loses only its `$`, by rule 8.
  *  5. `%` becomes `percent`.
  *  6. A point between two letters goes, so a dotted abbreviation is one word (`U.S.` is `us`).
  *  7. Hyphens, dashes and slashes become spaces.
@@ -39,10 +41,11 @@ export function normalise(text: string): string[] {
     .replace(/[\u2018\u2019\u201a\u201b\u2032\u02bc]/g, "'")
     .replace(/[\u201c\u201d\u201e\u201f\u2033]/g, '"')
     .replace(/(?<=\d),(?=\d{3}(?!\d))/g, '')
-    .replace(
-      /\$\s?(\d+(?:\.\d+)?)(\s+(?:hundred|thousand|million|billion|trillion)\b)?/g,
-      '$1$2 dollars',
-    )
+    .replace(DOLLAR_AMOUNT, (_amount, digits: string, scale?: string, suffix?: string) => {
+      const scaleWord = scale ?? DOLLAR_SUFFIXES.get(suffix ?? '');
+      // Spaces around: "US$5" is "us 5 dollars", not "us5".
+      return scaleWord === undefined ? ` ${digits} dollars ` : ` ${digits} ${scaleWord} dollars `;
+    })
     .replace(/%/g, ' percent ')
     .replace(/(?<=\p{L})\.(?=\p{L})/gu, '')
     .replace(/[\p{Pd}/]/gu, ' ')
@@ -57,8 +60,23 @@ export function normalise(text: string): string[] {
   return numbersToDigits(words);
 }
 
+/**
+ * Rule 4: `$`, a number, then a scale word or a suffix stuck to the number. The lookahead ends the
+ * amount: without it "$5m" became "5 dollarsm", a word no rule allows, which never matches "five
+ * million dollars". `\.\d` in it stops "$5.5x" backtracking to "$5" followed by ".5x".
+ */
+const DOLLAR_AMOUNT =
+  /\$\s?(\d+(?:\.\d+)?)(?:\s*(hundred|thousand|million|billion|trillion)|(k|m|bn|b))?(?![\p{L}\p{N}]|\.\d)/gu;
+
 // Maps, never object literals: a transcript word such as "constructor" must not find
 // Object.prototype's members and read as a number or a spelling.
+const DOLLAR_SUFFIXES: ReadonlyMap<string, string> = new Map([
+  ['k', 'thousand'],
+  ['m', 'million'],
+  ['b', 'billion'],
+  ['bn', 'billion'],
+]);
+
 const FILLERS: ReadonlySet<string> = new Set(['um', 'uh', 'er', 'ah', 'hmm', 'mm']);
 
 const SPELLINGS: ReadonlyMap<string, readonly string[]> = new Map([

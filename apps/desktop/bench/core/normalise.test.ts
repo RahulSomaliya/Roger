@@ -127,10 +127,26 @@ describe('normalise (version 1)', () => {
     expect(n('$5, $1,500.50 and $5 million')).toBe('5 dollars 1500.50 dollars and 5000000 dollars');
   });
 
+  it('reads the suffixes k, m, b and bn after a dollar amount as scale words', () => {
+    expect(n('$10K, $5m, $5M, $2.5b and $5bn')).toBe(
+      '10000 dollars 5000000 dollars 5000000 dollars 2500000000 dollars and 5000000000 dollars',
+    );
+    expect(n('$5million')).toBe('5000000 dollars');
+  });
+
+  it('never glues dollars onto a word: an amount must end where its number does', () => {
+    // A letter straight after the number is not a dollar amount, so the $ goes by rule 8.
+    expect(n('$5s, $10ish and $5.5x')).toBe('5s 10ish and 5.5x');
+    expect(n('$5 more, $5 t-shirts')).toBe('5 dollars more 5 dollars t shirts');
+    expect(n('US$5 each')).toBe('us 5 dollars each');
+  });
+
   it('makes what was said and what a vendor wrote read the same', () => {
     const pairs: [said: string, written: string][] = [
       ['twenty five percent', '25%'],
       ['five million dollars', '$5 million'],
+      ['five million dollars', '$5M'],
+      ['ten thousand dollars budget', '$10k budget'],
       ['two point five', '2.5'],
       ['one thousand five hundred', '1,500'],
       ['the twenty first', 'the 21st'],
