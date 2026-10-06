@@ -158,14 +158,20 @@ const MIGRATIONS: readonly string[] = [
 /**
  * A line can upload when it is not uploaded, not rejected, not hidden and not held: `upload_after`
  * unset or past `:now`. The list and the count share it, or "N lines waiting" never reaches zero
- * while a line is hidden. The compare is on text, which is right only because `holdSegment` writes
- * every instant in `toISOString` form (storeChecks.canonicalInstant). `canUpload` in
- * InMemoryTranscriptStore is its twin: change both.
+ * while a line is hidden; so does `meetingsNeedingSync`, or a meeting ended remotely comes back for
+ * a line the uploader then finds nothing to send for (or never comes back for one it would). The
+ * compare is on text, which is right only because `holdSegment` writes every instant in
+ * `toISOString` form (storeChecks.canonicalInstant). `canUpload` in InMemoryTranscriptStore is its
+ * twin: change both.
  */
 const CAN_UPLOAD = `synced_at IS NULL AND rejected_at IS NULL AND suppressed_reason IS NULL
   AND (upload_after IS NULL OR upload_after <= :now)`;
 
-/** Held: waiting on the echo sink. The same lines `listHeldSegments` settles at startup. */
+/**
+ * Held: waiting on the echo sink. The same lines `listHeldSegments` settles at startup and
+ * `countHeldSegments` counts for the uploader's end rule. `isHeld` in InMemoryTranscriptStore is
+ * its twin: change both.
+ */
 const HELD = `upload_after IS NOT NULL AND synced_at IS NULL AND rejected_at IS NULL
   AND suppressed_reason IS NULL`;
 
@@ -173,6 +179,8 @@ type Row = Record<string, SQLOutputValue>;
 
 export class SqliteTranscriptStore implements TranscriptStore {
   private readonly db: DatabaseSync;
+  /** Lines the uploader is sending (markSegmentsSent); in memory on purpose, see there. */
+  private readonly sent = new Set<string>();
   private readonly statements: {
     insertMeeting: StatementSync;
     getMeeting: StatementSync;
@@ -201,6 +209,7 @@ export class SqliteTranscriptStore implements TranscriptStore {
     release: StatementSync;
     heldSegments: StatementSync;
     heldSegmentsOfMeeting: StatementSync;
+    countHeld: StatementSync;
     saveSttUsage: StatementSync;
     getSttUsage: StatementSync;
     insertGap: StatementSync;
@@ -272,8 +281,14 @@ export class SqliteTranscriptStore implements TranscriptStore {
       resetSync: this.db.prepare(
         `UPDATE segments SET synced_at = NULL WHERE meeting_id = ? AND rejected_at IS NULL`,
       ),
+      // A meeting ended remotely comes back while it has a line that can upload; the uploader then
+      // re-sends its end (TranscriptStore.listMeetingsNeedingSync). The subquery is correlated on
+      // purpose: CAN_UPLOAD's columns are the segment's, and `meetings` has none of them.
       meetingsNeedingSync: this.db.prepare(
-        `SELECT * FROM meetings WHERE remote_state != 'ended' ORDER BY started_at ASC, id ASC`,
+        `SELECT * FROM meetings
+         WHERE remote_state != 'ended'
+            OR EXISTS (SELECT 1 FROM segments WHERE segments.meeting_id = meetings.id AND ${CAN_UPLOAD})
+         ORDER BY started_at ASC, id ASC`,
       ),
       insertSegment: this.db.prepare(
         `INSERT OR IGNORE INTO segments
@@ -302,7 +317,8 @@ export class SqliteTranscriptStore implements TranscriptStore {
          ORDER BY start_ms ASC, id ASC`,
       ),
       // Echo writes touch only lines not marked uploaded: Postgres keeps what it was sent.
-      // `synced_at IS NULL` cannot see an upload in flight: see TranscriptStore.suppressSegment.
+      // `synced_at IS NULL` cannot see a request still out: the methods refuse a sent line first
+      // (TranscriptStore.markSegmentsSent).
       suppress: this.db.prepare(
         `UPDATE segments SET suppressed_reason = ?, echo_of = ?, upload_after = NULL
          WHERE id = ? AND synced_at IS NULL`,
@@ -329,6 +345,9 @@ export class SqliteTranscriptStore implements TranscriptStore {
       heldSegmentsOfMeeting: this.db.prepare(
         `SELECT * FROM segments WHERE meeting_id = ? AND ${HELD}
          ORDER BY start_ms ASC, source ASC, id ASC`,
+      ),
+      countHeld: this.db.prepare(
+        `SELECT COUNT(*) AS n FROM segments WHERE meeting_id = ? AND ${HELD}`,
       ),
       saveSttUsage: this.db.prepare(
         `INSERT INTO stt_usage
@@ -458,7 +477,7 @@ export class SqliteTranscriptStore implements TranscriptStore {
   }
 
   listMeetingsNeedingSync(): LocalMeeting[] {
-    return this.statements.meetingsNeedingSync.all().map(rowToMeeting);
+    return this.statements.meetingsNeedingSync.all({ now: this.now() }).map(rowToMeeting);
   }
 
   appendSegment(segment: TranscriptSegment, origin: SegmentOrigin = 'live'): void {
@@ -483,15 +502,22 @@ export class SqliteTranscriptStore implements TranscriptStore {
       .map(rowToSegment);
   }
 
+  markSegmentsSent(ids: readonly string[]): void {
+    for (const id of ids) this.sent.add(id);
+  }
+
   markSegmentsSynced(ids: string[], syncedAt: string): void {
     if (ids.length === 0) return;
     this.transaction(() => {
       for (const id of ids) this.statements.markSynced.run(syncedAt, id);
     });
+    // After the commit: a failed write keeps the lines refused, as a failed request does.
+    for (const id of ids) this.sent.delete(id);
   }
 
   markSegmentRejected(id: string, reason: string, rejectedAt: string): void {
     this.statements.markRejected.run(rejectedAt, reason, id);
+    this.sent.delete(id);
   }
 
   countUnsyncedSegments(): number {
@@ -523,11 +549,13 @@ export class SqliteTranscriptStore implements TranscriptStore {
   }
 
   suppressSegment(id: string, reason: SuppressedReason, echoOf: string): boolean {
+    if (this.sent.has(id)) return false;
     return this.statements.suppress.run(reason, echoOf, id).changes > 0;
   }
 
   trimSegment(id: string, trim: SegmentTrim): boolean {
     checkTrim(id, trim);
+    if (this.sent.has(id)) return false;
     const words = trim.words === null ? null : JSON.stringify(trim.words);
     return this.statements.trim.run(trim.text, words, trim.echoOf, id).changes > 0;
   }
@@ -538,6 +566,7 @@ export class SqliteTranscriptStore implements TranscriptStore {
 
   holdSegment(id: string, uploadAfter: string): boolean {
     const until = canonicalInstant(uploadAfter, `hold of segment ${id}`);
+    if (this.sent.has(id)) return false;
     return this.statements.hold.run(until, id).changes > 0;
   }
 
@@ -554,6 +583,10 @@ export class SqliteTranscriptStore implements TranscriptStore {
         ? this.statements.heldSegments.all()
         : this.statements.heldSegmentsOfMeeting.all(meetingId);
     return rows.map(rowToStoredSegment);
+  }
+
+  countHeldSegments(meetingId: string): number {
+    return Number(this.statements.countHeld.get(meetingId)?.n ?? 0);
   }
 
   saveSttUsage(usage: MeetingSttUsage): void {

@@ -377,6 +377,77 @@ describe.each([
     store.close();
   });
 
+  it('lists a meeting ended remotely again while it has a line that can upload, and only then', () => {
+    const { store, clock } = openWithMeeting();
+    const needingSync = (): string[] => store.listMeetingsNeedingSync().map((m) => m.id);
+    // Ended remotely with every line uploaded: its lines must not bring m1 back.
+    store.createMeeting({ id: 'm0', title: 'T', startedAt: '2026-10-06T08:00:00.000Z' });
+    store.appendSegment(segment(9, { meetingId: 'm0' }));
+    store.markSegmentsSynced(['seg-9'], T0);
+    store.markMeetingEnded('m0', T0);
+    store.setMeetingRemoteState('m0', 'ended');
+    // Not ended remotely: listed whatever its lines, as in M1.
+    store.createMeeting({ id: 'm2', title: 'T', startedAt: '2026-10-06T09:30:00.000Z' });
+    store.appendSegment(segment(1));
+    store.markSegmentsSynced(['seg-1'], T0);
+    store.markMeetingEnded('m1', T0);
+    store.setMeetingRemoteState('m1', 'ended');
+    expect(needingSync()).toEqual(['m2']);
+
+    // Lines that cannot upload leave it alone: hidden, rejected, held until a later cap.
+    store.appendSegment(segment(2));
+    store.suppressSegment('seg-2', 'echo', 'sys-2');
+    store.appendSegment(segment(3));
+    store.markSegmentRejected('seg-3', 'bad', T0);
+    store.appendSegment(segment(4));
+    store.holdSegment('seg-4', '2026-10-06T10:02:00.000Z');
+    store.appendSegment(segment(5));
+    store.holdSegment('seg-5', '2026-10-06T10:02:00.000Z');
+    expect(needingSync()).toEqual(['m2']);
+
+    // M1 dropped a meeting ended remotely for good, which stranded each of these lines.
+    store.releaseSegments(['seg-4']);
+    expect(needingSync()).toEqual(['m1', 'm2']);
+    store.markSegmentsSynced(['seg-4'], T0);
+    expect(needingSync()).toEqual(['m2']);
+    clock.set('2026-10-06T10:02:00.000Z'); // seg-5's cap passes
+    expect(needingSync()).toEqual(['m1', 'm2']);
+    store.markSegmentsSynced(['seg-5'], T0);
+    store.unhideSegment('seg-2');
+    expect(needingSync()).toEqual(['m1', 'm2']);
+    store.markSegmentsSynced(['seg-2'], T0);
+    store.appendSegment(segment(6), 'rerun');
+    expect(needingSync()).toEqual(['m1', 'm2']);
+    store.markSegmentsSynced(['seg-6'], T0);
+    expect(needingSync()).toEqual(['m2']);
+    store.close();
+  });
+
+  it('counts the lines a meeting still holds, past their cap or not, as the settle lists them', () => {
+    const { store, clock } = openWithMeeting();
+    store.createMeeting({ id: 'm2', title: 'T', startedAt: '2026-10-06T09:30:00.000Z' });
+    for (const n of [1, 2, 3, 4, 5]) store.appendSegment(segment(n));
+    store.appendSegment(segment(6, { meetingId: 'm2' }));
+    store.appendSegment(segment(7)); // never held
+    for (const id of ['seg-1', 'seg-2', 'seg-3', 'seg-4', 'seg-5', 'seg-6']) {
+      expect(store.holdSegment(id, '2026-10-06T10:02:00.000Z')).toBe(true);
+    }
+    store.suppressSegment('seg-3', 'echo', 'sys-3'); // a hide ends the hold
+    store.markSegmentRejected('seg-4', 'bad', T0);
+    store.markSegmentsSynced(['seg-5'], T0);
+    expect(store.countHeldSegments('m1')).toBe(2);
+
+    // Past its cap a line can upload, and it still counts until it is uploaded or released.
+    clock.set('2026-10-06T10:05:00.000Z');
+    expect(store.countHeldSegments('m1')).toBe(2);
+    expect(store.listHeldSegments('m1').map((s) => s.id)).toEqual(['seg-1', 'seg-2']);
+    store.releaseSegments(['seg-1']);
+    expect(store.countHeldSegments('m1')).toBe(1);
+    expect(store.countHeldSegments('m2')).toBe(1);
+    expect(store.countHeldSegments('missing')).toBe(0);
+    store.close();
+  });
+
   it('never holds, hides or trims a line already uploaded: Postgres keeps it as it was sent', () => {
     const { store } = openWithMeeting();
     store.appendSegment(segment(1));
@@ -398,24 +469,31 @@ describe.each([
     store.close();
   });
 
-  it('cannot see an upload in flight: a line hidden or trimmed after the uploader listed it is still stamped synced', () => {
+  it('refuses to hide, trim or hold a line the uploader has sent, until it is uploaded or rejected', () => {
     const { store } = openWithMeeting();
-    store.appendSegment(segment(1));
-    store.appendSegment(segment(2));
+    for (const n of [1, 2, 3]) store.appendSegment(segment(n));
     const sending = store.listUnsyncedSegments('m1', 10).map((s) => s.id); // the uploader's batch
-    // The call-audio twins land while appendSegments is still open: the store says yes to both.
-    expect(store.suppressSegment('seg-1', 'echo', 'sys-1')).toBe(true);
+    store.markSegmentsSent(sending); // the request goes out
+    // The call-audio twins land while it is out: Postgres may already hold the text as sent, so a
+    // hide or trim here would make the local copy disagree with it.
+    expect(store.suppressSegment('seg-1', 'echo', 'sys-1')).toBe(false);
+    expect(store.trimSegment('seg-2', { text: 'line', words: null, echoOf: 'sys-2' })).toBe(false);
+    expect(store.holdSegment('seg-3', '2026-10-06T10:02:00.000Z')).toBe(false);
+    expect(store.getSegment('seg-1')).toMatchObject({ suppressedReason: null, echoOf: null });
+    expect(store.getSegment('seg-2')).toMatchObject({ text: 'line 2', originalText: null });
+    expect(store.getSegment('seg-3')?.uploadAfter).toBeNull();
+    // A failed request is retried: sent lines still wait and still upload.
+    expect(store.listUnsyncedSegments('m1', 10).map((s) => s.id)).toEqual(sending);
+    expect(store.countUnsyncedSegments()).toBe(3);
+
+    store.markSegmentsSynced(['seg-1', 'seg-2'], T0);
+    store.markSegmentRejected('seg-3', 'text too short', T0);
+    expect(store.suppressSegment('seg-1', 'echo', 'sys-1')).toBe(false); // uploaded, as before
+    // A rejected line never reaches Postgres, so the mark ends with the rejection.
+    expect(store.suppressSegment('seg-3', 'echo', 'sys-3')).toBe(true);
+    // Postgres lost the meeting: its lines may change again until the uploader re-sends them.
+    store.resetSyncForMeeting('m1');
     expect(store.trimSegment('seg-2', { text: 'line', words: null, echoOf: 'sys-2' })).toBe(true);
-    store.markSegmentsSynced(sending, T0); // the request returns
-    // Postgres holds both lines as they were sent, while the local rows say hidden and trimmed.
-    // Closing this window is M2-T3b's or M2-T14b's (TranscriptStore.suppressSegment): change this
-    // test with that fix.
-    expect(store.getSegment('seg-1')).toMatchObject({ suppressedReason: 'echo', syncedAt: T0 });
-    expect(store.getSegment('seg-2')).toMatchObject({
-      text: 'line',
-      originalText: 'line 2',
-      syncedAt: T0,
-    });
     store.close();
   });
 

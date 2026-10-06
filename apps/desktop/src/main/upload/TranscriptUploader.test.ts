@@ -1,8 +1,13 @@
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 import type { TranscriptSegment } from '../../shared/transcript';
 import { ApiError, type MeetingDto, type UploadApi } from '../api/ApiClient';
 import { createLogger } from '../logger';
 import { InMemoryTranscriptStore } from '../store/InMemoryTranscriptStore';
+import { SqliteTranscriptStore } from '../store/SqliteTranscriptStore';
+import type { TranscriptStore } from '../store/TranscriptStore';
 import { TranscriptUploader } from './TranscriptUploader';
 
 const logger = createLogger({ level: 'error', format: 'json', sink: () => undefined });
@@ -376,5 +381,409 @@ describe('TranscriptUploader', () => {
     expect(api.createMeeting).toHaveBeenCalledTimes(2);
     expect(store.countUnsyncedSegments()).toBe(0);
     uploader.stop();
+  });
+});
+
+/** A clock the test moves, for hold caps (the store decides with it whether a cap has passed). */
+function manualClock(iso: string): { now: () => Date; set: (next: string) => void } {
+  let current = new Date(iso);
+  return {
+    now: () => current,
+    set: (next) => {
+      current = new Date(next);
+    },
+  };
+}
+
+const ENDED_AT = '2026-10-05T10:30:00Z';
+
+/**
+ * Stands in for the echo sink's settleAll (M2-T14b): each hold on a line stored before
+ * `launchedAt` is checked once against the stored call-audio lines, then released. A hold of this
+ * run is left alone: a retried settle can run while a capture holds lines for their twins.
+ */
+function settleHoldsBefore(store: TranscriptStore, launchedAt: string): void {
+  const launch = Date.parse(launchedAt);
+  const leftByACrash = store
+    .listHeldSegments()
+    .filter((held) => Date.parse(held.createdAt) < launch);
+  store.releaseSegments(leftByACrash.map((held) => held.id));
+}
+
+/** What each appendSegments call sent, as line ids. */
+function sentBatches(api: FakeApi): string[][] {
+  return api.appendSegments.mock.calls.map((call) => call[1].map((s) => s.id));
+}
+
+describe('TranscriptUploader: no stranded lines (M2)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('uploads re-run lines added after the meeting ended remotely, then re-sends its end', async () => {
+    const store = new InMemoryTranscriptStore();
+    const api = fakeApi();
+    store.createMeeting({ id: 'm1', title: 'T', startedAt: '2026-10-05T10:00:00Z' });
+    store.appendSegment(segment('m1', 0));
+    store.markMeetingEnded('m1', ENDED_AT);
+    const uploader = new TranscriptUploader({ store, api, logger });
+    await uploader.flush();
+    expect(store.getMeeting('m1')?.remoteState).toBe('ended');
+
+    // The gap re-run (M2-T16) adds the words the live stream lost, after the meeting ended.
+    store.appendSegment(segment('m1', 3), 'rerun');
+    store.appendSegment(segment('m1', 5), 'rerun');
+    await uploader.flush();
+
+    expect(sentBatches(api)).toEqual([['m1-seg-0'], ['m1-seg-3', 'm1-seg-5']]);
+    // Only the line's own fields go up: its origin is local.
+    expect(api.appendSegments.mock.calls[1]?.[1]).toEqual([segment('m1', 3), segment('m1', 5)]);
+    expect(api.createMeeting).toHaveBeenCalledTimes(1);
+    expect(api.endMeeting.mock.calls).toEqual([
+      ['m1', ENDED_AT],
+      ['m1', ENDED_AT],
+    ]);
+    expect(store.getMeeting('m1')?.remoteState).toBe('ended');
+    expect(uploader.getStatus()).toMatchObject({ state: 'idle', pending: 0 });
+  });
+
+  it('uploads a line unhidden after the meeting ended remotely, and re-sends its end', async () => {
+    const store = new InMemoryTranscriptStore();
+    const api = fakeApi();
+    store.createMeeting({ id: 'm1', title: 'T', startedAt: '2026-10-05T10:00:00Z' });
+    store.appendSegment(segment('m1', 1)); // call audio
+    store.appendSegment(segment('m1', 2)); // the mic heard it too
+    store.suppressSegment('m1-seg-2', 'echo', 'm1-seg-1');
+    store.markMeetingEnded('m1', ENDED_AT);
+    const uploader = new TranscriptUploader({ store, api, logger });
+    await uploader.flush();
+    expect(sentBatches(api)).toEqual([['m1-seg-1']]);
+
+    // The user says it was not an echo.
+    expect(store.unhideSegment('m1-seg-2')).toBe(true);
+    await uploader.flush();
+
+    expect(sentBatches(api)).toEqual([['m1-seg-1'], ['m1-seg-2']]);
+    expect(api.endMeeting).toHaveBeenCalledTimes(2);
+    expect(store.getMeeting('m1')?.remoteState).toBe('ended');
+  });
+
+  it('does not send end while the meeting holds lines, and sends it once they are released', async () => {
+    const store = new InMemoryTranscriptStore();
+    const api = fakeApi();
+    store.createMeeting({ id: 'm1', title: 'T', startedAt: '2026-10-05T10:00:00Z' });
+    store.appendSegment(segment('m1', 0));
+    store.appendSegment(segment('m1', 2));
+    // A mic line waiting for the call-audio stream's watermark (M2 D2), cap far ahead.
+    store.holdSegment('m1-seg-2', '2099-01-01T00:00:00.000Z');
+    store.markMeetingEnded('m1', ENDED_AT);
+    const uploader = new TranscriptUploader({ store, api, logger });
+
+    await uploader.flush();
+    await uploader.flush();
+    expect(sentBatches(api)).toEqual([['m1-seg-0']]);
+    expect(api.endMeeting).not.toHaveBeenCalled();
+    expect(store.getMeeting('m1')?.remoteState).toBe('created');
+    expect(store.listMeetingsNeedingSync().map((m) => m.id)).toEqual(['m1']);
+
+    store.releaseSegments(['m1-seg-2']);
+    await uploader.flush();
+    expect(sentBatches(api)).toEqual([['m1-seg-0'], ['m1-seg-2']]);
+    expect(api.endMeeting).toHaveBeenCalledExactlyOnceWith('m1', ENDED_AT);
+    expect(store.getMeeting('m1')?.remoteState).toBe('ended');
+  });
+
+  it('neither creates nor discards an ended meeting whose only line is held, and ends it after the cap', async () => {
+    const clock = manualClock('2026-10-05T10:30:00.000Z');
+    const store = new InMemoryTranscriptStore(clock.now);
+    const api = fakeApi();
+    store.createMeeting({ id: 'm1', title: 'T', startedAt: '2026-10-05T10:00:00Z' });
+    store.appendSegment(segment('m1', 0));
+    store.holdSegment('m1-seg-0', '2026-10-05T10:32:00.000Z');
+    store.markMeetingEnded('m1', ENDED_AT);
+    const uploader = new TranscriptUploader({ store, api, logger, clock: clock.now });
+
+    await uploader.flush();
+    expect(store.getMeeting('m1')?.remoteState).toBe('pending');
+    expect(api.createMeeting).not.toHaveBeenCalled();
+    expect(api.endMeeting).not.toHaveBeenCalled();
+
+    // The call-audio stream never caught up: the cap lets the line go, uncompared.
+    clock.set('2026-10-05T10:32:00.000Z');
+    await uploader.flush();
+    expect(api.createMeeting).toHaveBeenCalledTimes(1);
+    expect(sentBatches(api)).toEqual([['m1-seg-0']]);
+    expect(api.endMeeting).toHaveBeenCalledExactlyOnceWith('m1', ENDED_AT);
+    expect(store.getMeeting('m1')?.remoteState).toBe('ended');
+  });
+
+  it('does not touch a meeting again once it has nothing to upload', async () => {
+    const store = new InMemoryTranscriptStore();
+    const api = fakeApi();
+    store.createMeeting({ id: 'm1', title: 'T', startedAt: '2026-10-05T10:00:00Z' });
+    store.appendSegment(segment('m1', 0));
+    store.appendSegment(segment('m1', 1));
+    store.appendSegment(segment('m1', 2));
+    store.markSegmentRejected('m1-seg-0', 'text too short', '2026-10-05T10:10:00.000Z');
+    store.suppressSegment('m1-seg-2', 'echo', 'm1-seg-1');
+    store.markMeetingEnded('m1', ENDED_AT);
+    const uploader = new TranscriptUploader({ store, api, logger });
+    await uploader.flush();
+    expect(sentBatches(api)).toEqual([['m1-seg-1']]);
+    const calls = (): number[] => [
+      api.createMeeting.mock.calls.length,
+      api.appendSegments.mock.calls.length,
+      api.endMeeting.mock.calls.length,
+    ];
+    expect(calls()).toEqual([1, 1, 1]);
+
+    // A late line that is held is not one that can upload yet either.
+    store.appendSegment(segment('m1', 4));
+    store.holdSegment('m1-seg-4', '2099-01-01T00:00:00.000Z');
+    await uploader.flush();
+    await uploader.flush();
+
+    expect(calls()).toEqual([1, 1, 1]);
+    expect(store.listMeetingsNeedingSync()).toEqual([]);
+  });
+
+  it('settles the holds a kill -9 left before its first tick, so a relaunch 6 s later uploads them', async () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'roger-uploader-')), 'roger.sqlite');
+    const crashed = new SqliteTranscriptStore(path, () => new Date('2026-10-05T10:05:00.000Z'));
+    crashed.createMeeting({ id: 'm1', title: 'T', startedAt: '2026-10-05T10:00:00Z' });
+    crashed.appendSegment(segment('m1', 1));
+    for (const n of [2, 4]) {
+      crashed.appendSegment(segment('m1', n));
+      crashed.holdSegment(`m1-seg-${n}`, '2026-10-05T10:07:00.000Z'); // created plus 120 s
+    }
+    // No close(): kill -9 never runs it. Committed writes are in the WAL file.
+
+    const relaunched = (): Date => new Date('2026-10-05T10:05:06.000Z');
+    const store = new SqliteTranscriptStore(path, relaunched);
+    store.endMeetingsLeftOpen(relaunched().toISOString()); // as main does at launch
+    // The holds outlived the crash: without a settle the lines would wait out their cap.
+    expect(store.countUnsyncedSegments()).toBe(1);
+    const api = fakeApi();
+    const order: string[] = [];
+    api.createMeeting.mockImplementation((input) => {
+      order.push('create');
+      return Promise.resolve(meetingDto(input.id));
+    });
+    // Built first and given the hook later, as main does: index.ts builds the uploader before the
+    // capture runtime, whose M2-T14b slot sets the hook, then starts it.
+    const uploader = new TranscriptUploader({ store, api, logger, clock: relaunched });
+    // Async, so a hook that is not awaited shows here.
+    uploader.setBeforeFirstTick(async (launchedAt) => {
+      await Promise.resolve();
+      order.push('settle');
+      settleHoldsBefore(store, launchedAt);
+    });
+    uploader.start();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(order).toEqual(['settle', 'create']);
+    expect(sentBatches(api)).toEqual([['m1-seg-1', 'm1-seg-2', 'm1-seg-4']]);
+    expect(api.endMeeting).toHaveBeenCalledTimes(1);
+    expect(store.getMeeting('m1')?.remoteState).toBe('ended');
+    uploader.stop();
+    store.close();
+    crashed.close();
+  });
+
+  it('retries a failed beforeFirstTick on the next tick before any line goes up, then never runs it again', async () => {
+    const store = new InMemoryTranscriptStore();
+    const api = fakeApi();
+    const lines: string[] = [];
+    const warnLogger = createLogger({ level: 'warn', format: 'json', sink: (l) => lines.push(l) });
+    store.createMeeting({ id: 'm1', title: 'T', startedAt: '2026-10-05T10:00:00Z' });
+    store.appendSegment(segment('m1', 0));
+    let settles = 0;
+    const uploader = new TranscriptUploader({
+      store,
+      api,
+      logger: warnLogger,
+      intervalMs: 1000,
+      baseBackoffMs: 500,
+    });
+    uploader.setBeforeFirstTick(() => {
+      settles += 1;
+      if (settles === 1) throw new Error('database is locked');
+    });
+    uploader.start();
+
+    await vi.advanceTimersByTimeAsync(0);
+    // A line the settle would have hidden must not go up first.
+    expect(api.createMeeting).not.toHaveBeenCalled();
+    const failure = 'could not run the step before the first upload: database is locked';
+    expect(uploader.getStatus()).toMatchObject({ state: 'backoff', lastError: failure });
+    expect(lines.some((l) => l.includes('upload failed') && l.includes(failure))).toBe(true);
+
+    await vi.advanceTimersByTimeAsync(500);
+    expect(settles).toBe(2);
+    expect(sentBatches(api)).toEqual([['m1-seg-0']]);
+    await vi.advanceTimersByTimeAsync(1000);
+    await uploader.flush();
+    expect(settles).toBe(2);
+    uploader.stop();
+  });
+
+  it('hands a retried settle the instant it was built, so the holds of a capture started since stay held', async () => {
+    const clock = manualClock('2026-10-05T10:05:06.000Z');
+    const store = new InMemoryTranscriptStore(clock.now);
+    const api = fakeApi();
+    // Left by a kill -9: a mic line held for its call-audio twin, stored before this launch.
+    store.createMeeting({ id: 'm1', title: 'T', startedAt: '2026-10-05T10:00:00Z' });
+    store.appendSegment({ ...segment('m1', 2), createdAt: '2026-10-05T10:04:58.000Z' });
+    store.holdSegment('m1-seg-2', '2026-10-05T10:06:58.000Z');
+    store.markMeetingEnded('m1', ENDED_AT);
+    const uploader = new TranscriptUploader({
+      store,
+      api,
+      logger,
+      clock: clock.now,
+      baseBackoffMs: 3000,
+    });
+    const handed: string[] = [];
+    uploader.setBeforeFirstTick((launchedAt) => {
+      handed.push(launchedAt);
+      if (handed.length === 1) throw new Error('database is locked');
+      settleHoldsBefore(store, launchedAt);
+    });
+    uploader.start();
+    await vi.advanceTimersByTimeAsync(0);
+
+    // The user presses Start during the backoff, and a mic line waits for its call-audio twin.
+    clock.set('2026-10-05T10:05:08.000Z');
+    store.createMeeting({ id: 'm2', title: 'T', startedAt: '2026-10-05T10:05:07Z' });
+    store.appendSegment({ ...segment('m2', 2), createdAt: '2026-10-05T10:05:08.000Z' });
+    store.holdSegment('m2-seg-2', '2026-10-05T10:07:08.000Z');
+    clock.set('2026-10-05T10:05:09.000Z');
+    await vi.advanceTimersByTimeAsync(3000);
+
+    expect(handed).toEqual(['2026-10-05T10:05:06.000Z', '2026-10-05T10:05:06.000Z']);
+    expect(sentBatches(api)).toEqual([['m1-seg-2']]);
+    // Released now it would go up before its twin, and Postgres would get the echo text twice.
+    expect(store.listHeldSegments('m2').map((s) => s.id)).toEqual(['m2-seg-2']);
+    uploader.stop();
+  });
+
+  it('runs beforeFirstTick before a flush that comes first, and only once', async () => {
+    const store = new InMemoryTranscriptStore();
+    const api = fakeApi();
+    const order: string[] = [];
+    api.appendSegments.mockImplementation((_meetingId, segments) => {
+      order.push('append');
+      return Promise.resolve({ accepted: segments.length, duplicates: 0 });
+    });
+    store.createMeeting({ id: 'm1', title: 'T', startedAt: '2026-10-05T10:00:00Z' });
+    store.appendSegment(segment('m1', 0));
+    const uploader = new TranscriptUploader({ store, api, logger });
+    uploader.setBeforeFirstTick(() => {
+      order.push('settle');
+    });
+
+    await uploader.flush();
+    store.appendSegment(segment('m1', 1));
+    await uploader.flush();
+    expect(order).toEqual(['settle', 'append', 'append']);
+  });
+
+  it('refuses a beforeFirstTick set once the first tick has started, or a second one', async () => {
+    const tooLate = /set before the uploader's first tick, which has started/;
+    const settle = (): void => undefined;
+
+    // Started, and its first tick ran: a hook set now could not run before it.
+    const started = new TranscriptUploader({
+      store: new InMemoryTranscriptStore(),
+      api: fakeApi(),
+      logger,
+    });
+    started.start();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(() => {
+      started.setBeforeFirstTick(settle);
+    }).toThrow(tooLate);
+    started.stop();
+
+    // A flush that comes first starts the first tick at once, before it settles.
+    const flushed = new TranscriptUploader({
+      store: new InMemoryTranscriptStore(),
+      api: fakeApi(),
+      logger,
+    });
+    const flushing = flushed.flush();
+    expect(() => {
+      flushed.setBeforeFirstTick(settle);
+    }).toThrow(tooLate);
+    await flushing;
+
+    // Started but its 0 ms timer has not fired: still in time.
+    const pending = new TranscriptUploader({
+      store: new InMemoryTranscriptStore(),
+      api: fakeApi(),
+      logger,
+    });
+    pending.start();
+    pending.setBeforeFirstTick(settle);
+    // One hook: a second would silently replace the first.
+    expect(() => {
+      pending.setBeforeFirstTick(settle);
+    }).toThrow(/already set/);
+    pending.stop();
+  });
+
+  it('marks a batch sent before the request, so an echo decision landing mid-upload is refused', async () => {
+    const store = new InMemoryTranscriptStore();
+    const api = fakeApi();
+    store.createMeeting({ id: 'm1', title: 'T', startedAt: '2026-10-05T10:00:00Z' });
+    store.appendSegment(segment('m1', 0));
+    store.appendSegment(segment('m1', 2));
+    let respond: () => void = () => undefined;
+    api.appendSegments.mockImplementationOnce(
+      (_meetingId, segments) =>
+        new Promise((resolve) => {
+          respond = () => {
+            resolve({ accepted: segments.length, duplicates: 0 });
+          };
+        }),
+    );
+    const uploader = new TranscriptUploader({ store, api, logger });
+    const flushing = uploader.flush();
+    await vi.waitFor(() => {
+      expect(api.appendSegments).toHaveBeenCalledTimes(1);
+    });
+
+    // The call-audio twins land while the request is out (a cap passed while call audio
+    // reconnected): too late, Postgres may already hold the text as sent.
+    expect(store.suppressSegment('m1-seg-0', 'echo', 'm1-seg-1')).toBe(false);
+    expect(store.trimSegment('m1-seg-2', { text: 'line', words: null, echoOf: 'm1-seg-1' })).toBe(
+      false,
+    );
+    respond();
+    await flushing;
+
+    expect(store.getSegment('m1-seg-0')).toMatchObject({ suppressedReason: null });
+    expect(store.getSegment('m1-seg-2')).toMatchObject({ text: 'line 2', originalText: null });
+    expect(store.countUnsyncedSegments()).toBe(0);
+  });
+
+  it('keeps a line it sent refused after a failed request, which may have reached the API', async () => {
+    const store = new InMemoryTranscriptStore();
+    const api = fakeApi();
+    store.createMeeting({ id: 'm1', title: 'T', startedAt: '2026-10-05T10:00:00Z' });
+    store.appendSegment(segment('m1', 0));
+    api.appendSegments.mockRejectedValueOnce(new ApiError(0, 'network_error', 'connection reset'));
+    const uploader = new TranscriptUploader({ store, api, logger });
+
+    await expect(uploader.flush()).rejects.toThrow('connection reset');
+    expect(store.suppressSegment('m1-seg-0', 'echo', 'm1-seg-1')).toBe(false);
+    await uploader.flush();
+
+    expect(sentBatches(api)).toEqual([['m1-seg-0'], ['m1-seg-0']]);
+    expect(store.getSegment('m1-seg-0')).toMatchObject({ suppressedReason: null });
+    expect(store.countUnsyncedSegments()).toBe(0);
   });
 });

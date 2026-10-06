@@ -205,7 +205,13 @@ export interface TranscriptStore {
   getMeetingStopReason(id: string): string | null;
   /** Forget that a meeting's lines were uploaded, so they are sent again (Postgres lost the meeting). */
   resetSyncForMeeting(id: string): void;
-  /** Meetings not yet fully in Postgres, oldest first. */
+  /**
+   * Meetings the uploader has work for, oldest first: every meeting not ended remotely, plus a
+   * meeting ended remotely that has a line that can upload (as `listUnsyncedSegments` selects
+   * them: a re-run line, an unhidden one, a released hold). M1 dropped a meeting from sync for good
+   * once it was ended remotely, which stranded every later line. One ended remotely with nothing
+   * to upload is never listed, so the uploader does not touch it again.
+   */
   listMeetingsNeedingSync(): LocalMeeting[];
   /** Idempotent on `segment.id`. */
   appendSegment(segment: TranscriptSegment, origin?: SegmentOrigin): void;
@@ -216,11 +222,25 @@ export interface TranscriptStore {
    */
   listUnsyncedSegments(meetingId: string, limit: number): TranscriptSegment[];
   /**
-   * Stamps every listed line not yet marked, whatever a hide or trim did to it after it was
-   * listed: see the in-flight trap on `suppressSegment`.
+   * The uploader is sending these lines, as listed. From now until each is marked uploaded or
+   * rejected, `suppressSegment`, `trimSegment` and `holdSegment` refuse it as they refuse an
+   * uploaded line: once the request is out, Postgres may hold the text as sent, and a hide or trim
+   * landing before the response would leave the local copy disagreeing with it (the plan's case: a
+   * mic line's 120 s cap passes while call audio reconnects, and its twin arrives mid-upload). A
+   * failed request keeps the mark, since the API may have stored the batch before the response
+   * was lost; the retry ends it. Sent lines still upload and count as waiting.
+   *
+   * Kept in memory, not in SQLite: a crash between a request and its `markSegmentsSynced` forgets
+   * it, so after a relaunch a line Postgres holds can read as never sent. Only a held line past its
+   * cap can be both uploading at the crash and seen by the startup settle (`listHeldSegments`).
    */
+  markSegmentsSent(ids: readonly string[]): void;
+  /** Stamps every listed line not yet marked, and ends its `markSegmentsSent` mark. */
   markSegmentsSynced(ids: string[], syncedAt: string): void;
-  /** Set a line aside after the API rejected it as invalid, so it never blocks the queue. */
+  /**
+   * Set a line aside after the API rejected it as invalid, so it never blocks the queue. It never
+   * reaches Postgres, so its `markSegmentsSent` mark ends too.
+   */
   markSegmentRejected(id: string, reason: string, rejectedAt: string): void;
   /** Lines that can upload, as `listUnsyncedSegments` selects them, across meetings. */
   countUnsyncedSegments(): number;
@@ -239,42 +259,43 @@ export interface TranscriptStore {
     toMs: number,
   ): StoredSegment[];
   /**
-   * Hide a line not yet marked uploaded and end its hold. False when it is unknown or already
-   * marked uploaded: Postgres keeps what it was sent, so hiding it here would make the two
-   * disagree.
-   *
-   * Trap for M2-T3b and M2-T14b: true does not prove Postgres never got the line. The store sees
-   * only `synced_at`, not an upload in flight: the uploader lists a line, awaits `appendSegments`,
-   * then marks it synced, so a hide (or a trim) that lands while that request is open returns
-   * true and the mark then stamps the row. The local copy says hidden while Postgres holds the
-   * text as sent. The plan's case: a mic line's 120 s cap passes while call audio reconnects, and
-   * its twin arrives mid-upload. Close it in the uploader (re-check hidden or trimmed lines before
-   * marking them synced) or in the sink (treat a decision made after the line's release as
-   * possibly too late). Pinned by the "cannot see an upload in flight" store test.
+   * Hide a line not yet sent and end its hold. False when it is unknown, being sent
+   * (`markSegmentsSent`) or already marked uploaded: Postgres keeps what it was sent, so hiding it
+   * here would make the two disagree. The echo sink reads false as "too late": the line stays.
+   * True proves this run never sent it (see `markSegmentsSent` for a crash).
    */
   suppressSegment(id: string, reason: SuppressedReason, echoOf: string): boolean;
   /**
    * Replace a line's text and words with what is left after the echo words are cut out, keeping
    * the vendor's version in `original_text` (the first trim's, on a second trim). The hold is
-   * kept: the echo sink releases the line. False when unknown or already marked uploaded; true
-   * can still come during an upload in flight (see `suppressSegment`). Throws on an empty text: a
-   * line trimmed to nothing is hidden instead.
+   * kept: the echo sink releases the line. False when unknown, being sent or already marked
+   * uploaded, as `suppressSegment`. Throws on an empty text: a line trimmed to nothing is hidden
+   * instead.
    */
   trimSegment(id: string, trim: SegmentTrim): boolean;
   /** Show a hidden line again, which lets it upload. False when it was not hidden. */
   unhideSegment(id: string): boolean;
   /**
    * Hold a line that is not uploaded yet until the echo sink releases it, or `uploadAfter` (an ISO
-   * 8601 instant, the cap) passes. False when unknown or already marked uploaded. Throws on a cap without
-   * a `Z` or `±hh:mm` offset (storeChecks.canonicalInstant).
+   * 8601 instant, the cap) passes. False when unknown, being sent or already marked uploaded, as
+   * `suppressSegment`. Throws on a cap without a `Z` or `±hh:mm` offset
+   * (storeChecks.canonicalInstant).
    */
   holdSegment(id: string, uploadAfter: string): boolean;
   releaseSegments(ids: readonly string[]): void;
   /**
    * Lines still held: not uploaded, not hidden, not rejected, with `upload_after` set, past or not.
-   * One meeting, or every meeting for the startup settle (holds a crash left behind).
+   * One meeting, or every meeting. Not only the holds a crash left: the startup settle (the
+   * uploader's `beforeFirstTick`) is retried after a failure and can run once a capture holds
+   * lines for their call-audio twins, so it keeps to lines created before the uploader's
+   * `launchedAt` (see `TranscriptUploader.setBeforeFirstTick`).
    */
   listHeldSegments(meetingId?: string): StoredSegment[];
+  /**
+   * How many lines one meeting still holds, as `listHeldSegments` lists them: a line past its cap
+   * counts until it is uploaded or released. The uploader never ends a meeting while this is not 0.
+   */
+  countHeldSegments(meetingId: string): number;
 
   /** Idempotent on `gap.id`. Throws when `endMs` is not after `startMs` or the meeting is unknown. */
   addGap(gap: NewTranscriptGap): void;
