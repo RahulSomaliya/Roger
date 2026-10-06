@@ -3,9 +3,12 @@ stt_vendors.py. Every bake-off configuration is one `.env` line from every other
 sees a preset (the token's `provider` is the vendor), and the retired `STT_MODEL` stops startup by
 name (docs/plans/M3-live-transcript.md, M3-T1)."""
 
+import logging
 import re
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
+from contextlib import contextmanager
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, get_args
 
 import httpx
@@ -14,6 +17,7 @@ from asgi_lifespan import LifespanManager
 from pydantic import ValidationError
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource
 
+from roger_api import config
 from roger_api.app import create_app
 from roger_api.config import REPO_ROOT_ENV_FILE, Settings
 from roger_api.dependencies import get_stt_token_issuer
@@ -27,6 +31,7 @@ from roger_api.services.stt_tokens import (
 from roger_api.stt_vendors import (
     STT_PRESETS,
     STT_VENDORS,
+    SttPreset,
     SttPresetId,
     open_stt_token_issuer,
 )
@@ -258,3 +263,76 @@ async def test_issuer_opens_for_every_preset(preset: str, issuer_type: type[obje
 
     async with open_stt_token_issuer(settings) as issuer:
         assert type(issuer) is issuer_type
+
+
+class EventRecorder(logging.Handler):
+    """Keeps the event dicts the app logs: configure_logging hands each one to stdlib logging."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.events: list[dict[str, Any]] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        if isinstance(record.msg, dict):
+            self.events.append(dict(record.msg))
+
+
+@contextmanager
+def recorded_events() -> Iterator[list[dict[str, Any]]]:
+    """Events logged inside the block. Enter it after create_app(), which resets the handlers."""
+    recorder = EventRecorder()
+    root = logging.getLogger()
+    root.addHandler(recorder)
+    try:
+        yield recorder.events
+    finally:
+        root.removeHandler(recorder)
+
+
+def stt_fields(events: list[dict[str, Any]], event: str) -> dict[str, Any]:
+    """The `stt_*` fields of the one `event` logged."""
+    [found] = [logged for logged in events if logged.get("event") == event]
+    return {name: value for name, value in found.items() if name.startswith("stt_")}
+
+
+async def test_api_started_names_the_preset_and_the_token_ttl(
+    database_url: str, clean_database: None
+) -> None:
+    settings = make_settings(
+        database_url, stt_provider="assemblyai-pro", stt_token_ttl_seconds=45, **vendor_keys()
+    )
+    app = create_app(settings)
+
+    with recorded_events() as events:
+        async with LifespanManager(app):
+            pass
+
+    assert stt_fields(events, "api_started") == {
+        "stt_preset": "assemblyai-pro",
+        "stt_provider": "assemblyai",
+        "stt_model": "universal-3-6-pro",
+        "stt_price_per_hour_usd": 0.45,
+        "stt_token_ttl_seconds": 45,
+    }
+    assert VENDOR_KEY not in str(events)
+
+
+async def test_unknown_price_warning_names_the_preset_and_its_vendor(
+    database_url: str, clean_database: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Every real preset has a list price (above), so the warning needs a patched one.
+    unpriced = SttPreset(vendor="assemblyai", model="universal-3-5-pro")
+    monkeypatch.setattr(
+        config, "STT_PRESETS", MappingProxyType({**STT_PRESETS, "assemblyai-pro": unpriced})
+    )
+    app = create_app(make_settings(database_url, stt_provider="assemblyai-pro", **vendor_keys()))
+
+    with recorded_events() as events:
+        async with LifespanManager(app):
+            pass
+
+    assert stt_fields(events, "stt_price_unknown") == {
+        "stt_preset": "assemblyai-pro",
+        "stt_provider": "assemblyai",
+        "stt_model": "universal-3-5-pro",
+    }
