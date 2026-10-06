@@ -32,7 +32,8 @@ export function describeHealth(health: SourceHealth, chunks: number): string {
   }
 }
 
-export function describeStream(state: SttStreamState): string {
+/** A session's state as people read it: "transcribing" only while its source sends audio. */
+export function describeStream(state: SttStreamState, health: SourceHealth): string {
   switch (state) {
     case 'closed':
       // No vendor session: before Start, after Stop, or the source failed or ended.
@@ -40,6 +41,9 @@ export function describeStream(state: SttStreamState): string {
     case 'connecting':
       return 'connecting';
     case 'open':
+      // Open but fed nothing: billed, not transcribing. It closes after the stall window.
+      if (health === 'pending') return 'connected, no audio yet';
+      if (health === 'stalled') return 'connected, no audio';
       return 'transcribing';
     case 'paused':
       return 'paused, no audio';

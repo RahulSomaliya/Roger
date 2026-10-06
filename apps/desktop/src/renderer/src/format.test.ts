@@ -43,9 +43,14 @@ describe('describeHealth', () => {
 
 describe('describeStream', () => {
   it('says transcribing only for an open session, and not connected for a closed one', () => {
-    expect(describeStream('open')).toBe('transcribing');
-    expect(describeStream('closed')).toBe('not connected');
-    expect(describeStream('connecting')).toBe('connecting');
+    expect(describeStream('open', 'active')).toBe('transcribing');
+    expect(describeStream('closed', 'error')).toBe('not connected');
+    expect(describeStream('connecting', 'active')).toBe('connecting');
+  });
+
+  it('never says transcribing while its source sends no audio', () => {
+    expect(describeStream('open', 'pending')).toBe('connected, no audio yet');
+    expect(describeStream('open', 'stalled')).toBe('connected, no audio');
   });
 });
 

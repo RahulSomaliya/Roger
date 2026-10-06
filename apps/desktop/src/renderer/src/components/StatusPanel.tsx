@@ -25,7 +25,10 @@ export function StatusPanel({ status }: { status: CaptureStatus }) {
               <dd>
                 {describeHealth(health.health, health.chunks)}
                 {health.message ? <span className="muted"> · {health.message}</span> : null}
-                <span className="muted"> · {describeStream(status.streams[source])}</span>
+                <span className="muted">
+                  {' '}
+                  · {describeStream(status.streams[source], health.health)}
+                </span>
                 {streamMessage !== null && streamMessage !== health.message ? (
                   <span className="muted"> ({streamMessage})</span>
                 ) : null}
