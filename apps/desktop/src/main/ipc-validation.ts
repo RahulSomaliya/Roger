@@ -13,9 +13,12 @@ import { isAudioSource, type AudioSource } from '../shared/transcript';
 export const MAX_AUDIO_CHUNK_BYTES = 1_048_576;
 
 /**
- * How far a chunk's capture time may be from main's clock. Renderer and main read the same wall
- * clock, so real chunks are milliseconds off; a time further than this is junk or a forged
- * payload, and would put the chunk's lines hours away on the meeting timeline.
+ * How far a chunk's capture time may be from main's clock: a time further than this is junk or a
+ * forged payload, and would put the chunk's lines hours away on the meeting timeline. Real chunks
+ * are milliseconds off only while the renderer builds the time on `Date.now()` per chunk (see
+ * `AudioChunkMessage.capturedAtMs`). One built on `performance.timeOrigin` falls behind by every
+ * sleep since the page loaded, because Chromium's monotonic clock stops while a Mac sleeps: past
+ * a day of sleeps this refuses every mic chunk, and the mic is dead until Roger restarts.
  */
 export const MAX_CAPTURE_TIME_SKEW_MS = 86_400_000;
 
@@ -51,7 +54,8 @@ export function parseAudioChunk(
     return null;
   if (capturedAtMs === undefined) return { source, pcm: bytes, capturedAtMs: null };
   // A bad time refuses the whole chunk rather than falling back to the arrival time: a renderer
-  // that sends one is broken or not ours, and its audio cannot be placed on the timeline either.
+  // that sends one is broken (see MAX_CAPTURE_TIME_SKEW_MS for the clock that breaks it) or not
+  // ours, and its audio cannot be placed on the timeline either.
   if (
     typeof capturedAtMs !== 'number' ||
     !Number.isFinite(capturedAtMs) ||

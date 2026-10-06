@@ -44,7 +44,8 @@ describe('parseAudioChunk', () => {
     });
     // M1's renderer sends none until M2-T12: main then uses the arrival time.
     expect(parseAudioChunk({ source: 'mic', pcm }, NOW)?.capturedAtMs).toBeNull();
-    // A day either way is still accepted: the bound catches junk, not clock drift.
+    // A day either way is still accepted: the bound catches junk. It does not absorb a renderer
+    // clock that stops through sleeps (AudioChunkMessage.capturedAtMs says how to avoid one).
     expect(
       parseAudioChunk({ source: 'system', pcm, capturedAtMs: NOW + MAX_CAPTURE_TIME_SKEW_MS }, NOW)
         ?.capturedAtMs,
