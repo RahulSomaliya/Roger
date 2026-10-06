@@ -17,7 +17,10 @@ from uuid import UUID, uuid4
 import pytest
 from fastapi import FastAPI, Request
 from sqlalchemy import func, update
+from sqlalchemy.event import listen
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session
 
 from roger_api.config import Settings
 from roger_api.db.engine import Database
@@ -652,6 +655,37 @@ async def test_a_run_ended_elsewhere_stops_at_its_next_heartbeat(
     assert rest == [RunEvent("error", {"code": "cancelled", "message": elsewhere})]
     stored = await read_run(database, run.id)
     assert (stored.status, stored.error) == ("cancelled", elsewhere)
+
+
+def lose_the_acknowledgement(session: Session) -> None:
+    """Fails a commit Postgres has already made: the connection dropped before COMMIT's reply."""
+    raise OperationalError("COMMIT", None, ConnectionResetError("Connection reset by peer"))
+
+
+async def test_a_save_committed_without_its_acknowledgement_never_reports_a_failure(
+    database: Database, meeting: Meeting
+) -> None:
+    model = ScriptedNotesModel(ModelScript(steps=("Beta ships Friday.",)))
+
+    async def unacknowledged(context: RunContext) -> RunSave:
+        save = await echo(context)
+
+        async def save_then_lose_the_acknowledgement(session: AsyncSession) -> Sequence[RunEvent]:
+            listen(session.sync_session, "after_commit", lose_the_acknowledgement, once=True)
+            return await save(session)
+
+        return save_then_lose_the_acknowledgement
+
+    async with asyncio.timeout(WAIT_S), running(database, model) as runtime:
+        run = await claim(database, new_run(meeting))
+        live = await runtime.start(run, unacknowledged)
+        events = [event async for event in live.subscribe()]
+
+    stored = await read_run(database, run.id)
+    assert (stored.status, stored.output_text) == ("succeeded", "Beta ships Friday.")
+    # Never an `error` for notes that were paid for and saved (a Retry would pay again). A stream
+    # ending with no `done` or `error` makes the desktop load the stored run (M4 plan, Streaming).
+    assert events == [delta("Beta ships Friday.")]
 
 
 async def test_cancel_of_a_run_no_process_drives_marks_its_row_cancelled(

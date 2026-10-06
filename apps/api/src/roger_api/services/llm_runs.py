@@ -437,7 +437,8 @@ class LlmRuntime:
                 if ended:
                     await session.commit()
         except Exception as error:
-            # Whatever broke the save (a deleted meeting, a bug in it), the run must still end.
+            # Whatever broke the save (a deleted meeting, a bug in it), the run must still end. A
+            # commit that landed and then raised ends as stored (`_emit_stored_ending`).
             _log_failure("llm_run_save_failed", live, error)
             await self._fail(live, "failed", "internal_error", _CRASHED_MESSAGE)
             return
@@ -469,20 +470,29 @@ class LlmRuntime:
         live._emit(error_event(code, message))
 
     async def _emit_stored_ending(self, live: LiveRun) -> None:
-        """The row had already ended (swept, or cancelled by another API process): subscribers are
-        told that ending, never one this process made up."""
+        """The row had already ended (swept, cancelled by another API process, or saved here by a
+        commit that raised): subscribers are told that ending, never one this process made up."""
         async with self.database.session() as session:
             row = (
                 await session.execute(
-                    select(LlmRun.error_code, LlmRun.error).where(*_this_run(live))
+                    select(LlmRun.status, LlmRun.error_code, LlmRun.error).where(*_this_run(live))
                 )
             ).one_or_none()
-        logger.warning("llm_run_ended_elsewhere", run_id=str(live.run_id), kind=live.kind)
         if row is None:
-            live._emit(error_event("internal_error", _GONE_MESSAGE))
-            return
-        code, message = row
-        live._emit(error_event(_stored_error_code(code), message or _CRASHED_MESSAGE))
+            ending = error_event("internal_error", _GONE_MESSAGE)
+        else:
+            status, code, message = row
+            if status == "succeeded":
+                # Only `_succeed` writes `succeeded`: its commit reached Postgres, then raised (the
+                # connection dropped before the acknowledgement). Never an `error` for notes that
+                # were paid for and saved, whose Retry would pay again. The save's `done` events
+                # stayed in `_succeed`: a stream ending with no `done` or `error` makes the desktop
+                # load the stored run (M4 plan, Streaming).
+                _log_ended(live, "succeeded", None)
+                return
+            ending = error_event(_stored_error_code(code), message or _CRASHED_MESSAGE)
+        logger.warning("llm_run_ended_elsewhere", run_id=str(live.run_id), kind=live.kind)
+        live._emit(ending)
 
 
 def _this_run(live: LiveRun) -> tuple[ColumnElement[bool], ColumnElement[bool]]:
