@@ -52,9 +52,33 @@ const JOIN_LINK_CASES: readonly (readonly [url: string, expected: JoinLinkProvid
   ['', null],
 ];
 
+/**
+ * The rows of the API's `PARSER_EDGE_CASES` that both sides refuse: links where Python's
+ * `urllib.parse` and the WHATWG parser could read the host or the path differently. A table of
+ * their own, never in JOIN_LINK_CASES: the API's `test_table_matches_the_desktop` compares that one
+ * row for row, and these rows live in another table there. Left out: the three links the API
+ * refuses and this side accepts on purpose (`/./` in the path, `%2E` in the host, a scheme with no
+ * slashes).
+ */
+const REFUSED_PARSER_EDGE_CASES: readonly string[] = [
+  // Python would read these hosts as an allowlisted name; WHATWG refuses them.
+  'https://evil%2F.zoom.us/j/1',
+  'https://evil.io\\.zoom.us/j/1',
+  'https://xn--zz.zoom.us/j/1',
+  'https://meet.google.com:abc/abc-defg-hij',
+  'https://zoom.us:65536/j/1',
+  // Python's `\d`, `\w` and case-folded `[a-z]` take non-ASCII; WHATWG percent-encodes it first.
+  'https://zoom.us/j/\u0661\u0662\u0663',
+  'https://meet.google.com/abc-defg-hi\u212a',
+];
+
 describe('parseJoinLink', () => {
   it.each(JOIN_LINK_CASES)('%s → %s', (url, expected) => {
     expect(parseJoinLink(url)?.provider ?? null).toBe(expected);
+  });
+
+  it.each(REFUSED_PARSER_EDGE_CASES)('refuses %s, as the API does', (url) => {
+    expect(parseJoinLink(url)).toBeNull();
   });
 
   it('returns the parsed href, so the link opened is the link checked', () => {

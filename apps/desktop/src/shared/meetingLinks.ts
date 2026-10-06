@@ -6,7 +6,8 @@
  * each event's `video_link` with the same rules. Change both in the same commit and keep the URL
  * table in `meetingLinks.test.ts` equal to the API's `tests/test_calendar_video_links.py`; a host
  * the API accepts and the desktop refuses shows no Join button, and the reverse opens a link the
- * API never vetted.
+ * API never vetted. The API's `test_table_matches_the_desktop` reads `JOIN_LINK_CASES` from the
+ * test file and fails when the two tables differ by a row.
  *
  * No runtime imports: this file is bundled into main and the renderer.
  */
