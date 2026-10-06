@@ -12,7 +12,9 @@ import { isAbsolute, join } from 'node:path';
  *
  * - `bundle`: `Roger.app/Contents/Resources/bin/roger-audio`, signed by install-mac.sh with the
  *   identifier `ai.linkt.roger.audio` and the app's own identity.
- * - `dev-build`: `apps/desktop/native/bin/roger-audio`, from `make native` (`make dev-desktop`).
+ * - `dev-build`: `apps/desktop/native/bin/roger-audio`, built by `make native` (and by `make check`
+ *   on a Mac). `make dev-desktop` uses it but never builds it: on a fresh clone, run `make native`
+ *   first.
  * - `e2e-fake`: M2-T10's fake helper for the Electron smoke test (M2-T13). A Node script: run it
  *   with Node (Electron's own binary under `ELECTRON_RUN_AS_NODE=1`), never exec it directly.
  */
