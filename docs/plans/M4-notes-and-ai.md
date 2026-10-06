@@ -234,7 +234,7 @@ Notes SSE events: `run {run_id, model, template_id, line_count}`, `section {inde
 `item {section, text, citations: [{ref, segment_id, start_ms}], support: "ok" | "weak"}`,
 `from_notes {text}` (D7 option a), `dropped {text, reason}`, `done {run_id, note}`,
 `error {code, message}` with codes `llm_provider_error`, `cut_off`, `cancelled`, `internal_error`.
-Chat SSE events: `run`, `delta {text}`, `citation {ref, segment_id, start_ms}`, `done {message}`,
+Chat SSE events: `run {run_id, model}`, `delta {text}`, `citation {ref, segment_id, start_ms}`, `done {message}`,
 `error`. The error table gains `422 empty_meeting` (M4-T8), `422 meeting_too_long` (M4-T10),
 `502 llm_provider_error` (M4-T2), and `409 conflict` rows for a stale note version and an AI-doc
 `PUT` during a run (M4-T6), a running run, stale generate versions and a run id stored elsewhere
