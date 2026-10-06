@@ -122,6 +122,31 @@ describe('PcmStreamCapture', () => {
     expect(h.chunks.map(([, at]) => Math.round(at))).toEqual([WALL - 300, WALL + 3_609_700]);
   });
 
+  it('swaps a new stream into the same worklet node, and ends the old stream', async () => {
+    const h = harness();
+    const first = new FakeStream();
+    const second = new FakeStream(new FakeTrack('AirPods Pro'));
+    await h.capture.start(first);
+    h.capture.replaceStream(second);
+
+    // One graph and one worklet: its partial chunk and frame count carry on across the swap.
+    expect(h.graph().worklets).toHaveLength(1);
+    expect(h.graph().plugged).toEqual([second]);
+    expect(first.track.stopped).toBe(true);
+    expect(second.track.stopped).toBe(false);
+    h.graph().post(9.9 * RATE);
+    expect(h.chunks).toHaveLength(1);
+
+    await h.capture.stop();
+    expect(second.track.stopped).toBe(true);
+  });
+
+  it('refuses a swap while it is not running', () => {
+    expect(() => {
+      harness().capture.replaceStream(new FakeStream());
+    }).toThrow(/not running/);
+  });
+
   it('refuses a stream whose track is missing or already ended', async () => {
     const ended = new FakeTrack();
     ended.end();

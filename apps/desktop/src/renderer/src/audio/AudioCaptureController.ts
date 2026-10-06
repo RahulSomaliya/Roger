@@ -2,6 +2,7 @@ import type { CapturePhase } from '../../../shared/capture';
 import { PCM_SAMPLE_RATE } from '../../../shared/ipc';
 import type { CaptureApi } from '../../../shared/ipc/capture';
 import type { AudioSource } from '../../../shared/transcript';
+import { type DeviceWatch, MicRecovery } from './MicRecovery';
 import {
   createBrowserGraph,
   PcmStreamCapture,
@@ -23,11 +24,15 @@ export interface AudioStartResult {
 /** One source's running capture, as the controller uses it (PcmStreamCapture). */
 export interface SourceCapture<S> {
   start(stream: S): Promise<void>;
+  /** Feeds another stream into the same worklet and ends the old one (MicRecovery's swap). */
+  replaceStream(stream: S): void;
   stop(): Promise<void>;
 }
 
 /** What the controller takes from the browser. Tests pass fakes: node has no getUserMedia. */
 export interface CaptureDevices<S extends CaptureStream> {
+  /** The device list and its devicechange event, which MicRecovery follows. */
+  mediaDevices: DeviceWatch;
   openMicrophone(): Promise<S>;
   openSystemAudio(sourceId: string): Promise<S>;
   createCapture(options: PcmStreamCaptureOptions): SourceCapture<S>;
@@ -35,9 +40,11 @@ export interface CaptureDevices<S extends CaptureStream> {
 
 /** The real devices: getUserMedia, and a capture on a real AudioContext. */
 export function browserCaptureDevices(): CaptureDevices<MediaStream> {
+  const { mediaDevices } = navigator;
   return {
-    openMicrophone: openMicrophoneStream,
-    openSystemAudio: openSystemAudioStream,
+    mediaDevices,
+    openMicrophone: () => openMicrophoneStream(mediaDevices),
+    openSystemAudio: (sourceId) => openSystemAudioStream(sourceId, mediaDevices),
     createCapture: (options) => new PcmStreamCapture(options, createBrowserGraph),
   };
 }
@@ -45,6 +52,8 @@ export function browserCaptureDevices(): CaptureDevices<MediaStream> {
 /** Runs both renderer-side captures and ships their chunks to main through the IPC contract. */
 export class AudioCaptureController<S extends CaptureStream = MediaStream> {
   private readonly captures = new Map<AudioSource, SourceCapture<S>>();
+  /** Follows the mic through device changes while it captures. */
+  private micRecovery: MicRecovery<S> | null = null;
   /**
    * Bumped by stop(), so a start still in flight when main stopped (sleep, no speech) stops the
    * source it was opening and starts no other, instead of running on with main idle.
@@ -81,9 +90,7 @@ export class AudioCaptureController<S extends CaptureStream = MediaStream> {
     const leftovers = this.stop();
     const generation = this.generation;
     await leftovers;
-    if (!(await this.startSource('mic', generation, () => this.devices.openMicrophone()))) {
-      return { systemAudioError: STOPPED_WHILE_STARTING };
-    }
+    if (!(await this.startMic(generation))) return { systemAudioError: STOPPED_WHILE_STARTING };
     const sourceId = await this.roger.getSystemAudioSourceId();
     if (generation !== this.generation) return { systemAudioError: STOPPED_WHILE_STARTING };
     let systemAudioError: string | null = null;
@@ -94,7 +101,7 @@ export class AudioCaptureController<S extends CaptureStream = MediaStream> {
         const started = await this.startSource('system', generation, () =>
           this.devices.openSystemAudio(sourceId),
         );
-        if (!started) return { systemAudioError: STOPPED_WHILE_STARTING };
+        if (started === null) return { systemAudioError: STOPPED_WHILE_STARTING };
       } catch (error) {
         systemAudioError = describeMediaError(error);
       }
@@ -111,17 +118,70 @@ export class AudioCaptureController<S extends CaptureStream = MediaStream> {
 
   async stop(): Promise<void> {
     this.generation += 1;
+    this.micRecovery?.stop();
+    this.micRecovery = null;
     const captures = [...this.captures.values()];
     this.captures.clear();
     await Promise.allSettled(captures.map((capture) => capture.stop()));
   }
 
-  /** True once the source captures; false when main stopped while it was starting (it stopped). */
+  /**
+   * The mic, with MicRecovery following it through device changes. False when main stopped while
+   * it was starting (it stopped).
+   */
+  private async startMic(generation: number): Promise<boolean> {
+    const started = await this.startSource('mic', generation, () => this.devices.openMicrophone());
+    if (started === null) return false;
+    const { capture, stream } = started;
+    const recovery = new MicRecovery<S>({
+      mediaDevices: this.devices.mediaDevices,
+      acquire: () => this.devices.openMicrophone(),
+      swap: (next) => {
+        capture.replaceStream(next);
+      },
+      onSwitched: (device) => {
+        // ASSUMES main makes this the "Switched to <device>" notice (CaptureStatus.notices, kind
+        // `device-switched`). Until it does, main reads `active` and drops the message: the
+        // switch is not a warning either way, and the chunks carry on in the same session.
+        this.roger.reportAudioSourceState({
+          source: 'mic',
+          state: 'active',
+          message: `Switched to ${device}`,
+        });
+      },
+      onFailed: (error) => {
+        this.micFailed(capture, error);
+      },
+    });
+    // Set before the await: a stop() meanwhile stops it too.
+    this.micRecovery = recovery;
+    await recovery.start(stream);
+    return generation === this.generation;
+  }
+
+  /**
+   * MicRecovery gave up: the mic's permission is gone. Main closes the mic's session (G1) and
+   * shows the error; call audio goes on.
+   */
+  private micFailed(capture: SourceCapture<S>, error: unknown): void {
+    if (this.captures.get('mic') !== capture) return;
+    this.captures.delete('mic');
+    this.micRecovery = null;
+    this.roger.reportAudioSourceState({
+      source: 'mic',
+      state: 'error',
+      message: describeMediaError(error),
+    });
+    // As in stop(): the device is let go of either way, and nothing waits on it.
+    void Promise.allSettled([capture.stop()]);
+  }
+
+  /** The capture once the source captures; null when main stopped while it was starting. */
   private async startSource(
     source: AudioSource,
     generation: number,
     open: () => Promise<S>,
-  ): Promise<boolean> {
+  ): Promise<{ capture: SourceCapture<S>; stream: S } | null> {
     const capture = this.devices.createCapture({
       source,
       sampleRate: PCM_SAMPLE_RATE,
@@ -131,17 +191,21 @@ export class AudioCaptureController<S extends CaptureStream = MediaStream> {
       },
     });
     const stream = await open();
-    // Listen before the awaits below: a track that ends during setup must still be reported.
-    // Main shows it on that source's row, names the stream in the error and closes its session.
-    stream.getAudioTracks()[0]?.addEventListener('ended', () => {
-      // A capture main stopped since ended its own tracks; that is no news for main.
-      if (generation !== this.generation) return;
-      this.roger.reportAudioSourceState({
-        source,
-        state: 'ended',
-        message: 'The audio device stopped delivering audio',
+    // Call audio: listen before the awaits below, so a track that ends during setup is reported
+    // too. Main shows it on that source's row, names the stream in the error and closes its
+    // session. Never the mic's: MicRecovery reacquires an ended mic, and main told `ended` would
+    // close the mic's session for the rest of the meeting (G1).
+    if (source === 'system') {
+      stream.getAudioTracks()[0]?.addEventListener('ended', () => {
+        // A capture main stopped since ended its own tracks; that is no news for main.
+        if (generation !== this.generation) return;
+        this.roger.reportAudioSourceState({
+          source,
+          state: 'ended',
+          message: 'The audio device stopped delivering audio',
+        });
       });
-    });
+    }
     try {
       await capture.start(stream);
     } catch (error) {
@@ -152,10 +216,10 @@ export class AudioCaptureController<S extends CaptureStream = MediaStream> {
     if (generation !== this.generation) {
       // Main stopped the recording (sleep, no speech) while this source was starting.
       await capture.stop();
-      return false;
+      return null;
     }
     this.captures.set(source, capture);
     this.roger.reportAudioSourceState({ source, state: 'active' });
-    return true;
+    return { capture, stream };
   }
 }

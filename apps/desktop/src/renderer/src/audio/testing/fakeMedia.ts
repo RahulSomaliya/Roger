@@ -1,3 +1,4 @@
+import type { DeviceInfo, DeviceWatch } from '../MicRecovery';
 import type { CaptureStream, CaptureTrack, TrackEvent } from '../streams';
 
 /**
@@ -71,5 +72,79 @@ export class FakeStream implements CaptureStream {
 
   getTracks(): FakeTrack[] {
     return [this.track];
+  }
+}
+
+/** A physical input: its name and its group id (one per device, as Chromium reports it). */
+export interface FakeInput {
+  label: string;
+  groupId: string;
+}
+
+export const BUILT_IN: FakeInput = { label: 'MacBook Pro Microphone', groupId: 'built-in' };
+export const AIRPODS: FakeInput = { label: 'AirPods Pro', groupId: 'airpods' };
+export const USB_MIC: FakeInput = { label: 'Shure MV7', groupId: 'shure' };
+
+/** A live track on `input`, opened on the default device as getUserMedia without an id does. */
+export function micStream(input: FakeInput): FakeStream {
+  return new FakeStream(
+    new FakeTrack(input.label, { deviceId: 'default', groupId: input.groupId }),
+  );
+}
+
+/**
+ * navigator.mediaDevices as MicRecovery reads it. Chromium lists the default input first, as a
+ * "Default - <name>" entry sharing its device's group id, then every input by its own id.
+ */
+export class FakeMediaDevices implements DeviceWatch {
+  enumerations = 0;
+  private inputs: FakeInput[];
+  private readonly listeners = new Set<() => void>();
+
+  constructor(...inputs: FakeInput[]) {
+    this.inputs = inputs;
+  }
+
+  enumerateDevices(): Promise<DeviceInfo[]> {
+    this.enumerations += 1;
+    const [first] = this.inputs;
+    const entries: DeviceInfo[] = this.inputs.map((input) => ({
+      deviceId: `id-${input.groupId}`,
+      groupId: input.groupId,
+      kind: 'audioinput',
+      label: input.label,
+    }));
+    if (first === undefined) return Promise.resolve(entries);
+    const defaultEntry: DeviceInfo = {
+      deviceId: 'default',
+      groupId: first.groupId,
+      kind: 'audioinput',
+      label: `Default - ${first.label}`,
+    };
+    const speakers: DeviceInfo = {
+      deviceId: 'id-speakers',
+      groupId: 'speakers',
+      kind: 'audiooutput',
+      label: 'MacBook Pro Speakers',
+    };
+    return Promise.resolve([defaultEntry, ...entries, speakers]);
+  }
+
+  addEventListener(_type: 'devicechange', listener: () => void): void {
+    this.listeners.add(listener);
+  }
+
+  removeEventListener(_type: 'devicechange', listener: () => void): void {
+    this.listeners.delete(listener);
+  }
+
+  get listening(): number {
+    return this.listeners.size;
+  }
+
+  /** The inputs become `inputs`, the first one the default, and devicechange fires. */
+  change(...inputs: FakeInput[]): void {
+    this.inputs = inputs;
+    for (const listener of [...this.listeners]) listener();
   }
 }

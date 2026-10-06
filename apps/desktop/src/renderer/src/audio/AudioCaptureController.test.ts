@@ -1,6 +1,10 @@
 import { describe, expect, expectTypeOf, it, vi } from 'vitest';
 import { idleCaptureStatus } from '../../../shared/capture';
-import type { CaptureApi } from '../../../shared/ipc/capture';
+import type {
+  AudioChunkMessage,
+  AudioSourceStateMessage,
+  CaptureApi,
+} from '../../../shared/ipc/capture';
 import type { AudioSource } from '../../../shared/transcript';
 import {
   AudioCaptureController,
@@ -8,18 +12,33 @@ import {
   type SourceCapture,
 } from './AudioCaptureController';
 import type { PcmStreamCaptureOptions } from './PcmStreamCapture';
-import { FakeStream } from './testing/fakeMedia';
+import { describeMediaError } from './sources';
+import {
+  BUILT_IN,
+  type FakeInput,
+  FakeMediaDevices,
+  FakeStream,
+  micStream,
+  USB_MIC,
+} from './testing/fakeMedia';
 
 /** A capture double: records whether it runs. No AudioContext or getUserMedia in node. */
 class FakeCapture implements SourceCapture<FakeStream> {
   running = false;
   stopped = false;
   stream: FakeStream | null = null;
+  /** Streams swapped in since start, in order (MicRecovery). */
+  replaced: FakeStream[] = [];
   constructor(readonly options: PcmStreamCaptureOptions) {}
   start(stream: FakeStream): Promise<void> {
     this.running = true;
     this.stream = stream;
     return Promise.resolve();
+  }
+  replaceStream(stream: FakeStream): void {
+    this.stream?.track.stop();
+    this.stream = stream;
+    this.replaced.push(stream);
   }
   stop(): Promise<void> {
     this.running = false;
@@ -41,8 +60,8 @@ function rogerApi() {
     stopCapture: () => Promise.resolve(status),
     getCaptureStatus: () => Promise.resolve(status),
     getSystemAudioSourceId: () => Promise.resolve('screen:1'),
-    sendAudioChunk: vi.fn(),
-    reportAudioSourceState: vi.fn(),
+    sendAudioChunk: vi.fn<(message: AudioChunkMessage) => void>(),
+    reportAudioSourceState: vi.fn<(message: AudioSourceStateMessage) => void>(),
     onCaptureStatus: () => () => undefined,
     onTranscriptSegment: () => () => undefined,
     onTranscriptInterim: () => () => undefined,
@@ -59,14 +78,22 @@ function rogerApi() {
 
 function harness() {
   const captures: FakeCapture[] = [];
-  let micOpened = (): void => undefined;
+  /** What the next getUserMedia for the mic opens, or how it fails, once the test says so. */
+  const mic: { input: FakeInput; error: Error | null; ready: () => void } = {
+    input: USB_MIC,
+    error: null,
+    ready: () => undefined,
+  };
+  const mediaDevices = new FakeMediaDevices(USB_MIC, BUILT_IN);
   const openSystemAudio = vi.fn(() => Promise.resolve(new FakeStream()));
   const devices: CaptureDevices<FakeStream> = {
+    mediaDevices,
     // The mic waits for the test: getUserMedia and the worklet setup take hundreds of ms.
     openMicrophone: () =>
-      new Promise((resolve) => {
-        micOpened = () => {
-          resolve(new FakeStream());
+      new Promise((resolve, reject) => {
+        mic.ready = () => {
+          if (mic.error === null) resolve(micStream(mic.input));
+          else reject(mic.error);
         };
       }),
     openSystemAudio,
@@ -84,10 +111,12 @@ function harness() {
     controller,
     roger,
     captures,
+    mic,
+    mediaDevices,
     openSystemAudio,
     live,
     micReady: () => {
-      micOpened();
+      mic.ready();
     },
   };
 }
@@ -196,5 +225,56 @@ describe('AudioCaptureController', () => {
       state: 'ended',
       message: 'The audio device stopped delivering audio',
     });
+  });
+
+  it('follows the mic to the device left when its track ends, in the same capture', async () => {
+    const h = harness();
+    await started(h);
+    const capture = h.live('mic')[0];
+    // The USB mic is unplugged: its track ends and the built-in mic is the default now.
+    h.mic.input = BUILT_IN;
+    h.mediaDevices.change(BUILT_IN);
+    capture?.stream?.track.end();
+    await settle();
+    h.micReady();
+    await settle();
+
+    expect(capture?.replaced.map((stream) => stream.track.label)).toEqual([
+      'MacBook Pro Microphone',
+    ]);
+    expect(h.live('mic')).toEqual([capture]);
+    // A recovered mic is not a cut: main hears "switched", never "ended" (which would close its
+    // vendor session for the rest of the meeting, G1).
+    expect(h.roger.reportAudioSourceState).toHaveBeenLastCalledWith({
+      source: 'mic',
+      state: 'active',
+      message: 'Switched to MacBook Pro Microphone',
+    });
+    const reports = h.roger.reportAudioSourceState.mock.calls.map(([report]) => report);
+    expect(reports.filter((report) => report.source === 'mic' && report.state === 'ended')).toEqual(
+      [],
+    );
+    await h.controller.stop();
+  });
+
+  it('tells main the mic failed when it cannot come back, and stops capturing it', async () => {
+    const h = harness();
+    await started(h);
+    const capture = h.live('mic')[0];
+    h.mic.error = new DOMException('Permission denied', 'NotAllowedError');
+    capture?.stream?.track.end();
+    await settle();
+    h.micReady();
+    await settle();
+
+    expect(h.roger.reportAudioSourceState).toHaveBeenLastCalledWith({
+      source: 'mic',
+      state: 'error',
+      message: describeMediaError(h.mic.error),
+    });
+    expect(capture?.stopped).toBe(true);
+    // Call audio goes on: only the mic's session closes (G1).
+    expect(h.live('system')).toHaveLength(1);
+    await h.controller.stop();
   });
 });
