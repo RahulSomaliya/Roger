@@ -1,5 +1,7 @@
+import { app } from 'electron';
 import type { BackupStatus, CaptureReport, EchoStatus } from '../../shared/capture';
 import type { ApiClient } from '../api/ApiClient';
+import { createSystemAudio } from '../audio/system/createSystemAudio';
 import type { ApiConnection } from '../api/http';
 import type { DesktopConfig } from '../config';
 import { type CaptureRequests, type CaptureWindow, registerIpcHandlers } from '../ipc';
@@ -7,6 +9,7 @@ import type { IpcMainLike } from '../ipc/trust';
 import type { QuitHook } from '../lifecycle';
 import type { Logger } from '../logger';
 import type { MicrophoneAccess } from '../permissions';
+import { readSigningIdentity } from '../signing';
 import type { StoredSegment, TranscriptStore } from '../store/TranscriptStore';
 import type { SpeechToTextFactory } from '../stt/createSpeechToText';
 import type { TranscriptUploader } from '../upload/TranscriptUploader';
@@ -138,6 +141,29 @@ export function createCaptureRuntime(deps: CaptureRuntimeDeps): CaptureRuntime {
   // [slot M2-T6] the network poll (net.isOnline every 1 s), fed to the live session
 
   // [slot M2-T10] call audio through the helper: HelperProcess, TapSystemAudio, selection
+
+  // The tap or Electron's path, chosen once; the helper runs while a recording does. M2-T17a's
+  // monitor, M2-T18's wake (`source.restart`) and M2-T19's "I allowed it" (`source.rebuild`,
+  // `verification`) use `systemAudio`. The helper's place comes from the build only
+  // (native/helperPath.ts): the fake helper only under ROGER_E2E=1 in an unpackaged build.
+  const systemAudio = createSystemAudio({
+    setting: config.capture.systemAudioCapture,
+    helperContext: {
+      isPackaged: app.isPackaged,
+      resourcesPath: process.resourcesPath,
+      appPath: app.getAppPath(),
+      env: process.env,
+    },
+    capture,
+    store,
+    logger: logger.child({ component: 'system-audio' }),
+    readSigningIdentity: () => readSigningIdentity(process.execPath),
+    onWindowFocus: (listener) => {
+      app.on('browser-window-focus', listener);
+    },
+    clock,
+  });
+  quitHooks.push(systemAudio.quitHook);
 
   // [slot M2-T11] signal health and loud warnings: SignalMonitor (a sink), Notifier
 

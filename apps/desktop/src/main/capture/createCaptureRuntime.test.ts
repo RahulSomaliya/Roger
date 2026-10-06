@@ -17,8 +17,14 @@ import {
   noCaptureFeatures,
 } from './createCaptureRuntime';
 
-// ipc.ts asks Electron's desktopCapturer for the screen source; nothing here calls it.
-vi.mock('electron', () => ({ desktopCapturer: { getSources: vi.fn() } }));
+// ipc.ts asks Electron's desktopCapturer for the screen source; nothing here calls it. The M2-T10
+// slot looks for the audio helper under `app.getAppPath()`: a folder with no helper, so call audio
+// takes Electron's path and no test here runs a helper. Never the real apps/desktop: on a Mac that
+// ran `make check` its dev build exists, and a Start here would build a real tap (a privacy prompt).
+vi.mock('electron', () => ({
+  desktopCapturer: { getSources: vi.fn() },
+  app: { isPackaged: false, getAppPath: () => '/nonexistent/roger-app', on: vi.fn() },
+}));
 
 const logger = createLogger({ level: 'error', format: 'json', sink: () => undefined });
 
@@ -128,8 +134,10 @@ describe('createCaptureRuntime', () => {
     }
   });
 
-  it('has no quit hook of its own until a feature adds one', () => {
-    expect(runtimeHarness().runtime.quitHooks).toEqual([]);
+  // The runtime has none of its own: each comes from a feature's slot.
+  it('stops the call audio helper at quit (M2-T10)', () => {
+    const names = runtimeHarness().runtime.quitHooks.map((hook) => hook.name);
+    expect(names).toContain('stop the call audio helper');
   });
 });
 
