@@ -31,6 +31,16 @@ which the token also carries (`stream.price_per_hour_usd_without_keyterms`).
   regular price is used so estimates err high). Deepgram bills the audio streamed, and Roger
   streams silence as well, so an open stream costs about its open time there too. Keyterm
   prompting, streaming, Pay As You Go: $0.0013/min = $0.078/hr.
+- Soniox, https://soniox.com/pricing (read 2026-10-07): real-time stt-rt-v5 $0.12/hr, billed in
+  tokens: input audio $2.00 per 1M (about 30,000 an hour of audio) and output text $4.00 per 1M
+  (about 15,000 an hour of speech). So $0.12 is an hour of continuous speech, and a stream with
+  pauses costs less (the estimate errs high). Context, which carries the jargon list as
+  `context.terms` (https://soniox.com/docs/stt/concepts/context), is billed as input text tokens,
+  $4.00 per 1M at about 0.3 tokens a character. The list goes once per stream, in its opening
+  config message (the pricing page does not say how often it is counted), so its cost is per
+  stream opened, not per hour: Roger's longest list (800 characters, schemas/vocabulary.py) is
+  about 240 tokens, under $0.001. Its surcharge is therefore 0.0, which that margin covers.
+  stt-rt-v5 is the current real-time model (https://soniox.com/docs/stt/models, same date).
 """
 
 from collections.abc import AsyncIterator, Mapping
@@ -47,6 +57,7 @@ from roger_api.services.stt_tokens import (
     AssemblyAiSttTokenIssuer,
     DeepgramSttTokenIssuer,
     FakeSttTokenIssuer,
+    SonioxSttTokenIssuer,
     SttTokenIssuer,
 )
 
@@ -123,12 +134,21 @@ STT_VENDORS: Mapping[SttProvider, SttVendor] = MappingProxyType(
             },
             issuer=AssemblyAiSttTokenIssuer,
         ),
+        # The optional third vendor (decision D1 in docs/plans/M3-live-transcript.md): its docs
+        # say it never trains on customer audio, and it has the lowest live price.
+        "soniox": SttVendor(
+            provider="soniox",
+            max_token_ttl_seconds=3600,
+            price_per_hour_usd={"stt-rt-v5": 0.12},
+            keyterm_surcharge_per_hour_usd={"stt-rt-v5": 0.0},
+            issuer=SonioxSttTokenIssuer,
+        ),
     }
 )
 
 
 # What STT_PROVIDER may name. A test keeps it equal to the keys of STT_PRESETS.
-type SttPresetId = Literal["fake", "assemblyai", "assemblyai-pro", "deepgram"]
+type SttPresetId = Literal["fake", "assemblyai", "assemblyai-pro", "deepgram", "soniox"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -152,6 +172,9 @@ STT_PRESETS: Mapping[SttPresetId, SttPreset] = MappingProxyType(
         # sends that only to universal-streaming-* models.
         "assemblyai-pro": SttPreset(vendor="assemblyai", model="universal-3-6-pro"),
         "deepgram": SttPreset(vendor="deepgram", model="nova-3"),
+        # Run D of the M3 bake-off. The desktop runs it once M3-T15's adapter lands; until then
+        # Start on the Mac refuses the provider.
+        "soniox": SttPreset(vendor="soniox", model="stt-rt-v5"),
     }
 )
 

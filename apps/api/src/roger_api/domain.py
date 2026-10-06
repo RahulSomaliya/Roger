@@ -5,8 +5,9 @@ from typing import Literal
 type MeetingStatus = Literal["recording", "ended"]
 type AudioSource = Literal["mic", "system"]
 # Speech-to-text vendors the API can hand out tokens for. Each has an entry in
-# stt_vendors.STT_VENDORS (a test fails without one) and an adapter on the desktop.
-type SttProvider = Literal["fake", "deepgram", "assemblyai"]
+# stt_vendors.STT_VENDORS (a test fails without one) and an adapter on the desktop, or a place in
+# `AWAITING_A_DESKTOP_ADAPTER` (tests/test_stt_providers.py) until its adapter lands.
+type SttProvider = Literal["fake", "deepgram", "assemblyai", "soniox"]
 
 # Phase 2 vocabulary, defined before the tables that use it so parallel tasks share one copy. Each
 # list is also a check constraint in its migration; change the two together.
