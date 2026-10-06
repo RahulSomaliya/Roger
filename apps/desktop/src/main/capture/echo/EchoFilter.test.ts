@@ -65,6 +65,27 @@ describe('filterEcho', () => {
     expect(filterEcho(me, [them], speakers)).toEqual({ action: 'hide', echoOf: 'them-1' });
   });
 
+  it('keeps combining marks, which some scripts write vowels with', () => {
+    // Devanagari writes the long a of काम ("work") as a mark; without it the word is कम ("less").
+    const them = line('them-1', [['काम', 1_000, 1_400]]);
+    const otherWord = line('me-1', [['कम', 1_000, 1_400]]);
+    const sameWord = line('me-2', [['काम', 1_000, 1_400]]);
+
+    expect(filterEcho(otherWord, [them], speakers)).toEqual({ action: 'keep' });
+    expect(filterEcho(sameWord, [them], speakers)).toEqual({ action: 'hide', echoOf: 'them-1' });
+  });
+
+  it('drops an emoji with its variation selector, a mark with no letter before it', () => {
+    const them = line('them-1', [['great', 1_000, 1_400]]);
+    // U+FE0F is a combining mark; kept alone it would be a second word that never matches.
+    const me = line('me-1', [
+      ['great', 1_000, 1_400],
+      ['❤️', 1_400, 1_500],
+    ]);
+
+    expect(filterEcho(me, [them], speakers)).toEqual({ action: 'hide', echoOf: 'them-1' });
+  });
+
   it('keeps a mic line with different words at the same moment', () => {
     const them = line('them-1', spoken('so the plan is to ship on Friday', 10_000));
     const me = line('me-1', spoken('can we move the review to Monday', 10_000));

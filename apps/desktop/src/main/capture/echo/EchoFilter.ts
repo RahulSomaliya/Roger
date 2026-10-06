@@ -168,18 +168,25 @@ function estimateTimings(line: EchoLine): Token[] {
 }
 
 /**
- * Lowercase letters and digits, keeping apostrophes inside a word ("don't", curly ones made
- * straight). Both streams go through the same vendor, so this only has to undo what differs
- * between two hearings of one sentence: case and punctuation. It is not the benchmark's WER
- * normaliser (M3), which also rewrites numbers and fillers.
+ * Lowercase letters and digits with their combining marks, keeping apostrophes inside a word
+ * ("don't", curly ones made straight). Both streams go through the same vendor, so this only has
+ * to undo what differs between two hearings of one sentence: case and punctuation. It is not the
+ * benchmark's WER normaliser (M3), which also rewrites numbers and fillers.
  */
 function normalizeWord(text: string): string {
-  return text
-    .normalize('NFKC')
-    .toLowerCase()
-    .replace(/[\u2018\u2019\u02bc]/g, "'")
-    .replace(/[^\p{L}\p{N}']/gu, '')
-    .replace(/^'+|'+$/g, '');
+  return (
+    text
+      .normalize('NFKC')
+      .toLowerCase()
+      .replace(/[\u2018\u2019\u02bc]/g, "'")
+      // Marks are part of the letter before them: Devanagari, Tamil and Thai write vowels as
+      // marks, and NFKC does not fold them in, so dropping them made \u0915\u093e\u092e and \u0915\u092e (and \u0939\u0948, \u0939\u094b, \u0939\u0940)
+      // one word and hid the user's own speech. A run of marks with no letter or digit before it
+      // (an emoji's variation selector) goes first, or it would outlive its emoji as a word.
+      .replace(/(?<![\p{L}\p{N}\p{M}])\p{M}+/gu, '')
+      .replace(/[^\p{L}\p{N}\p{M}']/gu, '')
+      .replace(/^'+|'+$/g, '')
+  );
 }
 
 /** A mic word, the call-audio words it may repeat (closest first), and the one it was given. */
