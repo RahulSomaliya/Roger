@@ -73,7 +73,8 @@ const VALID_CITATION: CitationAttrs = {
 function validateCitationAttr(key: keyof CitationAttrs): (value: unknown) => void {
   return (value) => {
     if (!isCitationAttrs({ ...VALID_CITATION, [key]: value })) {
-      throw new RangeError(`A citation's ${key} is not a chip's: ${JSON.stringify(value)}`);
+      // The value stays out: a label is text, and the reason must not quote the notes.
+      throw new RangeError(`A citation's ${key} is not a chip's`);
     }
   };
 }
@@ -235,14 +236,22 @@ export function noteSchema(): Schema {
 }
 
 /**
+ * ProseMirror ends a refused content's message with the content itself (`Invalid content for node
+ * listItem: <bulletList(listItem(paragraph("...`), the notes' own words.
+ */
+const CONTENT_DUMP = /: <[\s\S]*$/;
+
+/**
  * Why the editor cannot show `doc` as it is, or null when it can. An editor that showed it would
- * drop the parts it cannot hold, and the next save would store the doc without them.
+ * drop the parts it cannot hold, and the next save would store the doc without them. Like
+ * `noteDocProblem`, the reason names the rule, never the notes' words, so it can be shown and
+ * logged.
  */
 export function noteDocSchemaProblem(doc: NoteDoc, against: Schema = noteSchema()): string | null {
   try {
     DocNode.fromJSON(against, doc).check();
     return null;
   } catch (error) {
-    return error instanceof Error ? error.message : String(error);
+    return error instanceof Error ? error.message.replace(CONTENT_DUMP, '') : 'an unreadable doc';
   }
 }

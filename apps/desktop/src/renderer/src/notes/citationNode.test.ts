@@ -74,6 +74,16 @@ describe('the notes editor schema', () => {
     expect(noteDocSchemaProblem(doc)).toMatch(/listItem/);
   });
 
+  // Like noteDocProblem: the reason names the rule, never the notes' words, so it can be shown
+  // and logged. ProseMirror's own message ends with a dump of the content it refused.
+  it('says why without quoting the notes', () => {
+    const secret = 'Acme will cut 40 jobs in March';
+    const doc = docOf(bulletList(item(bulletList(item(paragraph(text(secret)))))));
+    expect(noteDocSchemaProblem(doc)).toBe('Invalid content for node listItem');
+    const label = { ...chip(), attrs: { ...chip().attrs, label: secret, support: 'maybe' } };
+    expect(noteDocSchemaProblem(docOf(paragraph(label)))).not.toContain(secret);
+  });
+
   it('refuses a chip without its attrs, and a node the editor does not know', () => {
     expect(noteDocSchemaProblem(docOf(paragraph({ type: CITATION_NODE_TYPE })))).toMatch(
       /segmentIds/,
