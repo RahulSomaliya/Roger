@@ -32,7 +32,8 @@ const CHECK_INTERVAL_MS = 1_000;
 /**
  * A check that comes this much later than the last one means the Mac slept (Node's timers stop
  * while it sleeps and the wall clock does not) or the event loop was stuck: that check is skipped,
- * or every source would read as silent for the whole sleep and warn at wake (openwhispr's watchdog).
+ * or every source would read as sending nothing for the whole sleep and warn of no audio at wake
+ * (openwhispr's watchdog).
  */
 const TIMER_GAP_MS = 5_000;
 
@@ -275,19 +276,22 @@ export class SignalMonitor implements AudioSink {
     const gapMs = now - this.lastCheckAtMs;
     this.lastCheckAtMs = now;
     if (gapMs > TIMER_GAP_MS || this.asleep) {
-      if (gapMs > TIMER_GAP_MS) {
-        this.options.logger.info('signal check skipped after a timer gap', {
-          meetingId: recording.meetingId,
-          gapMs,
-        });
-      }
-      // Silence counts in audio time, so the sleep added none; the time since each source's last
+      // Silence counts in audio time, so a sleep adds none; the time since each source's last
       // chunk is wall time, so it starts again here, and a source that does not come back still
       // warns NO_AUDIO_WARNING_MS after the wake.
       for (const source of AUDIO_SOURCES) this.meters[source].lastChunkAtMs = now;
+    }
+    if (gapMs > TIMER_GAP_MS) {
+      this.options.logger.info('signal check skipped after a timer gap', {
+        meetingId: recording.meetingId,
+        gapMs,
+      });
       return;
     }
-    const changes = this.spells.update(detectWarnings(this.facts(now)), now);
+    // While the recording is paused for sleep (M2-T18) both sessions are closed and the sources
+    // stop on purpose: nothing is wrong with the audio, so no warning holds until the wake.
+    const detected = this.asleep ? [] : detectWarnings(this.facts(now));
+    const changes = this.spells.update(detected, now);
     for (const warning of changes.raised) this.raised(recording, warning, now);
     for (const warning of changes.cleared) this.cleared(recording, warning, now);
     this.warnings = changes.warnings;

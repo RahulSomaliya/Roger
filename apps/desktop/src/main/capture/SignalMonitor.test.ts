@@ -364,6 +364,19 @@ describe('SignalMonitor: sleep, pauses and device switches', () => {
     expect(h.warnings()).toEqual([]);
   });
 
+  it('ends the warnings a recording had when it is paused for sleep: nothing is wrong with it then', () => {
+    const h = harness();
+    h.feed({ mic: 0, system: VOICE }, 9_000);
+    expect(h.warnings()).toEqual([{ kind: 'mic-dead', source: 'mic', loud: true }]);
+    h.monitor.observeStatus(recordingStatus({ paused: 'asleep' }));
+    h.wait(1_000);
+    expect(h.warnings()).toEqual([]);
+    expect(h.store.listCaptureEvents(MEETING).map(({ kind }) => kind)).toEqual([
+      'warning',
+      'warning-cleared',
+    ]);
+  });
+
   it('shows a mic device switch as a notice, never a warning, and times its silence afresh', () => {
     const h = harness();
     h.monitor.observeStatus(recordingStatus({}, { mic: { device: 'MacBook Pro Microphone' } }));
