@@ -5,13 +5,13 @@ import Foundation
 //
 // They cover everything that needs no audio permission: the frame header and capture times, the
 // ring and its overflow count, the converter, the writer thread, the IO block's mixdown, stdin
-// commands, the parent watch, signals, the rebuild debounce, and the tap session driven through a
-// fake TapDevice. The IO block's shut-off on a tap format change is checked through TapInput and
-// the format listener's block, called by hand. Nothing here creates a process tap, registers a
-// Core Audio listener or opens an audio device, so it never raises a macOS privacy prompt and
-// runs unattended; keep it that way, since `make check` runs it on every pass. The real tap is
-// exercised by `selftest --route-switch` (`make test-native-route`: opt-in, audible, M2-T7b) and
-// by the probe.
+// commands, the parent watch, signals, the rebuild debounce, and the tap session and the probe
+// driven through a fake TapDevice. The IO block's shut-off on a tap format change is checked
+// through TapInput and the format listener's block, called by hand. Nothing here creates a process
+// tap, registers a Core Audio listener or opens an audio device, so it never raises a macOS
+// privacy prompt and runs unattended; keep it that way, since `make check` runs it on every pass.
+// The real tap and the real probe are exercised by `selftest --route-switch` (`make
+// test-native-route`: opt-in and audible; "Route switch" below).
 
 func runSelfTest(arguments: [String]) -> Int32 {
   switch arguments {
@@ -36,9 +36,10 @@ func runSelfTest(arguments: [String]) -> Int32 {
   tapInputCases(&suite)
   lifecycleCases(&suite)
   sessionCases(&suite)
+  probeCases(&suite)
   suite.skip(
-    "Core Audio tap",
-    because: "it needs the System Audio Recording permission; `make test-native-route` runs it")
+    "Core Audio tap and probe",
+    because: "they need the System Audio Recording permission; `make test-native-route` runs both")
   return suite.finish()
 }
 
@@ -1012,6 +1013,183 @@ private final class SessionHarness {
     let written = stdoutDrain?.finish() ?? []
     queue.sync {}
     return written
+  }
+}
+
+// MARK: - Probe (with a fake device: no Core Audio)
+
+private func probeCases(_ suite: inout SelfTestSuite) {
+  suite.run("probe options: 2 s by default, 1 to 10 whole seconds, anything else refused") { t in
+    t.expectEqual(try ProbeOptions(arguments: []), ProbeOptions(seconds: 2), "default")
+    t.expectEqual(try ProbeOptions(arguments: ["--seconds", "10"]).seconds, 10, "explicit")
+    for bad in [
+      ["--seconds"], ["--seconds", "0"], ["--seconds", "11"], ["--seconds", "1.5"],
+      ["--seconds", "2", "--seconds", "2"], ["--sample-rate", "16000"],
+    ] {
+      t.expectThrows("refuses \(bad)") { _ = try ProbeOptions(arguments: bad) }
+    }
+  }
+
+  suite.run("probe lines: one JSON line each, \"event\" first") { t in
+    t.expectEqual(
+      ProbeOutput.listening(seconds: 2).jsonLine, #"{"event":"listening","seconds":2}"# + "\n",
+      "listening")
+    t.expectEqual(
+      ProbeOutput.result(ProbeResult(peak: 8_192, audioMs: 2_000)).jsonLine,
+      #"{"event":"result","peak":8192,"audioMs":2000}"# + "\n", "result")
+  }
+
+  suite.run("probe meter: the loudest sample on the stats scale, and how much audio came") { t in
+    var meter = PeakMeter()
+    t.expectEqual(meter.result, ProbeResult(peak: 0, audioMs: 0), "nothing heard yet")
+    var click = [Float](repeating: 0, count: 480)
+    click[100] = -0.5
+    click.withUnsafeBufferPointer { meter.add($0, sampleRate: 48_000) }
+    t.expectEqual(meter.result, ProbeResult(peak: 16_384, audioMs: 10), "|-0.5| is half of full scale")
+    [Float](repeating: 0.25, count: 160).withUnsafeBufferPointer { meter.add($0, sampleRate: 16_000) }
+    t.expectEqual(meter.result, ProbeResult(peak: 16_384, audioMs: 20), "quieter audio adds only time")
+    [Float.nan, 1.5, -Float.infinity].withUnsafeBufferPointer { meter.add($0, sampleRate: 48_000) }
+    t.expectEqual(meter.result.peak, 32_768, "past full scale is full scale; NaN is never loudest")
+
+    var faint = PeakMeter()
+    [Float(0.4 / 32_768)].withUnsafeBufferPointer { faint.add($0, sampleRate: 48_000) }
+    t.expectEqual(faint.result.peak, 0, "under half a 16-bit step is silence, as in tap's output")
+    [Float(0.6 / 32_768)].withUnsafeBufferPointer { faint.add($0, sampleRate: 48_000) }
+    t.expectEqual(faint.result.peak, 1, "over half a step is heard")
+  }
+
+  suite.run("probe: builds the tap, says it listens, hears for all its seconds, then tears down") {
+    t in
+    let probe = ProbeHarness(seconds: 2)
+    probe.start()
+    t.expect(probe.waitForListening(), "says it listens once the tap runs")
+    t.expectEqual(
+      probe.lines.value, [ProbeOutput.listening(seconds: 2).jsonLine], "the listening line, once")
+    writeToRing(probe.ring, [Float](repeating: 0.25, count: 12_000), rate: 48_000)
+    usleep(100_000)
+    t.expect(!probe.finished, "still listening: 2 s have not passed on the uptime clock")
+    probe.uptime.withValue { $0 += 2 }
+    guard case .success(let heard)? = probe.finish() else {
+      t.fail("did not finish with a result: \(String(describing: probe.finish()))")
+      return
+    }
+    t.expectEqual(heard, ProbeResult(peak: 8_192, audioMs: 250), "peak and length of what it heard")
+    t.expectEqual(probe.device.log.value, ["build", "teardown"], "torn down before it answers")
+    t.expect(probe.events.all.isEmpty, "no warning")
+  }
+
+  suite.run("probe: digital silence is peak 0; a tap that delivers nothing also warns no_audio") {
+    t in
+    let silent = ProbeHarness(seconds: 1)
+    silent.start()
+    t.expect(silent.waitForListening(), "listening")
+    writeToRing(silent.ring, [Float](repeating: 0, count: 4_800), rate: 48_000)
+    silent.uptime.withValue { $0 += 1 }
+    guard case .success(let quiet)? = silent.finish() else {
+      t.fail("silence: no result: \(String(describing: silent.finish()))")
+      return
+    }
+    t.expectEqual(quiet, ProbeResult(peak: 0, audioMs: 100), "100 ms of zeros")
+    t.expect(silent.events.all.isEmpty, "silence is an answer, not a warning")
+
+    let dead = ProbeHarness(seconds: 1)
+    dead.start()
+    t.expect(dead.waitForListening(), "listening")
+    dead.uptime.withValue { $0 += 1 }
+    guard case .success(let nothing)? = dead.finish() else {
+      t.fail("no audio: no result: \(String(describing: dead.finish()))")
+      return
+    }
+    t.expectEqual(nothing, ProbeResult(peak: 0, audioMs: 0), "no audio at all")
+    t.expect(
+      dead.events.all.contains {
+        guard case .warning(let code, _) = $0 else { return false }
+        return code == "no_audio"
+      }, "a tap that never ran is warned about: it is a helper failure, not a permission answer")
+  }
+
+  suite.run("probe: a tap that cannot be built is the error; no listening line, nothing left built") {
+    t in
+    let probe = ProbeHarness()
+    probe.device.failNextBuilds.withValue { $0 = 1 }
+    probe.start()
+    guard case .failure(let error)? = probe.finish() else {
+      t.fail("did not fail: \(String(describing: probe.finish()))")
+      return
+    }
+    t.expectEqual((error as? HelperFailure)?.code, "tap_create_failed", "the tap's own failure")
+    t.expectEqual((error as? HelperFailure)?.status, -50, "with its OSStatus")
+    t.expect(probe.lines.value.isEmpty, "never said it listens")
+    t.expectEqual(probe.device.log.value.last, "teardown", "nothing left built")
+  }
+
+  suite.run("probe: cancel (a termination signal) ends it early, torn down, with no result") { t in
+    let probe = ProbeHarness(seconds: 10)
+    probe.start()
+    t.expect(probe.waitForListening(), "listening")
+    probe.probe.cancel()
+    t.expect(waitUntil(seconds: 1) { probe.finished }, "ends within a poll, not after 10 s")
+    guard case .success(let heard)? = probe.finish() else {
+      t.fail("cancel is not a failure: \(String(describing: probe.finish()))")
+      return
+    }
+    t.expectEqual(heard, nil, "no result")
+    t.expectEqual(probe.device.log.value, ["build", "teardown"], "torn down")
+  }
+
+  suite.run("probe: a closed stdout ends it at once, torn down") { t in
+    let probe = ProbeHarness(stdoutClosed: true)
+    probe.start()
+    guard case .failure(let error)? = probe.finish() else {
+      t.fail("did not stop: \(String(describing: probe.finish()))")
+      return
+    }
+    t.expectEqual(error as? OutputError, .closed, "the write's own error")
+    t.expectEqual(probe.device.log.value, ["build", "teardown"], "torn down")
+  }
+}
+
+/// A PeakProbe on a fake tap, run on its own thread, with an uptime clock that moves only when a
+/// case moves it and a stdout that records its lines (or is closed).
+private final class ProbeHarness: @unchecked Sendable {
+  let queue = DispatchQueue(label: "selftest.probe")
+  let ring = AudioRing()
+  let device: FakeTapDevice
+  let events = RecordingEventSink()
+  let uptime = Locked<TimeInterval>(1_000)
+  let lines = Locked<[String]>([])
+  let probe: PeakProbe
+  private let stdoutClosed: Bool
+  private let outcome = Locked<Result<ProbeResult?, Error>?>(nil)
+
+  init(seconds: Int = 2, stdoutClosed: Bool = false) {
+    device = FakeTapDevice(queue: queue)
+    self.stdoutClosed = stdoutClosed
+    probe = PeakProbe(
+      device: device, ring: ring, queue: queue, events: events, seconds: seconds,
+      pollInterval: 0.005, uptime: { [uptime] in uptime.value })
+  }
+
+  func start() {
+    Thread { [self] in
+      let result = Result {
+        try probe.run { line in
+          if stdoutClosed { throw OutputError.closed }
+          lines.withValue { $0.append(line) }
+        }
+      }
+      outcome.withValue { $0 = result }
+    }.start()
+  }
+
+  func waitForListening() -> Bool { waitUntil(seconds: 5) { !self.lines.value.isEmpty } }
+
+  var finished: Bool { outcome.value != nil }
+
+  /// Waits up to 5 s for `run` to return; nil when it has not.
+  func finish() -> Result<ProbeResult?, Error>? {
+    _ = waitUntil(seconds: 5) { self.finished }
+    return outcome.value
   }
 }
 
