@@ -7,7 +7,9 @@ refresh token when it is missing or about to expire, and refreshed once more whe
 (a `401`), with one retry.
 
 A `424` here is final until the user connects again: the connection is marked
-`reconnect_required` with the 424's message, and later calls answer it without asking Google.
+`reconnect_required` with the 424's message, and later calls answer it without asking Google. One
+`424` stores nothing: CALENDAR_PROVIDER changed since the connect, which restoring the setting
+undoes (`list_events`).
 """
 
 from datetime import datetime
@@ -49,6 +51,15 @@ async def list_events(
         raise NotFoundError(NOT_CONNECTED_MESSAGE)
     if connection.status == "reconnect_required":
         raise CalendarReconnectRequiredError(connection.last_error or RECONNECT_MESSAGE)
+    calendar = runtime.provider
+    if connection.provider != calendar.provider:
+        # CALENDAR_PROVIDER changed since the connect: this provider cannot use that grant. Raised
+        # here, outside the `try` below, so it is never stored as reconnect_required: the grant
+        # is still good, and setting CALENDAR_PROVIDER back must serve events again without a new
+        # sign-in (the desktop stops polling on a 424 until a launch).
+        raise CalendarReconnectRequiredError(
+            f"Roger now reads the {calendar.provider} calendar. Connect the calendar again."
+        )
     # End the read before waiting on Google: a pooled connection must not sit idle in a
     # transaction for the length of a provider call.
     await session.commit()
@@ -77,11 +88,6 @@ async def _list_with_access(
     time_max: datetime,
 ) -> list[CalendarEvent]:
     calendar = runtime.provider
-    if connection.provider != calendar.provider:
-        # CALENDAR_PROVIDER changed since the connect: this provider cannot use that grant.
-        raise CalendarReconnectRequiredError(
-            f"Roger now reads the {calendar.provider} calendar. Connect the calendar again."
-        )
     access_token = runtime.access_tokens.get(principal, connection.id)
     if access_token is None:
         access_token = await _refresh(session, principal, runtime, connection)

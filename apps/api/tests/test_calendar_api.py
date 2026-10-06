@@ -896,11 +896,12 @@ async def test_events_after_the_token_key_changed_is_424(
     assert OTHER_TOKEN_KEY not in logs.text
 
 
-async def test_events_after_the_provider_changed_is_424(
+async def test_events_after_the_provider_changed_is_424_and_the_grant_kept(
     app: FastAPI, client: httpx.AsyncClient, google: GoogleStub
 ) -> None:
     await connect(client)
-    # CALENDAR_PROVIDER switched back to fake: the Google connection cannot be read by it.
+    # A restart on CALENDAR_PROVIDER=fake (a demo, QA, an API started without the repo-root
+    # .env): the fake cannot read the Google grant, but Google never refused it.
     use_runtime(
         app,
         CalendarRuntime(
@@ -914,7 +915,16 @@ async def test_events_after_the_provider_changed_is_424(
 
     message = assert_error(response, 424, "calendar_reconnect_required")
     assert "connect" in message.lower()
-    assert google.kinds == ["exchange"]
+    connection = await get_connection(client)
+    assert connection is not None
+    assert connection["status"] == "active"
+    assert connection["last_error"] is None
+    # Back on Google (a restart, so nothing cached): the stored grant serves events again, with
+    # no new sign-in.
+    use_runtime(app, google_runtime(google))
+    again = await client.get("/v1/calendar/events", params=WINDOW)
+    assert again.status_code == 200, again.text
+    assert google.kinds == ["exchange", "refresh", "events"]
 
 
 async def test_events_on_the_fake_provider_are_its_script(client: httpx.AsyncClient) -> None:

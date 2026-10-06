@@ -33,7 +33,7 @@ same change as the code on both sides. Base URL in development: `http://127.0.0.
   | 422 | `validation_error` | Body or query failed validation; `message` lists the fields |
   | 422 | `empty_meeting` | Notes were asked for a meeting with no transcript lines and no user notes |
   | 422 | `meeting_too_long` | The meeting is over the chat model's input budget (about 10 hours of talk) |
-  | 424 | `calendar_reconnect_required` | Only connecting the calendar again helps: Google refused the stored refresh token or a used or expired sign-in code (`invalid_grant`), the user did not grant calendar access, or the API can no longer use the stored grant (`CALENDAR_TOKEN_KEY` or `CALENDAR_PROVIDER` changed). The message says what to do. |
+  | 424 | `calendar_reconnect_required` | Only connecting the calendar again helps: Google refused the stored refresh token or a used or expired sign-in code (`invalid_grant`), the user did not grant calendar access, or the API can no longer use the stored grant (`CALENDAR_TOKEN_KEY` changed). Also when `CALENDAR_PROVIDER` changed since the connect, where setting it back helps too. The message says what to do. |
   | 500 | `internal_error` | Unexpected; details only in server logs |
   | 502 | `stt_provider_error` | The speech-to-text vendor refused or failed a token request |
   | 502 | `llm_provider_error` | The notes model's vendor refused or failed before the stream started |
@@ -372,7 +372,9 @@ because Google expires such refresh tokens after 7 days; `null` for `external_pr
 
 `424 calendar_reconnect_required` is final until the user connects again. On the events route it
 also sets the connection's `status` to `reconnect_required` with the message in `last_error`, and
-later event requests answer the same `424` without asking Google. No route here answers `409`.
+later event requests answer the same `424` without asking Google. One events `424` stores nothing:
+`CALENDAR_PROVIDER` changed since the connect. The grant is still good, so the connection stays
+`active` and setting `CALENDAR_PROVIDER` back serves events again. No route here answers `409`.
 
 #### `POST /v1/calendar/google/authorization`
 
