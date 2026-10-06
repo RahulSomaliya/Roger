@@ -69,8 +69,10 @@ export class NetworkStatus {
 
   /**
    * One reading. Runs on a timer, so nothing may escape it: a throw from a timer callback would
-   * be an uncaught exception in main. A failed check keeps the last reading (logged), and a
-   * follower that throws is logged; the next poll tries again either way.
+   * be an uncaught exception in main. A failed check keeps the last reading (logged), so the next
+   * poll reads the network again. A change the follower threw on is logged and never sent again:
+   * the reading has moved on, so the next poll sees no change (and suspendStreams records its
+   * reason before it touches a source, so a second call would do nothing).
    */
   private poll(): void {
     const follower = this.follower;
