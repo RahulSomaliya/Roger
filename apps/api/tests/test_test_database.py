@@ -1,19 +1,20 @@
-"""The suite's own database guard: it only runs against a `roger_test*` database, made if missing.
+"""The suite's own database guard: it only runs against a `roger_test*` database, rebuilt each run.
 
 Parallel worktrees share one Postgres (`make dev-db`), each with `make check TEST_DB=<name>`. The
-session migrates that database down to base and truncates it, so a name like `roger` (the dev
-database) must be refused before anything connects.
+session drops and recreates that database, so a name like `roger` (the dev database) must be
+refused before anything connects.
 """
 
 import asyncio
 from uuid import uuid4
 
 import pytest
+from alembic import command
 from sqlalchemy import NullPool, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from tests.conftest import ensure_test_database, require_test_database_name
+from tests.conftest import alembic_config, prepare_test_database, require_test_database_name
 
 SERVER = "postgresql+asyncpg://postgres:secret-password@localhost:5432"
 
@@ -49,7 +50,7 @@ def test_a_roger_test_database_is_accepted(name: str) -> None:
 def test_the_refusal_comes_before_any_connection() -> None:
     # Nothing listens on port 1: a connection attempt would raise OSError, not the refusal.
     with pytest.raises(ValueError, match="'roger'"):
-        ensure_test_database("postgresql+asyncpg://postgres:postgres@127.0.0.1:1/roger")
+        prepare_test_database("postgresql+asyncpg://postgres:postgres@127.0.0.1:1/roger")
 
 
 async def _database_exists(server_url: str, name: str) -> bool:
@@ -64,27 +65,67 @@ async def _database_exists(server_url: str, name: str) -> bool:
     return found is not None
 
 
-async def _drop_database(server_url: str, name: str) -> None:
-    engine = create_async_engine(server_url, poolclass=NullPool, isolation_level="AUTOCOMMIT")
+async def _execute(url: str, statement: str) -> None:
+    # AUTOCOMMIT: CREATE and DROP DATABASE refuse to run inside a transaction.
+    engine = create_async_engine(url, poolclass=NullPool, isolation_level="AUTOCOMMIT")
     try:
         async with engine.connect() as connection:
-            quoted = connection.dialect.identifier_preparer.quote_identifier(name)
-            await connection.execute(text(f"DROP DATABASE IF EXISTS {quoted}"))
+            await connection.execute(text(statement))
     finally:
         await engine.dispose()
 
 
-def test_a_missing_test_database_is_created(database_url: str) -> None:
-    """Sync on purpose: `ensure_test_database` runs its own event loop, like the session fixture."""
-    name = f"roger_test_created_{uuid4().hex[:12]}"
+async def _scalar(url: str, query: str) -> object:
+    engine = create_async_engine(url, poolclass=NullPool)
+    try:
+        async with engine.connect() as connection:
+            return await connection.scalar(text(query))
+    finally:
+        await engine.dispose()
+
+
+def _scratch_database(database_url: str, label: str) -> tuple[str, str, str]:
+    """(name, its URL, the maintenance URL) for a throwaway roger_test_<label>_<hex> database."""
+    name = f"roger_test_{label}_{uuid4().hex[:12]}"
     url = make_url(database_url)
-    missing = url.set(database=name).render_as_string(hide_password=False)
-    maintenance = url.set(database="postgres").render_as_string(hide_password=False)
+    return (
+        name,
+        url.set(database=name).render_as_string(hide_password=False),
+        url.set(database="postgres").render_as_string(hide_password=False),
+    )
+
+
+def test_a_missing_test_database_is_created_and_migrated(database_url: str) -> None:
+    """Sync on purpose: `prepare_test_database` runs its own event loop, as in the session."""
+    name, missing, maintenance = _scratch_database(database_url, "created")
     assert not asyncio.run(_database_exists(maintenance, name))
     try:
-        ensure_test_database(missing)
-        assert asyncio.run(_database_exists(maintenance, name))
+        prepare_test_database(missing)
 
-        ensure_test_database(missing)  # a second run finds it and creates nothing
+        assert asyncio.run(_database_exists(maintenance, name))
+        assert asyncio.run(_scalar(missing, "SELECT to_regclass('workspaces') IS NOT NULL"))
     finally:
-        asyncio.run(_drop_database(maintenance, name))
+        asyncio.run(_execute(maintenance, f'DROP DATABASE IF EXISTS "{name}"'))
+
+
+def test_a_database_migrated_before_a_stub_was_filled_is_rebuilt_from_empty(
+    database_url: str,
+) -> None:
+    """The stubs 0002 to 0005 are filled in place. A database migrated while one was still empty
+    sits at head without that stub's tables, so migrating it from there skips the filled upgrade()
+    and runs the filled downgrade() against tables that were never created (UndefinedTable), and
+    every test in the run errors. `alembic stamp head` on an empty database is that state with
+    every table missing (0001's downgrade() fails the same way); the stray table stands for
+    anything else an earlier run left."""
+    name, stale, maintenance = _scratch_database(database_url, "stale")
+    asyncio.run(_execute(maintenance, f'CREATE DATABASE "{name}"'))
+    try:
+        command.stamp(alembic_config(stale), "head")
+        asyncio.run(_execute(stale, "CREATE TABLE left_by_an_earlier_run (id integer)"))
+
+        prepare_test_database(stale)
+
+        assert asyncio.run(_scalar(stale, "SELECT to_regclass('workspaces') IS NOT NULL"))
+        assert asyncio.run(_scalar(stale, "SELECT to_regclass('left_by_an_earlier_run') IS NULL"))
+    finally:
+        asyncio.run(_execute(maintenance, f'DROP DATABASE IF EXISTS "{name}"'))
