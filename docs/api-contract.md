@@ -370,7 +370,10 @@ past what the JSON parser reads (thousands of levels) is a `400 bad_request` bef
 
 Postgres cannot store U+0000 or an unpaired UTF-16 surrogate (half of an emoji) in a doc. Neither
 is text anyone reads, so the API drops each U+0000 and replaces each unpaired surrogate with
-U+FFFD, in keys and values alike, and answers with the doc as stored.
+U+FFFD, in keys and values alike, and answers with the doc as stored. The key rules apply to keys
+as stored: `"__proto\u0000__"` is a `__proto__` key, and two keys of one object that would be
+stored as one (`"type"` and `"type\u0000"`) are a `422` rather than a value lost. The editor never
+writes such keys: its keys are its schema's names.
 
 ### Notes runs and streaming
 

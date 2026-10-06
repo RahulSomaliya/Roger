@@ -71,7 +71,12 @@ def note_doc_problem(doc: object) -> str | None:
         if isinstance(value, list):
             stack.extend((child, level + 1) for child in value)
             continue
-        forbidden = next((key for key in _FORBIDDEN_KEYS if key in value), None)
+        # Keys as `storable_doc` stores them. Checked only as sent, "__proto\u0000__" was stored
+        # as a "__proto__" key, and "type\u0000" beside "type" as one key, losing a value.
+        keys = {_storable_text(key) for key in value}
+        if len(keys) < len(value):
+            return "holds two keys that are one key once stored"
+        forbidden = next((key for key in _FORBIDDEN_KEYS if key in keys), None)
         if forbidden is not None:
             return f'holds a "{forbidden}" key'
         # Any `content` key, not only a node's, as the desktop counts it. Still bounded: every
@@ -92,8 +97,9 @@ def note_doc_problem(doc: object) -> str | None:
 
 def storable_doc(doc: dict[str, Any]) -> dict[str, Any]:
     """A copy of `doc` that jsonb can hold: every U+0000 dropped and every unpaired surrogate
-    replaced by U+FFFD, in keys and values alike. Call it only on a doc `note_doc_problem` passed,
-    which bounds the recursion.
+    replaced by U+FFFD, in keys and values alike. Call it only on a doc `note_doc_problem` passed:
+    it bounds the recursion, and it checks the keys as this stores them, so no key becomes a
+    forbidden one here and no two keys of an object become one (which would drop a value).
 
     Postgres refuses either one in jsonb, so a doc stored as sent was a 500. The desktop's
     `noteDocProblem` lets both through (a pasted NUL, half an emoji), and refusing them would leave

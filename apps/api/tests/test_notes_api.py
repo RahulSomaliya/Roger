@@ -36,6 +36,7 @@ NOTE_FIELDS = {
     "updated_at",
 }
 TOO_DEEP = f"nested deeper than {MAX_NOTE_DOC_DEPTH} levels"
+MERGED_KEYS = "holds two keys that are one key once stored"
 
 
 def database_of(app: FastAPI) -> Database:
@@ -593,6 +594,38 @@ async def test_text_postgres_cannot_store_is_stored_without_it(client: httpx.Asy
 
     assert note["doc"] == stored
     assert (await get_notes(client, meeting["id"]))["user"] == note
+
+
+async def test_keys_are_checked_as_they_would_be_stored(
+    app: FastAPI, client: httpx.AsyncClient
+) -> None:
+    # Keys lose their U+0000 too. Checked only as sent, "__proto\u0000__" was stored as a
+    # "__proto__" key, "type\u0000" replaced the doc's type, "content\u0000" its nodes, and two
+    # keys stored as one lost a value without a word.
+    meeting = await create_meeting(client)
+    refused = [
+        (
+            '{"type":"doc","content":[{"type":"paragraph","attrs":'
+            '{"__proto\\u0000__":{"polluted":true}}}]}',
+            'holds a "__proto__" key',
+        ),
+        (
+            '{"type":"doc","content":[{"type":"paragraph","constructor\\u0000":{}}]}',
+            'holds a "constructor" key',
+        ),
+        ('{"type":"doc","type\\u0000":"paragraph"}', MERGED_KEYS),
+        ('{"type":"doc","content":[{"type":"paragraph"}],"content\\u0000":"x"}', MERGED_KEYS),
+        # Both unpaired surrogates are stored as U+FFFD.
+        ('{"type":"doc","attrs":{"a\\ud800":1,"a\\udc00":2}}', MERGED_KEYS),
+    ]
+
+    for doc, reason in refused:
+        body = f'{{"doc":{doc},"base_version":0,"revision_id":"{uuid4()}"}}'
+        response = await put_raw_note(client, meeting["id"], "user", body)
+        message = assert_error(response, 422, "validation_error")
+        assert message.startswith("Invalid request: body.doc: "), message
+        assert reason in message, message
+    assert await stored_note_count(app, meeting["id"]) == 0
 
 
 def test_an_unpaired_surrogate_is_measured_no_larger_than_the_desktop_measures_it() -> None:
