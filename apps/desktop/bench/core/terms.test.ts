@@ -25,8 +25,8 @@ describe('countTerms', () => {
     expect(
       countTerms(
         terms,
-        'Linkt built Roger. LINKT ships it; linkt likes it.',
-        'Linked built roger, Roger and Roger.',
+        ['Linkt built Roger.', 'LINKT ships it; linkt likes it.'],
+        ['Linked built roger, Roger and Roger.'],
       ),
     ).toEqual([
       { term: 'Linkt', reference: 3, hypothesis: 0 },
@@ -38,19 +38,34 @@ describe('countTerms', () => {
   it('counts whole words and whole phrases only', () => {
     const [, , claudeCode] = countTerms(
       terms,
-      'We use Claude Code daily.',
-      'We use Claude daily, code later, and claude code once.',
+      ['We use Claude Code daily.'],
+      ['We use Claude daily, code later, and claude code once.'],
     );
-    const [linkt] = countTerms(terms, 'linkts linktx', 'xlinkt');
+    const [linkt] = countTerms(terms, ['linkts linktx'], ['xlinkt']);
 
     expect(claudeCode).toEqual({ term: 'Claude Code', reference: 1, hypothesis: 1 });
     expect(linkt).toEqual({ term: 'Linkt', reference: 0, hypothesis: 0 });
   });
 
   it('counts on normalised text, so a number term matches however it was written', () => {
-    const counted = countTerms(prepareTerms(['Q4 2026']).terms, 'Q4 twenty twenty six', 'q4 2026');
+    const counted = countTerms(
+      prepareTerms(['Q4 2026']).terms,
+      ['Q4 twenty twenty six'],
+      ['q4 2026'],
+    );
 
     expect(counted).toEqual([{ term: 'Q4 2026', reference: 1, hypothesis: 1 }]);
+  });
+
+  it('normalises each line and each final on its own, so no number term spans two of them', () => {
+    // Joined, the reference read "q4 twenty twenty six", the year 2026: a term nobody said.
+    const counted = countTerms(
+      prepareTerms(['Q4 2026']).terms,
+      ['We closed Q4 twenty', 'twenty six people joined'],
+      ['We closed Q4 20.', '26 people joined.'],
+    );
+
+    expect(counted).toEqual([{ term: 'Q4 2026', reference: 0, hypothesis: 0 }]);
   });
 });
 

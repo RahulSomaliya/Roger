@@ -1,4 +1,4 @@
-import { normalise } from './normalise';
+import { normalise, normaliseEach } from './normalise';
 
 /**
  * Jargon term metrics (M3 design, "Term metrics"). WER weighs "Linkt" the same as "the", but names
@@ -46,13 +46,18 @@ export interface TermCount {
   hypothesis: number;
 }
 
+/**
+ * Each term's counts in one item: pass the reference's lines and the stream's finals as lists,
+ * never joined, since each is normalised on its own (`normaliseEach`). Joined, a line ending "Q4
+ * twenty" and one starting "twenty six" would read as the year and count "Q4 2026".
+ */
 export function countTerms(
   terms: readonly PreparedTerm[],
-  referenceText: string,
-  hypothesisText: string,
+  referenceTexts: readonly string[],
+  hypothesisTexts: readonly string[],
 ): TermCount[] {
-  const reference = normalise(referenceText);
-  const hypothesis = normalise(hypothesisText);
+  const reference = normaliseEach(referenceTexts);
+  const hypothesis = normaliseEach(hypothesisTexts);
   return terms.map(({ term, words }) => ({
     term,
     reference: occurrences(reference, words),

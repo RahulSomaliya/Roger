@@ -1,6 +1,6 @@
 import { align } from './align';
-import { normalise } from './normalise';
-import { type ReferenceLine, speakerText } from './reference';
+import { normaliseEach } from './normalise';
+import { type ReferenceLine, speakerTexts } from './reference';
 
 /**
  * Word error rate: (substitutions + deletions + insertions) / reference words, on normalised words
@@ -36,9 +36,15 @@ export function countErrors(
   return counts;
 }
 
-/** The counts for two texts, both run through the same normaliser first. */
-export function scoreText(referenceText: string, hypothesisText: string): WerCounts {
-  return countErrors(normalise(referenceText), normalise(hypothesisText));
+/**
+ * The counts for a reference and a hypothesis given as lines or finals, each run through the same
+ * normaliser on its own (`normaliseEach`). One whole text is a list of one.
+ */
+export function scoreTexts(
+  referenceTexts: readonly string[],
+  hypothesisTexts: readonly string[],
+): WerCounts {
+  return countErrors(normaliseEach(referenceTexts), normaliseEach(hypothesisTexts));
 }
 
 export function errorCount(counts: WerCounts): number {
@@ -72,11 +78,15 @@ export function poolCounts(counts: Iterable<WerCounts>): WerCounts {
   return pooled;
 }
 
-/** One item's vendor text per stream: its finals joined, or null when the stream is missing. */
+/**
+ * One item's vendor finals per stream, in order, or null when the stream is missing. A list, never
+ * the finals joined: each is normalised on its own, so a final ending "twenty" and the next one
+ * starting "five" stay 20 and 5 instead of reading as 25.
+ */
 export interface StreamHypotheses {
-  /** Me's text as scored: the mic finals after the echo filter (the caller runs it). */
-  mic: string | null;
-  system: string | null;
+  /** Me's finals as scored: the mic finals after the echo filter (the caller runs it). */
+  mic: readonly string[] | null;
+  system: readonly string[] | null;
 }
 
 export interface SpeakerCounts {
@@ -99,15 +109,15 @@ export function scoreSpeakers(
 function scoreSpeaker(
   reference: readonly ReferenceLine[],
   speaker: ReferenceLine['speaker'],
-  hypothesis: string | null,
+  hypothesis: readonly string[] | null,
   label: string,
   stream: string,
 ): WerCounts | null {
-  const text = speakerText(reference, speaker);
-  if (hypothesis !== null) return scoreText(text, hypothesis);
+  const texts = speakerTexts(reference, speaker);
+  if (hypothesis !== null) return scoreTexts(texts, hypothesis);
   // Scoring these lines against nothing would count every word as deleted and blame the vendor
   // for an item that was clipped or labelled wrong.
-  if (text !== '') {
+  if (texts.length > 0) {
     throw new Error(`the reference has ${label} lines but the item has no ${stream} stream`);
   }
   return null;

@@ -7,7 +7,7 @@ import {
   errorRate,
   poolCounts,
   scoreSpeakers,
-  scoreText,
+  scoreTexts,
 } from './wer';
 
 const words = (text: string): string[] => (text === '' ? [] : text.split(' '));
@@ -69,10 +69,10 @@ describe('countErrors', () => {
   });
 });
 
-describe('scoreText', () => {
+describe('scoreTexts', () => {
   it('normalises both sides before counting', () => {
     expect(
-      scoreText('OK, so twenty five percent of the U.S. team.', 'okay so 25% of the US team'),
+      scoreTexts(['OK, so twenty five percent of the U.S. team.'], ['okay so 25% of the US team']),
     ).toEqual(counts({ referenceWords: 8, hypothesisWords: 8 }));
   });
 });
@@ -115,8 +115,8 @@ describe('scoreSpeakers', () => {
 
   it('scores Me against the mic stream and Them against the system stream', () => {
     const scores = scoreSpeakers(lines, {
-      mic: 'we ship roger on friday ok thanks',
-      system: 'great the team is red',
+      mic: ['we ship roger on friday', 'ok thanks'],
+      system: ['great the team is red'],
     });
 
     expect(scores.me).toEqual(counts({ referenceWords: 7, hypothesisWords: 7 }));
@@ -128,7 +128,7 @@ describe('scoreSpeakers', () => {
   it('leaves Me out of a system-only item, which has no mic stream', () => {
     const themOnly = parseReference('[00:01] Them: hello all').lines;
 
-    expect(scoreSpeakers(themOnly, { mic: null, system: 'hello all' })).toEqual({
+    expect(scoreSpeakers(themOnly, { mic: null, system: ['hello all'] })).toEqual({
       me: null,
       them: counts({ referenceWords: 2, hypothesisWords: 2 }),
     });
@@ -136,16 +136,42 @@ describe('scoreSpeakers', () => {
 
   it('counts mic words where the reference has no Me line as insertions', () => {
     const themOnly = parseReference('[00:01] Them: hello all').lines;
-    const scores = scoreSpeakers(themOnly, { mic: 'hello all', system: 'hello all' });
+    const scores = scoreSpeakers(themOnly, { mic: ['hello all'], system: ['hello all'] });
 
     expect(scores.me).toEqual(counts({ hypothesisWords: 2, insertions: 2 }));
   });
 
+  it('normalises each line and each final on its own, so a number never spans two turns', () => {
+    const { lines: split } = parseReference(
+      [
+        '[00:10] Me: We need twenty',
+        '[00:12] Them: How many said yes?',
+        '[00:15] Me: five people said yes.',
+      ].join('\n'),
+    );
+    const { lines: digits } = parseReference(
+      ['[00:10] Me: We need 20.', '[00:15] Me: 5 people said yes.'].join('\n'),
+    );
+    const perfect = counts({ referenceWords: 7, hypothesisWords: 7 });
+
+    // Words in the reference, digits from the vendor: joined, the reference read "25".
+    expect(
+      scoreSpeakers(split, {
+        mic: ['We need 20.', '5 people said yes.'],
+        system: ['How many said yes?'],
+      }).me,
+    ).toEqual(perfect);
+    // Digits in the reference, words from the vendor: joined, the finals read "25".
+    expect(
+      scoreSpeakers(digits, { mic: ['we need twenty', 'five people said yes'], system: [] }).me,
+    ).toEqual(perfect);
+  });
+
   it('refuses Me lines without a mic stream, and Them lines without a system stream', () => {
-    expect(() => scoreSpeakers(lines, { mic: null, system: 'x' })).toThrow(
+    expect(() => scoreSpeakers(lines, { mic: null, system: ['x'] })).toThrow(
       'the reference has Me lines but the item has no mic stream',
     );
-    expect(() => scoreSpeakers(lines, { mic: 'x', system: null })).toThrow(
+    expect(() => scoreSpeakers(lines, { mic: ['x'], system: null })).toThrow(
       'the reference has Them lines but the item has no system stream',
     );
   });

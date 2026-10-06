@@ -127,12 +127,12 @@ export function formatReferenceLine(
   return `[${minutes}:${seconds}] ${LABELS[line.speaker]}: ${text}`;
 }
 
-/** One speaker's text: their lines joined by spaces, in file order. */
-export function speakerText(lines: readonly ReferenceLine[], speaker: SpeakerLabel): string {
-  return lines
-    .filter((line) => line.speaker === speaker)
-    .map((line) => line.text)
-    .join(' ');
+/**
+ * One speaker's line texts, in file order. Kept apart, never joined: scoring normalises each line on
+ * its own (`normaliseEach`), so a number never reads across two turns.
+ */
+export function speakerTexts(lines: readonly ReferenceLine[], speaker: SpeakerLabel): string[] {
+  return lines.filter((line) => line.speaker === speaker).map((line) => line.text);
 }
 
 function speakerOf(label: string): SpeakerLabel | null {

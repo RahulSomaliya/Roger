@@ -4,7 +4,7 @@ import {
   formatReferenceLine,
   parseReference,
   requireCleanReference,
-  speakerText,
+  speakerTexts,
 } from './reference';
 
 describe('parseReference', () => {
@@ -123,15 +123,15 @@ describe('formatReferenceLine', () => {
   });
 });
 
-describe('speakerText', () => {
-  it("joins one speaker's lines in file order", () => {
+describe('speakerTexts', () => {
+  it("lists one speaker's line texts in file order, each line apart", () => {
     const { lines } = parseReference(
       '[00:01] Me: one\n[00:02] Them: two\n[00:03] Me: three\n[00:04] Them: four',
     );
 
-    expect(speakerText(lines, 'me')).toBe('one three');
-    expect(speakerText(lines, 'them')).toBe('two four');
-    expect(speakerText([], 'me')).toBe('');
+    expect(speakerTexts(lines, 'me')).toEqual(['one', 'three']);
+    expect(speakerTexts(lines, 'them')).toEqual(['two', 'four']);
+    expect(speakerTexts([], 'me')).toEqual([]);
   });
 });
 

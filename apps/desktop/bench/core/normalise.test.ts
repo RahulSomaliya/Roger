@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { NORMALISER_VERSION, normalise } from './normalise';
+import { NORMALISER_VERSION, normalise, normaliseEach } from './normalise';
 
 /** The normalised words of `text`, joined by spaces, so a failure reads as text. */
 const n = (text: string): string => normalise(text).join(' ');
@@ -155,5 +155,29 @@ describe('normalise (version 1)', () => {
       ['the follow-up', 'the follow up'],
     ];
     for (const [said, written] of pairs) expect(normalise(said)).toEqual(normalise(written));
+  });
+});
+
+describe('normaliseEach', () => {
+  it('normalises each text on its own, so a number never reads across two of them', () => {
+    // Punctuation is gone before numbers are read, so as one string these were 25 and 1990.
+    expect(normaliseEach(['We need twenty', 'five people said yes.'])).toEqual([
+      'we',
+      'need',
+      '20',
+      '5',
+      'people',
+      'said',
+      'yes',
+    ]);
+    expect(normaliseEach(['back in nineteen', 'ninety people came'])).toEqual([
+      'back',
+      'in',
+      '19',
+      '90',
+      'people',
+      'came',
+    ]);
+    expect(normaliseEach([])).toEqual([]);
   });
 });

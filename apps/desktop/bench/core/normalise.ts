@@ -61,6 +61,16 @@ export function normalise(text: string): string[] {
 }
 
 /**
+ * The words of each text normalised on its own, in order: a speaker's reference lines, or a
+ * stream's finals. Never normalise them joined into one string: punctuation is gone before numbers
+ * are read, so a turn ending "we need twenty" and the next starting "five people" read as 25. The
+ * cost, accepted: a number a vendor splits across two finals scores as two numbers.
+ */
+export function normaliseEach(texts: readonly string[]): string[] {
+  return texts.flatMap((text) => normalise(text));
+}
+
+/**
  * Rule 4: `$`, a number, then a scale word or a suffix stuck to the number. The lookahead ends the
  * amount: without it "$5m" became "5 dollarsm", a word no rule allows, which never matches "five
  * million dollars". `\.\d` in it stops "$5.5x" backtracking to "$5" followed by ".5x".
