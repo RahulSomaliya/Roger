@@ -50,7 +50,7 @@ describe('AudioPacer, realtime', () => {
     expect(reopen.queuedMs).toBe(0);
   });
 
-  it('never lets the audio sent run ahead of the wall time since ready by more than one frame', () => {
+  it('never lets the audio sent run ahead of the real time since ready by more than one frame', () => {
     const paced = pacer('realtime');
     const readyAtMs = 5_000;
     paced.start(readyAtMs);
@@ -104,20 +104,6 @@ describe('AudioPacer, realtime', () => {
     expect(framed.take(999)).toEqual([]);
     expect(msOf(framed.take(1_000))).toBe(50);
     expect(framed.nextAtMs()).toBe(1_050);
-  });
-
-  it('keeps pacing when the wall clock steps back', () => {
-    // A manual time change or an NTP step: real time went on, so the backlog must not wait the
-    // step out (a long one would leave AssemblyAI nothing for its inactivity timeout).
-    const stepped = pacer('realtime');
-    stepped.start(10_000);
-    for (let chunk = 0; chunk < 30; chunk += 1) stepped.enqueue(audio(100));
-    expect(msOf(stepped.take(10_000))).toBe(100);
-
-    expect(stepped.take(4_000)).toEqual([]);
-    expect(stepped.nextAtMs()).toBe(4_100);
-    expect(msOf(stepped.take(4_100))).toBe(100);
-    expect(msOf(stepped.take(5_000))).toBe(900);
   });
 
   it('counts whole samples at a rate that does not divide a millisecond', () => {

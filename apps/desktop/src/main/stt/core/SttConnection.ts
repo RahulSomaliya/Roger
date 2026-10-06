@@ -68,7 +68,15 @@ export interface SttConnectionOptions {
    * it). The capture's stall close (costGuards: sttStallCloseMs) is the same window.
    */
   keepAliveForMs: number;
+  /** Wall-clock ms: the connected time and the keep-alive window. Never the pacer's (paceClock). */
   clock: () => number;
+  /**
+   * Monotonic ms, for pacing only (performance.now() in the app). Never the wall clock: an NTP step
+   * or a manual time change forward would count as time passed and send a backlog at once, the
+   * 3007 close pacing exists to prevent; a step back would hold it until the clock caught up.
+   * Node's timers run on monotonic time too, so the pace timer shares the pacer's time base.
+   */
+  paceClock: () => number;
 }
 
 export class SttConnection implements SttStream {
@@ -81,6 +89,8 @@ export class SttConnection implements SttStream {
   private readonly opening = deferred();
   private readonly closing = deferred();
   private readonly clock: () => number;
+  /** The pacer's time and the pace timer's, never `clock` (SttConnectionOptions.paceClock). */
+  private readonly paceClock: () => number;
   private readonly sampleRate: number;
   /** USD per hour this session is open, from the API; null when unknown. */
   readonly pricePerHourUsd: number | null;
@@ -116,6 +126,7 @@ export class SttConnection implements SttStream {
       model: options.stream.settings.model,
     });
     this.clock = options.clock;
+    this.paceClock = options.paceClock;
     this.sampleRate = options.stream.settings.sampleRate;
     this.pricePerHourUsd = options.stream.settings.pricePerHourUsd;
     this.label = options.stream.label;
@@ -257,7 +268,7 @@ export class SttConnection implements SttStream {
         }
       }, keepAlive.intervalMs);
     }
-    this.pacer.start(this.clock());
+    this.pacer.start(this.paceClock());
     this.opening.resolve();
   }
 
@@ -405,7 +416,7 @@ export class SttConnection implements SttStream {
     this.clearPaceTimer();
     if (this.socket.readyState !== WebSocket.OPEN) return;
     for (;;) {
-      for (const frame of this.pacer.take(this.clock())) this.sendFrame(frame);
+      for (const frame of this.pacer.take(this.paceClock())) this.sendFrame(frame);
       const nextAtMs = this.pacer.nextAtMs();
       if (nextAtMs !== null) {
         this.paceTimer = setTimeout(
@@ -413,7 +424,7 @@ export class SttConnection implements SttStream {
             this.paceTimer = null;
             this.pump();
           },
-          Math.max(1, Math.ceil(nextAtMs - this.clock())),
+          Math.max(1, Math.ceil(nextAtMs - this.paceClock())),
         );
         return;
       }

@@ -82,7 +82,7 @@ export interface SttProtocol {
   readonly keepAlive: { message: string; intervalMs: number } | null;
   /**
    * `realtime` when the vendor closes a session sent audio faster than real time (AssemblyAI,
-   * 3007): the core then never sends audio ahead of the wall time since the ready signal by more
+   * 3007): the core then never sends audio ahead of the real time since the ready signal by more
    * than one frame, whoever hands it a burst (AudioPacer.ts). `none`: frames go as they come. The
    * conformance suite checks it against the vendor's fake
    * (conformanceVendors.ts `rejectsAudioFasterThanRealTime`).

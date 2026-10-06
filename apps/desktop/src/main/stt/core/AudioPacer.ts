@@ -1,6 +1,6 @@
 /**
  * `realtime`: the vendor closes a session that is sent audio faster than real time (AssemblyAI,
- * close code 3007, "Audio Transmission Rate Exceeded"), so audio is never sent ahead of the wall
+ * close code 3007, "Audio Transmission Rate Exceeded"), so audio is never sent ahead of the real
  * time since the session's ready signal by more than one frame. `none`: every frame goes at once.
  */
 export type AudioPacing = 'realtime' | 'none';
@@ -13,23 +13,23 @@ export interface AudioPacerOptions {
 
 /**
  * When each audio frame of one vendor session may go. Pure: time is the `nowMs` each call is
- * given, so it runs on any clock; SttConnection owns the queue's timer and the socket.
+ * given; SttConnection owns the queue's timer and the socket. That time must be monotonic
+ * (SttConnection's paceClock), never the wall clock: an NTP step or a manual change forward would
+ * count as time passed and send a backlog at once (3007), and a step back would hold it.
  *
  * The rule, under `realtime`: a frame goes once the audio sent before it fits in the time since
  * `start()` (the ready signal), so what was sent is never ahead of that time by more than the one
  * frame in flight. Live audio arrives once it was captured, so it is never held. A backlog (the
  * audio CaptureSession held while the session reopened) goes out at 1x and is never caught up:
  * AssemblyAI documents no tolerance above 1x, so that backlog stays as lag on the session until it
- * closes. The count is cumulative since ready: a source that sent nothing for a while (a stall, a
- * wake) has that time to spend, and its late audio goes as fast as it fits.
+ * closes. The count is cumulative since ready: a source that sent nothing for a while (a stall)
+ * has that time to spend, and its late audio goes as fast as it fits.
  */
 export class AudioPacer {
   private readonly pacing: AudioPacing;
   /** Bytes of PCM per second, so the comparisons below stay in whole numbers. */
   private readonly bytesPerSecond: number;
   private startedAtMs: number | null = null;
-  /** The latest `nowMs` seen, to notice the wall clock stepping back. */
-  private lastNowMs: number | null = null;
   private sentBytes = 0;
   private readonly queue: Uint8Array[] = [];
   private queuedBytes = 0;
@@ -42,7 +42,6 @@ export class AudioPacer {
   /** The vendor's ready signal: real time counts from here. Nothing goes before it. */
   start(atMs: number): void {
     this.startedAtMs = atMs;
-    this.lastNowMs = atMs;
   }
 
   enqueue(frame: Uint8Array): void {
@@ -52,7 +51,6 @@ export class AudioPacer {
 
   /** The frames that may go at `nowMs`, oldest first. They count as sent. */
   take(nowMs: number): Uint8Array[] {
-    this.followClock(nowMs);
     const due: Uint8Array[] = [];
     for (;;) {
       const frame = this.queue[0];
@@ -82,19 +80,6 @@ export class AudioPacer {
     this.queue.length = 0;
     this.queuedBytes = 0;
     return discardedMs;
-  }
-
-  /**
-   * The wall clock can step back (a manual change, an NTP step) while real time goes on, so the
-   * count since ready steps back with it. Otherwise a backlog would wait the step out, sending
-   * nothing, and a step past AssemblyAI's inactivity timeout (costGuards.sttVendorIdleTimeoutMs)
-   * would let the vendor close a live session. A step forward cannot be told from time passing.
-   */
-  private followClock(nowMs: number): void {
-    if (this.startedAtMs !== null && this.lastNowMs !== null && nowMs < this.lastNowMs) {
-      this.startedAtMs -= this.lastNowMs - nowMs;
-    }
-    this.lastNowMs = nowMs;
   }
 
   /** sentMs <= elapsedMs, multiplied out so a 44.1 kHz stream compares whole numbers too. */
