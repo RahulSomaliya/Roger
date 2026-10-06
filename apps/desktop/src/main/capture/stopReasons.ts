@@ -16,10 +16,13 @@ export type StopReason =
   | 'quit'
   /** G4: the main window closed. */
   | 'window-closed'
-  /** G4: the renderer process crashed or was killed: no page captures audio any more. */
+  /**
+   * G4: the page could not be brought back, so no page captures the mic: it did not load (a crash's
+   * reload or one someone asked for), or the page a crash's reload brought up crashed before it
+   * loaded. A crash alone or a reload no longer stops (M2 D7, lifecycle.ts): the reloaded page
+   * reopens the mic. There was a `page-reloaded` reason until M2-T12; old rows keep it.
+   */
   | 'renderer-gone'
-  /** G4: the page reloaded or navigated: the page that captured audio is gone. */
-  | 'page-reloaded'
   /** G4: the Mac is going to sleep; a socket left open bills until the vendor's idle timeout. */
   | 'system-sleep';
 
@@ -48,9 +51,7 @@ export function stopNotice(
       // would need it saved and read back at startup; the log and stt_usage.stop_reason have it.
       return null;
     case 'renderer-gone':
-      return `Stopped at ${time} because the Roger window crashed${detail === null ? '' : ` (${detail})`}.`;
-    case 'page-reloaded':
-      return `Stopped at ${time} because the Roger window reloaded.`;
+      return `Stopped at ${time} because the Roger window could not reload${detail === null ? '' : ` (${detail})`}.`;
     case 'system-sleep':
       return `Stopped at ${time} because the Mac went to sleep.`;
   }

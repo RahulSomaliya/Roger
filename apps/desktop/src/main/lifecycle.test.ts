@@ -273,25 +273,65 @@ describe('RecordingLifecycle.stopFor', () => {
 
   it('does nothing when nothing records', () => {
     const h = harness('idle');
-    h.lifecycle.stopFor('page-reloaded');
+    h.lifecycle.stopFor('renderer-gone');
     expect(h.capture.stops).toEqual([]);
   });
 });
 
+/** The main window as watchWindow sees it: its events, and the reloads it was asked for. */
+function fakeWindow() {
+  const webContents = Object.assign(new EventEmitter(), {
+    reloads: 0,
+    destroyed: false,
+    /** When set, reload() throws it, as Electron does for a destroyed webContents. */
+    reloadError: null as Error | null,
+    reload: () => {
+      if (webContents.reloadError !== null) throw webContents.reloadError;
+      webContents.reloads += 1;
+    },
+    isDestroyed: () => webContents.destroyed,
+  });
+  return Object.assign(new EventEmitter(), { webContents });
+}
+
+/** Electron's did-fail-load arguments after the event: code, description, URL, main frame. */
+function failLoad(
+  window: ReturnType<typeof fakeWindow>,
+  errorCode: number,
+  errorDescription: string,
+  isMainFrame = true,
+): void {
+  window.webContents.emit(
+    'did-fail-load',
+    {},
+    errorCode,
+    errorDescription,
+    'file:///index.html',
+    isMainFrame,
+  );
+}
+
+function watched(phase: CapturePhase = 'recording') {
+  const h = harness(phase);
+  h.capture.idleAfterStop = false;
+  const window = fakeWindow();
+  watchWindow(h.lifecycle, window);
+  const stops = () => h.capture.stops.map((stop) => [stop.reason, stop.detail]);
+  return { ...h, window, stops };
+}
+
 describe('the Electron events', () => {
-  it('maps quit, sleep, the window closing, a crash and a reload to a stop', () => {
+  it('maps quit, sleep and the window closing to a stop', () => {
     const h = harness();
     h.capture.idleAfterStop = false;
     const app = new EventEmitter();
     const powerMonitor = new EventEmitter();
-    const window = Object.assign(new EventEmitter(), { webContents: new EventEmitter() });
+    const window = fakeWindow();
     watchApp(h.lifecycle, { app, powerMonitor });
     watchWindow(h.lifecycle, window);
 
     powerMonitor.emit('suspend');
     window.emit('close');
-    window.webContents.emit('render-process-gone', {}, { reason: 'oom' });
-    window.webContents.emit('did-start-loading');
     let prevented = 0;
     app.emit('before-quit', { preventDefault: () => (prevented += 1) });
     app.emit('will-quit', { preventDefault: () => (prevented += 1) });
@@ -300,9 +340,95 @@ describe('the Electron events', () => {
     expect(h.capture.stops.map((stop) => [stop.reason, stop.detail])).toEqual([
       ['system-sleep', undefined],
       ['window-closed', undefined],
-      ['renderer-gone', 'oom'],
-      ['page-reloaded', undefined],
       ['quit', undefined],
     ]);
+  });
+});
+
+describe('a renderer crash or a reload while recording (M2 D7)', () => {
+  it('reloads the page after a crash, and the recording goes on', () => {
+    const h = watched();
+    h.window.webContents.emit('render-process-gone', {}, { reason: 'oom' });
+
+    expect(h.window.webContents.reloads).toBe(1);
+    expect(h.stops()).toEqual([]);
+    const reloading = h.lines.find((line) => line.includes('reloading the page'));
+    expect(reloading).toContain('"reason":"oom"');
+  });
+
+  it('reloads a crashed page while nothing records too, so the window is never left dead', () => {
+    const h = watched('idle');
+    h.window.webContents.emit('render-process-gone', {}, { reason: 'crashed' });
+    expect(h.window.webContents.reloads).toBe(1);
+    expect(h.stops()).toEqual([]);
+  });
+
+  it('does not stop on a reload: the reloaded page reopens the mic because main records', () => {
+    const h = watched();
+    h.window.webContents.emit('did-start-loading');
+    h.window.webContents.emit('did-finish-load');
+    expect(h.stops()).toEqual([]);
+  });
+
+  it('stops with renderer-gone when the page does not load, saying why', () => {
+    const h = watched();
+    h.window.webContents.emit('render-process-gone', {}, { reason: 'oom' });
+    failLoad(h.window, -6, 'ERR_FILE_NOT_FOUND');
+    expect(h.stops()).toEqual([['renderer-gone', 'ERR_FILE_NOT_FOUND']]);
+  });
+
+  it('stops when a reload someone asked for fails too: no page captures the mic', () => {
+    const h = watched();
+    h.window.webContents.emit('did-start-loading');
+    failLoad(h.window, -102, 'ERR_CONNECTION_REFUSED');
+    expect(h.stops()).toEqual([['renderer-gone', 'ERR_CONNECTION_REFUSED']]);
+  });
+
+  it('ignores a load another load replaced (ERR_ABORTED) and a failing subframe', () => {
+    const h = watched();
+    failLoad(h.window, -3, 'ERR_ABORTED');
+    failLoad(h.window, -6, 'ERR_FILE_NOT_FOUND', false);
+    expect(h.stops()).toEqual([]);
+  });
+
+  it('stops instead of reloading again when the reloaded page crashes before it loads', () => {
+    const h = watched();
+    h.window.webContents.emit('render-process-gone', {}, { reason: 'oom' });
+    h.window.webContents.emit('render-process-gone', {}, { reason: 'launch-failed' });
+
+    // A renderer that dies on load would otherwise reload forever.
+    expect(h.window.webContents.reloads).toBe(1);
+    expect(h.stops()).toEqual([['renderer-gone', 'it crashed again: launch-failed']]);
+  });
+
+  it('reloads again after a later crash once the last reload loaded', () => {
+    const h = watched();
+    h.window.webContents.emit('render-process-gone', {}, { reason: 'oom' });
+    h.window.webContents.emit('did-finish-load');
+    h.window.webContents.emit('render-process-gone', {}, { reason: 'oom' });
+    expect(h.window.webContents.reloads).toBe(2);
+    expect(h.stops()).toEqual([]);
+  });
+
+  it('stops with renderer-gone when the reload itself throws', () => {
+    const h = watched();
+    h.window.webContents.reloadError = new Error('Object has been destroyed');
+    h.window.webContents.emit('render-process-gone', {}, { reason: 'oom' });
+    expect(h.stops()).toEqual([['renderer-gone', 'Object has been destroyed']]);
+  });
+
+  it('leaves a renderer that goes with its window alone: the close or the quit stopped it', async () => {
+    const closed = watched();
+    closed.window.webContents.destroyed = true;
+    closed.window.webContents.emit('render-process-gone', {}, { reason: 'clean-exit' });
+    expect(closed.window.webContents.reloads).toBe(0);
+    expect(closed.stops()).toEqual([]);
+
+    const quitting = watched();
+    quitting.lifecycle.onQuitRequested();
+    await flush();
+    quitting.window.webContents.emit('render-process-gone', {}, { reason: 'clean-exit' });
+    expect(quitting.window.webContents.reloads).toBe(0);
+    expect(quitting.stops()).toEqual([['quit', undefined]]);
   });
 });
