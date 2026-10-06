@@ -94,6 +94,11 @@ export interface NotesStore {
    * notepad was opened would be kept and uploaded.
    */
   hasNotes(meetingId: string): boolean;
+  /**
+   * Trap: NotesSync's own attempts write here too (`syncing`, then `synced`, `offline` or
+   * `saved_locally`), so a listener that calls `NotesSync.flushMeeting` (NotesGenerator's
+   * re-check, M4-T23) is fed by its own flush. Read the trap on flushMeeting before wiring one.
+   */
   onNoteChanged(listener: (note: LocalNote) => void): () => void;
 
   getPendingGenerate(meetingId: string): StoredPendingGenerate | null;

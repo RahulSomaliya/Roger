@@ -59,10 +59,20 @@ export interface NotesSyncOptions {
  *   conflict copy. `offline`: the API did not answer, or failed (5xx).
  * - `refused`: the API answered with something a retry may fix but this code cannot read as one of
  *   the above (a `401`, a `422`, a `409` the server's copy did not explain).
+ * - `backing_off`: the API was away at the note's last attempt and the backoff has not ended; no
+ *   request was made.
  * - `stopped`: the sync stopped (quit) while the request was out; the store may be closed.
  */
 type SyncOutcome =
-  'clean' | 'synced' | 'behind' | 'meeting' | 'conflict' | 'offline' | 'refused' | 'stopped';
+  | 'clean'
+  | 'synced'
+  | 'behind'
+  | 'meeting'
+  | 'conflict'
+  | 'offline'
+  | 'refused'
+  | 'backing_off'
+  | 'stopped';
 
 /**
  * Uploads the notes in notes.sqlite to Postgres (M4 "Notes on the Mac"). It runs for the life of
@@ -109,7 +119,10 @@ export class NotesSync {
   private passDue = false;
   private timer: NodeJS.Timeout | null = null;
   private failures = 0;
-  /** No pass before this instant while backing off (ms since the epoch). */
+  /**
+   * While backing off (ms since the epoch): the retry pass runs then, and no attempt at a note the
+   * API was away for goes out before it, a flushMeeting's included.
+   */
   private retryAtMs = 0;
   private unsubscribe: (() => void) | null = null;
 
@@ -189,6 +202,16 @@ export class NotesSync {
    * the versions Postgres then holds. A conflict holds the run back even when nothing is dirty:
    * the user picks first. When the user is still typing, the newest save may not be in it; the
    * versions name what the server holds, and a run sent with a version since replaced is a `409`.
+   * It keeps the backoff as a pass does: a failed attempt starts it, and while it runs a note the
+   * API was away for answers `offline` at once, with no request.
+   *
+   * Trap: each attempt writes the note's sync state (`syncing`, then `synced`, `offline` or
+   * `saved_locally`), and each write emits `NotesStore.onNoteChanged`. A caller that flushes on
+   * that event (NotesGenerator's re-check, M4-T23) is fed by its own flush: a failed attempt
+   * emits twice, so two more flushes, each emitting twice in turn. What ends that loop is the
+   * backoff check in `syncNote` (`backing_off`): the next flush asks nothing and writes nothing.
+   * Without it the caller sends `PUT`s back to back while the API is away, its queue doubling
+   * every round. Keep the check, and still never re-run a flush for the events it caused.
    */
   async flushMeeting(meetingId: string): Promise<FlushMeetingResult> {
     for (const kind of NOTE_KINDS) {
@@ -196,6 +219,7 @@ export class NotesSync {
         const outcome = await this.serialised(meetingId, kind, () =>
           this.syncNote(meetingId, kind),
         );
+        if (outcome === 'offline' || outcome === 'refused') this.backOff();
         const cause = flushCause(outcome);
         if (cause !== null) return { ok: false, cause };
         if (outcome !== 'behind') break;
@@ -273,7 +297,10 @@ export class NotesSync {
         const outcome = await this.serialised(note.meetingId, note.kind, () =>
           this.syncNote(note.meetingId, note.kind),
         );
-        if (outcome === 'offline' || outcome === 'refused') failed = true;
+        // `backing_off`: a flushMeeting failed while this pass ran; the note goes at the retry.
+        if (outcome === 'offline' || outcome === 'refused' || outcome === 'backing_off') {
+          failed = true;
+        }
       }
     } catch (error) {
       failed = true;
@@ -291,15 +318,28 @@ export class NotesSync {
       if (due) this.soon();
       return;
     }
-    // A failure drops a pass that came due: the retry below is a pass over every dirty note.
-    this.failures += 1;
-    const delayMs = Math.min(this.maxBackoffMs, this.firstRetryMs * 2 ** (this.failures - 1));
-    this.retryAtMs = this.nowMs() + delayMs;
-    this.options.logger.warn('notes upload failed, backing off', {
-      failures: this.failures,
-      delayMs,
-    });
-    this.scheduleAt(this.retryAtMs);
+    // A failure drops a pass that came due: the retry is a pass over every dirty note.
+    this.backOff();
+  }
+
+  /**
+   * After a failed attempt: the next waits 2 s, doubling to 30 s, and a pass runs then. The wait
+   * doubles once per window, not once per failed attempt, so a flushMeeting and the pass that both
+   * fail inside one window count once.
+   */
+  private backOff(): void {
+    const nowMs = this.nowMs();
+    if (nowMs >= this.retryAtMs) {
+      this.failures += 1;
+      const delayMs = Math.min(this.maxBackoffMs, this.firstRetryMs * 2 ** (this.failures - 1));
+      this.retryAtMs = nowMs + delayMs;
+      this.options.logger.warn('notes upload failed, backing off', {
+        failures: this.failures,
+        delayMs,
+      });
+    }
+    // Before start() (a flush at launch), start() schedules the pass, at the end of the wait.
+    if (this.running) this.scheduleAt(this.retryAtMs);
   }
 
   // one note -------------------------------------------------------------------------------------
@@ -332,6 +372,8 @@ export class NotesSync {
       store.setSyncState(meetingId, kind, 'waiting_for_meeting');
       return 'meeting';
     }
+    // Asked nothing, and written nothing: see the trap on flushMeeting before changing this.
+    if (note.sync === 'offline' && this.nowMs() < this.retryAtMs) return 'backing_off';
     const revisionId = note.revisionId;
     if (revisionId === null) {
       // notes.sqlite's CHECK refuses a dirty row without a revision; reaching here is a bug.
@@ -453,6 +495,7 @@ function flushCause(outcome: SyncOutcome): 'meeting' | 'offline' | 'conflict' | 
       return outcome;
     case 'offline':
     case 'refused':
+    case 'backing_off':
     case 'stopped':
       return 'offline';
   }

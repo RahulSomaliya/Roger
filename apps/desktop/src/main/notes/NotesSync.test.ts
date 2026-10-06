@@ -567,13 +567,49 @@ describe('NotesSync: flushMeeting', () => {
     api.down = true;
     await expect(sync.flushMeeting(MEETING)).resolves.toEqual({ ok: false, cause: 'offline' });
     expect(store.getNote(MEETING, 'user')?.sync).toBe('offline');
-
+    // Until the backoff ends, a flush answers at once, with no request.
     api.down = false;
+    await expect(sync.flushMeeting(MEETING)).resolves.toEqual({ ok: false, cause: 'offline' });
+    expect(api.puts()).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(2_000);
+
     api.seed(MEETING, serverNote('user', 5, paragraphs('Theirs')));
     await expect(sync.flushMeeting(MEETING)).resolves.toEqual({ ok: false, cause: 'conflict' });
     // A conflict holds the run back even once nothing is dirty: the user picks first.
     expect(store.getNote(MEETING, 'user')?.dirty).toBe(false);
     await expect(sync.flushMeeting(MEETING)).resolves.toEqual({ ok: false, cause: 'conflict' });
+  });
+  it('flushing on every note change while the API is down sends one PUT per backoff window', async () => {
+    const { api, store, sync } = harness();
+    sync.start();
+    api.down = true;
+    sync.save(MEETING, 'user', paragraphs('Typed after Stop'));
+    // A re-check that flushes on every change (NotesGenerator, M4-T23) is fed by its own flush:
+    // each attempt writes syncing, then offline. Capped, so a loop ends the test.
+    let flushes = 0;
+    store.onNoteChanged(() => {
+      if (flushes >= 50) return;
+      flushes += 1;
+      void sync.flushMeeting(MEETING);
+    });
+
+    await expect(sync.flushMeeting(MEETING)).resolves.toEqual({ ok: false, cause: 'offline' });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(api.puts()).toHaveLength(1);
+    // The two flushes its own events started asked nothing: the backoff had begun.
+    expect(flushes).toBe(2);
+
+    // The pass waits for that backoff too, not the 1.5 s after the save, then 4 s after it fails.
+    await vi.advanceTimersByTimeAsync(1_999);
+    expect(api.puts()).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(api.puts()).toHaveLength(2);
+    await vi.advanceTimersByTimeAsync(3_999);
+    expect(api.puts()).toHaveLength(2);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(api.puts()).toHaveLength(3);
+    expect(flushes).toBe(6);
+    sync.stop();
   });
 });
 
