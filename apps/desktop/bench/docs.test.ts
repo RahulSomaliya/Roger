@@ -1,12 +1,14 @@
 import { readFileSync, readdirSync } from 'node:fs';
 import { parseEnv } from 'node:util';
 import { describe, expect, it } from 'vitest';
+import { NORMALISER_VERSION } from './core/normalise';
 import { benchDirSetting } from './run/benchDir';
 
 /**
- * The bench's settings are documented outside its code, in the Benchmark section of the repo-root
- * .env.example (house rule: it documents every variable). That drifts in silence when the code
- * changes, so these tests tie it to the code (M3-T13).
+ * The bench is documented in two places outside its code: the Benchmark section of the repo-root
+ * .env.example (house rule: it documents every variable) and docs/research/stt-benchmark.md, which
+ * lists the normaliser's rules under its version. Both drift in silence when the code changes, so
+ * these tests tie them to it (M3-T13).
  */
 
 const read = (relative: string): string => readFileSync(new URL(relative, import.meta.url), 'utf8');
@@ -52,5 +54,14 @@ describe('the Benchmark section of .env.example', () => {
 
   it('keeps the test set of a .env copied from it in ~/Roger-bench, outside the checkout', () => {
     expect(benchDirSetting(benchmarkSection(), '/Users/ann')).toBe('/Users/ann/Roger-bench');
+  });
+});
+
+describe('docs/research/stt-benchmark.md', () => {
+  it('lists the normaliser rules of the version the bench scores with', () => {
+    // normalise.ts bumps NORMALISER_VERSION whenever a rule changes; the doc's rules must follow.
+    expect(read('../../../docs/research/stt-benchmark.md')).toContain(
+      `## Normaliser, version ${NORMALISER_VERSION}`,
+    );
   });
 });
