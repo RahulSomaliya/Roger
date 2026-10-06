@@ -315,6 +315,53 @@ describe('SttConnection', () => {
     vendor.last().socket.resume(); // let the deaf peer notice the dropped connection
   });
 
+  /**
+   * CaptureSession's listener closes a stream from inside its fatal error, synchronously
+   * (streamFailed → retire → close()). These pin that such a close never restarts the finish.
+   */
+  describe('a listener that closes the stream on its fatal error', () => {
+    function closeOnFatal(connection: SttConnection): Promise<void>[] {
+      const closes: Promise<void>[] = [];
+      connection.on((event) => {
+        if (event.type === 'error' && event.fatal) closes.push(connection.close());
+      });
+      return closes;
+    }
+
+    it('leaves no finish timer behind a vendor close mid-call', async () => {
+      const { connection, events } = await open({ closeTimeoutMs: 50 });
+      const closes = closeOnFatal(connection);
+
+      vendor.last().socket.close(4000);
+      await waitFor(() => events.some((event) => event.type === 'closed'));
+      await Promise.all(closes);
+      // Past the finish deadline: a timer armed by that close would log a forced termination now.
+      await new Promise((resolve) => setTimeout(resolve, 120));
+
+      expect(closes).toHaveLength(1);
+      expect(events.map((event) => event.type)).toEqual(['error', 'closed']);
+      expect(lines.some((line) => line.message.includes('did not finish in time'))).toBe(false);
+    });
+
+    it('closes at once after a vendor error, without a finish sequence for the dead session', async () => {
+      vendor.script.onBinary = (connection) => {
+        connection.socket.send(JSON.stringify({ type: 'error', text: 'quota exceeded' }));
+      };
+      vendor.script.onText = () => undefined; // keeps the socket open, ignores any finish
+      const { connection, events } = await open({ closeTimeoutMs: 300 });
+      const closes = closeOnFatal(connection);
+
+      connection.send(new Uint8Array(CHUNK_100_MS));
+      await waitFor(() => events.some((event) => event.type === 'closed'));
+      await Promise.all(closes);
+
+      expect(vendor.last().texts).not.toContain(FINISH);
+      // Our close frame, answered: not the forced terminate (1006) at the finish deadline.
+      expect(events.at(-1)).toEqual({ type: 'closed', code: 1000, reason: null });
+      expect(lines.some((line) => line.message.includes('did not finish in time'))).toBe(false);
+    });
+  });
+
   it('turns an unreadable message into a non-fatal error and keeps going', async () => {
     vendor.script.onBinary = (connection) => {
       connection.socket.send('{nope');

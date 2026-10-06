@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { createLogger } from '../logger';
+import { createLogger, type Logger } from '../logger';
 import { WebSocketSpeechToText } from './core/WebSocketSpeechToText';
 import { LOCAL_STT_PROVIDERS, STT_VENDORS, type SttVendorOptions } from './registry';
 import { SttConnectError, type SttEvent, type SttStream } from './SpeechToText';
@@ -269,6 +269,77 @@ describe.each(CONFORMANCE_VENDORS)('$provider conforms', (vendor) => {
       expect(events.map((event) => event.type)).toEqual(['error', 'closed']);
     },
   );
+
+  /**
+   * CaptureSession closes a stream from inside its fatal error, synchronously (streamFailed →
+   * retire → close()). Such a close must not start a finish on a session the vendor already ended.
+   */
+  describe('when the listener closes the stream on its fatal error', () => {
+    function recordingLogger(): { logger: Logger; warnings: string[] } {
+      const warnings: string[] = [];
+      return {
+        warnings,
+        logger: createLogger({
+          level: 'warn',
+          format: 'json',
+          sink: (line) => warnings.push((JSON.parse(line) as { message: string }).message),
+        }),
+      };
+    }
+
+    function closeOnFatal(stream: SttStream): Promise<void>[] {
+      const closes: Promise<void>[] = [];
+      stream.on((event) => {
+        if (event.type === 'error' && event.fatal) closes.push(stream.close());
+      });
+      return closes;
+    }
+
+    it('leaves no finish timer running after a vendor close mid-call', async () => {
+      const { code, reason } = vendor.midCallClose;
+      server.script.onBinary = (connection) => {
+        connection.socket.close(code, reason);
+      };
+      const log = recordingLogger();
+      const { stream, events } = await open(stt({ logger: log.logger }));
+      const closes = closeOnFatal(stream);
+
+      stream.send(new Uint8Array(CHUNK_100_MS));
+      await waitFor(() => events.some((event) => event.type === 'closed'));
+      await Promise.all(closes);
+      await new Promise((resolve) => setTimeout(resolve, CLOSE_TIMEOUT_MS + 50));
+
+      expect(events.map((event) => event.type)).toEqual(['error', 'closed']);
+      expect(log.warnings.filter((message) => message.includes('did not finish in time'))).toEqual(
+        [],
+      );
+    });
+
+    itIf(vendor.errorFrame !== null)(
+      'closes at once after an error frame, with no finish sequence',
+      async () => {
+        const errorFrame = vendor.errorFrame ?? '';
+        answersFinish = false;
+        server.script.onBinary = (connection) => {
+          connection.socket.send(errorFrame); // and leaves the socket open
+        };
+        const log = recordingLogger();
+        const { stream, events } = await open(stt({ logger: log.logger }));
+        const closes = closeOnFatal(stream);
+
+        stream.send(new Uint8Array(CHUNK_100_MS));
+        await waitFor(() => events.some((event) => event.type === 'closed'));
+        await Promise.all(closes);
+
+        expect(finishTexts()).toEqual([]);
+        // Our close frame, answered, not the forced terminate at the finish deadline.
+        expect(events.at(-1)).toEqual({ type: 'closed', code: 1000, reason: null });
+        expect(
+          log.warnings.filter((message) => message.includes('did not finish in time')),
+        ).toEqual([]);
+      },
+    );
+  });
 
   it('keeps going after a message it cannot read', async () => {
     server.script.onBinary = (connection) => {

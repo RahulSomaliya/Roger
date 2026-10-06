@@ -150,7 +150,7 @@ export class SttConnection implements SttStream {
         return;
       }
       this.logger.error('stt socket error', { error: errorMessage(error) });
-      this.reportFatal(`${this.protocol.vendorName} connection failed: ${error.message}`);
+      this.endAfterFatal(`${this.protocol.vendorName} connection failed: ${error.message}`);
     });
     this.socket.on('message', (data, isBinary) => {
       if (!isBinary) this.handleMessage(rawDataToString(data));
@@ -192,7 +192,9 @@ export class SttConnection implements SttStream {
 
   /**
    * Stop: send the vendor's finish sequence, wait for its completion signal, close. Idempotent:
-   * every call returns the same promise, which settles once the socket is closed.
+   * every call returns the same promise, which settles once the socket is closed. Safe from inside
+   * a listener (CaptureSession closes a stream from its fatal error): the core leaves 'open' before
+   * it reports one, so such a call never starts a finish on a dead session (see reportFatal).
    */
   close(): Promise<void> {
     if (this.currentState === 'open') {
@@ -293,7 +295,7 @@ export class SttConnection implements SttStream {
         this.vendorError = message.message;
         this.logger.error('stt vendor reported an error', { message: message.message });
         // Before ready it only explains the close that follows (a failed connect).
-        if (this.currentState !== 'connecting') this.endAfterVendorError(message.message);
+        if (this.currentState !== 'connecting') this.endAfterFatal(message.message);
         return;
       case 'ignored':
         this.logger.debug('stt message ignored', { messageType: message.messageType });
@@ -314,23 +316,33 @@ export class SttConnection implements SttStream {
   }
 
   /**
-   * A fatal vendor error ends the session. The vendor says it closes right after; close our side
-   * as well and arm the hard timeout, so a vendor that keeps the socket open cannot keep billing a
-   * stream the caller already treats as dead.
+   * A fatal error mid-call (a vendor error frame, a socket error) ends the session. The vendor says
+   * it closes right after; close our side as well and arm the hard timeout, so a vendor that keeps
+   * the socket open cannot keep billing a stream the caller already treats as dead. A finish
+   * sequence is pointless here: the vendor already ended the session.
    */
-  private endAfterVendorError(message: string): void {
+  private endAfterFatal(message: string): void {
+    if (this.currentState === 'open') {
+      this.currentState = 'finishing';
+      this.stopKeepAlive();
+      this.socket.close(1000);
+      this.armFinishTimer();
+    }
     this.reportFatal(message);
-    if (this.currentState !== 'open') return;
-    this.currentState = 'finishing';
-    this.stopKeepAlive();
-    this.socket.close(1000);
-    this.armFinishTimer();
   }
 
   private emitTranscript(event: TranscriptEvent): void {
     if (this.currentState !== 'closed') this.deliver(event);
   }
 
+  /**
+   * Never call this while 'open': move the state on first (endAfterFatal, finalize). Listeners run
+   * synchronously, and CaptureSession's calls close() from inside this report. Seeing 'open', that
+   * close() sent the finish sequence to a session the vendor had already ended and armed a finish
+   * timer: after a vendor error our own close frame was skipped, so a vendor that kept its socket
+   * open billed until the 5 s finish deadline; after a vendor close the timer outlived the socket
+   * and logged a false "did not finish in time" on every mid-call close.
+   */
   private reportFatal(message: string): void {
     if (this.fatalReported) return;
     this.fatalReported = true;
@@ -390,6 +402,9 @@ export class SttConnection implements SttStream {
   private finalize(code: number, reason: string | null): void {
     if (this.currentState === 'closed') return;
     const was = this.currentState;
+    // Closed before any listener runs: a close() from inside one (the fatal report below) must find
+    // nothing left to finish, or it arms a timer after the ones cleared here (see reportFatal).
+    this.currentState = 'closed';
     this.clearConnectTimer();
     this.stopKeepAlive();
     if (this.finishTimer !== null) clearTimeout(this.finishTimer);
@@ -398,7 +413,6 @@ export class SttConnection implements SttStream {
     const held = this.session.release();
 
     if (was === 'connecting') {
-      this.currentState = 'closed';
       const error = this.connectError ?? this.earlyCloseError(code, reason);
       this.logger.warn('stt connect failed', { error: error.message, ...this.usage() });
       this.opening.reject(error);
@@ -414,7 +428,6 @@ export class SttConnection implements SttStream {
         `${this.protocol.vendorName} closed the stream (${this.protocol.describeClose(code, reason)})`,
       );
     }
-    this.currentState = 'closed';
     const usage = this.usage();
     this.logger.info('stt stream closed', {
       code,
