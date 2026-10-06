@@ -62,6 +62,10 @@ describe('suggestTemplate', () => {
       ['1-1 with Sam', 'one_on_one'],
       ['One on one: Sam', 'one_on_one'],
       ['Sam one-on-one', 'one_on_one'],
+      // Plurals count, as they do for the other title words.
+      ['Weekly 1:1s', 'one_on_one'],
+      ['Team 1-1s', 'one_on_one'],
+      ['Manager one-on-ones', 'one_on_one'],
       ['Acme client call', 'client_call'],
       ['Clients review', 'client_call'],
       ['Product demo for Acme', 'client_call'],
@@ -122,6 +126,9 @@ describe('suggestTemplate', () => {
       'Meeting 11 Oct 2026 11:10',
       'Review 2026-11-10',
       'Plan for 2026-1-1',
+      // A plural only after a whole 1:1: not a time or an id followed by letters.
+      '11:1s',
+      'Room 1:1st',
       // A word that only contains a cue word is not one.
       'Clientele review',
       'Dailyness',

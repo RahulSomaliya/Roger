@@ -55,13 +55,13 @@ const UNTITLED_MEETING = 'untitled meeting';
 const DEFAULT_MEETING_TITLE = /^meeting \d{1,2} [a-z]{3,4} \d{4} \d{2}:\d{2}$/;
 
 /**
- * Title words, matched on the normalised title. `1:1` and `1-1` must not touch another digit,
- * colon or hyphen: a clock time ("11:10") or a date ("2026-11-10", "2026-1-1") holds the same
- * three characters.
+ * Title words, matched on the normalised title, plurals included ("1:1s", "one-on-ones"). `1:1`
+ * and `1-1` must not touch another digit, colon or hyphen: a clock time ("11:10") or a date
+ * ("2026-11-10", "2026-1-1") holds the same three characters.
  */
 const TITLE_RULES: readonly (readonly [pattern: RegExp, templateId: NoteTemplateId])[] = [
   [/\b(?:stand-?ups?|daily)\b/, 'standup'],
-  [/(?<![\w:-])1[:-]1(?![\w:-])|\bone[- ]on[- ]one\b/, 'one_on_one'],
+  [/(?<![\w:-])1[:-]1s?(?![\w:-])|\bone[- ]on[- ]ones?\b/, 'one_on_one'],
   [/\b(?:clients?|demos?|discovery|proposals?|kick-?offs?)\b/, 'client_call'],
 ];
 
