@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { CaptureStatus } from '../../../shared/capture';
 import type { AudioSource, InterimTranscript, TranscriptSegment } from '../../../shared/transcript';
-import { AudioCaptureController } from '../audio/AudioCaptureController';
+import { AudioCaptureController, browserCaptureDevices } from '../audio/AudioCaptureController';
 import { describeMediaError } from '../audio/sources';
 
 export interface CaptureView {
@@ -20,7 +20,9 @@ const NO_INTERIM: Record<AudioSource, InterimTranscript | null> = { mic: null, s
 /** Binds the UI to main's capture state machine and runs the renderer-side audio capture. */
 export function useCapture(): CaptureView {
   const roger = window.roger;
-  const controller = useRef<AudioCaptureController>(new AudioCaptureController(roger));
+  const controller = useRef<AudioCaptureController>(
+    new AudioCaptureController(roger, browserCaptureDevices()),
+  );
   const [status, setStatus] = useState<CaptureStatus | null>(null);
   const [segments, setSegments] = useState<TranscriptSegment[]>([]);
   const [interim, setInterim] = useState(NO_INTERIM);

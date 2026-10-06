@@ -1,14 +1,17 @@
 import { PcmChunker } from './PcmChunker';
 import {
   PCM_WORKLET_NAME,
+  type PcmWorkletChunk,
   type PcmWorkletCommand,
   type PcmWorkletOptions,
 } from './pcm-worklet-contract';
 
 /**
- * Runs on the audio thread: downmix to mono, convert to Int16, post complete chunks to the page.
- * Compiled by its own tsconfig (tsconfig.worklet.json) because `AudioWorkletProcessor`,
- * `registerProcessor` and `sampleRate` exist only in the worklet scope.
+ * Runs on the audio thread: downmix to mono, convert to Int16, post complete chunks to the page,
+ * each with the frame of its first sample (`currentFrame` is the first frame of the block being
+ * processed). Compiled by its own tsconfig (tsconfig.worklet.json) because
+ * `AudioWorkletProcessor`, `registerProcessor`, `sampleRate` and `currentFrame` exist only in the
+ * worklet scope.
  */
 class PcmChunkerProcessor extends AudioWorkletProcessor {
   private readonly chunker: PcmChunker;
@@ -23,7 +26,7 @@ class PcmChunkerProcessor extends AudioWorkletProcessor {
     this.port.onmessage = (event: MessageEvent<unknown>) => {
       if (event.data !== flush) return;
       const rest = this.chunker.flush();
-      if (rest) this.port.postMessage(rest, [rest]);
+      if (rest) this.post(rest);
       this.stopped = true;
     };
   }
@@ -33,8 +36,13 @@ class PcmChunkerProcessor extends AudioWorkletProcessor {
     const channels = inputs[0];
     if (!channels || channels.length === 0) return true;
     const mono = channels.length === 1 ? (channels[0] ?? new Float32Array(0)) : downmix(channels);
-    for (const chunk of this.chunker.push(mono)) this.port.postMessage(chunk, [chunk]);
+    for (const chunk of this.chunker.push(mono, currentFrame)) this.post(chunk);
     return true;
+  }
+
+  /** Transfers the samples to the page rather than copying them. */
+  private post(chunk: PcmWorkletChunk): void {
+    this.port.postMessage(chunk, [chunk.pcm]);
   }
 }
 

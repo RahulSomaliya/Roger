@@ -2,8 +2,13 @@ import type { CapturePhase } from '../../../shared/capture';
 import { PCM_SAMPLE_RATE } from '../../../shared/ipc';
 import type { CaptureApi } from '../../../shared/ipc/capture';
 import type { AudioSource } from '../../../shared/transcript';
-import { PcmStreamCapture, type PcmStreamCaptureOptions } from './PcmStreamCapture';
+import {
+  createBrowserGraph,
+  PcmStreamCapture,
+  type PcmStreamCaptureOptions,
+} from './PcmStreamCapture';
 import { describeMediaError, openMicrophoneStream, openSystemAudioStream } from './sources';
+import { type CaptureStream, stopTracks } from './streams';
 
 /** 100 ms of audio per IPC message. */
 const CHUNK_SAMPLES = PCM_SAMPLE_RATE / 10;
@@ -15,28 +20,31 @@ export interface AudioStartResult {
   systemAudioError: string | null;
 }
 
-/** One source's running capture, as the controller uses it. */
-export interface SourceCapture {
-  start(stream: MediaStream): Promise<void>;
+/** One source's running capture, as the controller uses it (PcmStreamCapture). */
+export interface SourceCapture<S> {
+  start(stream: S): Promise<void>;
   stop(): Promise<void>;
 }
 
 /** What the controller takes from the browser. Tests pass fakes: node has no getUserMedia. */
-export interface CaptureDevices {
-  openMicrophone(): Promise<MediaStream>;
-  openSystemAudio(sourceId: string): Promise<MediaStream>;
-  createCapture(options: PcmStreamCaptureOptions): SourceCapture;
+export interface CaptureDevices<S extends CaptureStream> {
+  openMicrophone(): Promise<S>;
+  openSystemAudio(sourceId: string): Promise<S>;
+  createCapture(options: PcmStreamCaptureOptions): SourceCapture<S>;
 }
 
-const BROWSER_DEVICES: CaptureDevices = {
-  openMicrophone: openMicrophoneStream,
-  openSystemAudio: openSystemAudioStream,
-  createCapture: (options) => new PcmStreamCapture(options),
-};
+/** The real devices: getUserMedia, and a capture on a real AudioContext. */
+export function browserCaptureDevices(): CaptureDevices<MediaStream> {
+  return {
+    openMicrophone: openMicrophoneStream,
+    openSystemAudio: openSystemAudioStream,
+    createCapture: (options) => new PcmStreamCapture(options, createBrowserGraph),
+  };
+}
 
 /** Runs both renderer-side captures and ships their chunks to main through the IPC contract. */
-export class AudioCaptureController {
-  private readonly captures = new Map<AudioSource, SourceCapture>();
+export class AudioCaptureController<S extends CaptureStream = MediaStream> {
+  private readonly captures = new Map<AudioSource, SourceCapture<S>>();
   /**
    * Bumped by stop(), so a start still in flight when main stopped (sleep, no speech) stops the
    * source it was opening and starts no other, instead of running on with main idle.
@@ -47,7 +55,7 @@ export class AudioCaptureController {
     // Capture's part only, not RogerApi: typed against every feature's part, this file and its test
     // fake would fail the type check whenever another feature adds a member to its own IPC module.
     private readonly roger: CaptureApi,
-    private readonly devices: CaptureDevices = BROWSER_DEVICES,
+    private readonly devices: CaptureDevices<S>,
   ) {}
 
   /** True while any source captures. False while the first one is still starting. */
@@ -112,26 +120,32 @@ export class AudioCaptureController {
   private async startSource(
     source: AudioSource,
     generation: number,
-    open: () => Promise<MediaStream>,
+    open: () => Promise<S>,
   ): Promise<boolean> {
     const capture = this.devices.createCapture({
       source,
       sampleRate: PCM_SAMPLE_RATE,
       chunkSamples: CHUNK_SAMPLES,
-      onChunk: (pcm) => {
-        this.roger.sendAudioChunk({ source, pcm });
-      },
-      onState: (state, message) => {
-        this.roger.reportAudioSourceState(
-          message === undefined ? { source, state } : { source, state, message },
-        );
+      onChunk: (pcm, capturedAtMs) => {
+        this.roger.sendAudioChunk({ source, pcm, capturedAtMs });
       },
     });
     const stream = await open();
+    // Listen before the awaits below: a track that ends during setup must still be reported.
+    // Main shows it on that source's row, names the stream in the error and closes its session.
+    stream.getAudioTracks()[0]?.addEventListener('ended', () => {
+      // A capture main stopped since ended its own tracks; that is no news for main.
+      if (generation !== this.generation) return;
+      this.roger.reportAudioSourceState({
+        source,
+        state: 'ended',
+        message: 'The audio device stopped delivering audio',
+      });
+    });
     try {
       await capture.start(stream);
     } catch (error) {
-      for (const track of stream.getTracks()) track.stop();
+      stopTracks(stream);
       await capture.stop();
       throw error;
     }
@@ -141,6 +155,7 @@ export class AudioCaptureController {
       return false;
     }
     this.captures.set(source, capture);
+    this.roger.reportAudioSourceState({ source, state: 'active' });
     return true;
   }
 }

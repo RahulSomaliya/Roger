@@ -2,16 +2,23 @@ import { describe, expect, expectTypeOf, it, vi } from 'vitest';
 import { idleCaptureStatus } from '../../../shared/capture';
 import type { CaptureApi } from '../../../shared/ipc/capture';
 import type { AudioSource } from '../../../shared/transcript';
-import { AudioCaptureController, type CaptureDevices } from './AudioCaptureController';
+import {
+  AudioCaptureController,
+  type CaptureDevices,
+  type SourceCapture,
+} from './AudioCaptureController';
 import type { PcmStreamCaptureOptions } from './PcmStreamCapture';
+import { FakeStream } from './testing/fakeMedia';
 
 /** A capture double: records whether it runs. No AudioContext or getUserMedia in node. */
-class FakeCapture {
+class FakeCapture implements SourceCapture<FakeStream> {
   running = false;
   stopped = false;
+  stream: FakeStream | null = null;
   constructor(readonly options: PcmStreamCaptureOptions) {}
-  start(): Promise<void> {
+  start(stream: FakeStream): Promise<void> {
     this.running = true;
+    this.stream = stream;
     return Promise.resolve();
   }
   stop(): Promise<void> {
@@ -21,10 +28,7 @@ class FakeCapture {
   }
 }
 
-// Only getTracks is read (to stop a stream whose capture failed to start); a fake needs no more.
-const fakeStream = { getTracks: () => [] } as Pick<MediaStream, 'getTracks'> as MediaStream;
-
-function rogerApi(): CaptureApi {
+function rogerApi() {
   const status = idleCaptureStatus({
     state: 'idle',
     pending: 0,
@@ -32,7 +36,7 @@ function rogerApi(): CaptureApi {
     lastError: null,
     nextAttemptAt: null,
   });
-  return {
+  const api = {
     startCapture: () => Promise.resolve(status),
     stopCapture: () => Promise.resolve(status),
     getCaptureStatus: () => Promise.resolve(status),
@@ -50,18 +54,19 @@ function rogerApi(): CaptureApi {
     deleteMeetingAudio: vi.fn(),
     unhideSegment: vi.fn(),
   };
+  return api satisfies CaptureApi;
 }
 
 function harness() {
   const captures: FakeCapture[] = [];
   let micOpened = (): void => undefined;
-  const openSystemAudio = vi.fn(() => Promise.resolve(fakeStream));
-  const devices: CaptureDevices = {
+  const openSystemAudio = vi.fn(() => Promise.resolve(new FakeStream()));
+  const devices: CaptureDevices<FakeStream> = {
     // The mic waits for the test: getUserMedia and the worklet setup take hundreds of ms.
     openMicrophone: () =>
       new Promise((resolve) => {
         micOpened = () => {
-          resolve(fakeStream);
+          resolve(new FakeStream());
         };
       }),
     openSystemAudio,
@@ -71,11 +76,13 @@ function harness() {
       return capture;
     },
   };
-  const controller = new AudioCaptureController(rogerApi(), devices);
+  const roger = rogerApi();
+  const controller = new AudioCaptureController(roger, devices);
   const live = (source: AudioSource) =>
     captures.filter((capture) => capture.options.source === source && capture.running);
   return {
     controller,
+    roger,
     captures,
     openSystemAudio,
     live,
@@ -83,6 +90,14 @@ function harness() {
       micOpened();
     },
   };
+}
+
+/** Starts both sources the way a Start does, the mic answering at once. */
+async function started(h: ReturnType<typeof harness>): Promise<void> {
+  const starting = h.controller.start();
+  await settle();
+  h.micReady();
+  await starting;
 }
 
 /** Lets pending promise callbacks run. */
@@ -152,5 +167,34 @@ describe('AudioCaptureController', () => {
     expect(h.live('mic')).toHaveLength(1);
     expect(h.live('system')).toHaveLength(1);
     expect(h.captures.filter((capture) => capture.stopped)).toHaveLength(2);
+  });
+
+  it('sends each chunk with the wall clock of its first sample, as the capture dated it', async () => {
+    const h = harness();
+    await started(h);
+    const pcm = new ArrayBuffer(3_200);
+    h.live('mic')[0]?.options.onChunk(pcm, 1_765_000_000_123);
+    expect(h.roger.sendAudioChunk).toHaveBeenCalledWith({
+      source: 'mic',
+      pcm,
+      capturedAtMs: 1_765_000_000_123,
+    });
+  });
+
+  it('reports each source live once it captures, and the call audio track ending', async () => {
+    const h = harness();
+    await started(h);
+    expect(h.roger.reportAudioSourceState).toHaveBeenCalledWith({ source: 'mic', state: 'active' });
+    expect(h.roger.reportAudioSourceState).toHaveBeenCalledWith({
+      source: 'system',
+      state: 'active',
+    });
+
+    h.live('system')[0]?.stream?.track.end();
+    expect(h.roger.reportAudioSourceState).toHaveBeenLastCalledWith({
+      source: 'system',
+      state: 'ended',
+      message: 'The audio device stopped delivering audio',
+    });
   });
 });
