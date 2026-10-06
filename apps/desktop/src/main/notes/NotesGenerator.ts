@@ -20,7 +20,7 @@ import {
   type TemplateAttendee,
 } from '../../shared/suggestTemplate';
 import { ApiError } from '../api/http';
-import type { NotesClient } from '../api/notesClient';
+import type { LlmRunSummary, NotesClient } from '../api/notesClient';
 import type { CaptureService, RecordingEnded } from '../capture/CaptureService';
 import { errorMessage, type Logger } from '../logger';
 import type { TranscriptStore } from '../store/TranscriptStore';
@@ -88,11 +88,17 @@ interface Waiting {
   wakeOn: 'uploads' | 'notes' | 'timer';
 }
 
-/** One attempt at a pending generate's run: flush, stream, and the poll if the stream is lost. */
+/**
+ * One attempt at a pending generate's run: flush, stream, and the poll if the stream is lost. A
+ * cancel of a run the API may hold while nothing here streams or polls it runs as one too, so
+ * that no re-check sends the run meanwhile (`cancel`).
+ */
 interface Attempt {
   readonly runId: string;
   stage: 'flushing' | 'streaming' | 'polling';
   cancelRequested: boolean;
+  /** The API's answer to that cancel; the attempt settles by it and sends nothing (`settleStop`). */
+  stopping: Promise<LlmRunSummary> | null;
 }
 
 interface GeneratorEvents extends Record<string, unknown> {
@@ -134,6 +140,12 @@ export class NotesGenerator {
   private readonly waiting = new Map<string, Waiting>();
   /** The state last told per meeting, as JSON, so each change is told once. */
   private readonly told = new Map<string, string>();
+  /**
+   * Run ids this launch made (`newRow`) and has not sent yet: with a row still asking for its
+   * template, the only runs sure not to be in the API (`mayBeInApi`). An earlier launch leaves no
+   * record of what it sent, so its rows count as sent.
+   */
+  private readonly unsent = new Set<string>();
   /** The poll's waits; stop() ends them. */
   private readonly sleeps = new Set<() => void>();
   private readonly unsubscribes: (() => void)[] = [];
@@ -212,31 +224,60 @@ export class NotesGenerator {
   /**
    * Stops the meeting's run or drops a waiting generate (`notes:cancel-generate`). A streaming
    * run's end decides what follows (see `settle`); a run being polled is asked to stop, and the
-   * poll reads what the cancel did. Rejects when the API's cancel failed.
+   * poll reads what the cancel did. With neither, a run the API may hold is asked to stop too, and
+   * the generate ends as its answer says (`settleStop`). Rejects when the API's cancel failed.
    */
   async cancel(meetingId: string): Promise<void> {
+    const { store, streams, api, logger } = this.options;
     const attempt = this.attempts.get(meetingId);
-    if (attempt === undefined) {
+    const row = store.getPendingGenerate(meetingId);
+    logger.info('notes generate cancel', {
+      meetingId,
+      runId: attempt?.runId ?? row?.runId ?? null,
+      stage: attempt?.stage ?? null,
+    });
+    if (attempt !== undefined) attempt.cancelRequested = true;
+    if (attempt?.stage === 'streaming') {
+      await streams.cancelNotes(meetingId);
+      return;
+    }
+    if (attempt?.stage === 'polling') {
+      await api.cancelRun(meetingId, attempt.runId);
+      return;
+    }
+    // Trap: no stream or poll does not mean no run. The poll stops at its limit, an unreachable
+    // API or a refusal before the stream leaves the row for the next re-check, and an earlier
+    // launch may have sent it: the API runs on, bills, and saves notes nothing here would load if
+    // the row were only dropped, and the next edit of the AI notes would land on a stale base.
+    if (row === null || !this.mayBeInApi(row)) {
+      // An attempt still flushing finds the row gone once its flush returns.
       this.drop(meetingId);
       return;
     }
-    attempt.cancelRequested = true;
-    this.options.logger.info('notes generate cancel', {
-      meetingId,
-      runId: attempt.runId,
-      stage: attempt.stage,
-    });
-    switch (attempt.stage) {
-      case 'flushing':
-        // Nothing has reached the API: the attempt finds the row gone once its flush returns.
-        this.drop(meetingId);
-        return;
-      case 'streaming':
-        await this.options.streams.cancelNotes(meetingId);
-        return;
-      case 'polling':
-        await this.options.api.cancelRun(meetingId, attempt.runId);
-        return;
+    const stopping = api.cancelRun(meetingId, row.runId);
+    if (attempt === undefined) {
+      const stopper: Attempt = {
+        runId: row.runId,
+        stage: 'polling',
+        cancelRequested: true,
+        stopping,
+      };
+      this.waiting.delete(meetingId);
+      this.attempts.set(meetingId, stopper);
+      void this.runAttempt(meetingId, stopper, (log) =>
+        this.settleStop(meetingId, stopper, stopping, log),
+      );
+      this.tell(meetingId);
+    } else {
+      // Flushing: the attempt settles by the answer once its flush returns.
+      attempt.stopping = stopping;
+    }
+    try {
+      await stopping;
+    } catch (error) {
+      // The API never held the run: nothing to stop, and settleStop drops the row.
+      if (error instanceof ApiError && error.isNotFound) return;
+      throw error;
     }
   }
 
@@ -388,18 +429,22 @@ export class NotesGenerator {
 
   private begin(meetingId: string, runId: string): void {
     this.waiting.delete(meetingId);
-    const attempt: Attempt = { runId, stage: 'flushing', cancelRequested: false };
+    const attempt: Attempt = { runId, stage: 'flushing', cancelRequested: false, stopping: null };
     this.attempts.set(meetingId, attempt);
-    // Never rejects: runAttempt logs every failure and records it as the state.
-    void this.runAttempt(meetingId, attempt);
+    void this.runAttempt(meetingId, attempt, (log) => this.attempt(meetingId, attempt, log));
   }
 
   // one attempt ----------------------------------------------------------------------------------
 
-  private async runAttempt(meetingId: string, attempt: Attempt): Promise<void> {
+  /** Never rejects: logs every failure and records it as the state. */
+  private async runAttempt(
+    meetingId: string,
+    attempt: Attempt,
+    body: (log: Logger) => Promise<void>,
+  ): Promise<void> {
     const log = this.options.logger.child({ meetingId, runId: attempt.runId });
     try {
-      await this.attempt(meetingId, attempt, log);
+      await body(log);
     } catch (error) {
       // A bug or a store failure, not an answer from the API. The row stays as it was: the next
       // re-check, or Retry, re-sends its run id.
@@ -430,6 +475,14 @@ export class NotesGenerator {
       // M4 "Generate inputs": notes typed in the last seconds of a call drive the 2-minute target.
       const flushed = await sync.flushMeeting(meetingId);
       if (this.halted()) return;
+      // Cancelled during the flush: a row nothing sent is gone already; a run the API may hold
+      // ends as the API's answer to its cancel says. Nothing is sent either way.
+      if (this.cancelRequested(attempt)) {
+        if (attempt.stopping !== null) {
+          await this.settleStop(meetingId, attempt, attempt.stopping, log);
+        }
+        return;
+      }
       if (!flushed.ok) {
         const status: PendingGenerateStatus = { phase: 'waiting_for_notes', cause: flushed.cause };
         this.waiting.set(meetingId, {
@@ -439,10 +492,12 @@ export class NotesGenerator {
         log.info('notes generate waits for its notes', { cause: flushed.cause });
         return;
       }
-      // Cancelled during the flush.
+      // Gone or replaced during the flush: not this attempt's run any more.
       const row = store.getPendingGenerate(meetingId);
       if (row?.runId !== attempt.runId || row.templateId === null) return;
       attempt.stage = 'streaming';
+      // From here the API may hold the run, whatever the stream does (`mayBeInApi`).
+      this.unsent.delete(row.runId);
       log.info('notes run starting', { templateId: row.templateId });
       const end = await streams.streamNotes(
         {
@@ -540,7 +595,7 @@ export class NotesGenerator {
   private async runEnded(
     meetingId: string,
     attempt: Attempt,
-    run: LlmRun,
+    run: LlmRunSummary,
     status: Exclude<LlmRunStatus, 'running'>,
     log: Logger,
   ): Promise<void> {
@@ -570,6 +625,39 @@ export class NotesGenerator {
         return;
       }
     }
+  }
+
+  /**
+   * A cancel of a run the API may hold, sent while nothing here streamed or polled it (`cancel`).
+   * The API answers the run as the cancel left it: `cancelled`, or an end the run reached first,
+   * settled as any other (a `succeeded` run's notes are loaded, never taken as cancelled), or
+   * `running` while the cancel takes hold, which the poll follows. A `404`: the API never held it.
+   */
+  private async settleStop(
+    meetingId: string,
+    attempt: Attempt,
+    stopping: Promise<LlmRunSummary>,
+    log: Logger,
+  ): Promise<void> {
+    attempt.stage = 'polling';
+    let run: LlmRunSummary;
+    try {
+      run = await stopping;
+    } catch (error) {
+      if (!(error instanceof ApiError)) throw error;
+      if (this.halted()) return;
+      if (error.isNotFound) {
+        this.finish(meetingId, attempt, log, 'cancelled');
+        return;
+      }
+      // cancel() rejects with it: the generate goes on, and the next re-check re-sends its id.
+      log.warn('notes run cancel failed', { status: error.status, code: error.code });
+      this.waiting.set(meetingId, { status: OFFLINE, wakeOn: 'timer' });
+      return;
+    }
+    if (this.halted()) return;
+    if (run.status === 'running') await this.poll(meetingId, attempt, log);
+    else await this.runEnded(meetingId, attempt, run, run.status, log);
   }
 
   /**
@@ -635,9 +723,11 @@ export class NotesGenerator {
     templateId: string | null,
     reason: StoredPendingGenerate['reason'],
   ): StoredPendingGenerate {
+    const runId = this.newRunId();
+    this.unsent.add(runId);
     return {
       meetingId,
-      runId: this.newRunId(),
+      runId,
       templateId,
       reason,
       createdAt: this.clock().toISOString(),
@@ -667,9 +757,21 @@ export class NotesGenerator {
   /** Deletes the meeting's pending generate, whatever its run. */
   private drop(meetingId: string): void {
     const row = this.options.store.getPendingGenerate(meetingId);
-    if (row !== null) this.options.store.deletePendingGenerate(meetingId, row.runId);
+    if (row !== null) {
+      this.options.store.deletePendingGenerate(meetingId, row.runId);
+      this.unsent.delete(row.runId);
+    }
     this.waiting.delete(meetingId);
     this.tell(meetingId);
+  }
+
+  /**
+   * Whether the API may hold the row's run, so that dropping the row, or giving it another
+   * template, here alone would go unheard there. A run needs a template, and a failed row's run
+   * has ended; any other run id not in `unsent` may have been sent.
+   */
+  private mayBeInApi(row: StoredPendingGenerate): boolean {
+    return row.templateId !== null && row.lastError === null && !this.unsent.has(row.runId);
   }
 
   private stateFor(row: StoredPendingGenerate): PendingGenerateState {
@@ -740,6 +842,11 @@ export class NotesGenerator {
    */
   private halted(): boolean {
     return this.stopped;
+  }
+
+  /** Whether a cancel came for the attempt: a method for the reason `halted` is one. */
+  private cancelRequested(attempt: Attempt): boolean {
+    return attempt.cancelRequested;
   }
 
   private nowMs(): number {

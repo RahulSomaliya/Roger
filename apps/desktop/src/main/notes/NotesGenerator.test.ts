@@ -181,9 +181,14 @@ class FakeStreams implements Pick<LlmStreams, 'streamNotes' | 'cancelNotes'> {
   }
 }
 
-/** `GET` and cancel of one run: answers from `answers`, in order, then repeats the last. */
+/**
+ * `GET` and cancel of one run. `GET` answers from `answers`, in order, then repeats the last;
+ * cancel answers the run in `cancelAnswer`'s status (the run beat the cancel when not
+ * `cancelled`), or fails with it.
+ */
 class FakeRuns implements Pick<NotesClient, 'getRun' | 'cancelRun'> {
   answers: (LlmRun | ApiError)[] = [];
+  cancelAnswer: LlmRunStatus | ApiError = 'cancelled';
   readonly cancels: string[] = [];
 
   constructor(private readonly log: string[]) {}
@@ -197,8 +202,11 @@ class FakeRuns implements Pick<NotesClient, 'getRun' | 'cancelRun'> {
   }
 
   cancelRun(_meetingId: string, runId: string): Promise<LlmRunSummary> {
+    this.log.push(`cancel run ${runId}`);
     this.cancels.push(runId);
-    return Promise.resolve(aRun(runId, 'cancelled'));
+    const answer = this.cancelAnswer;
+    if (answer instanceof ApiError) return Promise.reject(answer);
+    return Promise.resolve(aRun(runId, answer));
   }
 }
 
@@ -338,6 +346,15 @@ function harness(options: HarnessOptions = {}) {
       for (const listener of recordingListeners) listener.ended?.(recording);
     },
   };
+}
+
+/** A promise the test resolves: `open()` lets whatever waits on `wait` go on. */
+function gate(): { wait: Promise<void>; open: () => void } {
+  let open = (): void => undefined;
+  const wait = new Promise<void>((resolve) => {
+    open = resolve;
+  });
+  return { wait, open };
 }
 
 /** Lets every promise chain that waits on no timer run to its end. */
@@ -997,6 +1014,8 @@ describe('NotesGenerator: cancel', () => {
 
     expect(h.store.listPendingGenerates()).toEqual([]);
     expect(h.changes.at(-1)).toEqual({ meetingId: MEETING, pending: null });
+    // Its run id was never sent: there is no run in the API to stop.
+    expect(h.runs.cancels).toEqual([]);
   });
 
   it('a cancelled stream that ends cancelled ends the generate', async () => {
@@ -1039,6 +1058,80 @@ describe('NotesGenerator: cancel', () => {
 
     expect(unconfirmed.store.getNote(MEETING, 'ai')?.doc).toEqual(paragraphs('saved anyway'));
     expect(unconfirmed.store.listPendingGenerates()).toEqual([]);
+  });
+
+  it('cancel after the poll stopped asks the API to stop the run', async () => {
+    const answers: readonly (readonly [cancel: LlmRunStatus | ApiError, stays: boolean])[] = [
+      ['cancelled', false],
+      // The run beat the cancel: its saved notes are loaded, never taken as cancelled.
+      ['succeeded', false],
+      // The API holds no such run: nothing to stop, and the row goes.
+      [new ApiError(404, 'not_found', 'No such run'), false],
+      // The cancel did not reach the API: it rejects, and the generate goes on.
+      [new ApiError(0, 'network_error', 'The API did not answer'), true],
+    ];
+    for (const [cancel, stays] of answers) {
+      const label = cancel instanceof ApiError ? cancel.code : cancel;
+      const h = harness();
+      h.api.seed(MEETING, note('ai', 1, paragraphs('saved before the cancel'), RUN_1));
+      h.generator.start();
+      // Off the 30 s re-check's beat: the cancel lands after the poll stopped, before a re-check.
+      await vi.advanceTimersByTimeAsync(10_000);
+      h.generator.generate(MEETING, 'standup');
+      await settle();
+      h.runs.answers = [aRun(RUN_1, 'running')];
+      h.streams.last().end({ kind: 'dropped', runId: RUN_1, cause: 'network_error' });
+      await vi.advanceTimersByTimeAsync(2 * 60_000);
+      // No stream and no poll: only the API holds the run now.
+      expect(h.generator.getPending(MEETING)?.status, label).toEqual({ phase: 'running' });
+      expect(h.streams.calls, label).toHaveLength(1);
+      h.runs.cancelAnswer = cancel;
+
+      const cancelled = h.generator.cancel(MEETING);
+      if (stays) await expect(cancelled, label).rejects.toThrow('did not answer');
+      else await cancelled;
+      await settle();
+
+      expect(h.runs.cancels, label).toEqual([RUN_1]);
+      expect(h.store.listPendingGenerates().length, label).toBe(stays ? 1 : 0);
+      if (cancel === 'succeeded') {
+        expect(h.store.getNote(MEETING, 'ai')?.doc).toEqual(paragraphs('saved before the cancel'));
+      }
+      h.generator.stop();
+    }
+  });
+
+  it('cancel during the flush of a run an earlier launch sent asks the API to stop it', async () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'roger-notes-generator-')), 'notes.sqlite');
+    const first = harness({ storePath: path });
+    first.generator.start();
+    first.stop();
+    await settle();
+    expect(first.streams.calls.map((call) => call.request.runId)).toEqual([RUN_1]);
+    first.generator.stop();
+    first.store.close();
+
+    // The next launch re-sends RUN_1 once its notes are flushed; the user cancels meanwhile.
+    const next = harness({ storePath: path });
+    const flush = gate();
+    const flushMeeting = next.sync.flushMeeting.bind(next.sync);
+    vi.spyOn(next.sync, 'flushMeeting').mockImplementationOnce(async (meetingId) => {
+      await flush.wait;
+      return flushMeeting(meetingId);
+    });
+    next.generator.start();
+    await settle();
+
+    await next.generator.cancel(MEETING);
+    expect(next.runs.cancels).toEqual([RUN_1]);
+    flush.open();
+    await settle();
+
+    expect(next.streams.calls).toEqual([]);
+    expect(next.store.listPendingGenerates()).toEqual([]);
+    expect(next.changes.at(-1)).toEqual({ meetingId: MEETING, pending: null });
+    next.generator.stop();
+    next.store.close();
   });
 
   it('cancel while polling asks the API to stop the run', async () => {
