@@ -134,6 +134,22 @@ describe('check', () => {
     );
   });
 
+  it('reports a reference.txt it cannot read under its item, and still checks the rest', async () => {
+    await save(item('a'));
+    await mkdir(itemPaths(benchDir, 'a').reference);
+    await save(item('b'), '[00:00] Me: {hi | high}\n');
+
+    const result = await check(benchDir);
+
+    expect(result.items).toBe(2);
+    expect(result.problems.map((problem) => problem.itemId)).toEqual(['a', 'b']);
+    // Node's EISDIR names no path, so the message names the file.
+    expect(result.problems[0]?.message).toBe(
+      'could not read reference.txt: EISDIR: illegal operation on a directory, read',
+    );
+    expect(result.problems[1]?.message).toMatch(/^reference\.txt line 1, column 13: unresolved/);
+  });
+
   it('checks nothing in a bench folder with no items', async () => {
     expect(await check(benchDir)).toEqual({ items: 0, problems: [] });
   });

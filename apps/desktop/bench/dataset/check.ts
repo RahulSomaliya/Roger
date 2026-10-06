@@ -62,7 +62,12 @@ async function itemProblems(benchDir: string, itemId: string): Promise<string[]>
   try {
     text = await readFile(paths.reference, 'utf8');
   } catch (error) {
-    if (!isMissingFile(error)) throw error;
+    // Under its item, as an unreadable item.json is: thrown, one item's folder or permissions
+    // problem would end the whole check and hide every other item's problems.
+    if (!isMissingFile(error)) {
+      problems.push(`could not read reference.txt: ${describeItemError(error)}`);
+      return problems;
+    }
     // Fixing the draft in place is safe only because `bench draft` never rewrites a draft that is
     // there (draft.ts); a draft that did would wipe the owner's fixes on its next run.
     problems.push(
