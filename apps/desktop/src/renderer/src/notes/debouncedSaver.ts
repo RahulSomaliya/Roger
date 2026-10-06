@@ -243,8 +243,9 @@ let pageResponder: NotesFlushResponder | undefined;
 /**
  * The page's responder, over `window.roger`, made and subscribed by the first call. Every
  * NoteEditor calls it; the app must also call it once as the page starts (M4-T20, which mounts the
- * editors), or a window where no meeting's notes were opened yet never acks, and main's quit and
- * every Stop of a silent meeting wait their full 1 s for it.
+ * editors), or a window where no meeting's notes were opened yet never acks: main's quit and
+ * every Stop of a silent meeting wait their full 1 s for it, and that Stop, unanswered, keeps the
+ * meeting for the uploader to discard rather than discard it itself (NotesQuitGuard.saveOpenNotes).
  */
 export function notesFlushResponder(): NotesFlushResponder {
   pageResponder ??= new NotesFlushResponder(window.roger);
