@@ -84,6 +84,8 @@ class NotesIpc {
    * count, so a retry then streams again, and the API attaches it to the answer it is writing.
    */
   private readonly answering = new Set<string>();
+  /** Questions the page cancelled while their answer streamed (see answerEnded). */
+  private readonly cancelled = new Set<string>();
   /** Meetings whose server notes are being pulled: two editors opening ask once. */
   private readonly pulling = new Set<string>();
   /** The polls' waits; stop() ends them. */
@@ -138,6 +140,7 @@ class NotesIpc {
     });
     // As notes:cancel-generate: settles once the API holds the run; never block the page on it.
     this.handle(chatChannels.ChatCancel, parseChatAnswerRequest, async (request) => {
+      if (this.answering.has(request.messageId)) this.cancelled.add(request.messageId);
       await streams.cancelChat(request);
     });
 
@@ -266,17 +269,22 @@ class NotesIpc {
   /**
    * After a chat stream ended. `done` and `error` reached the page as events. A lost stream's
    * answer goes on in the API and is stored there: its run is polled to its end, then the thread
-   * is read again. Trap: `cancel_unconfirmed` is one of them, never a cancel. The page was told
-   * `cancelled` at once, but the answer beat the cancel, or the cancel failed; read as cancelled,
-   * the page would keep an answer the API holds out of its thread.
+   * is read again.
+   *
+   * Trap: after a cancel, a stream that ends `done`, or `dropped` with `cancel_unconfirmed`, is
+   * not a cancel. The answer beat it (or the cancel failed) and is stored, while the page was
+   * told `cancelled` at once and, LlmStreams no longer forwarding, never got that `done`. Both
+   * read the thread again; ended as cancelled, the page would keep a stored answer out of its
+   * thread.
    */
   private async answerEnded(
     request: SendChatMessageRequest,
     end: StreamEnd<ChatMessage>,
   ): Promise<void> {
-    if (end.kind !== 'dropped') return;
+    const cancelled = this.cancelled.delete(request.messageId);
+    if (end.kind === 'error' || (end.kind === 'done' && !cancelled)) return;
     const { meetingId } = request;
-    if (end.runId !== null) await this.pollRun(meetingId, end.runId);
+    if (end.kind === 'dropped' && end.runId !== null) await this.pollRun(meetingId, end.runId);
     if (this.isStopped()) return;
     let thread: ChatThread;
     try {

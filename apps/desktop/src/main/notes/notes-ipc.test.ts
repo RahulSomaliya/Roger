@@ -517,6 +517,22 @@ describe('the notes and chat IPC', () => {
     expect(h.sentOn(chatChannels.ChatThreadChanged)).toHaveLength(1);
   });
 
+  it('an answer that beat its cancel reaches the page as the thread read again', async () => {
+    const h = harness();
+    await h.invoke(chatChannels.ChatSend, MAIN_PAGE, {
+      meetingId: MEETING,
+      messageId: MESSAGE,
+      text: 'Why?',
+    });
+    await h.invoke(chatChannels.ChatCancel, MAIN_PAGE, { meetingId: MEETING, messageId: MESSAGE });
+    // LlmStreams sent the page `cancelled` and stopped forwarding, then read the run's `done`:
+    // the answer is stored, and the page never saw it.
+    h.chatEnds[0]?.settle({ kind: 'done', result: chatMessage({ role: 'assistant', runId: RUN }) });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.calls.slice(2)).toEqual([`get thread ${MEETING}`]);
+    expect(h.sentOn(chatChannels.ChatThreadChanged)).toHaveLength(1);
+  });
+
   it('a lost answer whose run was never named reloads the thread at once', async () => {
     const h = harness();
     await h.invoke(chatChannels.ChatSend, MAIN_PAGE, {
