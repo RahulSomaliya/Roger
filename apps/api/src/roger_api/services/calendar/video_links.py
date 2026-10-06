@@ -22,6 +22,7 @@ returns is one the desktop accepts too:
 
 import html
 import re
+import unicodedata
 from collections.abc import Callable
 from dataclasses import dataclass
 from html.entities import html5
@@ -80,8 +81,18 @@ _C0_CONTROL_OR_SPACE = "".join(chr(code) for code in range(0x21))
 _HOST_NAME = re.compile(r"[a-z0-9.-]+", re.ASCII)
 _HTTPS_DEFAULT_PORT = 443
 
-# A link in free text ends at whitespace, a quote or an angle bracket (HTML attributes, `<url>`).
-_URL_IN_TEXT = re.compile(r"https?://[^\s<>\"'`]+", re.IGNORECASE)
+# Non-ASCII punctuation (Unicode category P): curly quotes, guillemets, dashes, CJK and fullwidth
+# marks. A link a machine writes percent-encodes it; pasted or autocorrected text glues it on, and
+# one glued closing quote failed the whole-path match (no Join button) or landed in the query the
+# desktop opens. The Basic Multilingual Plane holds every one a person types (built in ~5 ms).
+_NON_ASCII_PUNCTUATION = "".join(
+    char for char in map(chr, range(0x80, 0x10000)) if unicodedata.category(char).startswith("P")
+)
+# A link in free text ends at whitespace, a quote or an angle bracket (HTML attributes, `<url>`),
+# or any non-ASCII punctuation.
+_URL_IN_TEXT = re.compile(
+    rf"https?://[^\s<>\"'`{re.escape(_NON_ASCII_PUNCTUATION)}]+", re.IGNORECASE
+)
 # Sentence punctuation and closing brackets after a link are not part of it.
 _TRAILING_PUNCTUATION = ".,;:!?)]}*"
 # A character reference that ends in `;`: a name, a decimal or a hex number.

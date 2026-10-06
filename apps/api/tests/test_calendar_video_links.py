@@ -168,6 +168,16 @@ def test_find_join_link_finds_nothing_without_an_allowlisted_link() -> None:
         "**https://zoom.us/j/1234567890**",
         "Link: https://zoom.us/j/1234567890, see you there!",
         "\u00a0https://zoom.us/j/1234567890\u00a0",
+        # Smart quotes (macOS autocorrect, Docs, Outlook), guillemets, dashes, CJK and fullwidth
+        # punctuation: the Zoom path is matched whole, so one glued character hid the link.
+        "Join \u2018https://zoom.us/j/1234567890\u2019 now",
+        "\u201chttps://zoom.us/j/1234567890\u201d",
+        "\u00abhttps://zoom.us/j/1234567890\u00bb",
+        "\u300chttps://zoom.us/j/1234567890\u300d",
+        "Zoom\uff1ahttps://zoom.us/j/1234567890\u3002",
+        "https://zoom.us/j/1234567890\u3001",
+        "https://zoom.us/j/1234567890\u2014see you there",
+        "\uff08https://zoom.us/j/1234567890\uff09",
     ],
 )
 def test_find_join_link_leaves_surrounding_punctuation_out(text: str) -> None:
@@ -218,3 +228,26 @@ def test_find_join_link_decodes_an_html_entity_once() -> None:
     assert find_join_link(text) == JoinLink(
         provider="zoom", url="https://zoom.us/j/1?pwd=x&region=us&a=1"
     )
+
+
+@pytest.mark.parametrize(
+    ("text", "url"),
+    [
+        # A query or a Teams path takes any character, so the glued one went into the link.
+        (
+            "https://us02web.zoom.us/j/85512345678?pwd=abc\u3002",
+            "https://us02web.zoom.us/j/85512345678?pwd=abc",
+        ),
+        (
+            "\u201chttps://teams.microsoft.com/l/meetup-join/19%3ameeting_abc%40thread.v2/0"
+            "?context=%7b%7d\u201d",
+            "https://teams.microsoft.com/l/meetup-join/19%3ameeting_abc%40thread.v2/0"
+            "?context=%7b%7d",
+        ),
+    ],
+)
+def test_find_join_link_keeps_glued_punctuation_out_of_the_query(text: str, url: str) -> None:
+    link = find_join_link(text)
+
+    assert link is not None
+    assert link.url == url
