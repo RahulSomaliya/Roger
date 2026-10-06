@@ -69,7 +69,7 @@ of range blocks Start with an error naming it: a typo never loosens a guard.
 | Guard               | config.json key / variable                                              | Default                                   | Why                                                                                                                                                                                                                                   |
 | ------------------- | ----------------------------------------------------------------------- | ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Stall close         | `sttStallCloseSeconds` / `ROGER_STT_STALL_CLOSE_SECONDS`                | 30 s (10 to 300)                          | A source that sends no chunk at all has a dead capture path but its session bills like a live one. Its session closes ("paused, no audio") and reopens with its next chunk. After the 5 s "no audio" warning.                         |
-| Reopen buffer       | `sttReopenBufferSeconds` / `ROGER_STT_REOPEN_BUFFER_SECONDS`            | 3 s (1 to 10)                             | Audio that arrives while a session reopens is held and sent in order, so the chunk that woke it is not lost. Kept short: it is sent at once, and AssemblyAI closes a session sent audio faster than real time (3007).                 |
+| Reopen buffer       | `sttReopenBufferSeconds` / `ROGER_STT_REOPEN_BUFFER_SECONDS`            | 3 s (1 to 10)                             | Audio that arrives while a session reopens is held and sent in order, so the chunk that woke it is not lost. Kept short: it is paced at 1x (AssemblyAI takes nothing faster, 3007) and adds its own length of lag to that session.    |
 | Opens per minute    | `sttOpensPerMinute` / `ROGER_STT_OPENS_PER_MINUTE`                      | 4 (2 to 100)                              | Every session open (Start's two, every reopen, both sources) passes one limiter. AssemblyAI starts 5 a minute on a free account and refuses the next after the handshake. Counted across meetings, as the vendor does.                |
 | Opens per meeting   | `sttOpensPerMeeting` / `ROGER_STT_OPENS_PER_MEETING`                    | 30 (2 to 1000)                            | Bounds a reopen loop against a vendor that keeps failing. Past it the source stays closed with an error saying why.                                                                                                                   |
 | Reopen backoff      | `sttReopenBackoffSeconds` / `ROGER_STT_REOPEN_BACKOFF_SECONDS`          | 2 s (1 to 60)                             | After the vendor ends a session mid-call (an error, a dropped socket, the 3-hour cap), wait before reopening, doubling per failure in a row. A stream that stayed up a minute starts over.                                            |
@@ -159,7 +159,10 @@ Desktop:
    wire parser in `messages.ts` beside it, reading every field from `unknown` (`src/main/stt/json.ts`)
    and returning `invalid` rather than throwing. Never open, time or close a socket there.
 2. Map Roger's `linear16` / 16000 Hz to the vendor's names, and cite the vendor docs you relied on,
-   with the date read, in the file header (close codes, rate limits, billing).
+   with the date read, in the file header (close codes, rate limits, billing). Declare
+   `audioPacing`: `realtime` if the vendor closes a session sent audio faster than real time
+   (AssemblyAI, 3007; the core then paces it), else `none`, and say the same in its conformance
+   entry (`rejectsAudioFasterThanRealTime`).
 3. One line in `src/main/stt/registry.ts`.
 4. One entry in `src/main/stt/testing/conformanceVendors.ts`: how the vendor says ready, its finish
    messages and answer, a final line, a real mid-call close. The answer must match the protocol's

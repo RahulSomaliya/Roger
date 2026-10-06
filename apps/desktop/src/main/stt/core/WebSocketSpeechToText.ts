@@ -15,7 +15,13 @@ export interface WebSocketSttOptions {
   keepAliveMs?: number;
   /** Keep-alive only while audio was sent within this long. Default: the capture's stall close. */
   keepAliveForMs?: number;
+  /** Wall-clock ms for the meter and the keep-alive window. Default: Date.now(). */
   clock?: () => number;
+  /**
+   * Monotonic ms for pacing (tests pass a manual one). Default: performance.now(). Never Date.now():
+   * a wall-clock step forward sends a backlog at once (SttConnectionOptions.paceClock).
+   */
+  paceClock?: () => number;
 }
 
 /**
@@ -33,6 +39,7 @@ export class WebSocketSpeechToText implements SpeechToText {
   private readonly closeTimeoutMs: number;
   private readonly keepAliveForMs: number;
   private readonly clock: () => number;
+  private readonly paceClock: () => number;
   /**
    * Every connection this adapter made, failed ones too, for usage(). CaptureService makes one
    * adapter per meeting, so this is one meeting's sessions: two at Start, plus any reopens.
@@ -52,6 +59,7 @@ export class WebSocketSpeechToText implements SpeechToText {
     this.closeTimeoutMs = options.closeTimeoutMs ?? 5_000;
     this.keepAliveForMs = options.keepAliveForMs ?? DEFAULT_COST_GUARDS.sttStallCloseMs;
     this.clock = options.clock ?? (() => Date.now());
+    this.paceClock = options.paceClock ?? (() => performance.now());
   }
 
   async openStream(options: OpenStreamOptions): Promise<SttStream> {
@@ -63,6 +71,7 @@ export class WebSocketSpeechToText implements SpeechToText {
       closeTimeoutMs: this.closeTimeoutMs,
       keepAliveForMs: this.keepAliveForMs,
       clock: this.clock,
+      paceClock: this.paceClock,
     });
     this.connections.push(connection);
     await connection.whenOpen();

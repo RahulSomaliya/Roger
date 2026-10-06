@@ -379,13 +379,18 @@ export class CaptureSession {
       });
     }
     this.dropHeld(link);
+    // Handed over at once, sent at 1x: AssemblyAI takes no audio faster than real time (3007), so
+    // the core paces held audio (SttConnection.pump), and it adds its own length of lag to this
+    // session until it closes. Past the held audio nothing is replayed inline: that window is a
+    // gap, for M2-T6 to record and M2-T16 to re-run from the backup.
     for (const chunk of held) this.send(handle, chunk.pcm, chunk.atMs);
   }
 
   /**
-   * Keeps the newest reopenBufferMs of audio. It is sent all at once when the stream opens, and
-   * AssemblyAI closes a session sent audio faster than real time (3007), so the bound stays a few
-   * seconds (costGuards.sttReopenBufferMs); a connect takes about one.
+   * Keeps the newest reopenBufferMs of audio. Once the stream opens the core paces it at 1x
+   * (AssemblyAI closes a session sent audio faster than real time, 3007), so every held second is
+   * lag on that session until it closes: the bound stays a few seconds
+   * (costGuards.sttReopenBufferMs); a connect takes about one.
    */
   private hold(link: SourceLink, pcm: Uint8Array, now: number): void {
     const last = link.held.at(-1);

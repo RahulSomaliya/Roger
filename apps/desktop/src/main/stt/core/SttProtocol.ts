@@ -1,5 +1,6 @@
 import type { Logger } from '../../logger';
 import type { OpenStreamOptions, SttEvent, SttStreamSettings } from '../SpeechToText';
+import type { AudioPacing } from './AudioPacer';
 
 /**
  * What a websocket speech-to-text vendor adapter describes, and all it describes. The adapter never
@@ -50,7 +51,10 @@ export interface SttProtocolContext {
 export interface SttProtocolSession {
   /** One chunk of Int16 mono PCM → the binary frames to send now (may be none, or several). */
   encodeAudio(pcm: Uint8Array): Uint8Array[];
-  /** What Stop sends, in order: any held audio first, then the vendor's control messages. */
+  /**
+   * What Stop sends, in order: any held audio first, then the vendor's control messages. The core
+   * sends it after the audio still waiting for its pace, and paces the audio in it too.
+   */
   finishSequence(): (string | Uint8Array)[];
   read(raw: string): SttProtocolMessage;
   /** The socket closed: clear timers, return lines still held. They are emitted before "closed". */
@@ -76,6 +80,14 @@ export interface SttProtocol {
   readonly finishedOn: 'finished-message' | 'vendor-close';
   /** A message that keeps a quiet session from timing out, or null. Sent only while open. */
   readonly keepAlive: { message: string; intervalMs: number } | null;
+  /**
+   * `realtime` when the vendor closes a session sent audio faster than real time (AssemblyAI,
+   * 3007): the core then never sends audio ahead of the real time since the ready signal by more
+   * than one frame, whoever hands it a burst (AudioPacer.ts). `none`: frames go as they come. The
+   * conformance suite checks it against the vendor's fake
+   * (conformanceVendors.ts `rejectsAudioFasterThanRealTime`).
+   */
+  readonly audioPacing: AudioPacing;
   session(context: SttProtocolContext): SttProtocolSession;
   /** Close code and reason → words for an error, e.g. "code 3008: Session Expired: ...". */
   describeClose(code: number, reason: string | null): string;

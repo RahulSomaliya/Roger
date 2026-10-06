@@ -381,9 +381,99 @@ describe.each(CONFORMANCE_VENDORS)('$provider conforms', (vendor) => {
     await stream.close();
   });
 
+  /**
+   * A reopen hands the core a burst right after ready: the audio CaptureSession held while it
+   * connected. A vendor that rejects audio faster than real time must get it paced; any other must
+   * get it at once, or the burst becomes lag for nothing. On a manual pace clock: it decides what
+   * may go, real timers only wake the queue.
+   */
+  describe('a burst right after ready', () => {
+    const BURST_MS = 3_000;
+    const settle = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 50));
+    const bytesPerMs = (vendor.settings.sampleRate * 2) / 1000;
+    const receivedMs = (): number =>
+      server.last().binaryFrames.reduce((sum, bytes) => sum + bytes, 0) / bytesPerMs;
+    const largestFrameMs = (): number => Math.max(...server.last().binaryFrames) / bytesPerMs;
+
+    function sendBurst(stream: SttStream): void {
+      for (let sent = 0; sent < BURST_MS; sent += 100) stream.send(new Uint8Array(CHUNK_100_MS));
+    }
+
+    it(
+      vendor.rejectsAudioFasterThanRealTime
+        ? 'goes out no faster than real time, then all of it before the finish sequence'
+        : 'goes out at once, then the finish sequence',
+      async () => {
+        const clock = manualClock(0);
+        let receivedAtFinish: number | null = null;
+        server.script.onText = (connection, text) => {
+          if (text === vendor.finishMessages[0]) receivedAtFinish = receivedMs();
+          if (text === vendor.finishMessages.at(-1)) vendor.answerFinish(connection.socket);
+        };
+        const { stream } = await open(stt({ paceClock: clock.now }));
+
+        sendBurst(stream);
+
+        if (vendor.rejectsAudioFasterThanRealTime) {
+          for (const elapsedMs of [0, 1_000, 2_500]) {
+            clock.set(elapsedMs);
+            await waitFor(() => receivedMs() > elapsedMs);
+            await settle();
+            // Never ahead of the real time since ready by more than the one frame in flight.
+            expect(receivedMs() - elapsedMs).toBeLessThanOrEqual(largestFrameMs());
+          }
+        } else {
+          await waitFor(() => receivedMs() === BURST_MS); // the clock has not moved
+        }
+        clock.set(BURST_MS);
+        await stream.close();
+
+        // Nothing stayed queued: every byte went, and went before the finish sequence.
+        expect(receivedAtFinish).toBeGreaterThanOrEqual(BURST_MS);
+        expect(finishTexts()).toEqual(vendor.finishMessages);
+      },
+    );
+
+    it('cannot hold the close past the hard timeout, and none of it is sent after', async () => {
+      const clock = manualClock(0); // never moves: a paced burst can never drain
+      const { stream, events } = await open(stt({ paceClock: clock.now }));
+      sendBurst(stream);
+
+      const started = Date.now();
+      await stream.close();
+      const sentAtClose = receivedMs();
+      clock.set(60_000);
+      await settle();
+
+      expect(Date.now() - started).toBeLessThan(CLOSE_TIMEOUT_MS + 900);
+      expect(events.filter((event) => event.type === 'closed')).toHaveLength(1);
+      expect(receivedMs()).toBe(sentAtClose);
+      expect(sentAtClose).toBe(vendor.rejectsAudioFasterThanRealTime ? 100 : BURST_MS);
+    });
+
+    itIf(vendor.rejectsAudioFasterThanRealTime)(
+      'is not sent early when the wall clock steps forward',
+      async () => {
+        const wall = manualClock(0);
+        const pace = manualClock(0); // never moves: no real time passes
+        const { stream } = await open(stt({ clock: wall.now, paceClock: pace.now }));
+        sendBurst(stream);
+        await waitFor(() => receivedMs() > 0);
+
+        wall.set(60_000); // an NTP step or a manual time change
+        stream.send(new Uint8Array(CHUNK_100_MS)); // live audio wakes the queue on the new time
+        await settle();
+
+        expect(receivedMs()).toBeLessThanOrEqual(largestFrameMs());
+        await stream.close();
+      },
+    );
+  });
+
   it('meters sessions, connected time and audio on its clock', async () => {
     const clock = manualClock(0);
-    const adapter = stt({ clock: clock.now });
+    // Paced on the same clock: 60 s after ready, the 300 ms below goes at once.
+    const adapter = stt({ clock: clock.now, paceClock: clock.now });
 
     const mic = await open(adapter);
     const system = await open(adapter);

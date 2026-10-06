@@ -69,6 +69,8 @@ export function deepgramProtocol(options: DeepgramProtocolOptions = {}): SttProt
     // (SttConnection keepAliveForMs): never once Stop or a failure began, never for a stalled
     // source, which Deepgram then closes itself.
     keepAlive: { message: DEEPGRAM_KEEP_ALIVE, intervalMs: 5_000 },
+    // No rate rule documented, so a reopen's held audio goes at once instead of lagging.
+    audioPacing: 'none',
     session: () => ({
       encodeAudio: (pcm) => [pcm],
       // Finalize flushes buffered audio into final results; CloseStream then ends the session.

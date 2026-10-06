@@ -12,6 +12,7 @@ import {
 } from '../SpeechToText';
 import { estimateCostUsd } from '../usage';
 import { rawDataToString } from '../websocket';
+import { AudioPacer } from './AudioPacer';
 import type {
   SttProtocol,
   SttProtocolMessage,
@@ -30,10 +31,12 @@ import type {
  *
  * - connecting: the handshake plus the vendor's ready signal, under one connect timeout. A failure
  *   terminates the socket and rejects `whenOpen()` only once the socket is closed.
- * - open: audio flows. The keep-alive runs only while audio was sent within keepAliveForMs. A
- *   vendor close here is one fatal error, then "closed".
- * - finishing: Stop sent the finish sequence (or the vendor reported a fatal error). No audio, no
- *   keep-alive. After closeTimeoutMs the socket is terminated, whatever the vendor does.
+ * - open: audio flows, paced to real time for a vendor that declares it (see pump). The keep-alive
+ *   runs only while audio was sent within keepAliveForMs. A vendor close here is one fatal error,
+ *   then "closed".
+ * - finishing: Stop sends the audio still waiting for its pace, then the finish sequence (or the
+ *   vendor reported a fatal error, and that audio is dropped). No new audio, no keep-alive.
+ *   closeTimeoutMs after Stop the socket is terminated, whatever the vendor does, queue or not.
  * - closed: final. Audio is dropped and counted; close() returns the same settled promise.
  */
 
@@ -65,7 +68,15 @@ export interface SttConnectionOptions {
    * it). The capture's stall close (costGuards: sttStallCloseMs) is the same window.
    */
   keepAliveForMs: number;
+  /** Wall-clock ms: the connected time and the keep-alive window. Never the pacer's (paceClock). */
   clock: () => number;
+  /**
+   * Monotonic ms, for pacing only (performance.now() in the app). Never the wall clock: an NTP step
+   * or a manual time change forward would count as time passed and send a backlog at once, the
+   * 3007 close pacing exists to prevent; a step back would hold it until the clock caught up.
+   * Node's timers run on monotonic time too, so the pace timer shares the pacer's time base.
+   */
+  paceClock: () => number;
 }
 
 export class SttConnection implements SttStream {
@@ -78,6 +89,8 @@ export class SttConnection implements SttStream {
   private readonly opening = deferred();
   private readonly closing = deferred();
   private readonly clock: () => number;
+  /** The pacer's time and the pace timer's, never `clock` (SttConnectionOptions.paceClock). */
+  private readonly paceClock: () => number;
   private readonly sampleRate: number;
   /** USD per hour this session is open, from the API; null when unknown. */
   readonly pricePerHourUsd: number | null;
@@ -88,6 +101,11 @@ export class SttConnection implements SttStream {
   private connectTimer: NodeJS.Timeout | null;
   private finishTimer: NodeJS.Timeout | null = null;
   private keepAliveTimer: NodeJS.Timeout | null = null;
+  /** Wakes pump() when the next paced frame is due. */
+  private paceTimer: NodeJS.Timeout | null = null;
+  private readonly pacer: AudioPacer;
+  /** The finish sequence still to send once the paced audio before it has gone (Stop). */
+  private finishQueue: (string | Uint8Array)[] = [];
   /** The first reason a connect failed; the socket's close then rejects whenOpen() with it. */
   private connectError: SttConnectError | null = null;
   /** The vendor's last error text, to explain a close that comes before the ready signal. */
@@ -108,11 +126,13 @@ export class SttConnection implements SttStream {
       model: options.stream.settings.model,
     });
     this.clock = options.clock;
+    this.paceClock = options.paceClock;
     this.sampleRate = options.stream.settings.sampleRate;
     this.pricePerHourUsd = options.stream.settings.pricePerHourUsd;
     this.label = options.stream.label;
     this.closeTimeoutMs = options.closeTimeoutMs;
     this.keepAliveForMs = options.keepAliveForMs;
+    this.pacer = new AudioPacer({ pacing: this.protocol.audioPacing, sampleRate: this.sampleRate });
     // Throws SttConnectError on settings the vendor cannot take, before any socket exists.
     const target = this.protocol.target(options.stream);
     this.session = this.protocol.session({
@@ -175,7 +195,8 @@ export class SttConnection implements SttStream {
   }
 
   /**
-   * Sends one chunk while open. Outside open it is dropped and counted: before ready there is no
+   * Sends one chunk while open: at once, or as real time allows for a vendor that declares
+   * `realtime` pacing (pump). Outside open it is dropped and counted: before ready there is no
    * session to send to, and once Stop began the vendor is flushing its last lines.
    */
   send(pcm: Uint8Array): void {
@@ -187,7 +208,8 @@ export class SttConnection implements SttStream {
       return;
     }
     this.lastAudioAtMs = this.clock();
-    for (const frame of this.session.encodeAudio(pcm)) this.sendFrame(frame);
+    for (const frame of this.session.encodeAudio(pcm)) this.pacer.enqueue(frame);
+    this.pump();
   }
 
   /**
@@ -200,8 +222,11 @@ export class SttConnection implements SttStream {
     if (this.currentState === 'open') {
       this.currentState = 'finishing';
       this.stopKeepAlive();
-      for (const message of this.session.finishSequence()) this.sendRaw(message);
+      // Armed first: draining the paced audio counts against the same hard deadline. A backlog
+      // longer than closeTimeoutMs is cut by the terminate, and its last turn with it.
       this.armFinishTimer();
+      this.finishQueue = this.session.finishSequence();
+      this.pump();
     } else if (this.currentState === 'connecting') {
       this.failConnect(
         new SttConnectError(`${this.protocol.vendorName}: closed before the session began`),
@@ -243,6 +268,7 @@ export class SttConnection implements SttStream {
         }
       }, keepAlive.intervalMs);
     }
+    this.pacer.start(this.paceClock());
     this.opening.resolve();
   }
 
@@ -326,6 +352,9 @@ export class SttConnection implements SttStream {
    * sequence is pointless here: the vendor already ended the session.
    */
   private endAfterFatal(message: string): void {
+    // Also while Stop drains it: audio still waiting for its pace, and the finish sequence behind
+    // it, would go to a session the vendor already ended.
+    this.dropPacedAudio();
     if (this.currentState === 'open') {
       this.currentState = 'finishing';
       this.stopKeepAlive();
@@ -369,10 +398,50 @@ export class SttConnection implements SttStream {
     }
   }
 
-  private sendRaw(message: string | Uint8Array): void {
+  /**
+   * Sends every frame the pacer lets go now, then, once Stop began and no audio waits, the finish
+   * sequence in order (audio in it is paced too). What is not due yet waits for the timer.
+   *
+   * The only way audio reaches the socket. Pacing lives here, not in CaptureSession or an adapter,
+   * so no caller can skip it: every reopen's held audio (up to costGuards.sttReopenBufferMs)
+   * arrives as a burst right after ready, and so will M2-T6's offline reopen, M2-T16's re-run and
+   * M3-T20's pre-roll. Live audio is never held. AssemblyAI takes no audio faster than real time
+   * (3007), so held audio goes out at 1x and adds its own length of lag to that session until it
+   * closes; nothing past the held audio is replayed inline, at any speed (that window is a gap,
+   * for M2-T6 to record and M2-T16 to re-run from the backup). A raw `socket.send(pcm)` anywhere
+   * else draws that 3007 close the first time a flush, or a pipe read that merged a stall's
+   * writes, sends more than real time.
+   */
+  private pump(): void {
+    this.clearPaceTimer();
     if (this.socket.readyState !== WebSocket.OPEN) return;
-    if (typeof message === 'string') this.socket.send(message);
-    else this.sendFrame(message);
+    for (;;) {
+      for (const frame of this.pacer.take(this.paceClock())) this.sendFrame(frame);
+      const nextAtMs = this.pacer.nextAtMs();
+      if (nextAtMs !== null) {
+        this.paceTimer = setTimeout(
+          () => {
+            this.paceTimer = null;
+            this.pump();
+          },
+          Math.max(1, Math.ceil(nextAtMs - this.paceClock())),
+        );
+        return;
+      }
+      const message = this.finishQueue.shift();
+      if (message === undefined) return;
+      if (typeof message === 'string') this.socket.send(message);
+      else this.pacer.enqueue(message);
+    }
+  }
+
+  /** The session is over: audio still waiting for its pace will never be sent. Said, not hidden. */
+  private dropPacedAudio(): void {
+    this.clearPaceTimer();
+    this.finishQueue = [];
+    const queuedMs = this.pacer.discard();
+    if (queuedMs > 0)
+      this.logger.warn('stt paced audio dropped', { queuedMs: Math.round(queuedMs) });
   }
 
   /**
@@ -411,6 +480,7 @@ export class SttConnection implements SttStream {
     this.currentState = 'closed';
     this.clearConnectTimer();
     this.stopKeepAlive();
+    this.dropPacedAudio();
     if (this.finishTimer !== null) clearTimeout(this.finishTimer);
     this.finishTimer = null;
     this.closedAtMs = this.clock();
@@ -462,6 +532,11 @@ export class SttConnection implements SttStream {
   private stopKeepAlive(): void {
     if (this.keepAliveTimer !== null) clearInterval(this.keepAliveTimer);
     this.keepAliveTimer = null;
+  }
+
+  private clearPaceTimer(): void {
+    if (this.paceTimer !== null) clearTimeout(this.paceTimer);
+    this.paceTimer = null;
   }
 }
 
