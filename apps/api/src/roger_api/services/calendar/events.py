@@ -61,7 +61,9 @@ async def list_events(
             f"Roger now reads the {calendar.provider} calendar. Connect the calendar again."
         )
     # End the read before waiting on Google: a pooled connection must not sit idle in a
-    # transaction for the length of a provider call.
+    # transaction for the length of a provider call. Every provider call here and in
+    # connections.py follows this rule; test_no_database_connection_is_held_while_google_answers
+    # (tests/test_calendar_api.py) checks each one.
     await session.commit()
     try:
         return await _list_with_access(

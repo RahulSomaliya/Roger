@@ -24,6 +24,7 @@ from fastapi import FastAPI
 from pydantic import SecretStr
 from sqlalchemy import func, select, text
 from sqlalchemy.exc import DBAPIError
+from sqlalchemy.pool import QueuePool
 
 from roger_api.app import create_app
 from roger_api.auth import Principal
@@ -1056,6 +1057,46 @@ async def test_disconnect_on_the_fake_provider_is_204(client: httpx.AsyncClient)
 
     assert response.status_code == 204
     assert await get_connection(client) is None
+
+
+async def test_no_database_connection_is_held_while_google_answers(
+    app: FastAPI, client: httpx.AsyncClient, google: GoogleStub
+) -> None:
+    # A Google call may wait GOOGLE_TIMEOUT (10 s) per phase. A request that holds its pooled
+    # connection across one sits idle in a transaction that long, and a few slow calls empty the
+    # pool: every call to Google, the revoke included, comes after the session's last commit.
+    database = app.state.database
+    assert isinstance(database, Database)
+    pool = database.engine.pool
+    assert isinstance(pool, QueuePool)
+    held: list[tuple[str, int]] = []
+
+    def watched(kind: str, handler: Handler) -> Handler:
+        def record(request: httpx.Request) -> httpx.Response:
+            held.append((kind, pool.checkedout()))
+            return handler(request)
+
+        return record
+
+    # Every call the routes make: the exchange, a refresh for an expiring token, a refused access
+    # token with its refresh and retry, and the revoke.
+    google.exchange = watched("exchange", answer(token_body(expires_in=30)))
+    google.refresh = watched("refresh", REFRESHED)
+    google.events = watched("events", in_turn(TOKEN_REJECTED, answer(events_page())))
+    google.revoke = watched("revoke", google.revoke)
+
+    await connect(client)
+    assert (await client.get("/v1/calendar/events", params=WINDOW)).status_code == 200
+    assert (await client.delete("/v1/calendar/connection")).status_code == 204
+
+    assert held == [
+        ("exchange", 0),
+        ("refresh", 0),
+        ("events", 0),
+        ("refresh", 0),
+        ("events", 0),
+        ("revoke", 0),
+    ]
 
 
 # Secrets ----------------------------------------------------------------------------------------

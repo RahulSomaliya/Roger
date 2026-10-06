@@ -235,6 +235,9 @@ async def disconnect(session: AsyncSession, principal: Principal, runtime: Calen
         return
     try:
         refresh_token = await read_refresh_token(session, connection, runtime.token_key)
+        # End the read before waiting on Google, as events.py does: the decrypt began a new
+        # transaction, and its pooled connection must not sit idle in it for the revoke.
+        await session.commit()
         await calendar.revoke(reveal(refresh_token))
     except (CalendarProviderError, CalendarReconnectRequiredError) as exc:
         logger.warning(
