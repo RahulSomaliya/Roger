@@ -12,9 +12,16 @@
 #   macOS silently denies call audio ("No screen source is available for system audio") while
 #   System Settings still shows Roger switched on. A fixed identity keeps the requirement
 #   `identifier "ai.linkt.roger" and certificate leaf = H"..."` stable, so grants survive rebuilds.
+# - roger-audio, the Swift audio helper in Contents/Resources/bin, is signed by the same identity as
+#   `identifier "ai.linkt.roger.audio" and certificate leaf = H"..."` (same hash). Main spawns it,
+#   so macOS should treat Roger as the responsible process and pin the call-audio grant to Roger's
+#   requirement (M2 D1; the M2 plan's first risk row says what to do if a Mac shows otherwise). The
+#   helper's own signature must still be valid, or the kernel kills it at launch, and stable. The
+#   signing order below is what keeps both the helper's and the app's seal valid.
 set -euo pipefail
 
 readonly APP_ID="ai.linkt.roger"
+readonly HELPER_ID="ai.linkt.roger.audio"
 readonly DEST="/Applications/Roger.app"
 readonly LOG_DIR="$HOME/Library/Logs/Roger"
 readonly SIGNING_DIR="$HOME/Library/Application Support/Roger Dev Signing"
@@ -87,12 +94,37 @@ with_signing_keychain() {
   return "$status"
 }
 
-# Empty when the path has no app or no signature. codesign prints an ad-hoc app's implicit
-# requirement as "# designated => cdhash ..."; without the "#" in the pattern an ad-hoc install
-# reads as unsigned and its stale grants are never cleared.
+# Empty when the path (an app or the helper) is missing or unsigned. codesign prints an ad-hoc
+# signature's implicit requirement as "# designated => cdhash ..."; without the "#" in the pattern
+# an ad-hoc install reads as unsigned and its stale grants are never cleared.
+# src/main/signing.ts (DESIGNATED_LINE) parses the same line the same way: keep the two in step.
+# codesign exits 1 for unsigned code; under `set -e` and `pipefail` that failed pipeline would end
+# the whole install, silently, at the caller's assignment. Hence the `|| true`: unsigned reads as
+# empty, and each caller decides what empty means.
+# src/main/native/installMac.mac.test.ts (`make check` on a Mac) runs this function and
+# require_local_signature on real unsigned and ad-hoc code, and fails if either rule above goes. It
+# cuts each one out of this file by its text: keep both top-level `name() {` blocks, each closed by
+# a `}` line of its own.
 designated_requirement() {
-  [[ -d "$1" ]] || return 0
-  codesign -d -r- "$1" 2>/dev/null | sed -n 's/^#* *designated => //p'
+  [[ -e "$1" ]] || return 0
+  { codesign -d -r- "$1" 2>/dev/null || true; } | sed -n 's/^#* *designated => //p'
+}
+
+# Stops the install unless the code at $1 is signed as identifier $2 by this Mac's identity. Exact,
+# not "has a certificate leaf": a leftover signature from another identity, or the helper still
+# under the identifier the linker gave it, must fail here and not as a silent grant loss later.
+# codesign prints the leaf hash in lower case; openssl prints the fingerprint in upper case.
+require_local_signature() {
+  local path="$1" identifier="$2" leaf requirement expected
+  leaf="$(signing_identity_hash | tr '[:upper:]' '[:lower:]')"
+  requirement="$(designated_requirement "$path")"
+  expected="identifier \"$identifier\" and certificate leaf = H\"$leaf\""
+  if [[ "$requirement" != "$expected" ]]; then
+    echo "install-mac: $path is not signed as $identifier with the local identity" >&2
+    echo "  expected: $expected" >&2
+    echo "  found:    ${requirement:-no signature}" >&2
+    exit 1
+  fi
 }
 
 cd "$(dirname "$0")/.."
@@ -107,6 +139,12 @@ case "$(uname -m)" in
     ;;
 esac
 readonly built="$out_dir/Roger.app"
+# electron-builder.yml's extraResources puts it here; src/main/native/helperPath.ts runs it from
+# here (helperPath.test.ts checks this line).
+readonly helper="$built/Contents/Resources/bin/roger-audio"
+
+echo "==> Building the audio helper"
+bash scripts/build-native.sh
 
 echo "==> Building"
 pnpm exec electron-vite build
@@ -118,15 +156,42 @@ rm -rf "$built"
 # one used.
 CSC_IDENTITY_AUTO_DISCOVERY=false \
   pnpm exec electron-builder --mac dir "$arch_flag" --config electron-builder.yml
+# electron-builder only warns when an extraResources source is missing, and Roger would then fall
+# back to Electron's call-audio path (Screen Recording) without a word.
+if [[ ! -f "$helper" || ! -x "$helper" ]]; then
+  echo "install-mac: packaging left no executable audio helper at $helper" >&2
+  echo "  (scripts/build-native.sh builds native/bin/roger-audio; electron-builder.yml bundles it)" >&2
+  exit 1
+fi
 
 echo "==> Signing with the local signing identity (see the top of this file)"
 ensure_signing_identity
 previous_requirement="$(designated_requirement "$DEST")"
-with_signing_keychain codesign --force --deep --sign "$(signing_identity_hash)" "$built"
+identity="$(signing_identity_hash)"
+# The order matters, and the result is checked below (codesign on macOS 26.6.2, 2026-10-06).
+# 1. Everything, with --deep: Electron's frameworks and helper apps are nested code that must be
+#    signed before the app, and listing them by hand would break on every Electron upgrade.
+#    --deep does not sign a Mach-O in Contents/Resources: the helper keeps the ad-hoc signature
+#    the linker gave it, as identifier "roger-audio.partial" (build-native.sh's temporary name),
+#    and `codesign --verify --deep --strict` still passes. Only require_local_signature catches it.
+with_signing_keychain codesign --force --deep --sign "$identity" "$built"
+# 2. The helper under its own identifier and the same identity. No --options runtime here either
+#    (see the top of this file; a hardened runtime for the helper is M11).
+with_signing_keychain codesign --force --sign "$identity" --identifier "$HELPER_ID" "$helper"
+# 3. Step 2 changed a file the app's seal covers ("a sealed resource is missing or invalid"):
+#    reseal the app's top level. Without --deep: the nested code is signed already, and the helper
+#    keeps step 2's signature. Never re-sign the app before step 2, or the seal breaks again.
+with_signing_keychain codesign --force --sign "$identity" "$built"
 codesign --verify --deep --strict "$built"
+require_local_signature "$built" "$APP_ID"
+require_local_signature "$helper" "$HELPER_ID"
 new_requirement="$(designated_requirement "$built")"
-if [[ "$new_requirement" != *"certificate leaf"* ]]; then
-  echo "install-mac: $built is not signed with the local identity: $new_requirement" >&2
+
+# The shipped bytes, under their final signature: a signature the kernel refuses kills the helper
+# at launch. The selftest needs no permission and opens no audio device.
+if ! selftest_output="$("$helper" selftest 2>&1)"; then
+  echo "install-mac: the signed audio helper failed its selftest:" >&2
+  echo "$selftest_output" >&2
   exit 1
 fi
 
@@ -164,7 +229,7 @@ mv "$staged" "$DEST"
 
 cat <<EOF
 
-Installed $DEST (signed with the local identity, $(uname -m)).
+Installed $DEST and its audio helper (both signed with the local identity, $(uname -m)).
 
 The packaged app reads its settings from
   ~/Library/Application Support/Roger/config.json

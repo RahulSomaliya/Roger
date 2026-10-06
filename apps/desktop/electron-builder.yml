@@ -24,6 +24,16 @@ mac:
   entitlements: build/entitlements.mac.plist
   entitlementsInherit: build/entitlements.mac.plist
   notarize: false
+  # roger-audio, the Swift audio helper (M2 D1), lands at Contents/Resources/bin/roger-audio.
+  # src/main/native/helperPath.ts runs it from there and helperPath.test.ts fails if the paths
+  # here disagree with it. electron-builder only WARNS when this source is missing and packages an
+  # app without the helper, so scripts/install-mac.sh builds it first (scripts/build-native.sh),
+  # then re-signs it as ai.linkt.roger.audio and fails the install if it is missing. The build is
+  # for this Mac's CPU only: `pnpm package:mac` (arm64 and x64) neither builds it nor makes it
+  # universal. That, and signing it here, is M11.
+  extraResources:
+    - from: native/bin/roger-audio
+      to: bin/roger-audio
   extendInfo:
     NSMicrophoneUsageDescription: Roger uses the microphone to transcribe what you say in meetings.
     NSAudioCaptureUsageDescription: Roger captures system audio to transcribe what other people say on your calls.
