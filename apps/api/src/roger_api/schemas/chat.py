@@ -9,23 +9,14 @@ from uuid import UUID
 from pydantic import BaseModel, BeforeValidator, StringConstraints
 
 from roger_api.db.models_notes import ChatMessage, ChatMessageStatus, ChatRole
-from roger_api.schemas.common import OffsetMs, UtcDatetime
 
-# Private there because schemas/notes.py has another owner in Phase 2; one rule for what Postgres
-# cannot store, for notes docs and chat text alike.
-from roger_api.schemas.notes import _storable_text
+# One rule for what Postgres cannot store, for segments, titles, notes docs and chat text alike.
+from roger_api.schemas.common import OffsetMs, UtcDatetime, storable_text
 
 # `MAX_CHAT_TEXT_CHARS` in apps/desktop/src/shared/notes.ts, in characters (code points, as both
 # sides count them). The desktop counts before trimming, this after: never stricter than the
 # desktop, or a question it sent would be refused with nothing it could change.
 MAX_CHAT_TEXT_CHARS = 4000
-
-
-def storable_text(text: str) -> str:
-    """`text` as a Postgres `text` column can hold it: U+0000 dropped, each unpaired surrogate
-    replaced by U+FFFD. Either one, stored as sent, fails the write with a 500 (CLAUDE.md failure
-    log). Model output goes through here too: a model can write either."""
-    return _storable_text(text)
 
 
 def _storable(value: object) -> object:

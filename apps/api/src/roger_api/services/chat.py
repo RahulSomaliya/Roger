@@ -35,7 +35,8 @@ from roger_api.db.models import TranscriptSegment
 from roger_api.db.models_notes import ChatMessage, LlmRun
 from roger_api.errors import ConflictError, MeetingTooLongError
 from roger_api.log import get_logger
-from roger_api.schemas.chat import ChatMessageOut, storable_text
+from roger_api.schemas.chat import ChatMessageOut
+from roger_api.schemas.common import storable_text
 from roger_api.services.chat_prompt import (
     CHAT_HISTORY_EXCHANGES,
     CHAT_PROMPT_VERSION,
