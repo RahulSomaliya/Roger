@@ -8,7 +8,7 @@ import {
 import { formatOffset } from '../format';
 
 interface Props {
-  segments: TranscriptSegment[];
+  segments: readonly TranscriptSegment[];
   interim: Record<AudioSource, InterimTranscript | null>;
   recording: boolean;
 }
@@ -26,8 +26,12 @@ export function TranscriptView({ segments, interim, recording }: Props) {
   );
   return (
     <section className="transcript" aria-label="Transcript" aria-live="polite">
-      {ordered.length === 0 && !recording ? (
-        <p className="muted empty">Press Start before a call. Lines appear here as people speak.</p>
+      {ordered.length === 0 ? (
+        <p className="muted empty">
+          {recording
+            ? 'Lines appear here as people speak.'
+            : 'No lines were saved for this meeting.'}
+        </p>
       ) : null}
       {ordered.map((segment) => (
         <p key={segment.id} className={`line speaker-${segment.speaker}`}>

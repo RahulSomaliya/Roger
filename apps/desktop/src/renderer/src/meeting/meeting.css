@@ -1,0 +1,192 @@
+/*
+ * The meeting page (MeetingPage.tsx, MeetingHeader.tsx, regions.tsx). Colours come only from the
+ * theme tokens (theme/tokens.css); text in the accent and danger hues reads the -ink tokens, never
+ * the fills (theme/tokens.test.ts).
+ *
+ * The page fills the shell's page height (app.css .meeting-page), so each region scrolls inside
+ * itself. A region is a flex column: a child with `flex: 1` (styles.css .transcript) fills it.
+ * These rules load before app.css (AppLayout imports this page first), so any rule here that
+ * overrides one there needs the higher specificity, not the later place.
+ */
+
+.meeting-page {
+  /* The panes sit side by side from 720px of page, whatever the window's sidebar takes. */
+  container: meeting / inline-size;
+}
+
+/* Header */
+
+.meeting-title-pending {
+  color: var(--muted);
+}
+
+/* The recording state while Roger records this meeting; nothing once it stops. */
+.meeting-phase {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 10px;
+  border-radius: 999px;
+  background: var(--line);
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+/* --danger-ink, not --recording: as text on --danger-bg the dot's colour is under 4.5:1. */
+.meeting-phase-recording {
+  background: var(--danger-bg);
+  color: var(--danger-ink);
+}
+
+.meeting-read-error {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+}
+
+/* Regions */
+
+.meeting-body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 0;
+}
+
+.meeting-region {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  /*
+   * Under this the page scrolls instead: a tall capture report or a short window must not squeeze
+   * the transcript to nothing.
+   */
+  min-height: 240px;
+}
+
+/*
+ * Narrow: one pane at a time. Hidden, not unmounted: the citation navigator finds a chip's lines
+ * in the hidden transcript, then showTranscript brings it forward before it scrolls.
+ */
+.meeting-body[data-layout='split'] > .meeting-region:not([data-active]) {
+  display: none;
+}
+
+.meeting-pane-buttons {
+  display: flex;
+  align-self: flex-start;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--panel);
+}
+
+.meeting-pane-button {
+  padding: 5px 14px;
+  border: none;
+  border-radius: 6px;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.meeting-pane-button[aria-pressed='true'] {
+  background: var(--chip-bg);
+  color: var(--ink);
+}
+
+/* Wide: the notes beside the transcript, chat under the notes. */
+@container meeting (min-width: 720px) {
+  .meeting-body[data-layout='split'] {
+    display: grid;
+    grid-template-areas: 'side transcript';
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr);
+  }
+
+  .meeting-body[data-layout='split'] > .meeting-region,
+  .meeting-body[data-layout='split'] > .meeting-region:not([data-active]) {
+    display: flex;
+  }
+
+  .meeting-body[data-layout='split'] > .meeting-pane-buttons {
+    display: none;
+  }
+
+  .meeting-body[data-layout='split'] > .meeting-region-notes,
+  .meeting-body[data-layout='split'] > .meeting-region-chat {
+    grid-area: side;
+  }
+
+  .meeting-body[data-layout='split'] > .meeting-region-transcript {
+    grid-area: transcript;
+  }
+
+  .meeting-body[data-layout='split']:has(> .meeting-region-notes):has(> .meeting-region-chat) {
+    grid-template-areas:
+      'notes transcript'
+      'chat transcript';
+    grid-template-rows: minmax(0, 3fr) minmax(0, 2fr);
+  }
+
+  .meeting-body[data-layout='split']:has(> .meeting-region-chat) > .meeting-region-notes {
+    grid-area: notes;
+  }
+
+  .meeting-body[data-layout='split']:has(> .meeting-region-notes) > .meeting-region-chat {
+    grid-area: chat;
+  }
+}
+
+/* Notes tabs */
+
+.meeting-notes {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.meeting-notes-tabs {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--line);
+}
+
+.meeting-notes-tab {
+  margin-bottom: -1px;
+  padding: 6px 10px;
+  border: none;
+  border-bottom: 2px solid transparent;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.meeting-notes-tab[aria-selected='true'] {
+  border-bottom-color: var(--accent);
+  color: var(--ink);
+}
+
+.meeting-notes-panel {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  padding-top: 10px;
+}
+
+/* `display: flex` above would otherwise show the closed tab: [hidden] is only a UA default. */
+.meeting-notes-panel[hidden] {
+  display: none;
+}
