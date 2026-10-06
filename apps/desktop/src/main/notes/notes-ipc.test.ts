@@ -122,11 +122,12 @@ function deferredEnd() {
 class FakeServer implements NotesSyncApi {
   notes: ServerNotes = { user: null, ai: null };
   down = false;
-  getNotes(): Promise<ServerNotes> {
-    if (this.down) {
-      return Promise.reject(new ApiError(0, 'network_error', 'GET /v1/meetings/x/notes failed'));
-    }
-    return Promise.resolve(this.notes);
+  /** While set, a GET answers only once it resolves. */
+  gate: Promise<void> | null = null;
+  async getNotes(): Promise<ServerNotes> {
+    if (this.gate !== null) await this.gate;
+    if (this.down) throw new ApiError(0, 'network_error', 'GET /v1/meetings/x/notes failed');
+    return this.notes;
   }
   putNote(): Promise<Note> {
     return Promise.reject(new Error('no PUT expected: the sync is not started'));
@@ -256,6 +257,7 @@ function harness() {
     send,
     store,
     server,
+    sync,
     ipc,
     calls,
     acks,
@@ -581,6 +583,36 @@ describe('the notes and chat IPC', () => {
     await vi.advanceTimersByTimeAsync(0);
     await h.invoke(chatChannels.ChatSend, MAIN_PAGE, question);
     expect(h.calls.filter((call) => call.startsWith('stream chat'))).toHaveLength(2);
+  });
+
+  it('streams a retry sent while a lost answer is polled: the API attaches it to the answer', async () => {
+    const h = harness();
+    const question = { meetingId: MEETING, messageId: MESSAGE, text: 'Why?' };
+    await h.invoke(chatChannels.ChatSend, MAIN_PAGE, question);
+    h.chatEnds[0]?.settle({ kind: 'dropped', runId: RUN, cause: 'network_error' });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.calls.at(-1)).toBe(`get run ${RUN}`);
+
+    await h.invoke(chatChannels.ChatSend, MAIN_PAGE, question);
+
+    expect(h.calls.filter((call) => call.startsWith('stream chat'))).toHaveLength(2);
+  });
+
+  it('says nothing of a pull the quit cut short', async () => {
+    const h = harness();
+    h.server.notes = { user: serverNote(1, paragraphs('From the server')), ai: null };
+    let answer!: () => void;
+    h.server.gate = new Promise((resolve) => {
+      answer = resolve;
+    });
+    await h.invoke(notesChannels.NotesGet, MAIN_PAGE, MEETING);
+    // The quit stops the sync while the GET is out: its pull rejects, and nothing is wrong.
+    h.sync.stop();
+    h.ipc.stop();
+    answer();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.store.getNote(MEETING, 'user')).toBeNull();
+    expect(h.logged().filter((line) => line.message === 'server notes not loaded')).toEqual([]);
   });
 
   it('stop ends a poll, and nothing is read or sent after it', async () => {

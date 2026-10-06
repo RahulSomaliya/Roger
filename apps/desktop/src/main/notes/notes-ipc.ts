@@ -79,7 +79,10 @@ export function registerNotesIpc(deps: NotesIpcDeps): Stoppable {
 
 class NotesIpc {
   private readonly trust: IpcTrust;
-  /** Questions whose answer is streaming or being polled: one at a time per message id. */
+  /**
+   * Questions whose answer is streaming: one stream per message id. A lost answer's poll does not
+   * count, so a retry then streams again, and the API attaches it to the answer it is writing.
+   */
   private readonly answering = new Set<string>();
   /** Meetings whose server notes are being pulled: two editors opening ask once. */
   private readonly pulling = new Set<string>();
@@ -222,6 +225,8 @@ class NotesIpc {
       },
       (error: unknown) => {
         this.pulling.delete(meetingId);
+        // Quit stopped the sync while the GET was out: nothing failed, and the store may be closed.
+        if (this.isStopped()) return;
         const fields: LogFields = { meetingId, error: errorMessage(error) };
         if (error instanceof ApiError) {
           this.deps.logger.info('server notes not loaded', { ...fields, code: error.code });
@@ -244,6 +249,9 @@ class NotesIpc {
     const target = window === null || window.isDestroyed() ? null : window.webContents;
     this.deps.streams
       .streamChat(request, target)
+      .finally(() => {
+        this.answering.delete(messageId);
+      })
       .then((end) => this.answerEnded(request, end))
       .catch((error: unknown) => {
         // LlmStreams hands every API failure over as an end; this is a bug or a page gone wrong.
@@ -252,9 +260,6 @@ class NotesIpc {
           messageId,
           error: errorMessage(error),
         });
-      })
-      .finally(() => {
-        this.answering.delete(messageId);
       });
   }
 
