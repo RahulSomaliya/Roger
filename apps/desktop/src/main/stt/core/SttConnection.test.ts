@@ -246,7 +246,17 @@ describe('SttConnection', () => {
     await connection.close();
 
     expect(Date.now() - started).toBeLessThan(1_000);
-    expect(events.at(-1)).toMatchObject({ type: 'closed' });
+    // Cut short, the finish loses the lines of the audio the vendor had not finished: a failure
+    // the caller must hear of (CaptureSession records that tail as a gap), not a quiet close.
+    expect(events).toEqual([
+      {
+        type: 'error',
+        message:
+          'Toy did not finish the stream (code 1006: the connection dropped without a close frame): its last lines are lost',
+        fatal: true,
+      },
+      { type: 'closed', code: 1006, reason: null },
+    ]);
     expect(lines.some((line) => line.message.includes('did not finish in time'))).toBe(true);
     await waitFor(() => vendor.openSockets() === 0);
   });
@@ -258,12 +268,31 @@ describe('SttConnection', () => {
       // A peer that ignores our close frame: ws alone would wait 30 s for it.
       connection.socket.pause();
     };
-    const { connection } = await open({ closeTimeoutMs: 80 });
+    const { connection, events } = await open({ closeTimeoutMs: 80 });
 
     const started = Date.now();
     await connection.close();
     expect(Date.now() - started).toBeLessThan(1_000);
+    // The vendor finished: only its close frame is missing, so no line is lost.
+    expect(events).toEqual([
+      final('released by done'),
+      { type: 'closed', code: 1006, reason: null },
+    ]);
     vendor.last().socket.resume(); // let the deaf peer notice the dropped connection
+  });
+
+  it('reports a vendor that drops the connection before it finished, when its close is the signal', async () => {
+    vendor.script.onText = (connection, text) => {
+      if (text === FINISH) connection.socket.terminate(); // no close frame: not a finish
+    };
+    const { connection, events } = await open({
+      protocol: toyProtocol(vendor.baseUrl, { finishedOn: 'vendor-close' }),
+    });
+
+    await connection.close();
+
+    expect(events.map((event) => event.type)).toEqual(['error', 'closed']);
+    expect(events[0]).toMatchObject({ type: 'error', fatal: true });
   });
 
   it('waits for the vendor to close when that is its completion signal', async () => {
@@ -1244,7 +1273,8 @@ describe('SttConnection', () => {
       await closing;
 
       expect(Date.now() - started).toBeLessThan(1_000);
-      expect(events.filter((event) => event.type === 'closed')).toHaveLength(1);
+      // No fatal error for the finish it cut short: the caller asked, and knows (CaptureSession).
+      expect(events.map((event) => event.type)).toEqual(['closed']);
       expect(lines.some((line) => line.message.includes('did not finish in time'))).toBe(false);
     });
 

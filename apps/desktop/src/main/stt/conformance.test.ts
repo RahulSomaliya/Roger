@@ -212,7 +212,9 @@ describe.each(CONFORMANCE_VENDORS)('$provider conforms', (vendor) => {
 
     expect(Date.now() - started).toBeLessThan(CLOSE_TIMEOUT_MS + 900);
     expect(finishTexts()).toEqual(vendor.finishMessages);
-    expect(events.filter((event) => event.type === 'closed')).toHaveLength(1);
+    // A finish the deadline cut short lost its last lines: one fatal error says so (M2-T6).
+    expect(events.map((event) => event.type)).toEqual(['error', 'closed']);
+    expect(events[0]).toMatchObject({ type: 'error', fatal: true });
     await waitFor(() => server.last().closed);
   });
 

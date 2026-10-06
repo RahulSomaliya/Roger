@@ -51,7 +51,12 @@ export type SttEventListener = (event: SttEvent) => void;
 export interface SttStream {
   /** Send Int16 little-endian mono PCM at `settings.sampleRate`. Safe to call before open completes. */
   send(pcm: Uint8Array): void;
-  /** Flush pending audio, collect the last finals and close. Resolves once the stream is closed. */
+  /**
+   * Flush pending audio, collect the last finals and close. Resolves once the stream is closed. A
+   * finish that ends before the vendor completed it (its deadline, a dropped connection) reports
+   * one fatal error before "closed": the lines of its last audio never came, and CaptureSession
+   * records that tail as a gap, which a quiet close would lose (M2-T6).
+   */
   close(): Promise<void>;
   /**
    * Drop the connection now, with no finish sequence (M2-T6: the Mac went offline, so a finish

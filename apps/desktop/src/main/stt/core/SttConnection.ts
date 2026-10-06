@@ -42,10 +42,14 @@ import type {
  * - finishing: Stop sends the audio still waiting for its pace, then the finish sequence (or the
  *   vendor reported a fatal error, and that audio is dropped). No new audio, no keep-alive.
  *   closeTimeoutMs after Stop the socket is terminated, whatever the vendor does, queue or not.
+ *   A finish that ends without the vendor's completion signal (that deadline, a dropped
+ *   connection) lost the lines of the audio the vendor had not finished: one fatal error before
+ *   "closed" says so, and CaptureSession records that tail as a gap (see finishCompleted).
  * - closed: final. Audio is dropped and counted; close() returns the same settled promise.
  *
  * terminate() skips the finish: from connecting, open or finishing, the socket is dropped at once
- * (CaptureSession's offline suspend, M2-T6: with the network gone a finish can only wait).
+ * (CaptureSession's offline suspend, M2-T6: with the network gone a finish can only wait). It
+ * reports no fatal error, even for a finish it cuts short: its caller asked, and counts the loss.
  */
 
 export type SttConnectionState = 'connecting' | 'open' | 'finishing' | 'closed';
@@ -188,6 +192,12 @@ export class SttConnection implements SttStream {
   private vendorError: string | null = null;
   /** One fatal error per stream: a vendor error frame and the close after it are one failure. */
   private fatalReported = false;
+  /**
+   * Stop's finish (close()): `asked` until the vendor's completion signal makes it `done`, or
+   * terminate() cuts it short (`dropped`: its caller knows). Still `asked` when the socket closes,
+   * it did not complete (finishCompleted).
+   */
+  private finish: 'none' | 'asked' | 'done' | 'dropped' = 'none';
   private openedAtMs: number | null = null;
   private closedAtMs: number | null = null;
   /** Clock time of the last audio handed to send() while open; the keep-alive window counts from it. */
@@ -338,6 +348,7 @@ export class SttConnection implements SttStream {
   close(): Promise<void> {
     if (this.currentState === 'open') {
       this.currentState = 'finishing';
+      this.finish = 'asked';
       this.stopKeepAlive();
       this.stopLiveness();
       // Armed first: draining the paced audio counts against the same hard deadline. A backlog
@@ -368,6 +379,7 @@ export class SttConnection implements SttStream {
       );
     } else if (this.currentState === 'open' || this.currentState === 'finishing') {
       this.logger.info('stt stream terminated: no finish sequence', { state: this.currentState });
+      if (this.finish === 'asked') this.finish = 'dropped';
       this.dropPacedAudio();
       this.stopKeepAlive();
       this.stopLiveness();
@@ -535,6 +547,7 @@ export class SttConnection implements SttStream {
         // closing on one of those would lose its last lines. The finish deadline bounds both.
         if (this.protocol.finishedOn !== 'finished-message') return;
         this.logger.info('stt session finished');
+        if (this.finish === 'asked') this.finish = 'done';
         // The completion signal is the vendor's last message. When Stop asked for it, close now
         // rather than wait, billed, for the vendor to close.
         if (this.currentState === 'finishing') this.socket.close(1000);
@@ -770,6 +783,11 @@ export class SttConnection implements SttStream {
       this.reportFatal(
         `${this.protocol.vendorName} closed the stream (${this.protocol.describeClose(code, reason)})`,
       );
+    } else if (!this.finishCompleted(code)) {
+      // After the held lines: they are all this stream will ever send, so the gap starts past them.
+      this.reportFatal(
+        `${this.protocol.vendorName} did not finish the stream (${this.protocol.describeClose(code, reason)}): its last lines are lost`,
+      );
     }
     const usage = this.usage();
     this.logger.info('stt stream closed', {
@@ -779,6 +797,20 @@ export class SttConnection implements SttStream {
     });
     this.deliver({ type: 'closed', code, reason });
     this.closing.resolve();
+  }
+
+  /**
+   * False when Stop's finish was asked and the socket closed (with `code`) before the vendor's
+   * completion signal: its deadline ran out (a socket that did not survive the Mac's sleep, a
+   * vendor that never answered) or the connection dropped. The vendor never sent the lines of the
+   * audio it had not finished, and nothing else would say so: CaptureSession had already moved the
+   * source on (a pause, a closed source, the sleep, Stop), so a quiet close lost them silently,
+   * with no gap row for M2-T16 to re-run. Under `vendor-close` the signal is the vendor's own
+   * normal close (1000); a drop (1006) or an error code is not one.
+   */
+  private finishCompleted(code: number): boolean {
+    if (this.finish !== 'asked') return true;
+    return this.protocol.finishedOn === 'vendor-close' && code === 1000;
   }
 
   private earlyCloseError(code: number, reason: string | null): SttConnectError {
