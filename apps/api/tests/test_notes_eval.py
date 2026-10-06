@@ -1,0 +1,674 @@
+"""The notes eval harness (`roger_api/evals`, M4-T12): cases, scores, the judge, reports and the
+command line.
+
+Everything here runs offline: the fake model and scripted answers stand in for the vendor, as in the
+plan's tiers (the fake in `make check`, the real model only by hand with `make eval-notes`). The
+export reads Postgres, so its tests use the test database.
+"""
+
+import asyncio
+import json
+import shutil
+from collections.abc import AsyncIterator
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
+from pathlib import Path
+from typing import Any
+from uuid import UUID, uuid4
+
+import pytest
+
+from roger_api.auth import Principal
+from roger_api.db.engine import Database
+from roger_api.db.models import Meeting, TranscriptSegment, Workspace
+from roger_api.db.models_notes import LlmRun, MeetingNote
+from roger_api.errors import LlmProviderError, NotFoundError
+from roger_api.evals.notes_cases import (
+    CASES_ROOT,
+    ActionItemLabel,
+    CaseError,
+    CaseLabels,
+    CaseLine,
+    EvalCase,
+    NotesCase,
+    export_case,
+    export_path,
+    load_cases,
+    write_case,
+)
+from roger_api.evals.notes_eval import main, run_eval
+from roger_api.evals.notes_judge import JUDGE_PROMPT_VERSION
+from roger_api.evals.notes_report import EvalReport, render_report, write_report
+from roger_api.evals.notes_score import Share
+from roger_api.services.notes_model import ModelCutOffError, ModelDone, ModelUsage
+from roger_api.services.notes_model_fake import FakeNotesModel, ModelScript, ScriptedNotesModel
+from tests.conftest import make_settings
+
+type Json = dict[str, Any]
+
+USAGE = ModelUsage(
+    input_tokens=1_500,
+    output_tokens=400,
+    cached_tokens=None,
+    reasoning_tokens=0,
+    cost_usd=Decimal("0.0021"),
+)
+# `run` never opens the database: a URL to a database nobody created proves it.
+UNUSED_DATABASE_URL = "postgresql+asyncpg://postgres:postgres@localhost:5432/roger_test_unused"
+
+
+def bullets_doc(*items: str, heading: str | None = None) -> Json:
+    """A TipTap doc: an optional level-2 heading, then one bullet per item."""
+    content: list[Json] = []
+    if heading is not None:
+        content.append(
+            {
+                "type": "heading",
+                "attrs": {"level": 2},
+                "content": [{"type": "text", "text": heading}],
+            }
+        )
+    content.append(
+        {
+            "type": "bulletList",
+            "content": [
+                {
+                    "type": "listItem",
+                    "content": [{"type": "paragraph", "content": [{"type": "text", "text": item}]}],
+                }
+                for item in items
+            ],
+        }
+    )
+    return {"type": "doc", "content": content}
+
+
+def inline_case(
+    *texts: str,
+    user_notes: Json | None = None,
+    labels: CaseLabels | None = None,
+    case_id: str = "inline",
+) -> EvalCase:
+    """A case on the General template: one "them" line per text, five seconds apart."""
+    return EvalCase(
+        id=case_id,
+        case=NotesCase(
+            schema_version=1,
+            title="Inline case",
+            template_id="general",
+            lines=tuple(
+                CaseLine(speaker="them", start_ms=5_000 * number, text=text)
+                for number, text in enumerate(texts)
+            ),
+            user_notes=user_notes,
+            labels=labels or CaseLabels(),
+        ),
+    )
+
+
+def scripted(*answers: str | ModelScript) -> ScriptedNotesModel:
+    return ScriptedNotesModel(
+        *(
+            answer if isinstance(answer, ModelScript) else ModelScript(steps=(answer,))
+            for answer in answers
+        )
+    )
+
+
+def counted(share: Share) -> tuple[int, int]:
+    return share.count, share.total
+
+
+# --- The harness on the synthetic case and on scripted answers ----------------------------------
+
+
+async def test_harness_scores_the_synthetic_case_with_the_fake_model(tmp_path: Path) -> None:
+    # The committed case through the fake (NOTES_PROVIDER=fake): it spreads the 20 lines over the
+    # four standup sections, copies the first three of each as bullets citing them, and echoes each
+    # of the five note blocks as a bullet citing only that block.
+    cases = load_cases(CASES_ROOT, only=["synthetic_standup"])
+
+    report = await run_eval(cases, FakeNotesModel(), provider="fake", reasoning="off")
+
+    [case] = report.cases
+    assert case.case_id == "synthetic_standup"
+    assert case.error is None
+    assert case.scores is not None
+    scores = case.scores
+    assert (case.line_count, case.note_block_count) == (20, 5)
+    assert counted(scores.dropped) == (0, 17)
+    assert counted(scores.flagged) == (0, 12)
+    assert counted(scores.from_notes) == (5, 17)
+    # The "Standup" heading names a topic, not a point: four blocks to cover.
+    assert counted(scores.user_note_coverage) == (4, 4)
+    # Fifty thousand, twelve, p95 / 2.5 / 800 and Q3: each line's numbers are in the line it cites.
+    assert counted(scores.number_fidelity) == (4, 4)
+    # Found by meaning words, not exact text: "finished migrating ... fifty thousand rows" is the
+    # fact "finished the billing migration, 50,000 rows".
+    assert counted(scores.facts) == (3, 3)
+    # Only Priya's item is in a line the fake copied, with her name in it.
+    assert counted(scores.action_items) == (1, 3)
+    assert [item.owner for item in scores.missed_action_items] == ["Me", "Sam"]
+    # The fake reports no usage: cost unknown, never 0.
+    assert case.usage is None
+    assert (report.totals.usage, report.totals.usage_unknown) == (None, 1)
+    assert case.latency_ms is not None
+    assert case.latency_ms >= 0
+    assert case.first_line_ms is not None
+    assert report.model == "fake"
+    assert report.judge_model is None
+
+    files = write_report(report, tmp_path / "run")
+
+    assert files.json.name == "report.json"
+    assert EvalReport.model_validate_json(files.json.read_text(encoding="utf-8")) == report
+    markdown = files.markdown.read_text(encoding="utf-8")
+    assert markdown == render_report(report)
+    assert "| synthetic_standup |" in markdown
+    assert "33.3% (1 of 3)" in markdown
+
+
+async def test_report_counts_the_from_notes_share(tmp_path: Path) -> None:
+    case = inline_case(
+        "Beta ships on Friday.",
+        "Pricing stays where it is.",
+        "We hire two engineers.",
+        user_notes=bullets_doc("Check the travel budget"),
+    )
+    answer = (
+        "## Decisions\n"
+        "- Beta ships Friday [L1]\n"
+        "- Pricing stays as it is [L2]\n"
+        "- Hire two engineers [L3]\n"
+        "- Check the travel budget [N1]\n"
+        "- A line that cites nothing\n"
+    )
+
+    report = await run_eval([case], scripted(answer), provider="fake", reasoning="off")
+
+    [scored] = report.cases
+    assert scored.scores is not None
+    # From-notes lines of all the lines kept: 1 of the 3 cited and 1 from the notes.
+    assert counted(scored.scores.from_notes) == (1, 4)
+    assert scored.scores.from_notes.rate == 0.25
+    # Dropped lines count against every line written, the dropped one included.
+    assert counted(scored.scores.dropped) == (1, 5)
+    assert counted(report.totals.from_notes) == (1, 4)
+    markdown = write_report(report, tmp_path / "run").markdown.read_text(encoding="utf-8")
+    from_notes_row = next(line for line in markdown.splitlines() if "From your notes" in line)
+    assert "25.0% (1 of 4)" in from_notes_row
+    # No target until the owner has seen the share (M4 D7).
+    assert "no target" in from_notes_row
+    stored = json.loads((tmp_path / "run" / "report.json").read_text(encoding="utf-8"))
+    assert stored["totals"]["from_notes"] == {"count": 1, "total": 4, "rate": 0.25}
+
+
+async def test_action_items_and_facts_match_by_owner_numbers_and_words() -> None:
+    labels = CaseLabels(
+        action_items=(
+            ActionItemLabel(owner="Priya", text="share the migration runbook by Thursday"),
+            # The words are all there, under the wrong owner.
+            ActionItemLabel(owner="Me", text="send the deck by Friday"),
+        ),
+        facts=("the pilot stays at 50k", "the pilot stays at 60k"),
+    )
+    case = inline_case(
+        "Priya will share the runbook for the migration on Thursday.",
+        "Them: send the deck by Friday.",
+        "The pilot stays at fifty thousand.",
+        labels=labels,
+    )
+    answer = (
+        "- Priya: share the migration runbook on Thursday [L1]\n"
+        "- Them: send the deck by Friday [L2]\n"
+        "- The pilot stays at fifty thousand [L3]\n"
+    )
+
+    report = await run_eval([case], scripted(answer), provider="fake", reasoning="off")
+
+    scores = report.cases[0].scores
+    assert scores is not None
+    assert counted(scores.action_items) == (1, 2)
+    assert [item.owner for item in scores.missed_action_items] == ["Me"]
+    # "50k" is the transcript's "fifty thousand"; "60k" is in no line.
+    assert counted(scores.facts) == (1, 2)
+    assert scores.missed_facts == ["the pilot stays at 60k"]
+
+
+async def test_flagged_lines_and_numbers_are_counted_against_their_cited_lines() -> None:
+    case = inline_case(
+        "Beta ships on Friday.",
+        "The pilot stays at fifty thousand.",
+        user_notes=bullets_doc("ask about Q3", heading="Pricing"),
+    )
+    answer = (
+        "- Beta ships Friday [L1]\n"
+        # 60000 is in no cited line: kept, flagged "check this".
+        "- The pilot stays at 60k [L2]\n"
+        "- Ask about Q3 [N2]\n"
+    )
+
+    report = await run_eval([case], scripted(answer), provider="fake", reasoning="off")
+
+    scores = report.cases[0].scores
+    assert scores is not None
+    assert counted(scores.flagged) == (1, 2)
+    assert [line.text for line in scores.flagged_lines] == ["The pilot stays at 60k"]
+    assert scores.flagged_lines[0].missing_numbers == ["60000"]
+    assert counted(scores.number_fidelity) == (0, 1)
+    # N1 is the "Pricing" heading, a topic rather than a point; the one point, N2, was kept.
+    assert counted(scores.user_note_coverage) == (1, 1)
+
+
+async def test_judge_counts_the_lines_it_calls_unsupported() -> None:
+    case = inline_case("Beta ships on Friday.", "Pricing stays where it is.")
+    notes = scripted(
+        ModelScript(
+            steps=("- Beta ships Friday [L1]\n- Pricing goes up [L2]\n",), end=ModelDone(USAGE)
+        )
+    )
+    judge = ScriptedNotesModel(
+        ModelScript(steps=("J1: yes\n", "**J2:** no\n"), end=ModelDone(USAGE)), model_id="judge"
+    )
+
+    report = await run_eval([case], notes, provider="openrouter", reasoning="off", judge=judge)
+
+    [scored] = report.cases
+    assert scored.judge is not None
+    assert scored.judge.model == "judge"
+    assert scored.judge.prompt_version == JUDGE_PROMPT_VERSION
+    assert counted(scored.judge.unsupported) == (1, 2)
+    assert scored.judge.unsupported_lines == ["Pricing goes up"]
+    assert scored.judge.unjudged == 0
+    assert report.judge_model == "judge"
+    assert report.totals.judge_unsupported is not None
+    assert counted(report.totals.judge_unsupported) == (1, 2)
+    # One claim per kept line, each shown with the line it cites, fenced as data.
+    [request] = judge.requests
+    prompt = request.messages[-1].parts[0].text
+    assert "<claims>" in prompt
+    assert "J2 Pricing goes up" in prompt
+    assert "L2 [00:00:05] Them: Pricing stays where it is." in prompt
+    # The notes and the judge are billed apart.
+    assert scored.usage is not None
+    assert scored.usage.cost_usd == Decimal("0.0021")
+    assert scored.judge.usage is not None
+    assert scored.judge.usage.cost_usd == Decimal("0.0021")
+
+
+async def test_the_judge_is_not_called_when_no_line_was_kept() -> None:
+    case = inline_case("Beta ships on Friday.")
+    # No script: a call would raise LookupError.
+    judge = ScriptedNotesModel(model_id="judge")
+
+    report = await run_eval(
+        [case],
+        scripted("- A line that cites nothing\n"),
+        provider="openrouter",
+        reasoning="off",
+        judge=judge,
+    )
+
+    scored = report.cases[0].judge
+    assert scored is not None
+    assert judge.requests == []
+    assert counted(scored.unsupported) == (0, 0)
+    # Nothing was sent, so nothing was billed: a known zero, unlike an unreported usage.
+    assert scored.usage is not None
+    assert scored.usage.cost_usd == 0
+    assert report.totals.judge_usage_unknown == 0
+
+
+async def test_a_failed_case_is_reported_and_the_next_case_still_runs() -> None:
+    cut_off = inline_case("Beta ships on Friday.", case_id="cut_off")
+    refused = inline_case("Beta ships on Friday.", case_id="refused")
+    scored = inline_case("Beta ships on Friday.", case_id="scored")
+    model = scripted(
+        # Billed though cut off: its usage is kept.
+        ModelScript(steps=("- Beta ships [L1",), end=ModelCutOffError(USAGE)),
+        ModelScript(refuse=LlmProviderError("The notes model's provider refused the request")),
+        ModelScript(steps=("- Beta ships Friday [L1]\n",), end=ModelDone(USAGE)),
+    )
+
+    report = await run_eval([cut_off, refused, scored], model, provider="fake", reasoning="off")
+
+    by_id = {case.case_id: case for case in report.cases}
+    assert by_id["cut_off"].error is not None
+    assert by_id["cut_off"].error.code == "cut_off"
+    assert by_id["cut_off"].scores is None
+    assert by_id["cut_off"].usage is not None
+    assert by_id["cut_off"].usage.cost_usd == Decimal("0.0021")
+    assert by_id["refused"].error is not None
+    assert by_id["refused"].error.code == "llm_provider_error"
+    assert by_id["refused"].usage is None
+    assert by_id["scored"].error is None
+    assert report.totals.failed == 2
+    assert report.totals.scored == 1
+    # The refused case's cost is unknown: counted apart, never added as 0, so the total says it
+    # is not the whole.
+    assert report.totals.usage is not None
+    assert report.totals.usage.cost_usd == Decimal("0.0042")
+    assert report.totals.usage_unknown == 1
+    markdown = render_report(report)
+    assert "$0.0042, and 1 call with no usage reported" in markdown
+    assert "| cut_off | general | 1 | failed: cut_off |" in markdown
+
+
+# --- Cases -------------------------------------------------------------------------------------
+
+
+def write_json(path: Path, value: object) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(value), encoding="utf-8")
+    return path
+
+
+def case_json(**overrides: object) -> Json:
+    return {
+        "schema_version": 1,
+        "title": "A call",
+        "template_id": "general",
+        "lines": [{"speaker": "me", "start_ms": 0, "text": "Hello."}],
+        **overrides,
+    }
+
+
+def test_cases_load_from_the_folder_and_its_local_subfolder(tmp_path: Path) -> None:
+    write_json(tmp_path / "synthetic.json", case_json())
+    write_json(tmp_path / "local" / "client-call.json", case_json(title="Client"))
+    write_json(tmp_path / "local" / "notes.txt", {"ignored": True})
+
+    cases = load_cases(tmp_path)
+
+    assert [case.id for case in cases] == ["local/client-call", "synthetic"]
+    assert [case.id for case in load_cases(tmp_path, only=["synthetic"])] == ["synthetic"]
+    with pytest.raises(CaseError, match="missing"):
+        load_cases(tmp_path, only=["missing"])
+
+
+@pytest.mark.parametrize(
+    ("overrides", "problem"),
+    [
+        ({"template_id": "retro"}, "retro"),
+        ({"lines": [], "user_notes": None}, "no transcript lines and no notes"),
+        (
+            {
+                "lines": [
+                    {"speaker": "me", "start_ms": 9_000, "text": "Later."},
+                    {"speaker": "me", "start_ms": 1_000, "text": "Earlier."},
+                ]
+            },
+            "transcript order",
+        ),
+        ({"user_notes": {"type": "paragraph"}}, "not a TipTap doc"),
+    ],
+)
+def test_a_bad_case_names_its_file_and_the_problem(
+    tmp_path: Path, overrides: Json, problem: str
+) -> None:
+    write_json(tmp_path / "broken.json", case_json(**overrides))
+
+    with pytest.raises(CaseError, match=r"broken\.json") as raised:
+        load_cases(tmp_path)
+
+    assert problem in str(raised.value)
+
+
+def test_a_case_file_name_is_refused_when_markdown_would_break_on_it(tmp_path: Path) -> None:
+    write_json(tmp_path / "a|b.json", case_json())
+
+    with pytest.raises(CaseError, match=r"a\|b\.json"):
+        load_cases(tmp_path)
+
+
+# --- The export (Postgres) ---------------------------------------------------------------------
+
+
+@pytest.fixture
+async def database(database_url: str, clean_database: None) -> AsyncIterator[Database]:
+    database = Database(database_url)
+    yield database
+    await database.dispose()
+
+
+@pytest.fixture
+async def principal(database: Database) -> Principal:
+    workspace = Workspace(id=uuid4(), name="Linkt")
+    async with database.session() as session:
+        session.add(workspace)
+        await session.commit()
+    return Principal(workspace_id=workspace.id, user_id=None)
+
+
+async def add_meeting(
+    database: Database, workspace_id: UUID, *, title: str = "Standup", hours_ago: int = 0
+) -> UUID:
+    meeting_id = uuid4()
+    async with database.session() as session:
+        session.add(
+            Meeting(
+                id=meeting_id,
+                workspace_id=workspace_id,
+                title=title,
+                status="ended",
+                started_at=datetime.now(UTC) - timedelta(hours=hours_ago),
+            )
+        )
+        await session.commit()
+    return meeting_id
+
+
+async def add_generated_notes(
+    database: Database,
+    workspace_id: UUID,
+    meeting_id: UUID,
+    *,
+    generated: Json | None,
+    current: Json,
+    edited: bool,
+) -> UUID:
+    """A notes run that wrote `generated` (None: it failed), and the AI note as it is now."""
+    run_id = uuid4()
+    async with database.session() as session:
+        session.add(
+            LlmRun(
+                id=run_id,
+                workspace_id=workspace_id,
+                meeting_id=meeting_id,
+                kind="notes",
+                status="succeeded" if generated is not None else "failed",
+                model="xiaomi/mimo-v2.6-pro",
+                prompt_version="notes-v1",
+                template_id="standup",
+                line_count=2,
+                ref_map={},
+                output_doc=generated,
+                dropped=[{"text": "A line with no source", "reason": "no_refs"}],
+                flagged_count=2,
+                from_notes_count=1,
+                cost_usd=Decimal("0.0031") if generated is not None else None,
+            )
+        )
+        await session.flush()
+        session.add(
+            MeetingNote(
+                id=uuid4(),
+                workspace_id=workspace_id,
+                meeting_id=meeting_id,
+                kind="ai",
+                doc=current,
+                version=3 if edited else 2,
+                last_revision_id=uuid4(),
+                template_id="standup",
+                last_run_id=run_id,
+                generated_version=2,
+            )
+        )
+        await session.commit()
+    return run_id
+
+
+async def test_export_writes_a_case_from_a_meeting_and_its_notes(
+    database: Database, principal: Principal, tmp_path: Path
+) -> None:
+    workspace_id = principal.workspace_id
+    meeting_id = await add_meeting(database, workspace_id, title="Acme renewal")
+    user_doc = bullets_doc("ask about Q3")
+    async with database.session() as session:
+        for number, (speaker, text) in enumerate([("them", "Second."), ("me", "First.")]):
+            session.add(
+                TranscriptSegment(
+                    id=uuid4(),
+                    meeting_id=meeting_id,
+                    workspace_id=workspace_id,
+                    source="mic" if speaker == "me" else "system",
+                    speaker=speaker,
+                    # Stored out of order: the export reads the transcript's own order.
+                    start_ms=4_000 - 3_000 * number,
+                    end_ms=5_000 - 3_000 * number,
+                    text=text,
+                )
+            )
+        session.add(
+            MeetingNote(
+                id=uuid4(),
+                workspace_id=workspace_id,
+                meeting_id=meeting_id,
+                kind="user",
+                doc=user_doc,
+                version=1,
+                last_revision_id=uuid4(),
+            )
+        )
+        await session.commit()
+    await add_generated_notes(
+        database, workspace_id, meeting_id, generated=user_doc, current=user_doc, edited=False
+    )
+
+    case = await export_case(database, principal, meeting_id, template_id=None)
+
+    assert case.title == "Acme renewal"
+    assert case.template_id == "standup"  # the AI notes' template
+    assert [(line.speaker, line.start_ms, line.text) for line in case.lines] == [
+        ("me", 1_000, "First."),
+        ("them", 4_000, "Second."),
+    ]
+    assert case.user_notes == user_doc
+    assert case.labels == CaseLabels()  # labelled by hand after the export
+    assert case.meeting_id == meeting_id
+    path = export_path(tmp_path, meeting_id)
+    assert path == tmp_path / "local" / f"{meeting_id}.json"
+    write_case(case, path, overwrite=False)
+    [loaded] = load_cases(tmp_path)
+    assert loaded.id == f"local/{meeting_id}"
+    assert loaded.case == case
+    chosen = await export_case(database, principal, meeting_id, template_id="general")
+    assert chosen.template_id == "general"
+    # A second export would erase the hand labels.
+    with pytest.raises(FileExistsError):
+        write_case(case, path, overwrite=False)
+
+
+async def test_export_needs_a_template_and_a_meeting_of_the_workspace(
+    database: Database, principal: Principal
+) -> None:
+    meeting_id = await add_meeting(database, principal.workspace_id)
+    async with database.session() as session:
+        session.add(
+            TranscriptSegment(
+                id=uuid4(),
+                meeting_id=meeting_id,
+                workspace_id=principal.workspace_id,
+                source="mic",
+                speaker="me",
+                start_ms=0,
+                end_ms=1_000,
+                text="Hello.",
+            )
+        )
+        await session.commit()
+
+    with pytest.raises(CaseError, match="--template"):
+        await export_case(database, principal, meeting_id, template_id=None)
+    with pytest.raises(CaseError, match="retro"):
+        await export_case(database, principal, meeting_id, template_id="retro")
+    stranger = Principal(workspace_id=uuid4(), user_id=None)
+    with pytest.raises(NotFoundError):
+        await export_case(database, stranger, meeting_id, template_id="general")
+
+
+# --- The command line --------------------------------------------------------------------------
+
+
+def test_run_command_writes_the_report_and_says_where(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    cases = tmp_path / "cases"
+    cases.mkdir()
+    shutil.copy(CASES_ROOT / "synthetic_standup.json", cases / "synthetic_standup.json")
+    out = tmp_path / "report"
+
+    code = main(
+        ["run", "--cases", str(cases), "--out", str(out)],
+        settings=make_settings(UNUSED_DATABASE_URL),
+    )
+
+    assert code == 0
+    assert (out / "report.json").is_file()
+    printed = capsys.readouterr().out
+    assert str(out / "report.md") in printed
+    assert "| synthetic_standup |" in printed
+
+
+@pytest.mark.parametrize(
+    "option",
+    [["--model", "anthropic/claude-sonnet-5.5"], ["--reasoning", "on"], ["--judge-model", "x"]],
+)
+def test_model_options_are_refused_on_the_fake_provider(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], option: list[str]
+) -> None:
+    out = tmp_path / "report"
+
+    code = main(["run", "--out", str(out), *option], settings=make_settings(UNUSED_DATABASE_URL))
+
+    assert code == 1
+    assert "NOTES_PROVIDER=openrouter" in capsys.readouterr().err
+    assert not out.exists()
+
+
+async def test_export_command_writes_a_case_and_never_overwrites_it(
+    database: Database, database_url: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The command resolves the API's own principal (one workspace until M6), as a request would.
+    settings = make_settings(database_url)
+    async with database.session() as session:
+        session.add(Workspace(id=settings.default_workspace_id, name="Linkt"))
+        await session.commit()
+    meeting_id = await add_meeting(database, settings.default_workspace_id, title="Acme renewal")
+    async with database.session() as session:
+        session.add(
+            TranscriptSegment(
+                id=uuid4(),
+                meeting_id=meeting_id,
+                workspace_id=settings.default_workspace_id,
+                source="system",
+                speaker="them",
+                start_ms=0,
+                end_ms=2_000,
+                text="Beta ships on Friday.",
+            )
+        )
+        await session.commit()
+    case_file = tmp_path / "local" / "acme.json"
+    export = ["export", "--meeting", str(meeting_id), "--template", "client_call"]
+
+    # `main` runs its own event loop, so it runs in a thread beside this test's.
+    exported = await asyncio.to_thread(main, [*export, "--out", str(case_file)], settings=settings)
+    again = await asyncio.to_thread(main, [*export, "--out", str(case_file)], settings=settings)
+
+    assert (exported, again) == (0, 1)
+    [case] = load_cases(tmp_path)
+    assert case.case.template_id == "client_call"
+    assert case.case.meeting_id == meeting_id
+    # A second export would have erased the hand labels: refused, the file kept.
+    assert "File exists" in capsys.readouterr().err
