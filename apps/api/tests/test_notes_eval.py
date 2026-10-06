@@ -38,7 +38,7 @@ from roger_api.evals.notes_cases import (
 )
 from roger_api.evals.notes_eval import main, run_eval
 from roger_api.evals.notes_fixes import measure_fixes, render_fixes
-from roger_api.evals.notes_judge import JUDGE_PROMPT_VERSION
+from roger_api.evals.notes_judge import JUDGE_PROMPT_VERSION, read_verdicts
 from roger_api.evals.notes_report import EvalReport, render_report, render_summary, write_report
 from roger_api.evals.notes_score import Share
 from roger_api.services.notes_model import ModelCutOffError, ModelDone, ModelUsage
@@ -333,6 +333,24 @@ async def test_judge_counts_the_lines_it_calls_unsupported() -> None:
     assert scored.usage.cost_usd == Decimal("0.0021")
     assert scored.judge.usage is not None
     assert scored.judge.usage.cost_usd == Decimal("0.0021")
+
+
+@pytest.mark.parametrize(
+    ("answer", "verdicts"),
+    [
+        ("J1: yes\n**J2:** no\n- J3 - Yes.\n", {1: True, 2: False, 3: True}),
+        # Claims go out as "J<n> <text>": an echoed one that opens with "No" is no verdict.
+        ("J1 No blockers for Sam\n\nJ1: yes\n", {1: True}),
+        # Nor is a claim restated with its answer: not judged, which the report shows.
+        ("J1 No blockers for Sam: yes\n", {}),
+        # Answered twice, the first verdict stands; a number past the claims is ignored.
+        ("J1: no\nJ1: yes\nJ4: no\n", {1: False}),
+    ],
+)
+def test_a_judge_verdict_is_the_last_word_of_its_line(
+    answer: str, verdicts: dict[int, bool]
+) -> None:
+    assert read_verdicts(answer, 3) == verdicts
 
 
 def judge_row(report: EvalReport) -> str:

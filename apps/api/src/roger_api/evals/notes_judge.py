@@ -41,7 +41,9 @@ J2: no
 """
 
 # `J2: no`, `**J2:** no`, `- J2 - yes`: marks around the number are form, the word is the verdict.
-_VERDICT = re.compile(r"^\W*J(\d{1,6})\W+(yes|no)\b", re.IGNORECASE | re.MULTILINE)
+# It must end its line: claims go out as `J<n> <text>`, so a judge that echoes the claim "J3 No
+# hiring this quarter" before answering would otherwise have its echo read as a "no".
+_VERDICT = re.compile(r"^\W*J(\d{1,6})\W+(yes|no)\W*$", re.IGNORECASE | re.MULTILINE)
 
 
 def judge_request(lines: Sequence[CitedLine], refs: RefMap) -> ModelRequest:
@@ -67,7 +69,10 @@ def judge_request(lines: Sequence[CitedLine], refs: RefMap) -> ModelRequest:
 
 def read_verdicts(answer: str, claims: int) -> dict[int, bool]:
     """Each claim's verdict by its number (True: supported). A claim the judge skipped, or answered
-    twice, keeps only its first verdict or none; numbers outside `1..claims` are ignored."""
+    twice, keeps only its first verdict or none; numbers outside `1..claims` are ignored.
+
+    A line with words after the verdict ("J2: no, it says 40k") is not read: the claim stays
+    unjudged, which the report counts and fails the run on, rather than a guess at its verdict."""
     verdicts: dict[int, bool] = {}
     for match in _VERDICT.finditer(answer):
         number = int(match.group(1))
