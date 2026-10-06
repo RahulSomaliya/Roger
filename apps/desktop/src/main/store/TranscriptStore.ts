@@ -246,7 +246,8 @@ export interface TranscriptStore {
   unhideSegment(id: string): boolean;
   /**
    * Hold a line that is not uploaded yet until the echo sink releases it, or `uploadAfter` (an ISO
-   * 8601 instant, the cap) passes. False when unknown or already uploaded.
+   * 8601 instant, the cap) passes. False when unknown or already uploaded. Throws on a cap without
+   * a `Z` or `±hh:mm` offset (storeChecks.canonicalInstant).
    */
   holdSegment(id: string, uploadAfter: string): boolean;
   releaseSegments(ids: readonly string[]): void;

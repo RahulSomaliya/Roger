@@ -324,6 +324,22 @@ describe.each([
     store.close();
   });
 
+  it('refuses a hold cap that is not an ISO 8601 instant with Z or an offset', () => {
+    const { store } = openWithMeeting();
+    store.appendSegment(segment(1));
+    // Date.parse reads the first as local time and guesses at the rest: on a Mac in IST the first
+    // would become 04:32Z, a cap already past, and the line would upload unchecked.
+    for (const cap of ['2026-10-06T10:02:00', 'Oct 6 2026', '1', '2026-10-06', '']) {
+      expect(() => store.holdSegment('seg-1', cap)).toThrow(
+        /hold of segment seg-1 is not an ISO 8601 instant/,
+      );
+    }
+    expect(store.getSegment('seg-1')?.uploadAfter).toBeNull();
+    expect(store.holdSegment('seg-1', '2026-10-06T15:32:00+05:30')).toBe(true);
+    expect(store.getSegment('seg-1')?.uploadAfter).toBe('2026-10-06T10:02:00.000Z');
+    store.close();
+  });
+
   it('lists held lines for the settle and releases them on a decision', () => {
     const { store } = openWithMeeting();
     store.createMeeting({ id: 'm2', title: 'T', startedAt: '2026-10-06T09:30:00.000Z' });

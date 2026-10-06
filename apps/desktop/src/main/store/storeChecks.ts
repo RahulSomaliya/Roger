@@ -14,14 +14,21 @@ export function checkAudioPath(path: string): string {
   return path;
 }
 
+/** Date and time with a `Z` or `±hh:mm` offset; seconds and fractions optional. */
+const ISO_INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})$/;
+
 /**
  * An ISO 8601 instant in the one form `toISOString` writes. A hold is compared as text in SQL,
  * and "10:02:00Z" sorts after "10:02:00.000Z", so a cap written without milliseconds would hold
- * a line past it.
+ * a line past it. The shape is checked before `Date.parse`, which reads a time with no offset as
+ * local time and guesses at other text ("Oct 6 2026", "1"): on a Mac in IST a cap of
+ * "10:02:00" would land at 04:32Z, already past, and the line would upload unchecked.
  */
 export function canonicalInstant(iso: string, what: string): string {
-  const time = Date.parse(iso);
-  if (Number.isNaN(time)) throw new Error(`${what} is not an ISO 8601 instant: ${iso}`);
+  const time = ISO_INSTANT.test(iso) ? Date.parse(iso) : Number.NaN;
+  if (Number.isNaN(time)) {
+    throw new Error(`${what} is not an ISO 8601 instant with a Z or ±hh:mm offset: ${iso}`);
+  }
   return new Date(time).toISOString();
 }
 
