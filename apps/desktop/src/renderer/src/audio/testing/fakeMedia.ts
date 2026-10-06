@@ -100,6 +100,8 @@ export class FakeMediaDevices implements DeviceWatch {
   enumerations = 0;
   private inputs: FakeInput[];
   private readonly listeners = new Set<() => void>();
+  /** While set, enumerateDevices answers once it settles (holdListing). */
+  private gate: Promise<void> | null = null;
 
   constructor(...inputs: FakeInput[]) {
     this.inputs = inputs;
@@ -107,6 +109,23 @@ export class FakeMediaDevices implements DeviceWatch {
 
   enumerateDevices(): Promise<DeviceInfo[]> {
     this.enumerations += 1;
+    const gate = this.gate;
+    return gate === null ? Promise.resolve(this.list()) : gate.then(() => this.list());
+  }
+
+  /** Holds every enumerateDevices from now open until the returned function is called. */
+  holdListing(): () => void {
+    let release = (): void => undefined;
+    this.gate = new Promise((resolve) => {
+      release = resolve;
+    });
+    return () => {
+      this.gate = null;
+      release();
+    };
+  }
+
+  private list(): DeviceInfo[] {
     const [first] = this.inputs;
     const entries: DeviceInfo[] = this.inputs.map((input) => ({
       deviceId: `id-${input.groupId}`,
@@ -114,7 +133,7 @@ export class FakeMediaDevices implements DeviceWatch {
       kind: 'audioinput',
       label: input.label,
     }));
-    if (first === undefined) return Promise.resolve(entries);
+    if (first === undefined) return entries;
     const defaultEntry: DeviceInfo = {
       deviceId: 'default',
       groupId: first.groupId,
@@ -127,7 +146,7 @@ export class FakeMediaDevices implements DeviceWatch {
       kind: 'audiooutput',
       label: 'MacBook Pro Speakers',
     };
-    return Promise.resolve([defaultEntry, ...entries, speakers]);
+    return [defaultEntry, ...entries, speakers];
   }
 
   addEventListener(_type: 'devicechange', listener: () => void): void {

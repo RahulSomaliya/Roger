@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  MIC_DEAD_OPENS_LIMIT,
   MIC_DEVICE_CHANGE_DEBOUNCE_MS,
   MIC_MUTE_GRACE_MS,
   MIC_RETRY_MS,
@@ -22,13 +23,17 @@ function mediaError(name: string): DOMException {
 
 function harness(...inputs: FakeInput[]) {
   const devices = new FakeMediaDevices(...inputs);
-  /** What getUserMedia opens next: the default input, unless a test makes it fail or wait. */
+  /**
+   * What getUserMedia opens next: the default input, live, unless a test makes it fail, wait, or
+   * hand out a track that is already ended or muted (getUserMedia resolves with either).
+   */
   const next: {
     input: FakeInput;
     error: Error | null;
     gate: Promise<void> | null;
+    comesUp: 'live' | 'ended' | 'muted';
     attempts: number;
-  } = { input: inputs[0] ?? BUILT_IN, error: null, gate: null, attempts: 0 };
+  } = { input: inputs[0] ?? BUILT_IN, error: null, gate: null, comesUp: 'live', attempts: 0 };
   const opened: FakeStream[] = [];
   const swapped: FakeStream[] = [];
   const switched: string[] = [];
@@ -42,6 +47,9 @@ function harness(...inputs: FakeInput[]) {
       if (next.gate !== null) await next.gate;
       if (next.error !== null) throw next.error;
       const stream = micStream(input);
+      // Before anything listens, as getUserMedia hands it out: neither event reaches recovery.
+      if (next.comesUp === 'ended') stream.track.end();
+      if (next.comesUp === 'muted') stream.track.mute();
       opened.push(stream);
       return stream;
     },
@@ -153,6 +161,105 @@ describe('MicRecovery', () => {
     await muted.recovery.start(muted.first);
     await vi.advanceTimersByTimeAsync(MIC_MUTE_GRACE_MS);
     expect(muted.swapped).toHaveLength(1);
+  });
+
+  it('refuses a replacement that opens already ended, and gives up after a few: the permission is gone', async () => {
+    const h = harness(BUILT_IN);
+    await h.recovery.start(h.first);
+    // macOS hands out a dead track, not a NotAllowedError, once Roger's Microphone access is off.
+    h.next.comesUp = 'ended';
+    h.first.track.end();
+    await vi.advanceTimersByTimeAsync(0);
+
+    // Never swapped in: an ended track fires no event, so recovery would wait on it for good.
+    expect(h.swapped).toEqual([]);
+    expect(h.switched).toEqual([]);
+    expect(h.opened[0]?.track.stopped).toBe(true);
+    expect(h.failed).toEqual([]);
+
+    await vi.advanceTimersByTimeAsync(MIC_RETRY_MS * (MIC_DEAD_OPENS_LIMIT - 1));
+    expect(h.next.attempts).toBe(MIC_DEAD_OPENS_LIMIT);
+    expect(h.failed).toHaveLength(1);
+    expect(String(h.failed[0])).toContain('permission');
+    expect(h.opened.every((stream) => stream.track.stopped)).toBe(true);
+    expect(h.devices.listening).toBe(0);
+    await vi.advanceTimersByTimeAsync(MIC_RETRY_MS * 3);
+    expect(h.next.attempts).toBe(MIC_DEAD_OPENS_LIMIT);
+  });
+
+  it('takes the next live replacement after one that opened dead, and counts afresh', async () => {
+    const h = harness(BUILT_IN);
+    await h.recovery.start(h.first);
+    h.next.comesUp = 'ended';
+    h.first.track.end();
+    await vi.advanceTimersByTimeAsync(0);
+    h.next.comesUp = 'live';
+    await vi.advanceTimersByTimeAsync(MIC_RETRY_MS);
+    expect(h.swapped).toHaveLength(1);
+
+    // Dead opens later in the meeting start from zero: the live one in between reset the count.
+    h.next.comesUp = 'ended';
+    h.current().end();
+    await vi.advanceTimersByTimeAsync(MIC_RETRY_MS * (MIC_DEAD_OPENS_LIMIT - 2));
+    expect(h.failed).toEqual([]);
+  });
+
+  it('keeps a live mic when the new default opens dead', async () => {
+    const h = harness(BUILT_IN);
+    await h.recovery.start(h.first);
+    h.next.comesUp = 'ended';
+    h.devices.change(AIRPODS, BUILT_IN);
+    await vi.advanceTimersByTimeAsync(MIC_DEVICE_CHANGE_DEBOUNCE_MS + MIC_RETRY_MS * 3);
+
+    expect(h.next.attempts).toBe(1);
+    expect(h.swapped).toEqual([]);
+    expect(h.failed).toEqual([]);
+    expect(h.current().readyState).toBe('live');
+  });
+
+  it('watches a replacement that comes up muted, and reacquires if it stays muted', async () => {
+    const h = harness(BUILT_IN);
+    await h.recovery.start(h.first);
+    h.next.comesUp = 'muted';
+    h.first.track.end();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.swapped).toHaveLength(1);
+
+    h.next.comesUp = 'live';
+    await vi.advanceTimersByTimeAsync(MIC_MUTE_GRACE_MS);
+    expect(h.swapped).toHaveLength(2);
+    expect(h.current().muted).toBe(false);
+  });
+
+  it('recovers a replacement that ends while its attempt is still listing the devices', async () => {
+    const h = harness(USB_MIC, BUILT_IN);
+    await h.recovery.start(h.first);
+    const release = h.devices.holdListing();
+    h.next.input = BUILT_IN;
+    h.first.track.end();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.swapped).toHaveLength(1);
+
+    h.current().end();
+    release();
+    await vi.advanceTimersByTimeAsync(MIC_DEVICE_CHANGE_DEBOUNCE_MS);
+    expect(h.swapped).toHaveLength(2);
+  });
+
+  it('reports no switch for an attempt that stop() overtook while it listed the devices', async () => {
+    const h = harness(USB_MIC, BUILT_IN);
+    await h.recovery.start(h.first);
+    const release = h.devices.holdListing();
+    h.next.input = BUILT_IN;
+    h.first.track.end();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.swapped).toHaveLength(1);
+
+    // Main went idle (no speech) meanwhile: a switch reported now could land on the next meeting.
+    h.recovery.stop();
+    release();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.switched).toEqual([]);
   });
 
   it('ignores a stale attempt: a stream that opens after stop() is ended, never swapped in', async () => {

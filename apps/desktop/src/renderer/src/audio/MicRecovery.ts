@@ -15,6 +15,12 @@ export const MIC_DEVICE_CHANGE_DEBOUNCE_MS = 250;
 export const MIC_MUTE_GRACE_MS = 800;
 /** A mic that is dead and could not be reopened is tried again this often. */
 export const MIC_RETRY_MS = 2_000;
+/**
+ * Reopens in a row that hand out an already-ended track before recovery gives up. macOS does that,
+ * instead of a NotAllowedError, once Roger's Microphone access is off (PcmStreamCapture.start), so
+ * no retry brings the mic back; one alone may be a device leaving as it opened.
+ */
+export const MIC_DEAD_OPENS_LIMIT = 3;
 
 /** One entry of `enumerateDevices()`, as far as recovery reads it. */
 export type DeviceInfo = Pick<MediaDeviceInfo, 'deviceId' | 'groupId' | 'kind' | 'label'>;
@@ -34,7 +40,10 @@ export interface MicRecoveryOptions<S extends CaptureStream> {
   swap(stream: S): void;
   /** The mic now captures another device, named for people ("AirPods Pro"). */
   onSwitched(device: string): void;
-  /** The mic cannot come back (its permission is gone). Recovery has stopped by then. */
+  /**
+   * The mic cannot come back: its permission is gone (NotAllowedError, or MIC_DEAD_OPENS_LIMIT
+   * dead tracks in a row). Recovery has stopped by then.
+   */
   onFailed(error: unknown): void;
 }
 
@@ -93,8 +102,10 @@ export class MicRecovery<S extends CaptureStream> {
   private inputs: AudioInputs | null = null;
   /** The attempt in flight: one at a time, or two streams would race to be swapped in. */
   private recovery: Promise<void> | null = null;
-  /** A devicechange came while an attempt ran: look again once it is done. */
+  /** A devicechange, or a track ending, came while an attempt ran: look again once it is done. */
   private changedDuringRecovery = false;
+  /** Reopens in a row whose track had ended before it was handed out (MIC_DEAD_OPENS_LIMIT). */
+  private deadOpens = 0;
   private debounceTimer: ReturnType<typeof setTimeout> | undefined;
   private muteTimer: ReturnType<typeof setTimeout> | undefined;
   private retryTimer: ReturnType<typeof setTimeout> | undefined;
@@ -103,6 +114,9 @@ export class MicRecovery<S extends CaptureStream> {
     this.scheduleLook();
   };
   private readonly onEnded = (): void => {
+    // An attempt in flight may have just swapped this track in, and would leave it dead: the look
+    // after it finds the ended track and reacquires.
+    if (this.recovery !== null) this.changedDuringRecovery = true;
     void this.recover();
   };
   private readonly onMute = (): void => {
@@ -145,6 +159,7 @@ export class MicRecovery<S extends CaptureStream> {
     this.retryTimer = undefined;
     this.recovery = null;
     this.changedDuringRecovery = false;
+    this.deadOpens = 0;
     this.stream = null;
   }
 
@@ -252,12 +267,25 @@ export class MicRecovery<S extends CaptureStream> {
         stopTracks(replacement);
         return;
       }
-      if (replacement.getAudioTracks()[0] === undefined) {
-        throw new Error('The microphone stream has no audio track');
+      const track = replacement.getAudioTracks()[0];
+      if (track === undefined) throw new Error('The microphone stream has no audio track');
+      // As in start(): an ended track never fires `ended`, and one that came up muted never fires
+      // `mute`. Swapped in unchecked, an ended one would leave the mic dead for the rest of the
+      // meeting, with no retry, no error for main, and maybe a false "switched".
+      if (track.readyState === 'ended') {
+        this.deadOpens += 1;
+        throw new Error(
+          'The microphone track had ended as it opened (is the microphone permission granted?)',
+        );
       }
+      this.deadOpens = 0;
       this.options.swap(replacement);
       this.attach(replacement);
+      if (track.muted) this.onMute();
       this.inputs = await this.listInputs();
+      // stop() may have come during the listing: a switch reported now could land on the next
+      // meeting, under the name of no device (the track is gone).
+      if (!this.isCurrent(generation)) return;
       if (this.device !== null && this.device !== before) {
         this.options.onSwitched(deviceName(this.track?.label ?? ''));
       }
@@ -265,17 +293,25 @@ export class MicRecovery<S extends CaptureStream> {
       if (replacement !== null && replacement !== this.stream) stopTracks(replacement);
       if (!this.isCurrent(generation)) return;
       if (isPermissionError(error)) {
-        this.stop();
-        this.options.onFailed(error);
+        this.fail(error);
         return;
       }
       // A new default that will not open while the old device still captures: keep the old one
       // until the next devicechange, rather than reopen every 2 s for nothing.
       if (this.track !== null && this.track.readyState !== 'ended' && !this.track.muted) return;
+      if (this.deadOpens >= MIC_DEAD_OPENS_LIMIT) {
+        this.fail(error);
+        return;
+      }
       this.retryTimer = setTimeout(() => {
         this.retryTimer = undefined;
         void this.recover();
       }, MIC_RETRY_MS);
     }
+  }
+
+  private fail(error: unknown): void {
+    this.stop();
+    this.options.onFailed(error);
   }
 }
