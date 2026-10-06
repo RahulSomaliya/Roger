@@ -83,6 +83,9 @@ export interface SttConnectionOptions {
   paceClock: () => number;
 }
 
+/** ws's close code when the connection ended without a close frame (RFC 6455: never on the wire). */
+const NO_CLOSE_FRAME = 1006;
+
 export class SttConnection implements SttStream {
   private currentState: SttConnectionState = 'connecting';
   private readonly protocol: SttProtocol;
@@ -535,7 +538,14 @@ export class SttConnection implements SttStream {
         ? ` (${this.protocol.describeClose(code, reason)})`
         : `: ${this.vendorError}`;
     const advice = this.protocol.connectAdvice(explanation);
-    const keytermsRejected = this.keytermsRefused({ kind: 'closed-before-ready', code, reason });
+    // 1006 is ws's code for a TCP connection that ended with no close frame (a Wi-Fi handoff, a
+    // proxy cutting it): the vendor said nothing, so it is a network error and never a refusal
+    // (SttProtocol's SttConnectRefusal). Asked anyway, a predicate like AssemblyAI's "any close
+    // before Begin except 1008 and 3009" would blame the drop on the list, and CaptureSession
+    // would keep the list off that source for the whole meeting under a false warning.
+    const keytermsRejected =
+      code !== NO_CLOSE_FRAME &&
+      this.keytermsRefused({ kind: 'closed-before-ready', code, reason });
     return new SttConnectError(
       `${this.protocol.vendorName} ended the connection before the session began${explanation}` +
         this.keytermsRejectedNote(keytermsRejected) +

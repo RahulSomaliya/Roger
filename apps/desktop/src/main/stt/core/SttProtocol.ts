@@ -115,7 +115,12 @@ export interface SttProtocol {
 export type SttConnectRefusal =
   /** The vendor answered the websocket handshake with this HTTP status instead of upgrading. */
   | { kind: 'http-status'; status: number }
-  /** The vendor closed the socket before its ready signal (`readyOn: 'ready-message'`). */
+  /**
+   * The vendor closed the socket before its ready signal (`readyOn: 'ready-message'`). `code` is
+   * always from the vendor's close frame: a connection that dropped with no frame (1006) is a
+   * network error, and the core never asks about it (SttConnection.earlyCloseError), so a
+   * predicate of "any code except ..." never blames a network drop on the list.
+   */
   | { kind: 'closed-before-ready'; code: number; reason: string | null };
 
 /**

@@ -908,6 +908,30 @@ describe('SttConnection', () => {
       expect(error.keytermsRejected).toBe(false);
       expect(asked).toEqual([]);
     });
+
+    it('never asks about a connection that dropped before the ready signal', async () => {
+      // The TCP connection ends after the upgrade with no close frame (a Wi-Fi handoff, a proxy
+      // cutting it): ws reports 'close 1006' and no 'error', so this reaches the close path.
+      vendor.script.onConnect = (connection) => {
+        connection.socket.terminate();
+      };
+      const asked: SttConnectRefusal[] = [];
+      const protocol: SttProtocol = {
+        ...toyProtocol(vendor.baseUrl),
+        keytermsRejected: (refusal) => {
+          asked.push(refusal);
+          return true;
+        },
+      };
+      const { error } = await connectError({ protocol, stream: withKeyterms(LIST) });
+
+      expect(asked).toEqual([]);
+      expect(error.keytermsRejected).toBe(false);
+      expect(error.message).toBe(
+        'Toy ended the connection before the session began (code 1006: the connection dropped ' +
+          'without a close frame)',
+      );
+    });
   });
 
   it('times out a handshake that never completes and closes the TCP socket', async () => {
