@@ -201,6 +201,33 @@ describe('runCanary', () => {
     );
   });
 
+  it('--save-wire fails and writes nothing when the core reported no vendor messages', async () => {
+    const { deps: canaryDeps, timers } = deps({
+      vendor: {
+        onAudio: (stream, endMs) => {
+          if (endMs === 3_000) {
+            stream.emit({
+              type: 'final',
+              text: CANARY_REFERENCE,
+              startMs: 0,
+              endMs,
+              confidence: 0.9,
+              words: [],
+            });
+          }
+        },
+      },
+    });
+
+    const result = await timers.settle(runCanary({ saveWireDir: wireDir }, canaryDeps));
+
+    expect(result).toMatchObject({
+      passed: false,
+      reason: 'the STT core reported no vendor messages, so no wire was saved',
+    });
+    expect(await readdir(wireDir)).toEqual([]);
+  });
+
   it('--save-wire with the fake provider says there is no wire to save', async () => {
     const { deps: canaryDeps, lines, timers } = deps({ provider: 'fake' });
 

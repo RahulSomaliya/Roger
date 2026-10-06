@@ -148,8 +148,12 @@ export async function runCanary(
   closing = true;
   await stream.close();
 
-  if (options.saveWireDir !== null) await saveWire(options.saveWireDir, result, wire, deps.out);
+  const unsaved =
+    options.saveWireDir === null
+      ? null
+      : await saveWire(options.saveWireDir, result, wire, deps.out);
   if (ended.reason !== null) return fail(result, ended.reason, deps.out);
+  if (unsaved !== null) return fail(result, unsaved, deps.out);
   if (result.firstFinalMs === null || result.firstFinalMs > CANARY_FINAL_WITHIN_MS) {
     return fail(result, `no final within ${CANARY_FINAL_WITHIN_MS / 1000} s`, deps.out);
   }
@@ -182,16 +186,20 @@ async function synthesizeScript(synthesize: CanaryDeps['synthesize']): Promise<I
   }
 }
 
+/** Writes the wire fixture; returns why it could not, or null. */
 async function saveWire(
   dir: string,
   result: CanaryResult,
   wire: readonly string[],
   out: (line: string) => void,
-): Promise<void> {
+): Promise<string | null> {
   if (result.provider === 'fake' || result.model === null) {
     out('no vendor wire to save: the fake provider opens no socket');
-    return;
+    return null;
   }
+  // An empty file would pass for a recording and replace the fixtures with nothing; the core
+  // reports the wire only once its tap exists (WebSocketSttOptions.wireTap).
+  if (wire.length === 0) return 'the STT core reported no vendor messages, so no wire was saved';
   // The model names the file the fixture tests read (wireFixtures.ts); a bench id is a safe name.
   assertBenchId(result.model, 'model');
   const path = join(dir, `${result.model}.jsonl`);
@@ -199,6 +207,7 @@ async function saveWire(
   // Synthetic speech only, made to be committed as a fixture: not a private bench file.
   await writeFile(path, wire.map((message) => `${message}\n`).join(''));
   out(`wrote ${wire.length} vendor messages to ${path}`);
+  return null;
 }
 
 function fail(result: CanaryResult, reason: string, out: (line: string) => void): CanaryResult {
