@@ -180,9 +180,9 @@ function normalizeWord(text: string): string {
       .toLowerCase()
       .replace(/[\u2018\u2019\u02bc]/g, "'")
       // Marks are part of the letter before them: Devanagari, Tamil and Thai write vowels as
-      // marks, and NFKC does not fold them in, so dropping them made \u0915\u093e\u092e and \u0915\u092e (and \u0939\u0948, \u0939\u094b, \u0939\u0940)
-      // one word and hid the user's own speech. A run of marks with no letter or digit before it
-      // (an emoji's variation selector) goes first, or it would outlive its emoji as a word.
+      // marks and NFKC does not fold them in, so dropping them made काम and कम (or है,
+      // हो and ही) one word and hid the user's own speech. A run of marks with no letter or
+      // digit before it (an emoji's variation selector) goes first, or it outlives its emoji.
       .replace(/(?<![\p{L}\p{N}\p{M}])\p{M}+/gu, '')
       .replace(/[^\p{L}\p{N}\p{M}']/gu, '')
       .replace(/^'+|'+$/g, '')
