@@ -30,12 +30,14 @@ class ScriptedStream implements SttStream {
   readonly emitter = new SttEventEmitter();
   readonly sent: Uint8Array[] = [];
   closed = false;
+  /** When set, close() stays pending until it settles: a vendor still sending its last lines. */
+  closeUntil: Promise<void> | null = null;
   send(pcm: Uint8Array): void {
     this.sent.push(pcm);
   }
   close(): Promise<void> {
     this.closed = true;
-    return Promise.resolve();
+    return this.closeUntil ?? Promise.resolve();
   }
   on(listener: SttEventListener): () => void {
     return this.emitter.on(listener);
@@ -745,6 +747,30 @@ describe('CaptureSession', () => {
         longestWaitMs: 600,
         clampedWords: 0,
         repeatedWords: 0,
+      });
+    });
+
+    it('logs only once every stream has closed, so the last line a close flushes is timed', async () => {
+      const log = recordingLogger();
+      const { s, mic, at } = await recording({ logger: log.logger });
+      pushContiguous(s, 'mic', 12_000, 20); // stream 0-2 s, captured 12-14 s
+      // At Stop the vendor sends its last final while the close is still pending (AssemblyAI's
+      // ForceEndpoint and Terminate, Deepgram's Finalize): no event showed "goodbye" before it.
+      const finishing = gate<undefined>();
+      mic.closeUntil = finishing.promise;
+      const closing = s.close();
+      await flush();
+      expect(latencyLines(log.messages)).toEqual([]);
+
+      at(14_500);
+      final(mic, 'goodbye', 0, 1_000, [[0, 1_000]]); // captured by 13 s
+      finishing.resolve(undefined);
+      await closing;
+      // Logged before the stream closed, the line would read 0 words for the mic.
+      expect(latencyLines(log.messages)[0]?.mic).toMatchObject({
+        words: 1,
+        displayP50Ms: 1_500,
+        finalP50Ms: 1_500,
       });
     });
 
