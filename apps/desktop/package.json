@@ -8,7 +8,7 @@
   "author": "Linkt",
   "license": "UNLICENSED",
   "engines": {
-    "node": ">=22.12.0"
+    "node": ">=22.13.0"
   },
   "scripts": {
     "dev": "electron-vite dev",
@@ -17,15 +17,24 @@
     "start": "electron-vite preview",
     "package:mac": "electron-vite build && electron-builder --mac --config electron-builder.yml",
     "install:mac": "bash scripts/install-mac.sh",
-    "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json && tsc --noEmit -p tsconfig.worklet.json",
+    "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.e2e.json && tsc --noEmit -p tsconfig.web.json && tsc --noEmit -p tsconfig.worklet.json",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "test:mac": "vitest run --config vitest.mac.config.ts",
+    "test:e2e": "electron-vite build && vitest run --config vitest.e2e.config.ts",
+    "preview:renderer": "vite --config vite.preview.config.ts",
+    "bench": "vite build --config bench/vite.config.ts && node bench/dist/cli.js"
   },
   "dependencies": {
+    "@tiptap/core": "3.31.3",
+    "@tiptap/extensions": "3.31.3",
+    "@tiptap/pm": "3.31.3",
+    "@tiptap/react": "3.31.3",
+    "@tiptap/starter-kit": "3.31.3",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "ws": "^8.18.0"
@@ -44,6 +53,7 @@
     "eslint-config-prettier": "^10.1.0",
     "eslint-plugin-react-hooks": "^7.0.0",
     "globals": "^17.0.0",
+    "playwright-core": "1.63.0",
     "prettier": "^3.6.0",
     "typescript": "~5.9.0",
     "typescript-eslint": "^8.46.0",

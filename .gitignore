@@ -27,6 +27,13 @@ htmlcov/
 *.db
 *.log
 /data/
+# The desktop's committed test fixtures include a small roger.sqlite (the audio-backup fixture).
+# Without this line `git add` of the fixture folder drops it silently. WAL and SHM sidecars stay out.
+!apps/desktop/test/fixtures/**/*.sqlite
+# Notes-eval cases exported from real calls are client conversations, and their reports quote
+# them: both stay on the Mac. Only the synthetic cases in apps/api/evals/notes/cases are committed.
+apps/api/evals/notes/cases/local/
+apps/api/evals/notes/reports/
 
 # Editors and OS
 .idea/

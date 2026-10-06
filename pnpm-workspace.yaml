@@ -10,3 +10,11 @@ onlyBuiltDependencies:
 # `pnpm install --frozen-lockfile` (make setup-desktop, CI) fail with
 # ERR_PNPM_LOCKFILE_CONFIG_MISMATCH. Change it only together with a fresh lockfile.
 autoInstallPeers: true
+
+# @tiptap/react lists its bubble and floating menus as `^<its version>`, yet each menu takes the
+# exact same @tiptap/core and @tiptap/pm as a peer. Left alone, pnpm picks the newest menu (3.31.4
+# on 2026-10-06, 6 days old: this Mac's pnpm did not enforce its 7-day minimum-release-age) and
+# the peers break. Bump these two together with the five @tiptap packages in apps/desktop.
+overrides:
+  '@tiptap/extension-bubble-menu': 3.31.3
+  '@tiptap/extension-floating-menu': 3.31.3
