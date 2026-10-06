@@ -19,7 +19,10 @@ export interface CalendarApiPort {
   getConnection(): Promise<CalendarConnection | null>;
   /** `DELETE /v1/calendar/connection`: revokes at Google. Safe to repeat. */
   disconnect(): Promise<void>;
-  /** `GET /v1/calendar/events`: timed events as UTC instants, ordered by start. */
+  /**
+   * `GET /v1/calendar/events`: every event, ordered by start. Timed events carry UTC instants;
+   * all-day events carry plain dates and a null `start`, and the list keeps them too.
+   */
   listEvents(window: CalendarWindow): Promise<CalendarEventsPage>;
 }
 
