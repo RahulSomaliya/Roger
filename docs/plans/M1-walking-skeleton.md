@@ -143,6 +143,43 @@ should-fixes, all fixed with regression tests.
 - In dev mode the terminal is the app macOS checks, and no common terminal carries
   `NSAudioCaptureUsageDescription`, so call audio must be tested from the installed app.
 
+**2026-10-06, field report: grants lost after a restart (M2-T1, read from the `tccd` log):**
+
+- Symptoms: after a restart the installed app said it could not detect system audio, and it
+  asked for the mic again although System Settings showed Roger allowed.
+- The log names the cause: 11 lines of `Failed to match existing code requirement for subject
+  ai.linkt.roger and service ...`, one at 11:46 and the rest from 14:12 to 14:15, for
+  `kTCCServiceMicrophone` (then a new mic prompt), `kTCCServiceScreenCapture` and
+  `kTCCServiceAudioCapture`. Those builds were ad-hoc signed (`cdhash H"..."`), so each rebuild
+  changed the requirement the grants were pinned to. With ScreenCapture refused,
+  `desktopCapturer.getSources` returns nothing, hence "No screen source is available for system
+  audio".
+- 14:22:55: TCC deleted Roger's three records (`install-mac.sh` resets them when the signing
+  identity changes). The app installed at 14:24 is signed `identifier "ai.linkt.roger" and
+  certificate leaf = H"b457..."`, which survives rebuilds (commit 30e137c). At 16:56 the log had
+  no mismatch line for Roger since that install.
+- Two copies of Roger.app exist, `/Applications` and `apps/desktop/dist/mac-arm64`; only the
+  `/Applications` one is launched.
+- Both launches in that window (14:15 and 14:24) also logged an Error-level `attempted to call
+  TCCAccessRequest for kTCCServiceAccessibility without the recommended ... entitlement`. Roger's
+  code asks for no Accessibility access; the line comes from Electron at launch and is not a grant
+  problem.
+- Recipe (compare a hit with `codesign -d -r- /Applications/Roger.app`):
+
+  ```bash
+  /usr/bin/log show --last 1d \
+    --predicate 'subsystem == "com.apple.TCC" AND eventMessage CONTAINS[c] "roger"' \
+    | grep 'Failed to match existing code requirement'
+  ```
+- The app can now read its own signature: `src/main/signing.ts` reports `local-identity`,
+  `developer-id`, `adhoc` or `unsigned` and a hash of the requirement, which "system audio
+  verified" is stored against. M2-T10 and M2-T19 call it at startup.
+
+**Pending: M2-T1's Mac check (a person).** On the installed app: Start, grant, quit, relaunch,
+Start again. Pass: no new prompt, call audio present, and the recipe above shows no new mismatch
+line. Then open each link in `src/main/settingsPanes.ts` on macOS 26 and record where it lands in
+the M2 exit check log.
+
 **Pending: the real-call check.** A 30-minute Google Meet call with `STT_PROVIDER=deepgram` and a
 Deepgram key on the API, then Claude quoting a line from it through MCP. Record the line here.
 

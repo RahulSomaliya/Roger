@@ -115,6 +115,12 @@ Each line is a trap someone already hit. Add one when you hit a new one.
   build ad hoc either: macOS pins privacy grants to the code hash, so each rebuild silently loses
   call audio while System Settings still shows Roger on (2026-10-06). `make install-desktop` signs
   with a stable per-Mac identity, without hardened runtime; see `apps/desktop/scripts/install-mac.sh`.
+- To tell a lost privacy grant from a code bug, read the `tccd` log:
+  `/usr/bin/log show --last 1d --predicate 'subsystem == "com.apple.TCC" AND eventMessage CONTAINS[c] "roger"' | grep 'Failed to match existing code requirement'`.
+  A hit names the service (`kTCCServiceMicrophone`, `ScreenCapture`, `AudioCapture`): the grant is
+  pinned to another designated requirement than `codesign -d -r- /Applications/Roger.app` prints.
+  Type `/usr/bin/log`; plain `log` is a zsh builtin. The Error-level `kTCCServiceAccessibility`
+  line at launch comes from Electron and is not a grant problem (2026-10-06).
 - A packaged app logs to stderr only. Launch it with
   `open --stderr <file> --stdout <file> /Applications/Roger.app` to read its log.
 - Ruff `RUF001` rejects lookalike Unicode (en dash, curly quotes, `‹`) in Python string literals:
