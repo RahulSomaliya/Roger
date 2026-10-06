@@ -100,7 +100,11 @@ export function buildStreamingUrl(
   // The Universal-3 Pro models always format and do not take the parameter.
   if (settings.model.startsWith('universal-streaming'))
     url.searchParams.set('format_turns', 'true');
-  // M3: the jargon list plugs in here as `keyterms_prompt`.
+  // The jargon list, so names like Linkt come out spelled right: one parameter holding a JSON
+  // array (up to 100 terms of 50 characters; the core has already cut the list to the shared
+  // limits, keyterms.ts). Never sent empty: no list, no parameter.
+  const keyterms = settings.keyterms ?? [];
+  if (keyterms.length > 0) url.searchParams.set('keyterms_prompt', JSON.stringify(keyterms));
   // M9: streaming speaker labels plug in here as `speaker_labels=true` (then see messages.ts).
   // Not sent: `settings.language` (the English model takes only English; `language_codes` is for
   // the multilingual one).
@@ -148,6 +152,18 @@ export function assemblyAiProtocol(options: AssemblyAiProtocolOptions = {}): Stt
     describeClose: (code, reason) => describeCloseWith(ASSEMBLYAI_CLOSE_MEANINGS, code, reason),
     connectAdvice: (explanation) =>
       SESSION_LIMIT_REASON.test(explanation) ? SESSION_LIMIT_ADVICE : null,
+    // AssemblyAI documents no refusal for a list it will not take, so any close before Begin is
+    // put down to the list (the core asks only when one was sent), except the two codes that name
+    // another cause: 1008 (a bad or expired token, an account problem) and 3009 (too many sessions
+    // started this minute). A reopen without the list cannot fix those, and CaptureSession would
+    // keep the list off that source for the rest of the meeting under a false warning. A close
+    // blamed wrongly (3005, a server error) costs one reopen without the list, and if that fails
+    // too its error carries both reasons (M3-T4b). An HTTP status at the handshake is never put
+    // down to the list: AssemblyAI documents its refusals as close codes. A connection that
+    // dropped with no close frame (1006) never gets here: the core calls it a network error and
+    // does not ask (SttConnectRefusal).
+    keytermsRejected: (refusal) =>
+      refusal.kind === 'closed-before-ready' && refusal.code !== 1008 && refusal.code !== 3009,
   };
 }
 

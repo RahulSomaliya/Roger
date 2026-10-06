@@ -73,6 +73,28 @@ describe('buildStreamingUrl', () => {
     expect(url.searchParams.has('format_turns')).toBe(false);
   });
 
+  it('sends the jargon list as one keyterms_prompt JSON array, and none without a list', () => {
+    const query = (keyterms?: readonly string[]) =>
+      new URL(
+        buildStreamingUrl(
+          'wss://streaming.assemblyai.com',
+          keyterms === undefined ? settings : { ...settings, keyterms },
+          't',
+          120_000,
+        ),
+      ).searchParams;
+
+    const withList = query(['Linkt', 'order number', 'Roger & Co']);
+    expect(withList.getAll('keyterms_prompt')).toHaveLength(1);
+    expect(JSON.parse(withList.get('keyterms_prompt') ?? '')).toEqual([
+      'Linkt',
+      'order number',
+      'Roger & Co',
+    ]);
+    expect(query([]).has('keyterms_prompt')).toBe(false);
+    expect(query().has('keyterms_prompt')).toBe(false);
+  });
+
   it('refuses an encoding it has no AssemblyAI name for', () => {
     expect(() => buildStreamingUrl('wss://x', { ...settings, encoding: 'opus' }, 't', 1)).toThrow(
       SttConnectError,
@@ -134,9 +156,13 @@ describe('AssemblyAiSpeechToText', () => {
     });
   });
 
-  async function open(options: Partial<AssemblyAiOptions> = {}, accessToken = 'temp-token') {
+  async function open(
+    options: Partial<AssemblyAiOptions> = {},
+    accessToken = 'temp-token',
+    streamSettings: SttStreamSettings = settings,
+  ) {
     const stt = new AssemblyAiSpeechToText({ logger, baseUrl, ...options });
-    const stream = await stt.openStream({ accessToken, settings, label: 'mic' });
+    const stream = await stt.openStream({ accessToken, settings: streamSettings, label: 'mic' });
     const events: SttEvent[] = [];
     stream.on((event) => events.push(event));
     return { stream, events };
@@ -416,6 +442,64 @@ describe('AssemblyAiSpeechToText', () => {
         'AssemblyAI limits how many sessions start per minute (5 on a free account) and each ' +
         'Start opens two, one per audio source: wait a minute, then press Start again.',
     );
+  });
+
+  describe('with a jargon list', () => {
+    const withList: SttStreamSettings = { ...settings, keyterms: ['Linkt', 'Roger'] };
+
+    async function refusal(
+      onConnect: (socket: WebSocket) => void,
+      streamSettings = withList,
+    ): Promise<SttConnectError> {
+      script.onConnect = onConnect;
+      const error = await open({}, 'temp-token', streamSettings).catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(SttConnectError);
+      return error as SttConnectError;
+    }
+
+    it('blames a close before Begin on the list, except for the token and session-limit codes', async () => {
+      const rejected = await refusal((socket) => {
+        socket.close(3005, 'Session Cancelled: An error occurred');
+      });
+      expect(rejected.keytermsRejected).toBe(true);
+      expect(rejected.message).toBe(
+        'AssemblyAI ended the connection before the session began ' +
+          '(code 3005: Session Cancelled: An error occurred); the jargon list (2 terms) was rejected',
+      );
+
+      // A bad token or a busy account: a reopen without the list would fail the same way.
+      for (const [code, reason] of [
+        [1008, 'Unauthorized Connection: Missing Authorization header'],
+        [3009, 'Unauthorized Connection: Too many concurrent sessions'],
+        [1008, 'Unauthorized connection: Too many concurrent sessions'],
+      ] as const) {
+        const error = await refusal((socket) => {
+          socket.close(code, reason);
+        });
+        expect(error.keytermsRejected, `${code} ${reason}`).toBe(false);
+      }
+    });
+
+    it('never blames the list when none was sent', async () => {
+      const error = await refusal((socket) => {
+        socket.close(3005, 'Session Cancelled: An error occurred');
+      }, settings);
+      expect(error.keytermsRejected).toBe(false);
+    });
+
+    it('never blames the list for a connection that dropped without a close frame (1006)', async () => {
+      const error = await refusal((socket) => {
+        socket.terminate();
+      });
+      expect(error.keytermsRejected).toBe(false);
+      expect(error.message).toContain('code 1006');
+    });
+
+    it('never blames the list for a refused handshake', async () => {
+      rejectWith = 400;
+      const error = await open({}, 'temp-token', withList).catch((e: unknown) => e);
+      expect((error as SttConnectError).keytermsRejected).toBe(false);
+    });
   });
 
   it('reports a rejected handshake as a connect error with the status code', async () => {
