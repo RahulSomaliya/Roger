@@ -1,3 +1,4 @@
+import pkgutil
 from pathlib import Path
 
 from alembic.autogenerate import compare_metadata
@@ -7,8 +8,10 @@ from alembic.script import ScriptDirectory
 from sqlalchemy import Connection, NullPool
 from sqlalchemy.ext.asyncio import create_async_engine
 
+import roger_api.db
 from roger_api.db.base import Base
 from tests.conftest import ALEMBIC_INI
+from tests.helpers import modules_loaded_by
 
 # revision: (file name, down_revision). Fixed in docs/plans/phase-2-build-order.md, section 2, so
 # parallel worktrees never grow two heads. An owner fills its stub's upgrade() and downgrade() and
@@ -54,3 +57,16 @@ def test_revision_chain_is_fixed() -> None:
     }
 
     assert chain == FIXED_CHAIN
+
+
+def test_db_models_imports_every_domain_model_module() -> None:
+    """Alembic (`migrations/env.py`) and the test truncation import `db/models.py` alone, so a
+    table in a `db/models_<domain>.py` module that it does not import is invisible to both."""
+    domain_modules = {
+        f"roger_api.db.{module.name}"
+        for module in pkgutil.iter_modules(roger_api.db.__path__)
+        if module.name.startswith("models_")
+    }
+    assert domain_modules, "no db/models_<domain>.py modules found; is the walk broken?"
+
+    assert domain_modules <= modules_loaded_by("roger_api.db.models")
