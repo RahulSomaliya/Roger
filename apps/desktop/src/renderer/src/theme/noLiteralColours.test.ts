@@ -1,5 +1,6 @@
 import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
+import { cssDeclarations } from './cssDeclarations';
 import { rendererSources } from './rendererSources';
 
 /**
@@ -62,19 +63,14 @@ function literalColoursInValue(value: string): string[] {
   ];
 }
 
-/** Each declaration in a style sheet that holds a literal colour. Selectors are not values. */
+/**
+ * Each declaration in a style sheet that holds a literal colour, at any nesting depth
+ * (cssDeclarations.ts says why that needs a scanner). Selectors are not values.
+ */
 function literalColoursInCss(css: string): string[] {
-  const found: string[] = [];
-  const uncommented = css.replace(/\/\*[\s\S]*?\*\//g, '');
-  for (const [, block = ''] of uncommented.matchAll(/\{([^{}]*)\}/g)) {
-    for (const declaration of block.split(';')) {
-      const colon = declaration.indexOf(':');
-      if (colon !== -1 && literalColoursInValue(declaration.slice(colon + 1)).length > 0) {
-        found.push(declaration.trim());
-      }
-    }
-  }
-  return found;
+  return cssDeclarations(css)
+    .filter(({ value }) => literalColoursInValue(value).length > 0)
+    .map(({ property, value }) => `${property}: ${value}`);
 }
 
 /**
@@ -151,6 +147,16 @@ describe('literal colours in the renderer', () => {
       'outline-color: oklch(0.7 0.1 200)',
       'box-shadow: 0 0 2px #00000080',
     ]);
+    // Native nesting (Electron's Chromium renders it): a rule that holds a rule keeps its own
+    // declarations before and after the inner one, and a string may hold a brace.
+    expect(
+      literalColoursInCss(`
+        .note { background: #fff; &:hover { background: var(--panel); } }
+        .row { &:hover { color: var(--ink); } color: red; }
+        @media (width > 600px) { .wide { & .cell { border-color: #ccc } } }
+        .quote { content: '}'; color: hsl(0 0% 0%) }
+      `),
+    ).toEqual(['background: #fff', 'color: red', 'border-color: #ccc', 'color: hsl(0 0% 0%)']);
     expect(
       literalColoursInScript(
         'Probe.tsx',
@@ -175,6 +181,7 @@ describe('literal colours in the renderer', () => {
         .b { font-family: -apple-system, 'Segoe UI', sans-serif; content: 'red'; }
         .c { background: color-mix(in srgb, var(--accent) 20%, transparent); }
         .d { font-weight: 650; grid-template-columns: 64px 48px 1fr; }
+        .e { color: var(--ink); &:not(.red):hover { color: var(--muted); } }
       `),
     ).toEqual([]);
     expect(
