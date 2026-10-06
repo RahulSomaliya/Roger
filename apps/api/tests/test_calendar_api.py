@@ -29,7 +29,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import QueuePool
 
 from roger_api.app import create_app
-from roger_api.auth import Principal
+from roger_api.auth import Principal, default_principal
 from roger_api.config import Settings
 from roger_api.config_calendar import GoogleOAuthAudience
 from roger_api.db.engine import Database
@@ -560,6 +560,7 @@ async def test_connection_again_replaces_the_connection(
     app: FastAPI, client: httpx.AsyncClient, google: GoogleStub
 ) -> None:
     await connect(client)
+    [replaced] = await stored_connections(app)
     google.exchange = answer(
         token_body(
             id_token=id_token("priya.work@linkt.ai"),
@@ -574,6 +575,9 @@ async def test_connection_again_replaces_the_connection(
     assert await get_connection(client) == second
     [stored] = await stored_connections(app)
     assert stored.account_email == "priya.work@linkt.ai"
+    # A new row id: the access token cache checks it, so a refresh still in flight for the
+    # replaced grant can never hand its account's token to this connection.
+    assert stored.id != replaced.id
     # The new grant's access token, never the replaced one's.
     await client.get("/v1/calendar/events", params=WINDOW)
     [events] = google.requests("events")
@@ -1041,18 +1045,21 @@ async def test_disconnect_a_second_time_is_204(
 
 
 async def test_disconnect_forgets_the_cached_access_token(
-    client: httpx.AsyncClient, google: GoogleStub
+    app: FastAPI, client: httpx.AsyncClient, google: GoogleStub
 ) -> None:
+    # No route can show it (events are a 404 without a connection, and a connect overwrites the
+    # entry), so the cache is read directly: a revoked grant's token does not stay in memory.
+    runtime = google_runtime(google)
+    use_runtime(app, runtime)
     await connect(client)
-    await client.delete("/v1/calendar/connection")
-    google.exchange = answer(token_body(access_token="ya29.after-reconnect", expires_in=30))
+    [stored] = await stored_connections(app)
+    owner = default_principal(app.state.settings)
+    assert runtime.access_tokens.get(owner, stored.id) == ACCESS_TOKEN
 
-    await connect(client)
-    response = await client.get("/v1/calendar/events", params=WINDOW)
+    response = await client.delete("/v1/calendar/connection")
 
-    assert response.status_code == 200, response.text
-    [events] = google.requests("events")
-    assert events.headers["Authorization"] == f"Bearer {REFRESHED_ACCESS_TOKEN}"
+    assert response.status_code == 204
+    assert runtime.access_tokens.get(owner, stored.id) is None
 
 
 async def test_disconnect_on_the_fake_provider_is_204(client: httpx.AsyncClient) -> None:

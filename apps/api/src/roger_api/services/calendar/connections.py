@@ -282,8 +282,10 @@ async def _save(
         )
     )
     insert_row = insert(CalendarConnection).values(
-        # A new id on every connect, also when it replaces a row: the access token cached for the
-        # old grant (runtime.AccessTokenCache) is keyed by it and is never used for the new one.
+        # A new id on every connect, also when it replaces a row (so "id" is in `replaced` below):
+        # the access token cached for the old grant (runtime.AccessTokenCache) is keyed by it and
+        # is never used for the new one. tests/test_calendar_api.py::
+        # test_connection_again_replaces_the_connection fails without it.
         id=uuid4(),
         workspace_id=principal.workspace_id,
         user_id=principal.user_id,
