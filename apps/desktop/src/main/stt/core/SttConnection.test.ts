@@ -550,7 +550,7 @@ describe('SttConnection', () => {
       expect(tapped.filter((record) => record.kind === 'connect')).toHaveLength(1);
     });
 
-    it('turns a tap that throws into one non-fatal error, and the stream goes on without it', async () => {
+    it('turns a tap that throws once open into one non-fatal error, and the stream goes on', async () => {
       vendor.script.onBinary = (connection, frame) => {
         if (frame === 2) connection.socket.send(JSON.stringify({ type: 'final', text: 'kept' }));
       };
@@ -578,6 +578,47 @@ describe('SttConnection', () => {
       expect(calls).toBe(callsBeforeAudio + 1);
       expect(vendor.last().binaryFrames).toEqual([CHUNK_100_MS, CHUNK_100_MS]);
       expect(lines.find((line) => line.message === 'stt wire tap failed')?.level).toBe('error');
+    });
+
+    /**
+     * Before ready no listener exists: openStream hands the stream over only once it is open. An
+     * error event there reached no one, and the item ran to its end unrecorded with nothing to say
+     * so; the connect fails instead, so the bench fails the item.
+     */
+    it('fails the connect before any socket when the tap cannot take its first record', () => {
+      // The bench's tap opens its file on the first record, always the connect: a missing
+      // --save-wire directory, EACCES or a full disk fails it there.
+      const connect = (): SttConnection =>
+        new SttConnection(
+          options({
+            wireTap: () => {
+              throw new Error('no such directory');
+            },
+          }),
+        );
+
+      expect(connect).toThrow(SttConnectError);
+      expect(connect).toThrow('Toy wire tap failed: no such directory');
+      expect(vendor.connections).toHaveLength(0);
+      expect(lines.find((line) => line.message === 'stt wire tap failed')?.fields).toMatchObject({
+        record: 'connect',
+      });
+    });
+
+    it('fails the connect, with the socket closed, when the tap throws before the ready signal', async () => {
+      let calls = 0;
+      const { connection, error } = await connectError({
+        wireTap: (record) => {
+          calls += 1;
+          if (record.kind === 'text') throw new Error('disk full');
+        },
+      });
+
+      expect(error.message).toBe('Toy wire tap failed: disk full');
+      expect(error.keytermsRejected).toBe(false);
+      expect(connection.state).toBe('closed');
+      // The connect, then the ready message it failed on: the ready message opened nothing.
+      expect(calls).toBe(2);
     });
   });
 

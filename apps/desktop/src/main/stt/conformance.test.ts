@@ -690,5 +690,22 @@ describe.each(CONFORMANCE_VENDORS)('$provider conforms', (vendor) => {
       expect(error).toBeInstanceOf(SttConnectError);
       expect((error as SttConnectError).message).toContain('Invalid token');
     });
+
+    // The ready message is tapped before it opens the stream, and openStream hands the stream over
+    // only once open: no listener exists yet to hear a non-fatal error (SttConnection.tap).
+    itIf(vendor.readyMessage !== null)('when the wire tap fails on the ready message', async () => {
+      const adapter = stt({
+        wireTap: (record) => {
+          if (record.kind === 'text') throw new Error('disk full');
+        },
+      });
+      const error = await open(adapter).catch((e: unknown) => e);
+
+      expect(error).toBeInstanceOf(SttConnectError);
+      expect((error as SttConnectError).message).toBe(
+        `${adapter.vendorName} wire tap failed: disk full`,
+      );
+      await waitFor(() => server.last().closed);
+    });
   });
 });

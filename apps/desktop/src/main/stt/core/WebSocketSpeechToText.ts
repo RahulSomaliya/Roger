@@ -27,7 +27,9 @@ export interface WebSocketSttOptions {
    * ways, and each connect's query with the token left out (SttWireRecord). `bench run` stores the
    * query in run.json; `bench canary --save-wire` writes the vendor's messages as the wire fixtures
    * (stt/assemblyai/fixtures/). Only the bench passes one: the app never records the wire, which
-   * holds transcript text.
+   * holds transcript text. A tap that throws is switched off for that stream: before the session
+   * began, openStream rejects with SttConnectError; once open, the stream emits one non-fatal error
+   * (SttConnection.tap). Either way the bench fails the item its recording no longer covers.
    */
   wireTap?: SttWireTap;
 }

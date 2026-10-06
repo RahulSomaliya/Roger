@@ -34,7 +34,7 @@ import type {
  * - connecting: the handshake plus the vendor's ready signal, under one connect timeout. A failure
  *   terminates the socket and rejects `whenOpen()` only once the socket is closed. A refusal the
  *   protocol blames on the jargon list rejects with `keytermsRejected` set; it is never retried
- *   here (see keytermsRefused).
+ *   here (see keytermsRefused). A wire tap that fails here fails the connect too (see tap).
  * - open: audio flows, paced to real time for a vendor that declares it (see pump). The keep-alive
  *   runs only while audio was sent within keepAliveForMs. A vendor close here is one fatal error,
  *   then "closed".
@@ -169,12 +169,15 @@ export class SttConnection implements SttStream {
     // Throws SttConnectError on settings the vendor cannot take, before any socket exists.
     const target = this.protocol.target(stream);
     // Before the socket exists, and never the URL: an AssemblyAI URL carries the temporary token.
+    // A tap that cannot take this first record (the bench opens its file on it) fails the connect
+    // here, with nothing opened or billed: no listener exists yet to hear an error event (tap).
     if (this.wireTap !== null) {
-      this.tap({
+      const failure = this.recordOnTap({
         kind: 'connect',
         label: this.label,
         query: queryWithoutToken(target.url, stream.accessToken),
       });
+      if (failure !== null) throw new SttConnectError(failure);
     }
     this.session = this.protocol.session({
       logger: this.logger,
@@ -305,7 +308,10 @@ export class SttConnection implements SttStream {
   }
 
   private becomeOpen(sessionId: string | null): void {
-    if (this.currentState !== 'connecting') return;
+    // A failed connect stays failed while its socket is terminated: a ready message read after it
+    // (the one a wire tap just failed on, or one that raced the connect timeout) would resolve
+    // whenOpen() on a dead session and lose the connect error to a false "closed the stream".
+    if (this.currentState !== 'connecting' || this.connectError !== null) return;
     this.clearConnectTimer();
     this.currentState = 'open';
     this.logger.info('stt stream open', { sessionId });
@@ -528,21 +534,29 @@ export class SttConnection implements SttStream {
    * Hands one record to the wire tap, if there is one. A tap that throws (the bench's disk is
    * full) must not end a billed session mid-item, or escape a socket handler and kill the process
    * with sockets open. It is switched off for this stream at its first failure, because a
-   * recording with holes would pass for the whole wire, and the failure is logged and reported as
-   * a non-fatal error, so the bench can fail the item it no longer records.
+   * recording with holes would pass for the whole wire, and the bench is told, so it can fail the
+   * item it no longer records: once open by a non-fatal error, before that by a failed connect.
+   * Before ready no listener exists (openStream hands the stream over only once it is open), so an
+   * error event there reached no one and the item ran to its end unrecorded, with nothing to say
+   * so. The connect record itself fails in the constructor, before any socket (see there).
    */
   private tap(record: SttWireRecord): void {
-    if (this.wireTap === null) return;
+    const failure = this.recordOnTap(record);
+    if (failure === null) return;
+    if (this.currentState === 'connecting') this.failConnect(new SttConnectError(failure));
+    else this.deliver({ type: 'error', message: failure, fatal: false });
+  }
+
+  /** Runs the tap on one record. Returns why it failed (logged, the tap switched off), else null. */
+  private recordOnTap(record: SttWireRecord): string | null {
+    if (this.wireTap === null) return null;
     try {
       this.wireTap(record);
+      return null;
     } catch (error) {
       this.wireTap = null;
       this.logger.error('stt wire tap failed', { record: record.kind, error: errorMessage(error) });
-      this.deliver({
-        type: 'error',
-        message: `${this.protocol.vendorName} wire tap failed: ${errorMessage(error)}`,
-        fatal: false,
-      });
+      return `${this.protocol.vendorName} wire tap failed: ${errorMessage(error)}`;
     }
   }
 
