@@ -1,7 +1,7 @@
-"""The repo tooling other tasks build on: the root `Makefile` targets.
+"""The repo tooling other tasks build on: the root `Makefile` targets and the `.gitignore` rules.
 
-`make --dry-run` prints commands without running them, so these tests need no database, no
-network and no build.
+`make --dry-run` prints commands without running them and `git check-ignore` reads only the
+rules, so these tests need no database, no network and no build.
 """
 
 import os
@@ -38,6 +38,19 @@ def make_dry_run(*args: str) -> str:
     )
     assert result.returncode == 0, result.stderr
     return result.stdout
+
+
+def git_ignores(path: str) -> bool:
+    """Whether git's rules ignore `path` (from the repo root), even once the file is tracked."""
+    result = subprocess.run(  # noqa: S603 - fixed argv from this file, no shell.
+        [_tool("git"), "-C", str(REPO_ROOT), "check-ignore", "--quiet", "--no-index", path],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    # 0: ignored, 1: not ignored, anything else: git failed.
+    assert result.returncode in (0, 1), result.stderr
+    return result.returncode == 0
 
 
 def test_test_db_points_the_api_tests_at_that_database() -> None:
@@ -82,3 +95,28 @@ def test_the_route_test_builds_the_helper_first() -> None:
     build = commands.index("bash apps/desktop/scripts/build-native.sh")
     route = commands.index("apps/desktop/native/bin/roger-audio selftest --route-switch")
     assert build < route
+
+
+@pytest.mark.parametrize(
+    ("path", "ignored"),
+    [
+        # Notes-eval cases exported from real calls are client conversations, and their reports
+        # quote them. Neither may ever be committed. The synthetic case is.
+        ("apps/api/evals/notes/cases/local/client-call.json", True),
+        ("apps/api/evals/notes/reports/2026-10-06/report.md", True),
+        ("apps/api/evals/notes/cases/synthetic_standup.json", False),
+        # The backup fixture is a real SQLite file. The root `*.sqlite` rule would drop it from a
+        # `git add` of its folder without a word; only `test/fixtures` is let through.
+        ("apps/desktop/test/fixtures/backup/roger.sqlite", False),
+        ("apps/desktop/test/fixtures/backup/roger.sqlite-wal", True),
+        ("apps/desktop/src/main/store/roger.sqlite", True),
+        ("roger.sqlite", True),
+        # Build output: the Swift helper binary and the benchmark CLI bundle.
+        ("apps/desktop/native/bin/roger-audio", True),
+        ("apps/desktop/native/roger-audio/main.swift", False),
+        ("apps/desktop/bench/dist/cli.js", True),
+        ("apps/desktop/bench/cli.ts", False),
+    ],
+)
+def test_gitignore_rules(path: str, ignored: bool) -> None:
+    assert git_ignores(path) is ignored
