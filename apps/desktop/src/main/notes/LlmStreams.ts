@@ -10,6 +10,8 @@ import {
   noteDocProblem,
   type ChatMessage,
   type ChatStreamEvent,
+  type LlmRun,
+  type LlmRunStatus,
   type Note,
   type NotesStreamEvent,
   type RefCitation,
@@ -47,8 +49,11 @@ export interface StreamWindow {
 export interface LlmStreamsDeps {
   /** createStreamRequest (main/api/streamRequest.ts) on the app's API connection. */
   stream: StreamRequest;
-  /** `POST /v1/meetings/{id}/runs/{run_id}/cancel`, from the notes client (M4-T14). */
-  cancelRun: (meetingId: string, runId: string) => Promise<unknown>;
+  /**
+   * `POST /v1/meetings/{id}/runs/{run_id}/cancel`, from the notes client (M4-T14). Answers the
+   * run: its status says whether the cancel stopped it or the run had already finished.
+   */
+  cancelRun: (meetingId: string, runId: string) => Promise<Pick<LlmRun, 'status'>>;
   logger: Logger;
 }
 
@@ -69,17 +74,26 @@ export interface NotesStreamRequest {
 /**
  * Why a stream ended with no `done` or `error`. Not the `dropped` event of a notes run, which is
  * one AI line the API removed: this is the whole stream lost while its run goes on in the API.
- * `window_closed`: the asking window closed, and main stopped reading on purpose.
+ * - `window_closed`: the asking window closed, and main stopped reading on purpose.
+ * - `cancel_unconfirmed`: this stream was cancelled, but the API did not say it stopped the run.
+ *   Its answer names another status (the run finished first: a `succeeded` notes run saved its AI
+ *   doc), or the cancel request failed and the run may still finish and save.
  */
-export type StreamDropCause = 'stream_ended' | 'network_error' | 'invalid_event' | 'window_closed';
+export type StreamDropCause =
+  'stream_ended' | 'network_error' | 'invalid_event' | 'window_closed' | 'cancel_unconfirmed';
 
 /**
  * How a stream ended, once, for its caller.
  * - `done`: the stored result: the AI note (notes) or the answer (chat).
  * - `error`: the API's `error` event (`status` null), a refusal before the stream (`status` is
- *   the HTTP status, 0 for `network_error`), or this stream's cancel (`cancelled`, null).
+ *   the HTTP status, 0 for `network_error`), or this stream's cancel (`cancelled`, null), once
+ *   the API answered that it stopped the run (or the stream ended before the API named one).
  * - `dropped`: see StreamDropCause. `runId` is null only for a chat answer whose `run` event
  *   never came.
+ *
+ * A cancelled stream can still end `done` or `dropped` (`cancel_unconfirmed`): the run beat the
+ * cancel. The page was told `cancelled` at once, so the caller loads what the run saved (for
+ * notes, `applyServerNote`), or notes.sqlite keeps an older AI doc than Postgres.
  */
 export type StreamEnd<TDone> =
   | { kind: 'done'; result: TDone }
@@ -129,8 +143,11 @@ interface OpenStream {
   /** Why main stopped reading, or null while it reads. Nothing reaches the page once set. */
   stop: 'cancelled' | 'window_closed' | null;
   readonly runHeld: RunHeld;
-  /** The cancel under way: the API's cancel, sent once the API holds the run. */
-  cancelling: Promise<void> | null;
+  /**
+   * The cancel under way: the API's cancel, sent once the API holds the run. Settles with the
+   * run's status from the API's answer, or null when the stream ended before the API named a run.
+   */
+  cancelling: Promise<LlmRunStatus | null> | null;
   sendError(code: string, message: string): void;
 }
 
@@ -200,10 +217,10 @@ export class LlmStreams {
   }
 
   /**
-   * Cancels the meeting's notes stream: the page gets a `cancelled` error at once, the stream
-   * ends as `cancelled`, and the API is asked to stop the run. False when no stream is open.
-   * Settles when the API answered the cancel, and rejects when that request failed (the run may
-   * then finish and save in the API).
+   * Cancels the meeting's notes stream: the page gets a `cancelled` error at once and the API is
+   * asked to stop the run. The stream ends as `cancelled` only when the API's answer says it
+   * stopped the run; otherwise as StreamEnd says. False when no stream is open. Settles when the
+   * API answered the cancel, and rejects when that request failed.
    */
   cancelNotes(meetingId: string): Promise<boolean> {
     return this.cancel(this.open.get(`notes:${meetingId}`));
@@ -240,7 +257,10 @@ export class LlmStreams {
     this.watch(window);
     stream.log.info('llm stream opening');
     try {
-      const end = await this.pump(stream, spec);
+      const pumped = await this.pump(stream, spec);
+      // The stream is over: a cancel still waiting for the run id learns there is none to send.
+      stream.runHeld.resolve(null);
+      const end = pumped === 'stopped' ? await this.stoppedEnd(stream) : pumped;
       logEnd(stream.log, end);
       return end;
     } finally {
@@ -249,16 +269,17 @@ export class LlmStreams {
     }
   }
 
+  /** Reads the stream to its end; `stopped` when main stopped reading (stoppedEnd decides). */
   private async pump<TEvent, TDone>(
     stream: OpenStream,
     spec: StreamSpec<TEvent, TDone>,
-  ): Promise<StreamEnd<TDone>> {
+  ): Promise<StreamEnd<TDone> | 'stopped'> {
     let events: AsyncIterable<SseEvent>;
     try {
       events = await this.deps.stream(spec.path, spec.body, stream.abort.signal);
     } catch (error) {
       if (!(error instanceof ApiError)) throw error;
-      if (stream.stop !== null) return stopped(stream);
+      if (stream.stop !== null) return 'stopped';
       stream.sendError(error.code, error.message);
       return { kind: 'error', code: error.code, message: error.message, status: error.status };
     }
@@ -285,24 +306,59 @@ export class LlmStreams {
           // it and loads what it stored, as after any lost stream.
           return stream.stop === null
             ? { kind: 'dropped', runId: stream.runId, cause: 'invalid_event' }
-            : stopped(stream);
+            : 'stopped';
         }
         if (step.runId !== undefined && stream.runId === null) {
           stream.runId = step.runId;
           stream.runHeld.resolve(step.runId);
         }
         this.forward(stream, spec, step.event);
-        if (step.end !== undefined) return stream.stop === null ? step.end : stopped(stream);
+        if (step.end === undefined) continue;
+        // A `done` read after main stopped reading is still the run's saved result: the run beat
+        // the cancel (a replayed chat answer has no `run` event, so nothing aborts it), and the
+        // caller must apply it. Ending it as `cancelled` leaves notes.sqlite on an older AI doc.
+        return stream.stop === null || step.end.kind === 'done' ? step.end : 'stopped';
       }
     } catch (error) {
       if (!(error instanceof ApiError)) throw error;
-      if (stream.stop !== null) return stopped(stream);
+      if (stream.stop !== null) return 'stopped';
       stream.log.info('llm stream connection failed', { error: error.message });
       return { kind: 'dropped', runId: stream.runId, cause: 'network_error' };
     }
     return stream.stop === null
       ? { kind: 'dropped', runId: stream.runId, cause: 'stream_ended' }
-      : stopped(stream);
+      : 'stopped';
+  }
+
+  /**
+   * The end of a stream main stopped reading. A closed window's run goes on in the API. A
+   * cancelled one ends `cancelled` only once the API's answer says it stopped the run: a run that
+   * finished first saved its output, and the abort threw its `done` away, so the caller must
+   * load it (StreamEnd). Only `cancelled` confirms. `running` (the API answered before it marked
+   * the run) ends `dropped` too, and the caller's poll reads the final status; the cancel route
+   * (M4-T8) answers the run once it is marked, or every cancel costs that poll.
+   */
+  private async stoppedEnd(stream: OpenStream): Promise<StreamEnd<never>> {
+    if (stream.cancelling === null) {
+      return { kind: 'dropped', runId: stream.runId, cause: 'window_closed' };
+    }
+    let status: LlmRunStatus | null;
+    try {
+      status = await stream.cancelling;
+    } catch (error) {
+      if (!(error instanceof ApiError)) throw error;
+      // cancel() hands this failure to its own caller; for the stream it means the run may go on.
+      stream.log.warn('llm run cancel failed, the run may still finish', {
+        code: error.code,
+        status: error.status,
+      });
+      return { kind: 'dropped', runId: stream.runId, cause: 'cancel_unconfirmed' };
+    }
+    if (status === null || status === 'cancelled') {
+      return { kind: 'error', code: 'cancelled', message: stream.cancelledMessage, status: null };
+    }
+    stream.log.warn('llm run ended before its cancel', { runStatus: status });
+    return { kind: 'dropped', runId: stream.runId, cause: 'cancel_unconfirmed' };
   }
 
   /** Sends one event to the stream's window, unless main stopped reading or the page is gone. */
@@ -333,15 +389,16 @@ export class LlmStreams {
    * A chat answer's run id arrives in its first event, so until then the stream is read on
    * without forwarding. Waiting is bounded by the stream's open timeout (streamRequest.ts).
    */
-  private async cancelRun(stream: OpenStream): Promise<void> {
+  private async cancelRun(stream: OpenStream): Promise<LlmRunStatus | null> {
     const runId = await stream.runHeld.promise;
     stream.abort.abort();
     if (runId === null) {
       stream.log.info('llm stream cancelled before the API named its run');
-      return;
+      return null;
     }
-    await this.deps.cancelRun(stream.meetingId, runId);
-    stream.log.info('llm run cancelled', { runId });
+    const run = await this.deps.cancelRun(stream.meetingId, runId);
+    stream.log.info('llm run cancel answered', { runId, runStatus: run.status });
+    return run.status;
   }
 
   /**
@@ -360,13 +417,6 @@ export class LlmStreams {
       }
     });
   }
-}
-
-/** The end of a stream main stopped reading. */
-function stopped<TDone>(stream: OpenStream): StreamEnd<TDone> {
-  return stream.stop === 'cancelled'
-    ? { kind: 'error', code: 'cancelled', message: stream.cancelledMessage, status: null }
-    : { kind: 'dropped', runId: stream.runId, cause: 'window_closed' };
 }
 
 function logEnd(log: Logger, end: StreamEnd<unknown>): void {

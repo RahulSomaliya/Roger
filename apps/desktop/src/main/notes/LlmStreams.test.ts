@@ -2,7 +2,8 @@ import { EventEmitter } from 'node:events';
 import { describe, expect, it, vi } from 'vitest';
 import { chatChannels, type ChatStreamMessage } from '../../shared/ipc/chat';
 import { notesChannels, type NotesStreamMessage } from '../../shared/ipc/notes';
-import type { ChatMessage, Note } from '../../shared/notes';
+import type { ChatMessage, LlmRun, Note } from '../../shared/notes';
+import { ApiError } from '../api/http';
 import { createStreamRequest } from '../api/streamRequest';
 import { createLogger } from '../logger';
 import { LlmStreams, type StreamWindow } from './LlmStreams';
@@ -110,9 +111,10 @@ function fakeWindow(id: number) {
 function harness() {
   const api = fakeApi();
   const lines: string[] = [];
+  // The API's answer to a cancel that stopped the run.
   const cancelRun = vi
-    .fn<(meetingId: string, runId: string) => Promise<unknown>>()
-    .mockResolvedValue({});
+    .fn<(meetingId: string, runId: string) => Promise<Pick<LlmRun, 'status'>>>()
+    .mockResolvedValue({ status: 'cancelled' });
   const streams = new LlmStreams({
     stream: createStreamRequest(
       { baseUrl: 'http://api.test', token: 'secret', fetchImpl: api.fetchImpl },
@@ -441,6 +443,75 @@ describe('LlmStreams', () => {
     await expect(refusedCancel).resolves.toBe(true);
     await expect(refused).resolves.toMatchObject({ kind: 'error', code: 'cancelled' });
     expect(cancelRun).toHaveBeenCalledTimes(2);
+  });
+
+  it('a cancel the run beat ends as dropped, so the caller loads what the run saved', async () => {
+    const { streams, call, cancelRun } = harness();
+    const page = fakeWindow(1);
+    // The run saved its notes a moment before the cancel reached the API, and the API's answer
+    // says so. Its `done` was lost with the aborted body.
+    cancelRun.mockResolvedValueOnce({ status: 'succeeded' });
+    const notes = streams.streamNotes(notesRequest(), page.window);
+    const notesApi = await call(0);
+    notesApi.open();
+    notesApi.send('section', { index: 0, heading: 'Decisions' });
+    await vi.waitFor(() => {
+      expect(page.sent).toHaveLength(1);
+    });
+
+    await expect(streams.cancelNotes(MEETING)).resolves.toBe(true);
+    await expect(notes).resolves.toEqual({
+      kind: 'dropped',
+      runId: RUN,
+      cause: 'cancel_unconfirmed',
+    });
+    // The page heard `cancelled` at once; the caller's load of the saved notes corrects it.
+    expect(page.on(notesChannels.NotesEvent).map((m) => (m as NotesStreamMessage).event)).toEqual([
+      { type: 'section', index: 0, heading: 'Decisions' },
+      { type: 'error', code: 'cancelled', message: 'Notes generation was cancelled.' },
+    ]);
+
+    // A cancel request that failed leaves the run going on in the API: not cancelled either.
+    const offline = new ApiError(0, 'network_error', 'POST /v1/.../cancel failed: offline');
+    cancelRun.mockRejectedValueOnce(offline);
+    const chat = streams.streamChat(question, page.window);
+    const chatApi = await call(1);
+    chatApi.open();
+    chatApi.send('run', { run_id: CHAT_RUN, model: 'test-model' });
+    await vi.waitFor(() => {
+      expect(page.on(chatChannels.ChatEvent)).toHaveLength(1);
+    });
+    await expect(streams.cancelChat({ meetingId: MEETING, messageId: QUESTION })).rejects.toBe(
+      offline,
+    );
+    await expect(chat).resolves.toEqual({
+      kind: 'dropped',
+      runId: CHAT_RUN,
+      cause: 'cancel_unconfirmed',
+    });
+  });
+
+  it('a done read after a cancel ends the stream with the saved result', async () => {
+    const { streams, call, cancelRun } = harness();
+    const page = fakeWindow(1);
+    // A re-sent question whose answer is complete: the API replays `done` with no `run` first,
+    // so the cancel is still waiting for a run id when the answer arrives.
+    const chat = streams.streamChat(question, page.window);
+    const chatApi = await call(0);
+    chatApi.open();
+    const cancelled = streams.cancelChat({ meetingId: MEETING, messageId: QUESTION });
+    chatApi.send('done', { message: answerWire });
+
+    await expect(chat).resolves.toEqual({ kind: 'done', result: answer });
+    await expect(cancelled).resolves.toBe(true);
+    expect(cancelRun).not.toHaveBeenCalled();
+    expect(page.on(chatChannels.ChatEvent)).toEqual([
+      {
+        meetingId: MEETING,
+        messageId: QUESTION,
+        event: { type: 'error', code: 'cancelled', message: 'The answer was cancelled.' },
+      },
+    ]);
   });
 
   it('closing the window aborts its streams', async () => {
