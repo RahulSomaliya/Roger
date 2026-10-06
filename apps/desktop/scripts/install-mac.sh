@@ -101,6 +101,10 @@ with_signing_keychain() {
 # codesign exits 1 for unsigned code; under `set -e` and `pipefail` that failed pipeline would end
 # the whole install, silently, at the caller's assignment. Hence the `|| true`: unsigned reads as
 # empty, and each caller decides what empty means.
+# src/main/native/installMac.mac.test.ts (`make check` on a Mac) runs this function and
+# require_local_signature on real unsigned and ad-hoc code, and fails if either rule above goes. It
+# cuts each one out of this file by its text: keep both top-level `name() {` blocks, each closed by
+# a `}` line of its own.
 designated_requirement() {
   [[ -e "$1" ]] || return 0
   { codesign -d -r- "$1" 2>/dev/null || true; } | sed -n 's/^#* *designated => //p'
