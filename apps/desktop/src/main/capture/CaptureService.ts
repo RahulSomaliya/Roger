@@ -180,6 +180,8 @@ export class CaptureService {
     status.message = message;
     const meetingId = this.session?.meetingId ?? null;
     this.options.logger.warn('audio source problem', { source, state, message, meetingId });
+    // Its vendor session would bill silence until Stop: close it now; the other source goes on.
+    this.session?.closeSource(source, message ?? `the audio source reported ${state}`);
     if (state === 'ended' && this.phase === 'recording') {
       // A track that ends mid-call never comes back; only a new session reopens the device.
       this.error = `${AUDIO_SOURCE_LABEL[source]} stopped: ${message ?? 'the audio track ended'}. Press Stop, then Start again.`;

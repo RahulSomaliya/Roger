@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import type { UploadStatus } from '../../shared/capture';
-import { describeHealth, describeSaved, describeUpload, formatOffset } from './format';
+import {
+  describeHealth,
+  describeSaved,
+  describeStream,
+  describeUpload,
+  formatOffset,
+} from './format';
 
 const upload = (overrides: Partial<UploadStatus>): UploadStatus => ({
   state: 'idle',
@@ -28,6 +34,14 @@ describe('describeHealth', () => {
     expect(describeHealth('stalled', 12)).toBe('no audio for over 5 s');
     expect(describeHealth('active', 25)).toBe('3s captured');
     expect(describeHealth('ended', 25)).toBe('stopped');
+  });
+});
+
+describe('describeStream', () => {
+  it('says transcribing only for an open session, and not connected for a closed one', () => {
+    expect(describeStream('open')).toBe('transcribing');
+    expect(describeStream('closed')).toBe('not connected');
+    expect(describeStream('connecting')).toBe('connecting');
   });
 });
 

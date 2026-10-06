@@ -154,13 +154,38 @@ describe('CaptureSession', () => {
 
     system.emitter.emit({ type: 'closed', code: 1011, reason: 'timeout' });
     expect(l.failures).toEqual([['system', 'connection closed (code 1011: timeout)']]);
-    expect(l.states.at(-1)).toBe('system:closed');
+    expect(l.states.at(-1)).toBe('system:error');
+    expect(system.closed).toBe(true); // the dead stream is closed, not only forgotten
 
     s.pushAudio('mic', new Uint8Array(3200));
     s.pushAudio('system', new Uint8Array(3200));
     expect(mic.sent).toHaveLength(1);
     expect(system.sent).toHaveLength(0);
 
+    await s.close();
+    expect(mic.closed).toBe(true);
+  });
+
+  it('closes only the session of a source that failed, and never reports that close', async () => {
+    const stt = new ControlledSpeechToText();
+    const l = listeners();
+    const s = session(stt, l);
+    const opening = s.open();
+    const mic = stt.succeed('mic');
+    const system = stt.succeed('system');
+    await opening;
+
+    s.closeSource('system', 'No screen source is available for system audio');
+    expect(system.closed).toBe(true);
+    expect(mic.closed).toBe(false);
+    expect(l.states.at(-1)).toBe('system:closed');
+    system.emitter.emit({ type: 'closed', code: 1000, reason: null });
+    expect(l.failures).toEqual([]);
+
+    s.pushAudio('system', new Uint8Array(3200));
+    s.pushAudio('mic', new Uint8Array(3200));
+    expect(system.sent).toHaveLength(0);
+    expect(mic.sent).toHaveLength(1);
     await s.close();
     expect(mic.closed).toBe(true);
   });

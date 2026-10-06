@@ -32,7 +32,8 @@ export function describeHealth(health: SourceHealth, chunks: number): string {
 export function describeStream(state: SttStreamState): string {
   switch (state) {
     case 'closed':
-      return 'closed';
+      // No vendor session: before Start, after Stop, or the source failed or ended.
+      return 'not connected';
     case 'connecting':
       return 'connecting';
     case 'open':

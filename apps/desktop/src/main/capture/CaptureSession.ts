@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import type { SttStreamState } from '../../shared/capture';
 import { PCM_SAMPLE_RATE } from '../../shared/ipc';
 import { pcmBytesToMs } from '../../shared/pcm';
 import {
@@ -12,12 +13,11 @@ import { errorMessage, type Logger } from '../logger';
 import type { TranscriptStore } from '../store/TranscriptStore';
 import type { SpeechToText, SttEvent, SttStream, SttStreamSettings } from '../stt/SpeechToText';
 
-export type SessionStreamState = 'connecting' | 'open' | 'closed';
-
 export interface CaptureSessionListeners {
   onSegment(segment: TranscriptSegment): void;
   onInterim(interim: InterimTranscript): void;
-  onStreamState(source: AudioSource, state: SessionStreamState): void;
+  /** A source's vendor session changed state; `message` says why it is not open, or null. */
+  onStreamState(source: AudioSource, state: SttStreamState, message: string | null): void;
   /** A stream died while the session was still recording. The session keeps the other stream. */
   onStreamFailure(source: AudioSource, reason: string): void;
   /** A final line could not be written to the local store. onSegment still gets it right after. */
@@ -37,14 +37,41 @@ export interface CaptureSessionOptions {
   clock?: () => number;
 }
 
+/** One vendor stream, from its open until its close settles. */
+interface StreamHandle {
+  readonly stream: SttStream;
+  /**
+   * Meeting offset of the stream's first audio byte, the vendor's time zero. Per stream, not per
+   * source: a reopened stream starts its own clock. Null until its first chunk is sent.
+   */
+  offsetMs: number | null;
+  /** Set once the stream was asked to close; settles when it has. */
+  closing: Promise<void> | null;
+}
+
+/** What one audio source has with the vendor right now. */
+interface SourceLink {
+  state: SttStreamState;
+  /** The stream carrying this source's audio, or null. Only `open` has one. */
+  current: StreamHandle | null;
+  /** Bumped by every open and every close, so an open that lands late knows it is stale. */
+  attempt: number;
+}
+
 /**
  * One meeting's live pipeline: one speech-to-text stream per audio source, finals written to the
  * local store the moment they arrive (house rule 1), interims passed straight to the UI.
+ *
+ * Vendors bill every second a session is open, silent or not, so a source that has no audio must
+ * not hold one: a source that fails or ends closes its own session at once (closeSource), and the
+ * other keeps going. Every stream this class ever opened is tracked until its close settles, and
+ * close() waits for all of them.
  */
 export class CaptureSession {
   readonly meetingId: string;
-  private readonly streams = new Map<AudioSource, SttStream>();
-  private readonly firstChunkOffsetMs = new Map<AudioSource, number>();
+  private readonly links: Record<AudioSource, SourceLink> = { mic: newLink(), system: newLink() };
+  /** Every stream not yet closed, the ones closing included: close() waits for each. */
+  private readonly handles = new Set<StreamHandle>();
   private readonly clock: () => number;
   private segmentsStored = 0;
   private closing = false;
@@ -76,54 +103,106 @@ export class CaptureSession {
   }
 
   pushAudio(source: AudioSource, pcm: Uint8Array): void {
-    const stream = this.streams.get(source);
-    if (!stream) return;
-    if (!this.firstChunkOffsetMs.has(source)) {
-      // The vendor's clock starts at its first audio byte. That byte was captured one chunk
-      // before it reached us, so the offset is "now" minus the chunk's own duration. Adapters
-      // must hand the vendor every byte, in order (AssemblyAI regroups them; see
-      // SttConnection.sendFrame).
-      const captured =
-        this.clock() -
-        pcmBytesToMs(pcm.byteLength, this.options.settings.sampleRate || PCM_SAMPLE_RATE);
-      this.firstChunkOffsetMs.set(source, Math.max(0, captured - this.options.meetingStartedAtMs));
+    if (this.closing) return;
+    const link = this.links[source];
+    if (link.state === 'open' && link.current !== null) this.send(link.current, pcm, this.clock());
+  }
+
+  /**
+   * The source failed or ended: close its vendor session now, without waiting for Stop. The
+   * renderer reports this once the track is gone for good, so the session would only bill silence
+   * (Deepgram even kept it alive with KeepAlive) for the rest of the meeting. It stays closed: a
+   * dead track never comes back, only a new Start reopens the device.
+   */
+  closeSource(source: AudioSource, reason: string): void {
+    if (this.closing) return;
+    const link = this.links[source];
+    link.attempt += 1;
+    const handle = link.current;
+    link.current = null;
+    if (link.state === 'closed') return;
+    this.setState(source, 'closed', reason);
+    if (handle !== null) {
+      this.options.logger.info('speech-to-text stream closed: the source has no audio', {
+        source,
+        reason,
+      });
+      void this.retire(handle);
     }
-    stream.send(pcm);
   }
 
   async close(): Promise<void> {
     this.closing = true;
-    const streams = [...this.streams.entries()];
-    this.streams.clear();
-    const results = await Promise.allSettled(streams.map(([, stream]) => stream.close()));
-    results.forEach((result, index) => {
-      if (result.status === 'rejected') {
-        this.options.logger.warn('stream close failed', {
-          source: streams[index]?.[0],
-          error: errorMessage(result.reason),
-        });
-      }
-    });
+    for (const link of Object.values(this.links)) {
+      link.attempt += 1;
+      if (link.current !== null) void this.retire(link.current);
+      link.current = null;
+    }
+    await Promise.all([...this.handles].map((handle) => this.retire(handle)));
   }
 
   private async openStream(source: AudioSource): Promise<void> {
-    const { listeners, stt, accessToken, settings } = this.options;
-    listeners.onStreamState(source, 'connecting');
-    const stream = await stt.openStream({ accessToken, settings, label: source });
-    if (this.closing) {
-      // Another stream failed while this one was still connecting; do not leak it.
-      await stream.close();
+    const { stt, accessToken, settings } = this.options;
+    const link = this.links[source];
+    const attempt = (link.attempt += 1);
+    this.setState(source, 'connecting', null);
+    const handle = this.track(
+      source,
+      await stt.openStream({ accessToken, settings, label: source }),
+    );
+    if (this.closing || link.attempt !== attempt) {
+      // Another stream failed, or the source closed, while this one was connecting: do not leak it.
+      await this.retire(handle);
       return;
     }
-    stream.on((event) => {
-      this.handleEvent(source, event);
-    });
-    this.streams.set(source, stream);
-    listeners.onStreamState(source, 'open');
+    link.current = handle;
+    this.setState(source, 'open', null);
   }
 
-  private handleEvent(source: AudioSource, event: SttEvent): void {
-    const offset = this.firstChunkOffsetMs.get(source) ?? 0;
+  /** Every stream is tracked from the moment it exists, so close() can never miss one. */
+  private track(source: AudioSource, stream: SttStream): StreamHandle {
+    const handle: StreamHandle = { stream, offsetMs: null, closing: null };
+    this.handles.add(handle);
+    stream.on((event) => {
+      this.handleEvent(source, handle, event);
+    });
+    return handle;
+  }
+
+  /** Asks the stream to close (idempotent); the handle is forgotten once it has. */
+  private retire(handle: StreamHandle): Promise<void> {
+    handle.closing ??= handle.stream
+      .close()
+      .catch((error: unknown) => {
+        this.options.logger.warn('stream close failed', { error: errorMessage(error) });
+      })
+      .finally(() => {
+        this.handles.delete(handle);
+      });
+    return handle.closing;
+  }
+
+  private send(handle: StreamHandle, pcm: Uint8Array, arrivedAtMs: number): void {
+    if (handle.offsetMs === null) {
+      // The vendor's clock starts at its first audio byte. That byte was captured one chunk
+      // before it reached us, so the offset is its arrival minus the chunk's own duration.
+      // Adapters must hand the vendor every byte, in order (AssemblyAI regroups them; see
+      // SttConnection.sendFrame).
+      const captured =
+        arrivedAtMs -
+        pcmBytesToMs(pcm.byteLength, this.options.settings.sampleRate || PCM_SAMPLE_RATE);
+      handle.offsetMs = Math.max(0, captured - this.options.meetingStartedAtMs);
+    }
+    handle.stream.send(pcm);
+  }
+
+  private setState(source: AudioSource, state: SttStreamState, message: string | null): void {
+    this.links[source].state = state;
+    this.options.listeners.onStreamState(source, state, message);
+  }
+
+  private handleEvent(source: AudioSource, handle: StreamHandle, event: SttEvent): void {
+    const offset = handle.offsetMs ?? 0;
     const { listeners, logger } = this.options;
     switch (event.type) {
       case 'final': {
@@ -177,24 +256,35 @@ export class CaptureSession {
           message: event.message,
           fatal: event.fatal,
         });
-        if (event.fatal && !this.closing) this.fail(source, event.message);
+        if (event.fatal) this.streamFailed(source, handle, event.message);
         return;
       case 'closed': {
         const reason = describeClose(event.code, event.reason);
         logger.info('speech-to-text stream closed', { source, reason });
-        if (this.closing) return;
         // Not asked to close: the vendor or the network ended the stream mid-call.
-        this.fail(source, `connection closed (${reason})`);
+        this.streamFailed(source, handle, `connection closed (${reason})`);
       }
     }
   }
 
-  private fail(source: AudioSource, reason: string): void {
-    if (!this.streams.has(source)) return;
-    this.streams.delete(source);
-    this.options.listeners.onStreamState(source, 'closed');
+  /**
+   * The source's current stream died mid-call. A stream we asked to close (Stop, a failed source)
+   * is no longer current, so its "closed" is not a failure. The dead stream is closed too: the core
+   * closes itself after a fatal error, but a stream that only reported one must not stay open.
+   */
+  private streamFailed(source: AudioSource, handle: StreamHandle, reason: string): void {
+    const link = this.links[source];
+    if (this.closing || link.current !== handle) return;
+    link.current = null;
+    link.attempt += 1;
+    void this.retire(handle);
+    this.setState(source, 'error', reason);
     this.options.listeners.onStreamFailure(source, reason);
   }
+}
+
+function newLink(): SourceLink {
+  return { state: 'closed', current: null, attempt: 0 };
 }
 
 function describeClose(code: number | null, reason: string | null): string {

@@ -37,12 +37,15 @@ class ScriptedStream implements SttStream {
   readonly emitter = new SttEventEmitter();
   readonly sent: Uint8Array[] = [];
   closed = false;
+  closeCalls = 0;
   /** Emitted while closing, like a vendor flushing its last final after CloseStream. */
   finalOnClose: string | null = null;
   send(pcm: Uint8Array): void {
     this.sent.push(pcm);
   }
   close(): Promise<void> {
+    this.closeCalls += 1;
+    if (this.closed) return Promise.resolve();
     if (this.finalOnClose !== null) {
       this.emitter.emit({
         type: 'final',
@@ -54,6 +57,8 @@ class ScriptedStream implements SttStream {
       });
     }
     this.closed = true;
+    // Like a vendor's: the close it was asked for still ends in "closed".
+    this.emitter.emit({ type: 'closed', code: 1000, reason: null });
     return Promise.resolve();
   }
   on(listener: SttEventListener): () => void {
@@ -525,6 +530,63 @@ describe('CaptureService audio flow', () => {
 
     await h.elapse(6_000);
     expect(h.service.getStatus().sources.system.health).toBe('ended');
+    await h.service.stop();
+  });
+});
+
+describe('CaptureService cost guards', () => {
+  const chunk = () => new Uint8Array(3200);
+
+  it('closes the session of a source that fails, in the same tick, and leaves the other one open', async () => {
+    const h = harness();
+    await h.service.start();
+    const mic = h.stt.streams.get('mic')!;
+    const system = h.stt.streams.get('system')!;
+
+    h.service.reportSourceState(
+      'system',
+      'error',
+      'No screen source is available for system audio',
+    );
+
+    // No await: the vendor session is asked to close before reportSourceState returns.
+    expect(system.closeCalls).toBe(1);
+    expect(mic.closeCalls).toBe(0);
+    const status = h.service.getStatus();
+    expect(status.streams).toEqual({ mic: 'open', system: 'closed' });
+    expect(status.phase).toBe('recording');
+    expect(h.statuses.at(-1)?.streams.system).toBe('closed');
+
+    h.service.pushAudio('mic', chunk());
+    h.service.pushAudio('system', chunk());
+    expect(mic.sent).toHaveLength(1);
+    expect(system.sent).toHaveLength(0);
+    expect(h.stt.opened).toHaveLength(2); // a failed source never reopens on its own
+
+    await h.service.stop();
+    expect(mic.closed).toBe(true);
+    expect(system.closeCalls).toBe(1);
+  });
+
+  it('closes the session of a source whose track ended mid-call', async () => {
+    const h = harness();
+    await h.service.start();
+    h.service.pushAudio('mic', chunk());
+    h.service.reportSourceState('mic', 'ended', 'The audio device stopped delivering audio');
+
+    expect(h.stt.streams.get('mic')?.closed).toBe(true);
+    expect(h.stt.streams.get('system')?.closed).toBe(false);
+    expect(h.service.getStatus().streams.mic).toBe('closed');
+    expect(h.service.getStatus().error).toContain('Mic (me) stopped');
+    await h.service.stop();
+  });
+
+  it('closes a stream the vendor ended mid-call instead of only forgetting it', async () => {
+    const h = harness();
+    await h.service.start();
+    const system = h.stt.streams.get('system')!;
+    system.emitter.emit({ type: 'error', message: 'Session Cancelled', fatal: true });
+    expect(system.closeCalls).toBe(1);
     await h.service.stop();
   });
 });
