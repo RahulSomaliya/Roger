@@ -87,6 +87,10 @@ interface TranscriptSegment {
 
 ## Endpoints
 
+Every route has its own heading, ``### `METHOD /path` `` (``#### `METHOD /path` `` under a
+feature's heading). `apps/api/tests/test_http_plumbing.py` reads these headings and fails on a
+served route without one, or on one without a route.
+
 ### `GET /health`
 
 No auth. `200 {"status": "ok", "version": "0.1.0", "database": "ok"}`. Returns `503` with

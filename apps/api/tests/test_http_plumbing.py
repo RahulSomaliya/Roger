@@ -6,25 +6,36 @@ import httpx
 import pytest
 from fastapi import FastAPI
 
+from roger_api.config import REPO_ROOT_ENV_FILE
 from tests.helpers import assert_error
 
 UUID_PATTERN = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}")
 
+API_CONTRACT = REPO_ROOT_ENV_FILE.parent / "docs" / "api-contract.md"
+# A route's heading in the contract: "### `GET /v1/meetings?limit=50...`", or "#### `PUT
+# /v1/vocabulary`" under a feature's own heading. The query string is not part of the path.
+CONTRACT_ROUTE_HEADING = re.compile(r"^#+ `(GET|POST|PUT|PATCH|DELETE) (/[^`?\s]*)", re.MULTILINE)
+
 
 async def test_openapi_documents_the_contract_routes(anonymous_client: httpx.AsyncClient) -> None:
+    # The expected routes come from the contract, never from a list here. Phase 2 has a dozen
+    # route-adding tasks in parallel worktrees; a path literal in this file made every one of them
+    # edit the same lines, so their branches conflicted on merge (M3-T2 review, 2026-10-06). A new
+    # route needs only its heading in its own contract section (house rule 8), and a route or a
+    # heading without the other fails here.
     response = await anonymous_client.get("/openapi.json")
 
     assert response.status_code == 200
-    assert set(response.json()["paths"]) == {
-        "/health",
-        "/v1/meetings",
-        "/v1/meetings/{meeting_id}",
-        "/v1/meetings/{meeting_id}/segments",
-        "/v1/meetings/{meeting_id}/end",
-        "/v1/meetings/{meeting_id}/transcript",
-        "/v1/stt/token",
-        "/v1/vocabulary",
+    served = {
+        (method.upper(), path)
+        for path, operations in response.json()["paths"].items()
+        for method in operations
     }
+    documented = set(CONTRACT_ROUTE_HEADING.findall(API_CONTRACT.read_text()))
+    undocumented = sorted(served - documented)
+    unserved = sorted(documented - served)
+    assert not undocumented, f"routes with no heading in docs/api-contract.md: {undocumented}"
+    assert not unserved, f"docs/api-contract.md headings with no route: {unserved}"
 
 
 async def test_request_id_is_echoed(client: httpx.AsyncClient) -> None:
