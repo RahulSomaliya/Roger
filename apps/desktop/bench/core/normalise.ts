@@ -36,8 +36,8 @@ export function normalise(text: string): string[] {
   const cleaned = text
     .normalize('NFKC')
     .toLowerCase()
-    .replace(/[‘’‚‛′ʼ]/g, "'")
-    .replace(/[“”„‟″]/g, '"')
+    .replace(/[\u2018\u2019\u201a\u201b\u2032\u02bc]/g, "'")
+    .replace(/[\u201c\u201d\u201e\u201f\u2033]/g, '"')
     .replace(/(?<=\d),(?=\d{3}(?!\d))/g, '')
     .replace(
       /\$\s?(\d+(?:\.\d+)?)(\s+(?:hundred|thousand|million|billion|trillion)\b)?/g,

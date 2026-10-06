@@ -16,11 +16,11 @@ describe('normalise (version 1)', () => {
   });
 
   it('applies Unicode NFKC, then lowercases', () => {
-    expect(n('ＬＩＮＫＴ ﬁle Roger')).toBe('linkt file roger');
+    expect(n('\uff2c\uff29\uff2e\uff2b\uff34 \ufb01le Roger')).toBe('linkt file roger');
   });
 
   it('makes curly quotes straight, so a curly apostrophe stays inside its word', () => {
-    expect(n('don’t ‘quoted’ “this”')).toBe("don't quoted this");
+    expect(n('don\u2019t \u2018quoted\u2019 \u201cthis\u201d')).toBe("don't quoted this");
   });
 
   it('removes punctuation, keeping apostrophes inside words and points inside numbers', () => {
@@ -39,7 +39,7 @@ describe('normalise (version 1)', () => {
   });
 
   it('turns hyphens, dashes and slashes into spaces', () => {
-    expect(n('follow-up and/or well—I mean–no')).toBe('follow up and or well i mean no');
+    expect(n('follow-up and/or well\u2014I mean\u2013no')).toBe('follow up and or well i mean no');
   });
 
   it('removes the fillers um, uh, er, ah, hmm and mm, and only those words', () => {
