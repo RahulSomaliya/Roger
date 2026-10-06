@@ -18,15 +18,16 @@ import httpx
 import pytest
 from asgi_lifespan import LifespanManager
 from fastapi import FastAPI
-from sqlalchemy import func, select, update
+from sqlalchemy import column, func, select, table, update
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from roger_api.app import create_app
-from roger_api.auth import default_principal
+from roger_api.auth import Principal, default_principal
 from roger_api.config_notes import NotesSettings
 from roger_api.db.engine import Database
 from roger_api.db.models import Meeting
 from roger_api.db.models_notes import ChatMessage, ChatMessageStatus, ChatRole, LlmRun
-from roger_api.errors import LlmProviderError
+from roger_api.errors import ConflictError, LlmProviderError
 from roger_api.services import chat, llm_runs
 from roger_api.services.chat_prompt import CHAT_HISTORY_EXCHANGES, CHAT_PROMPT_VERSION
 from roger_api.services.llm_runs import STALE_AFTER
@@ -213,6 +214,44 @@ async def streaming_answer(database: Database) -> ChatMessage:
         lambda rows: any(row.role == "assistant" and row.status == "streaming" for row in rows),
     )
     return next(row for row in messages if row.role == "assistant")
+
+
+_ACTIVITY = table("pg_stat_activity", column("datname"), column("wait_event_type"))
+
+
+async def waiting_on_a_lock(database: Database) -> bool:
+    """Whether a session of this test database waits on a lock another transaction holds."""
+    async with database.session() as session:
+        waiting = await session.scalar(
+            select(func.count())
+            .select_from(_ACTIVITY)
+            .where(
+                _ACTIVITY.c.datname == func.current_database(),
+                _ACTIVITY.c.wait_event_type == "Lock",
+            )
+        )
+    return bool(waiting)
+
+
+async def until_blocked(database: Database, task: asyncio.Task[None]) -> None:
+    """Waits until `task` waits on a lock, or has ended. The caller's timeout bounds it."""
+    await eventually(lambda: waiting_on_a_lock(database), lambda waiting: waiting or task.done())
+
+
+async def claim_in(
+    api: ChatApi, session: AsyncSession, meeting_id: str, message_id: UUID
+) -> chat.AnswerClaim:
+    """A claim as the route's dependency makes it, left uncommitted in `session`. Through the
+    routes, ASGITransport would hide when it ran (it buffers whole responses)."""
+    return await chat.claim_answer(
+        session,
+        get_llm_runtime_of(api.app),
+        default_principal(api.app.state.settings),
+        UUID(meeting_id),
+        message_id=message_id,
+        text="When?",
+        max_input_tokens=api.app.state.settings.notes_max_input_tokens,
+    )
 
 
 # ---------------------------------------------------------------------------- answering
@@ -498,21 +537,11 @@ async def test_resent_message_id_of_a_streaming_answer_attaches(open_api: OpenAp
         # The model was asked, so the run is driven here and held mid-answer.
         await eventually(lambda: requests_of(model), lambda asked: asked == 1)
 
-        # The re-send, as the route's dependency makes it. Through the routes, ASGITransport would
-        # hide whether it attached before the run ended (it buffers whole responses).
-        runtime = get_llm_runtime_of(api.app)
+        # The re-send, claimed here so it surely attaches before the run ends.
         async with api.database.session() as session:
-            claim = await chat.claim_answer(
-                session,
-                runtime,
-                default_principal(api.app.state.settings),
-                UUID(meeting.id),
-                message_id=question_id,
-                text="When?",
-                max_input_tokens=api.app.state.settings.notes_max_input_tokens,
-            )
+            claim = await claim_in(api, session, meeting.id, question_id)
             await session.commit()
-        stream = await chat.start_answer(runtime, claim)
+        stream = await chat.start_answer(get_llm_runtime_of(api.app), claim)
         hold.set()
         again = [(event.name, dict(event.data)) async for event in stream.events()]
         first_events = events_of(await first)
@@ -643,6 +672,63 @@ async def test_resent_message_id_of_an_answer_another_process_writes_is_a_confli
     assert_error(response, 409, "conflict")
     assert (run.id, run.status) == (run_id, "running")
     assert [message.status for message in messages] == ["complete", "streaming"]
+    assert model.requests == []
+
+
+async def test_an_answer_saved_while_its_resend_is_claimed_is_never_written_again(
+    open_api: OpenApi, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    model = ScriptedNotesModel()
+    async with asyncio.timeout(WAIT_S), open_api(model) as api:
+        meeting = await add_meeting(api.client, LINES)
+        question_id, answer_id, run_id = await add_answer_being_written(
+            api.database, meeting.id, heartbeat_age=timedelta(0)
+        )
+
+        async def save_elsewhere() -> None:
+            # What the API process writing the answer commits once it is written
+            # (`llm_runs._succeed`): the answer, then its run, in one transaction.
+            async with api.database.session() as session:
+                await session.execute(
+                    update(ChatMessage)
+                    .where(ChatMessage.id == answer_id)
+                    .values(text="Friday.", citations=[], status="complete")
+                )
+                await session.execute(
+                    update(LlmRun)
+                    .where(LlmRun.id == run_id)
+                    .values(status="succeeded", finished_at=func.now())
+                )
+                await session.commit()
+
+        saves: list[asyncio.Task[None]] = []
+        run_is_over = chat._run_is_over
+
+        async def saved_then_run_is_over(
+            session: AsyncSession, principal: Principal, run: UUID | None
+        ) -> bool:
+            # The save lands between the claim's read of the answer and its read of the run, the
+            # one moment a `succeeded` run would make the claim write the answer again.
+            saves.append(asyncio.create_task(save_elsewhere()))
+            await until_blocked(api.database, saves[-1])
+            return await run_is_over(session, principal, run)
+
+        with monkeypatch.context() as patch:
+            patch.setattr(chat, "_run_is_over", saved_then_run_is_over)
+            async with api.database.session() as session:
+                # The answer the claim read stays `streaming` until it commits, and its run is
+                # alive: some API process is writing it.
+                with pytest.raises(ConflictError):
+                    await claim_in(api, session, meeting.id, question_id)
+        [save] = saves
+        await save
+        replayed = events_of(await ask(api.client, meeting.id, "When?", question_id))
+        runs = await chat_runs(api.database)
+
+    # The saved answer is replayed, never reset and paid for a second time.
+    assert names(replayed) == ["done"]
+    assert done_message(replayed)["text"] == "Friday."
+    assert [(run.id, run.status) for run in runs] == [(run_id, "succeeded")]
     assert model.requests == []
 
 

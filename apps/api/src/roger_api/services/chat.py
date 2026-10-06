@@ -285,6 +285,8 @@ async def _claim_writing(
             )
         )
     else:
+        # Needs no status check: `_answer_to` holds this row, failed or streaming, locked until the
+        # claim commits. Without that lock this would reset an answer saved in between.
         await session.execute(
             update(ChatMessage)
             .where(ChatMessage.id == answer_id, ChatMessage.workspace_id == principal.workspace_id)
@@ -381,6 +383,18 @@ async def _store_question(
 async def _answer_to(
     session: AsyncSession, principal: Principal, question: ChatMessage
 ) -> ChatMessage | None:
+    """The question's answer, locked until the claim commits.
+
+    A run's save or failure (`llm_runs._succeed`, `_end_running_row`) waits for that lock, so the
+    status read here stays true through `_run_is_over` and `_claim_writing`. Unlocked, a save could
+    commit between this read (`streaming`) and `_run_is_over` (its run now `succeeded`, so over),
+    and `_claim_writing` would reset the complete answer and pay for it again. FOR NO KEY UPDATE is
+    enough to hold off an UPDATE (CLAUDE.md failure log, M3-T2).
+
+    Lock order: this answer, then its run when `claim_run`'s sweep fails it as stale. A run that
+    another API process fails at that moment takes them the other way round; Postgres ends that
+    deadlock by failing one of the two transactions, never by a wrong write.
+    """
     return await session.scalar(
         select(ChatMessage)
         .where(
@@ -390,6 +404,7 @@ async def _answer_to(
         )
         .order_by(ChatMessage.created_at.desc())
         .limit(1)
+        .with_for_update(key_share=True)
     )
 
 
@@ -402,7 +417,13 @@ async def _stored_elsewhere(session: AsyncSession, message_id: UUID) -> bool:
 
 async def _run_is_over(session: AsyncSession, principal: Principal, run_id: UUID | None) -> bool:
     """True when the run has ended, or its heartbeat is STALE_AFTER old on the database clock (the
-    sweep's own test, `llm_runs._fail_stale_runs`): no API process is writing the answer."""
+    sweep's own test, `llm_runs._fail_stale_runs`): no API process is writing the answer.
+
+    Called only for an answer `_answer_to` locked as `streaming`, so its run never reads
+    `succeeded` here: a run saves its answer `complete` and ends `succeeded` in one commit, which
+    waits on that lock. Unlocked, `succeeded` here meant "saved a moment ago", and the claim wrote
+    that answer again.
+    """
     if run_id is None:
         return True
     over = await session.scalar(
