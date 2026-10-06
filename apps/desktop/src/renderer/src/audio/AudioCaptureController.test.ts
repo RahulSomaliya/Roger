@@ -1,6 +1,6 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, expectTypeOf, it, vi } from 'vitest';
 import { idleCaptureStatus } from '../../../shared/capture';
-import type { RogerApi } from '../../../shared/ipc';
+import type { CaptureApi } from '../../../shared/ipc/capture';
 import type { AudioSource } from '../../../shared/transcript';
 import { AudioCaptureController, type CaptureDevices } from './AudioCaptureController';
 import type { PcmStreamCaptureOptions } from './PcmStreamCapture';
@@ -24,7 +24,7 @@ class FakeCapture {
 // Only getTracks is read (to stop a stream whose capture failed to start); a fake needs no more.
 const fakeStream = { getTracks: () => [] } as Pick<MediaStream, 'getTracks'> as MediaStream;
 
-function rogerApi(): RogerApi {
+function rogerApi(): CaptureApi {
   const status = idleCaptureStatus({
     state: 'idle',
     pending: 0,
@@ -84,6 +84,15 @@ async function settle(): Promise<void> {
 }
 
 describe('AudioCaptureController', () => {
+  // Checked by tsc (tsconfig.web.json), not at run time. RogerApi is every feature's part at once:
+  // typed against it, this controller and its fake below break the type check the moment any other
+  // feature adds a member, in files that feature does not own.
+  it("needs only capture's part of window.roger", () => {
+    expectTypeOf<
+      ConstructorParameters<typeof AudioCaptureController>[0]
+    >().toEqualTypeOf<CaptureApi>();
+  });
+
   it('stops a source still starting when main goes idle, and starts no other', async () => {
     const h = harness();
     const starting = h.controller.start();

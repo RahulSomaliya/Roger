@@ -1,59 +1,99 @@
-import type { CaptureStatus, AudioSourceState } from './capture';
-import type { AudioSource, InterimTranscript, TranscriptSegment } from './transcript';
+import { appChannels, type AppApi } from './ipc/app';
+import { calendarChannels, type CalendarApi } from './ipc/calendar';
+import { captureChannels, type CaptureApi } from './ipc/capture';
+import { chatChannels, type ChatApi } from './ipc/chat';
+import { loginItemChannels, type LoginItemApi } from './ipc/loginItem';
+import { meetingsChannels, type MeetingsApi } from './ipc/meetings';
+import { notesChannels, type NotesApi } from './ipc/notes';
+import { prefsChannels, type PrefsApi } from './ipc/prefs';
+import { promptChannels } from './ipc/prompt';
+import { setupChannels, type SetupApi } from './ipc/setup';
+import { vocabularyChannels, type VocabularyApi } from './ipc/vocabulary';
 
 /**
- * The IPC contract between renderer and main. Channel names live here once; the preload
- * bridges them into `window.roger`, the main process registers handlers for them.
+ * The IPC contract between renderer and main. Each feature owns one module under ./ipc/ with its
+ * channel names and its part of `window.roger`; the preload bridges them (src/preload/bridges/),
+ * main registers handlers for them through src/main/ipc/trust.ts, and the preview harness fakes
+ * them (preview/fakes/). This file only composes the modules and is not edited after P2-F1: a
+ * feature changes its own module, bridge and fake.
  */
-export const IpcChannel = {
-  /** renderer → main, invoke */
-  CaptureStart: 'capture:start',
-  CaptureStop: 'capture:stop',
-  CaptureGetStatus: 'capture:get-status',
-  AudioGetSystemSource: 'audio:get-system-source',
-  /** renderer → main, fire and forget */
-  AudioChunk: 'audio:chunk',
-  AudioSourceState: 'audio:source-state',
-  /** main → renderer events */
-  CaptureStatusChanged: 'capture:status-changed',
-  TranscriptSegment: 'transcript:segment',
-  TranscriptInterim: 'transcript:interim',
+
+/** Every feature's channel map. ipc.test.ts fails when two share a key or a channel name. */
+export const featureChannels = {
+  capture: captureChannels,
+  setup: setupChannels,
+  app: appChannels,
+  prefs: prefsChannels,
+  meetings: meetingsChannels,
+  vocabulary: vocabularyChannels,
+  notes: notesChannels,
+  chat: chatChannels,
+  calendar: calendarChannels,
+  loginItem: loginItemChannels,
+  prompt: promptChannels,
 } as const;
 
 /**
- * The one audio format the renderer sends: every PCM chunk crossing IPC is PCM_ENCODING at
- * PCM_SAMPLE_RATE. The API's STT stream settings must name the same pair; main refuses to start a
- * session otherwise (src/main/stt/streamSettings.ts), because a vendor told another rate
- * transcribes garbage and reports no error.
+ * Every channel, flat. A key two features share is no type error: the later spread silently
+ * replaces the earlier channel, which ipc.test.ts catches. The prompt panel's channels are here
+ * too, although its API is not RogerApi: they share ipcMain's one namespace.
  */
-export const PCM_SAMPLE_RATE = 16_000;
-/** Int16 little-endian mono, which is what the PCM worklet produces. */
-export const PCM_ENCODING = 'linear16';
+export const IpcChannel = {
+  ...captureChannels,
+  ...setupChannels,
+  ...appChannels,
+  ...prefsChannels,
+  ...meetingsChannels,
+  ...vocabularyChannels,
+  ...notesChannels,
+  ...chatChannels,
+  ...calendarChannels,
+  ...loginItemChannels,
+  ...promptChannels,
+} as const;
 
-export interface AudioChunkMessage {
-  source: AudioSource;
-  /** PCM_ENCODING mono PCM at PCM_SAMPLE_RATE. */
-  pcm: ArrayBuffer;
+/**
+ * Each feature's part of `window.roger`, by feature (every feature of featureChannels but the
+ * prompt panel, which has its own preload). The preview composes its fakes from this map.
+ */
+export interface RogerApiParts {
+  capture: CaptureApi;
+  setup: SetupApi;
+  app: AppApi;
+  prefs: PrefsApi;
+  meetings: MeetingsApi;
+  vocabulary: VocabularyApi;
+  notes: NotesApi;
+  chat: ChatApi;
+  calendar: CalendarApi;
+  loginItem: LoginItemApi;
 }
 
-export interface AudioSourceStateMessage {
-  source: AudioSource;
-  state: AudioSourceState;
-  message?: string;
-}
+/** A union's members as one intersection: `A | B` becomes `A & B`. */
+type AllOf<U> = (U extends unknown ? (part: U) => void : never) extends (part: infer I) => void
+  ? I
+  : never;
 
-export type Unsubscribe = () => void;
+/**
+ * What the renderer sees as `window.roger`: every part at once. Built from the map, not written
+ * as `CaptureApi & SetupApi & ...`, because the stubs are all `object` until their owners fill
+ * them, and lint refuses an intersection that repeats a type.
+ *
+ * Only the composers take it whole: roger.d.ts, preload/index.ts and preview/fakeRoger.ts. Other
+ * code, and every test double, types against its own feature's part (AudioCaptureController takes
+ * CaptureApi). Typed RogerApi, a fake of one feature fails the type check as soon as any other
+ * feature adds a member, in a file that feature does not own. Today it would still compile,
+ * because the stubs add nothing.
+ */
+export type RogerApi = AllOf<RogerApiParts[keyof RogerApiParts]>;
 
-/** What the renderer sees as `window.roger`. */
-export interface RogerApi {
-  startCapture(): Promise<CaptureStatus>;
-  stopCapture(): Promise<CaptureStatus>;
-  getCaptureStatus(): Promise<CaptureStatus>;
-  /** A desktopCapturer source id for system audio, or null when none is available. */
-  getSystemAudioSourceId(): Promise<string | null>;
-  sendAudioChunk(message: AudioChunkMessage): void;
-  reportAudioSourceState(message: AudioSourceStateMessage): void;
-  onCaptureStatus(listener: (status: CaptureStatus) => void): Unsubscribe;
-  onTranscriptSegment(listener: (segment: TranscriptSegment) => void): Unsubscribe;
-  onTranscriptInterim(listener: (interim: InterimTranscript) => void): Unsubscribe;
-}
+export type { Unsubscribe } from './ipc/unsubscribe';
+// Kept on the barrel: CaptureSession, CaptureService, stt/streamSettings.ts, the AssemblyAI
+// protocol, ipc-validation.ts and the renderer's AudioCaptureController import them from here, and
+// those files belong to other tasks. New code imports from the feature module.
+export {
+  PCM_ENCODING,
+  PCM_SAMPLE_RATE,
+  type AudioChunkMessage,
+  type AudioSourceStateMessage,
+} from './ipc/capture';

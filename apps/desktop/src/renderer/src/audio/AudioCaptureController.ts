@@ -1,5 +1,6 @@
 import type { CapturePhase } from '../../../shared/capture';
-import { PCM_SAMPLE_RATE, type RogerApi } from '../../../shared/ipc';
+import { PCM_SAMPLE_RATE } from '../../../shared/ipc';
+import type { CaptureApi } from '../../../shared/ipc/capture';
 import type { AudioSource } from '../../../shared/transcript';
 import { PcmStreamCapture, type PcmStreamCaptureOptions } from './PcmStreamCapture';
 import { describeMediaError, openMicrophoneStream, openSystemAudioStream } from './sources';
@@ -43,7 +44,9 @@ export class AudioCaptureController {
   private generation = 0;
 
   constructor(
-    private readonly roger: RogerApi,
+    // Capture's part only, not RogerApi: typed against every feature's part, this file and its test
+    // fake would fail the type check whenever another feature adds a member to its own IPC module.
+    private readonly roger: CaptureApi,
     private readonly devices: CaptureDevices = BROWSER_DEVICES,
   ) {}
 
