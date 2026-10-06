@@ -30,7 +30,11 @@ type InterimEvent = Extract<SttEvent, { type: 'interim' }>;
 type FinalEvent = Extract<SttEvent, { type: 'final' }>;
 
 export type ParsedAssemblyAiMessage =
-  | { kind: 'begin'; sessionId: string }
+  /**
+   * `model` is what Begin's `configuration.model` says the session runs, or null when Begin names
+   * none (or names it oddly: the session still began). The adapter compares it with what it asked.
+   */
+  | { kind: 'begin'; sessionId: string; model: string | null }
   | {
       kind: 'turn';
       turnOrder: number;
@@ -63,7 +67,7 @@ export function parseAssemblyAiMessage(raw: string, audioSentMs: number): Parsed
   switch (parsed.type) {
     case 'Begin':
       return typeof parsed.id === 'string'
-        ? { kind: 'begin', sessionId: parsed.id }
+        ? { kind: 'begin', sessionId: parsed.id, model: beginModel(parsed.configuration) }
         : { kind: 'invalid', reason: 'Begin without a session id' };
     case 'Turn':
       return turnToEvent(parsed, audioSentMs);
@@ -149,6 +153,12 @@ function turnToEvent(turn: Record<string, unknown>, audioSentMs: number): Parsed
     };
   }
   return { kind: 'turn', turnOrder, formatted, event };
+}
+
+/** Begin's `configuration.model`, or null when it has none that reads as a model name. */
+function beginModel(configuration: unknown): string | null {
+  if (!isRecord(configuration)) return null;
+  return typeof configuration.model === 'string' ? configuration.model : null;
 }
 
 /** Absent means false; anything but a boolean is a malformed message (null). */

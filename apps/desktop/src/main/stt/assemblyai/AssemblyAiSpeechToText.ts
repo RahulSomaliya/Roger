@@ -244,6 +244,7 @@ class AssemblyAiSession implements SttProtocolSession {
     const parsed = parseAssemblyAiMessage(raw, this.context.audioSentMs());
     switch (parsed.kind) {
       case 'begin':
+        this.checkModel(parsed.model);
         return { kind: 'ready', sessionId: parsed.sessionId };
       case 'turn': {
         const events = this.acceptTurn(parsed.turnOrder, parsed.formatted, parsed.event);
@@ -266,6 +267,21 @@ class AssemblyAiSession implements SttProtocolSession {
 
   release(): TranscriptEvent[] {
     return this.releaseHeldTurn();
+  }
+
+  /**
+   * AssemblyAI ignores query parameters it does not know and runs a model of its choosing, so a
+   * misspelt or retired `speech_model` transcribes with another model, at another price, without an
+   * error (openwhispr `assemblyAiStreaming.js:461-475`). Begin says which model runs: a session
+   * that differs from the one asked for is logged, so a bake-off run or a meeting never passes for
+   * the model its preset names. Only a warning: the session works, and the API's presets
+   * (stt_vendors.py) are what keeps the model right.
+   */
+  private checkModel(running: string | null): void {
+    const asked = this.context.settings.model;
+    if (running !== null && running !== asked) {
+      this.context.logger.warn('assemblyai runs another model than asked for', { asked, running });
+    }
   }
 
   /**

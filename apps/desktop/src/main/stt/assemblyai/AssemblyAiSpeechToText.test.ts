@@ -559,6 +559,86 @@ describe('AssemblyAiSpeechToText', () => {
     });
   });
 
+  describe('logs', () => {
+    let lines: { level: string; message: string; asked?: unknown; running?: unknown }[];
+    let raw: string[];
+    const recording = () =>
+      createLogger({
+        level: 'debug',
+        format: 'json',
+        sink: (line) => {
+          raw.push(line);
+          lines.push(JSON.parse(line) as (typeof lines)[number]);
+        },
+      });
+
+    beforeEach(() => {
+      lines = [];
+      raw = [];
+    });
+
+    function beginRunning(model: string | null): (socket: WebSocket) => void {
+      return (socket) => {
+        socket.send(
+          JSON.stringify({
+            type: 'Begin',
+            id: 'session-1',
+            expires_at: 1772570132,
+            ...(model === null ? {} : { configuration: { model, mode: 'balanced' } }),
+          }),
+        );
+      };
+    }
+
+    const modelWarnings = () =>
+      lines.filter((line) => line.message === 'assemblyai runs another model than asked for');
+
+    it('warns when Begin says the session runs another model than the one asked for', async () => {
+      // AssemblyAI ignores what it does not know and runs a model of its choosing (M3 plan).
+      script.onConnect = beginRunning('universal-streaming-english');
+      const { stream } = await open({ logger: recording() }, 'temp-token', {
+        ...settings,
+        model: 'universal-3-6-pro',
+      });
+      await stream.close();
+
+      expect(modelWarnings()).toEqual([
+        expect.objectContaining({
+          level: 'warn',
+          asked: 'universal-3-6-pro',
+          running: 'universal-streaming-english',
+        }),
+      ]);
+    });
+
+    it('says nothing when Begin names the model asked for, or none', async () => {
+      for (const model of ['universal-streaming-english', null]) {
+        script.onConnect = beginRunning(model);
+        const { stream } = await open({ logger: recording() });
+        await stream.close();
+      }
+      expect(lines.some((line) => line.message === 'stt stream open')).toBe(true);
+      expect(modelWarnings()).toEqual([]);
+    });
+
+    it('never writes the token, which rides in the URL, into a log line', async () => {
+      const token = 'temp-token-c2VjcmV0';
+      const withList = { ...settings, keyterms: ['Linkt'], model: 'universal-3-6-pro' };
+      script.onConnect = beginRunning('universal-streaming-english');
+      const { stream } = await open({ logger: recording() }, token, withList);
+      stream.send(new Uint8Array(CHUNK_100_MS));
+      await stream.close();
+      script.onConnect = (socket) => {
+        socket.close(3005, 'Session Cancelled: An error occurred');
+      };
+      await open({ logger: recording() }, token, withList).catch((e: unknown) => e);
+
+      expect(lines.some((line) => line.message === 'stt connect failed')).toBe(true);
+      expect(modelWarnings()).toHaveLength(1);
+      expect(raw.join('\n')).not.toContain(token);
+    });
+  });
+
   it('reports a rejected handshake as a connect error with the status code', async () => {
     rejectWith = 401;
     const error = await open().catch((e: unknown) => e);

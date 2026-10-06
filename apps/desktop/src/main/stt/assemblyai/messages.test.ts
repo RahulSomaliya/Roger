@@ -33,7 +33,33 @@ describe('parseAssemblyAiMessage', () => {
         JSON.stringify({ type: 'Begin', id: 'session-1', expires_at: 1772570132 }),
         AUDIO_SENT_MS,
       ),
-    ).toEqual({ kind: 'begin', sessionId: 'session-1' });
+    ).toEqual({ kind: 'begin', sessionId: 'session-1', model: null });
+  });
+
+  it('reads the model Begin says the session runs, from its configuration', () => {
+    // The API reference's Begin, read 2026-10-06.
+    const begin = (configuration: unknown) =>
+      parseAssemblyAiMessage(
+        JSON.stringify({
+          type: 'Begin',
+          id: '3207b601-2054-48df-ba77-8784dfcf9fb8',
+          expires_at: 1772570132,
+          configuration,
+        }),
+        AUDIO_SENT_MS,
+      );
+
+    expect(
+      begin({ model: 'universal-3-6-pro', mode: 'balanced', api_version: '2025-05-12' }),
+    ).toEqual({
+      kind: 'begin',
+      sessionId: '3207b601-2054-48df-ba77-8784dfcf9fb8',
+      model: 'universal-3-6-pro',
+    });
+    // An extra the session can start without: an odd one is no model, never an unreadable Begin.
+    for (const odd of [{ model: 7 }, { mode: 'balanced' }, 'universal-3-6-pro', null]) {
+      expect(begin(odd), JSON.stringify(odd)).toMatchObject({ kind: 'begin', model: null });
+    }
   });
 
   it('turns a partial Turn into an interim event spanning its words', () => {
