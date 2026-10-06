@@ -3,6 +3,7 @@ import { join, resolve } from 'node:path';
 import { parseEnv } from 'node:util';
 import { app, dialog, ipcMain, powerMonitor, session, type BrowserWindow } from 'electron';
 import { ApiClient } from './api/ApiClient';
+import type { ApiConnection } from './api/http';
 import { CaptureService } from './capture/CaptureService';
 import { loadConfig, readConfigFile } from './config';
 import { registerIpcHandlers } from './ipc';
@@ -52,6 +53,9 @@ async function main(): Promise<void> {
   }
   // Set by the window creation below; every IPC registrar trusts only this window's page.
   let window: BrowserWindow | null = null;
+  // Every Roger API client's connection (api/http.ts). Without a token each call is refused, and
+  // the runtime below reports why and blocks Start.
+  const apiConnection: ApiConnection = { baseUrl: config.apiUrl, token: config.apiToken ?? '' };
 
   // [slot M4-S2] the preferences store
 
@@ -71,7 +75,7 @@ async function main(): Promise<void> {
 
   // [slot M2-T4 runtime] API client, uploader, capture, capture IPC, the recording lifecycle
 
-  const api = new ApiClient({ baseUrl: config.apiUrl, token: config.apiToken ?? '' });
+  const api = new ApiClient(apiConnection);
   const uploader = new TranscriptUploader({
     store,
     api,

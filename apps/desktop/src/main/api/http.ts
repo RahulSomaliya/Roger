@@ -1,8 +1,9 @@
 /**
  * The HTTP core every Roger API client is built on (docs/api-contract.md): ApiClient for meetings
  * and tokens, and one file per feature (vocabularyClient, notesClient, calendarClient, ...) so no
- * two features edit the same client. A client takes an ApiRequest and maps its own types; the
- * bearer token, the timeout and the error envelope are handled here once.
+ * two features edit the same client. A client takes the ApiConnection index.ts builds once, makes
+ * its requests with createApiRequest and maps its own types; the bearer token, the timeout and
+ * the error envelope are handled here once.
  */
 
 export type HttpMethod = 'GET' | 'POST' | 'PUT' | 'DELETE';
