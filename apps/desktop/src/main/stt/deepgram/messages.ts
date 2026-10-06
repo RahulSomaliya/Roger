@@ -17,7 +17,11 @@ import type { SttEvent } from '../SpeechToText';
 
 export type ParsedDeepgramMessage =
   /** `warning` names data that was dropped while keeping the event, for the adapter to log. */
-  | { kind: 'event'; event: SttEvent; warning?: string }
+  | {
+      kind: 'event';
+      event: Extract<SttEvent, { type: 'interim' | 'final' | 'error' }>;
+      warning?: string;
+    }
   | { kind: 'ignored'; messageType: string }
   | { kind: 'invalid'; reason: string };
 
@@ -67,7 +71,7 @@ function resultsToEvent(results: Record<string, unknown>): ParsedDeepgramMessage
     return { kind: 'event', event: { type: 'interim', text, startMs, endMs } };
   }
   const words = parseWords(alternative.words);
-  const event: SttEvent = {
+  const event: Extract<SttEvent, { type: 'final' }> = {
     type: 'final',
     text,
     startMs,

@@ -139,6 +139,32 @@ describe('DeepgramSpeechToText', () => {
     expect((error as SttConnectError).statusCode).toBe(401);
   });
 
+  it('says what a Deepgram close reason means when it ends the stream mid-call', async () => {
+    server.removeAllListeners('connection');
+    server.on('connection', (socket: WebSocket) => {
+      socket.on('message', () => {
+        socket.close(1011, 'NET-0001');
+      });
+    });
+    const stt = new DeepgramSpeechToText({ logger, baseUrl });
+    const stream = await stt.openStream({ accessToken: 't', settings, label: 'system' });
+    const events: SttEvent[] = [];
+    stream.on((event) => events.push(event));
+
+    stream.send(new Uint8Array(3200));
+    await waitFor(() => events.some((e) => e.type === 'closed'));
+    expect(events).toEqual([
+      {
+        type: 'error',
+        message:
+          'Deepgram closed the stream (code 1011: NET-0001, no audio or KeepAlive reached ' +
+          'Deepgram in time)',
+        fatal: true,
+      },
+      { type: 'closed', code: 1011, reason: 'NET-0001' },
+    ]);
+  });
+
   it('closes even when the vendor never answers CloseStream', async () => {
     server.removeAllListeners('connection');
     server.on('connection', () => undefined);
