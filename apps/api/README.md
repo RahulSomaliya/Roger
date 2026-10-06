@@ -136,11 +136,12 @@ Behind a TLS-terminating proxy, run uvicorn with `--proxy-headers --forwarded-al
 ## Tests and checks
 
 The tests run against a real Postgres. Point `TEST_DATABASE_URL` at a database you do not mind
-losing: the suite migrates it down and up again with Alembic at the start of the run (so the
-migrations themselves are tested, and a test checks they match the models), and truncates every
-table before each test. The database name must start with `roger_test`: the suite refuses any other
-name before it connects, and creates the database when it does not exist yet. Parallel worktrees
-each use their own: `make check TEST_DB=roger_test_<task>`.
+losing: at the start of the run the suite drops and recreates it, then migrates it up, down and up
+again with Alembic (so the migrations themselves are tested, and a test checks they match the
+models), and it truncates every table before each test. The database name must start with
+`roger_test`: the suite refuses any other name before it connects. Parallel worktrees each use
+their own: `make check TEST_DB=roger_test_<task>`. Close any other session on it first (psql, a
+GUI client); the drop fails while one is open.
 
 ```bash
 uv run --frozen ruff check . && uv run --frozen ruff format --check .   # make lint-api
@@ -160,7 +161,19 @@ Tables are only ever created by Alembic. The chain is fixed through `0005`: Phas
 `0002` to `0005` exist as empty stubs, each owned by one task (`docs/plans/phase-2-build-order.md`,
 section 2), and `tests/test_migrations.py` fails on a second head or a re-pointed `down_revision`.
 To fill a stub, run step 2 into a scratch revision, move its operations into the stub, and delete
-the scratch file. To change the schema:
+the scratch file.
+
+A stub is filled in place, so a database migrated while it was empty already sits past it:
+`alembic upgrade head` does nothing (the new tables never arrive) and `alembic downgrade` fails on
+the tables it never created. The test suite needs nothing: it recreates its database every run.
+Any other database, the dev `roger` included, needs one repair after you fill a stub or pull one
+that someone else filled: `uv run --frozen alembic stamp <the stub's down_revision>` (this only
+rewrites the recorded version; it runs nothing), then `uv run --frozen alembic upgrade head`. When
+several stubs were filled since that database was last migrated, stamp to the down_revision of the
+earliest. Stamping too far back fails loudly on a table that already exists; dropping and
+recreating the database also works, but loses its data.
+
+To change the schema:
 
 1. Edit the models: `src/roger_api/db/models_<domain>.py` for a Phase 2 domain (`db/models.py`
    imports each at its end), `db/models.py` for the M1 tables.
@@ -169,8 +182,9 @@ the scratch file. To change the schema:
    row in the plan's table and in `test_revision_chain_is_fixed`.
 3. Read the generated file and fix what autogenerate gets wrong (server defaults, data
    migrations, index expressions). Keep `downgrade()` working.
-4. `uv run --frozen alembic upgrade head`, then run the tests: `test_migrations.py` fails if the
-   models and the migrations disagree.
+4. `uv run --frozen alembic upgrade head` (after filling a stub, the `alembic stamp` above comes
+   first, since step 2 needed the database at `head`), then run the tests: `test_migrations.py`
+   fails if the models and the migrations disagree.
 
 ## Layout
 
