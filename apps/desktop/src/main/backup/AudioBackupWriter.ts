@@ -13,7 +13,12 @@ import type { AudioSink } from '../capture/AudioFanout';
 import { AudioTimeline } from '../capture/AudioTimeline';
 import { errorMessage, type Logger } from '../logger';
 import type { CaptureEvent, JsonObject, TranscriptStore } from '../store/TranscriptStore';
-import { ensureMeetingAudioDir, resolveStoredAudioPath, storedAudioPath } from './audioPaths';
+import {
+  ensureMeetingAudioDir,
+  PRIVATE_FILE_MODE,
+  resolveStoredAudioPath,
+  storedAudioPath,
+} from './audioPaths';
 import type { CompressJob } from './AudioCompressor';
 import { type FreeDiskBytes, freeDiskBytes, hasBackupRoom } from './diskGuard';
 import { repairWavFile, WAV_HEADER_BYTES, wavDataBytesToMs, wavHeader } from './wav';
@@ -25,9 +30,6 @@ export const DISK_CHECK_INTERVAL_MS = 10_000;
 const MAX_FILE_MS = 60_000;
 const BYTES_PER_SAMPLE = 2;
 const MAX_FILE_BYTES = ((MAX_FILE_MS * PCM_SAMPLE_RATE) / 1_000) * BYTES_PER_SAMPLE;
-/** Readable by its owner only, in a 0700 folder (audioPaths.ts). */
-const PRIVATE_FILE_MODE = 0o600;
-
 /** The capture events saved when a recording's audio stops being kept: missedAudio reads them. */
 const BACKUP_PAUSED_EVENT = 'backup_paused';
 /** Its detail is `{ error: <code> }` (errorCode), never a path. */

@@ -4,7 +4,7 @@ import { isUuidV4 } from '../ipc-validation';
 
 /**
  * Where the local audio backup lives (M2 D5): `userData/audio/<meeting>/<file>`, each folder mode
- * 0700, never uploaded. `audio_files.path` holds the file relative to userData
+ * 0700 and each file 0600, never uploaded. `audio_files.path` holds the file relative to userData
  * (`audio/<meeting>/<file>`, NewAudioFile.path), which M3's `bench clip` resolves against a
  * userData folder of its own choosing.
  *
@@ -17,6 +17,11 @@ import { isUuidV4 } from '../ipc-validation';
 const AUDIO_DIR_NAME = 'audio';
 /** Readable by its owner only: the audio of colleagues' calls. */
 const PRIVATE_DIR_MODE = 0o700;
+/**
+ * Every backup file, WAV or m4a, is owner-only too, so a copied folder stays private. A file made
+ * by a tool (afconvert) gets the umask's 0644: AudioCompressor sets this before its rename.
+ */
+export const PRIVATE_FILE_MODE = 0o600;
 
 /** The folder that holds every meeting's audio. */
 export function audioRoot(userData: string): string {

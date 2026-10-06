@@ -1,4 +1,12 @@
-import { existsSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdtempSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -40,6 +48,8 @@ function manualRunner(): { run: RunTool; calls: Call[] } {
         signal,
         finish: () => {
           writeFileSync(output, Buffer.from('....ftypM4A encoded'));
+          // As afconvert leaves its output under a umask of 022.
+          chmodSync(output, 0o644);
           resolve();
         },
         fail: (error) => {
@@ -132,6 +142,8 @@ describe('AudioCompressor', () => {
     const m4a = job.path.replace(/\.wav$/, '.m4a');
     expect(file).toMatchObject({ format: 'm4a', path: m4a });
     expect(file!.bytes).toBe(statSync(join(userData, m4a)).size);
+    // Owner-only like the WAV it replaces, for the weeks it is kept.
+    expect(statSync(join(userData, m4a)).mode & 0o777).toBe(0o600);
     expect(existsSync(wav)).toBe(false);
     expect(readdirSync(join(userData, 'audio', MEETING))).toEqual([m4a.split('/').at(-1)]);
     expect(onEncoded).toHaveBeenCalledWith(job);

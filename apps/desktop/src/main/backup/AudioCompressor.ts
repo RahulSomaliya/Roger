@@ -1,8 +1,8 @@
 import { execFile } from 'node:child_process';
-import { renameSync, rmSync, statSync } from 'node:fs';
+import { chmodSync, renameSync, rmSync, statSync } from 'node:fs';
 import { errorMessage, type Logger } from '../logger';
 import type { TranscriptStore } from '../store/TranscriptStore';
-import { resolveStoredAudioPath } from './audioPaths';
+import { PRIVATE_FILE_MODE, resolveStoredAudioPath } from './audioPaths';
 
 /** Ships with macOS: the backup needs no audio dependency (M2 D5). */
 export const AFCONVERT = '/usr/bin/afconvert';
@@ -175,6 +175,9 @@ export class AudioCompressor {
         timeoutMs: ENCODE_TIMEOUT_MS,
         signal,
       });
+      // afconvert creates it under the umask (0644), and the rename keeps that mode: without this
+      // every m4a, kept for weeks, is readable by anyone who gets a copy of the folder.
+      chmodSync(partial, PRIVATE_FILE_MODE);
       renameSync(partial, m4a);
     } catch (error) {
       this.remove(partial, fields);

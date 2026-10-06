@@ -1,5 +1,13 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -90,6 +98,8 @@ describe('AudioCompressor on macOS', () => {
     expect(existsSync(wav)).toBe(false);
     expect(readdirSync(join(userData, 'audio', MEETING))).toEqual([row!.path.split('/').at(-1)]);
     expect(readFileSync(m4a).toString('latin1', 4, 8)).toBe('ftyp');
+    // afconvert writes it under the umask (0644); it is kept owner-only, like the WAV.
+    expect(statSync(m4a).mode & 0o777).toBe(0o600);
     // A small fraction of the WAV: the point of encoding (M2 D5).
     expect(row!.bytes).toBeLessThan(pcm.length / 4);
     const info = execFileSync('/usr/bin/afinfo', [m4a], { encoding: 'utf8' });
