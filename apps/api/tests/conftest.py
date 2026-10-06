@@ -1,5 +1,6 @@
 """Fixtures. API tests run against a real Postgres at TEST_DATABASE_URL, migrated by Alembic."""
 
+import asyncio
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -13,6 +14,7 @@ from asgi_lifespan import LifespanManager
 from fastapi import FastAPI
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
 from sqlalchemy import NullPool, text
+from sqlalchemy.engine import URL, make_url
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from roger_api.app import create_app
@@ -23,6 +25,14 @@ from roger_api.db.models import Meeting, TranscriptSegment, Workspace
 from tests.helpers import AUTH_HEADERS, BASE_URL, TEST_TOKEN
 
 ALEMBIC_INI = Path(__file__).resolve().parents[1] / "alembic.ini"
+
+# The session below drops and recreates its database, then truncates every table before each test.
+# Worktrees share one Postgres and pick a database with `make check TEST_DB=<name>`, and Make
+# checks no name, so this prefix is the only thing between a typo like TEST_DB=roger and a dropped
+# dev database.
+TEST_DATABASE_PREFIX = "roger_test"
+# Every Postgres server has it; CREATE DATABASE runs from there, as the test database may not exist.
+MAINTENANCE_DATABASE = "postgres"
 
 
 class TestDatabaseSettings(BaseSettings):
@@ -56,19 +66,69 @@ def alembic_config(database_url: str) -> Config:
     return config
 
 
-@pytest.fixture(scope="session")
-def database_url() -> str:
-    """The test database, with the schema built by the real migrations (down, then up)."""
-    url = TestDatabaseSettings().test_database_url
+def require_test_database_name(url: str) -> str:
+    """The database named in `url`; a ValueError unless it starts with TEST_DATABASE_PREFIX."""
+    name = make_url(url).database
+    if not name:
+        raise ValueError(
+            f"TEST_DATABASE_URL names no database; name one starting with {TEST_DATABASE_PREFIX!r}"
+        )
+    if not name.startswith(TEST_DATABASE_PREFIX):
+        # The name only: the URL carries the password.
+        raise ValueError(
+            f"TEST_DATABASE_URL names the database {name!r}. The test session drops and "
+            "recreates its database, so it runs only against a database whose "
+            f"name starts with {TEST_DATABASE_PREFIX!r} (make check TEST_DB=roger_test_<task>)."
+        )
+    return name
+
+
+async def _recreate_database(url: URL, name: str) -> None:
+    # CREATE and DROP DATABASE refuse to run inside a transaction, hence AUTOCOMMIT.
+    engine = create_async_engine(
+        url.set(database=MAINTENANCE_DATABASE), poolclass=NullPool, isolation_level="AUTOCOMMIT"
+    )
+    try:
+        async with engine.connect() as connection:
+            quoted = connection.dialect.identifier_preparer.quote_identifier(name)
+            # No WITH (FORCE): a session still open on it (psql, a second run on the same TEST_DB)
+            # makes this fail loudly, naming the database, instead of being cut off mid-run.
+            await connection.execute(text(f"DROP DATABASE IF EXISTS {quoted}"))
+            await connection.execute(text(f"CREATE DATABASE {quoted}"))
+    finally:
+        await engine.dispose()
+
+
+def prepare_test_database(url: str) -> None:
+    """Refuse a database not named roger_test*, rebuild it empty, then migrate it up, down and up.
+
+    The name is checked before anything connects. Runs its own event loop: call it from sync code.
+    """
+    name = require_test_database_name(url)
+    # Rebuilt empty every run, never migrated on from where the last run left it. The Phase 2
+    # stubs 0002 to 0005 are filled in place (see their docstrings), so a database migrated while
+    # one was still empty already sits at head: `upgrade head` would skip the filled upgrade() and
+    # `downgrade base` would run its downgrade() against tables that were never created, and every
+    # test would error at setup.
+    asyncio.run(_recreate_database(make_url(url), name))
     config = alembic_config(url)
     command.upgrade(config, "head")
     command.downgrade(config, "base")
     command.upgrade(config, "head")
+
+
+@pytest.fixture(scope="session")
+def database_url() -> str:
+    """The test database, rebuilt empty, with the schema built by the real migrations."""
+    url = TestDatabaseSettings().test_database_url
+    prepare_test_database(url)
     return url
 
 
 @pytest.fixture
 async def clean_database(database_url: str) -> None:
+    # Take the URL from `database_url` only, never from TestDatabaseSettings directly: that
+    # fixture is what refuses a database not named roger_test* (prepare_test_database).
     tables = ", ".join(table.name for table in Base.metadata.sorted_tables)
     engine = create_async_engine(database_url, poolclass=NullPool)
     async with engine.begin() as connection:

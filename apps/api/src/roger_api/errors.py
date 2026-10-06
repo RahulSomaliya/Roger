@@ -32,3 +32,46 @@ class SttProviderError(AppError):
 
     status_code = 502
     code = "stt_provider_error"
+
+
+# Phase 2 errors, added together before their features (phase-2-build-order.md, section 1) so
+# parallel tasks never edit this file. Each code has its row in docs/api-contract.md's error table;
+# tests/test_errors.py fails without it.
+
+
+class LlmProviderError(AppError):
+    """The notes model's vendor refused, failed or answered with something we cannot use (M4-T2)."""
+
+    status_code = 502
+    code = "llm_provider_error"
+
+
+class EmptyMeetingError(AppError):
+    """Notes were asked for a meeting with no transcript lines and no user notes (M4-T8)."""
+
+    status_code = 422
+    code = "empty_meeting"
+
+
+class MeetingTooLongError(AppError):
+    """The meeting is over the chat model's input budget (M4-T10)."""
+
+    status_code = 422
+    code = "meeting_too_long"
+
+
+class CalendarProviderError(AppError):
+    """Google Calendar is unreachable or answered with an error we cannot use (M5-T2)."""
+
+    status_code = 502
+    code = "calendar_provider_error"
+
+
+class CalendarReconnectRequiredError(AppError):
+    """Google refused the stored refresh token, or calendar access was not granted (M5-T2).
+
+    The message says what to do: the user reconnects the calendar.
+    """
+
+    status_code = 424
+    code = "calendar_reconnect_required"

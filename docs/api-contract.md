@@ -1,4 +1,4 @@
-# Roger API contract (M1)
+# Roger API contract
 
 The desktop app and every MCP client talk to the API through this contract. It is updated in the
 same change as the code on both sides. Base URL in development: `http://127.0.0.1:8000` (the port
@@ -28,11 +28,16 @@ same change as the code on both sides. Base URL in development: `http://127.0.0.
   | --- | --- | --- |
   | 401 | `unauthorized` | Missing or wrong bearer token |
   | 404 | `not_found` | Unknown id, or an id in another workspace |
-  | 409 | `conflict` | A segment id is already stored under a different meeting. Nothing in that batch is stored. This is the only `409`. |
+  | 409 | `conflict` | The request clashes with what is stored. Each route's section lists its own `409`s. |
   | 405 | `method_not_allowed` | Known path, wrong method |
   | 422 | `validation_error` | Body or query failed validation; `message` lists the fields |
+  | 422 | `empty_meeting` | Notes were asked for a meeting with no transcript lines and no user notes |
+  | 422 | `meeting_too_long` | The meeting is over the chat model's input budget (about 10 hours of talk) |
+  | 424 | `calendar_reconnect_required` | Google refused the stored refresh token (`invalid_grant`), or the user did not grant calendar access. The message says what to do. |
   | 500 | `internal_error` | Unexpected; details only in server logs |
   | 502 | `stt_provider_error` | The speech-to-text vendor refused or failed a token request |
+  | 502 | `llm_provider_error` | The notes model's vendor refused or failed before the stream started |
+  | 502 | `calendar_provider_error` | Google is unreachable or answered with an error we cannot use |
 
   A 401 carries `WWW-Authenticate: Bearer`. Every response carries `X-Request-ID` (echoed when the
   caller sends a safe one, generated otherwise); the same id is on every log line for the request.
@@ -196,6 +201,34 @@ and the desktop uses its built-in fake adapter (useful for development without a
 A vendor that refuses, fails, times out or answers with something unreadable is a
 `502 stt_provider_error`. The vendor key is never in a response or a log line.
 
+### Vocabulary
+
+Not built yet. Owner: M3-T2, which writes its routes here, with their `409`s.
+
+### STT usage
+
+Not built yet. Owner: M3-T19a, which writes its routes here, with their `409`s.
+
+### Note templates
+
+Not built yet. Owner: M4-T3, which writes its routes here, with their `409`s.
+
+### Notes
+
+Not built yet. Owner: M4-T6, which writes its routes here, with their `409`s.
+
+### Notes runs and streaming
+
+Not built yet. Owner: M4-T8, which writes its routes here, with their `409`s.
+
+### Chat
+
+Not built yet. Owner: M4-T10, which writes its routes here, with their `409`s.
+
+### Calendar
+
+Not built yet. Owner: M5-T3, which writes its routes here, with their `409`s.
+
 ## MCP
 
 Endpoint: `POST /mcp` and `GET /mcp` (MCP Streamable HTTP, stateless). Same bearer token.
@@ -249,3 +282,15 @@ transcript_segments  (id uuid pk, meeting_id uuid fk on delete cascade, workspac
                       text text, confidence real null, words jsonb null, created_at timestamptz)
                      index (meeting_id, start_ms)
 ```
+
+Phase 2 tables. Each line is replaced by its owner's tables, in the form above, in the commit that
+fills its migration:
+
+- Vocabulary (`vocabulary_terms`, revision `0002`): M3-T2.
+
+- Notes (`meeting_notes`, `llm_runs`, `chat_messages`, revision `0003`): M4-T1.
+
+- Calendar (`calendar_connections`, `meeting_attendees`, the new `meetings` columns, revision
+  `0004`): M5-T1.
+
+- STT usage (`stt_usage`, revision `0005`): M3-T19a.

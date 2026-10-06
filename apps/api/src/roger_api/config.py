@@ -8,6 +8,8 @@ from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 from sqlalchemy.engine import make_url
 
 from roger_api import __version__
+from roger_api.config_calendar import CalendarSettings
+from roger_api.config_notes import NotesSettings
 from roger_api.domain import SttProvider
 
 # The vendor registry imports the token issuers, which log through roger_api.log. That module
@@ -53,7 +55,10 @@ class DatabaseSettings(BaseSettings):
         return url.render_as_string(hide_password=False)
 
 
-class Settings(DatabaseSettings):
+# The notes and calendar settings are mixins in their own files (config_notes.py, owned by M4-T2;
+# config_calendar.py, owned by M5-T1), so those tasks never edit this file. The STT fields stay
+# here. The mixins are plain pydantic models with no model_config: Settings keeps the config above.
+class Settings(NotesSettings, CalendarSettings, DatabaseSettings):
     roger_api_token: SecretStr
     stt_provider: SttProvider = "fake"
     deepgram_api_key: SecretStr | None = None

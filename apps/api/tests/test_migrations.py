@@ -1,9 +1,32 @@
+import pkgutil
+from pathlib import Path
+
 from alembic.autogenerate import compare_metadata
+from alembic.config import Config
 from alembic.migration import MigrationContext
+from alembic.script import ScriptDirectory
 from sqlalchemy import Connection, NullPool
 from sqlalchemy.ext.asyncio import create_async_engine
 
+import roger_api.db
 from roger_api.db.base import Base
+from tests.conftest import ALEMBIC_INI
+from tests.helpers import modules_loaded_by
+
+# revision: (file name, down_revision). Fixed in docs/plans/phase-2-build-order.md, section 2, so
+# parallel worktrees never grow two heads. An owner fills its stub's upgrade() and downgrade() and
+# never renames the file or re-points down_revision; a new revision adds a row there and here.
+FIXED_CHAIN = {
+    "0001": ("0001_initial_schema.py", None),
+    "0002": ("0002_vocabulary_terms.py", "0001"),  # M3-T2
+    "0003": ("0003_notes.py", "0002"),  # M4-T1
+    "0004": ("0004_calendar.py", "0003"),  # M5-T1
+    "0005": ("0005_stt_usage.py", "0004"),  # M3-T19a
+}
+
+
+def _scripts() -> ScriptDirectory:
+    return ScriptDirectory.from_config(Config(str(ALEMBIC_INI)))
 
 
 def _diff(connection: Connection) -> list[object]:
@@ -19,3 +42,31 @@ async def test_models_match_the_migrations(database_url: str) -> None:
     await engine.dispose()
 
     assert diff == []
+
+
+def test_alembic_has_one_head() -> None:
+    heads = _scripts().get_heads()
+
+    assert len(heads) == 1, f"two branches of migrations: {heads}"
+
+
+def test_revision_chain_is_fixed() -> None:
+    chain = {
+        script.revision: (Path(script.path).name, script.down_revision)
+        for script in _scripts().walk_revisions()
+    }
+
+    assert chain == FIXED_CHAIN
+
+
+def test_db_models_imports_every_domain_model_module() -> None:
+    """Alembic (`migrations/env.py`) and the test truncation import `db/models.py` alone, so a
+    table in a `db/models_<domain>.py` module that it does not import is invisible to both."""
+    domain_modules = {
+        f"roger_api.db.{module.name}"
+        for module in pkgutil.iter_modules(roger_api.db.__path__)
+        if module.name.startswith("models_")
+    }
+    assert domain_modules, "no db/models_<domain>.py modules found; is the walk broken?"
+
+    assert domain_modules <= modules_loaded_by("roger_api.db.models")

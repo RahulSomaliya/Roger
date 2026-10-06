@@ -82,3 +82,17 @@ class TranscriptSegment(Base):
     # Python None is stored as SQL NULL, not as the JSON literal `null`.
     words: Mapped[list[dict[str, Any]] | None] = mapped_column(JSONB(none_as_null=True))
     created_at: Mapped[datetime] = _created_at()
+
+
+# Phase 2 tables live in one module per domain, each with one owner, so parallel tasks never edit
+# this file (phase-2-build-order.md, section 1). Importing them here registers their tables on
+# Base.metadata for Alembic (migrations/env.py) and the test truncation (tests/conftest.py); a new
+# db/models_<domain>.py is added to this list. The import sits at the end, not the top, so a domain
+# module can import Meeting or Workspace from this module: by now those classes exist, and the
+# circular import resolves.
+from roger_api.db import (  # noqa: E402, F401 - registers the tables; at the end on purpose.
+    models_calendar,
+    models_notes,
+    models_stt_usage,
+    models_vocabulary,
+)

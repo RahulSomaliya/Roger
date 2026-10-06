@@ -12,7 +12,20 @@ from roger_api.error_handlers import register_error_handlers
 from roger_api.log import configure_logging, get_logger
 from roger_api.mcp_server import McpDependencies, build_mcp_http_app, build_mcp_server
 from roger_api.middleware import RequestContextMiddleware
-from roger_api.routers import health, meetings, stt
+from roger_api.routers import (
+    calendar,
+    chat,
+    health,
+    meetings,
+    note_templates,
+    notes,
+    notes_runs,
+    stt,
+    stt_usage,
+    vocabulary,
+)
+from roger_api.services.calendar.runtime import open_calendar_runtime
+from roger_api.services.llm_runs import open_llm_runtime
 from roger_api.services.workspaces import ensure_workspace
 from roger_api.stt_vendors import open_stt_token_issuer
 
@@ -54,8 +67,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         try:
             await _prepare_database(database, settings)
-            async with open_stt_token_issuer(settings) as issuer, mcp.session_manager.run():
+            # Each runtime is opened once here and closed in reverse order before the database.
+            # Its owner (M4-T7, M5-T3) builds it in its own module, with the FastAPI getter that
+            # reads it from app.state, so this block does not change again in Phase 2.
+            async with (
+                open_stt_token_issuer(settings) as issuer,
+                open_llm_runtime(settings) as llm_runtime,
+                open_calendar_runtime(settings) as calendar_runtime,
+                mcp.session_manager.run(),
+            ):
                 app.state.stt_token_issuer = issuer
+                app.state.llm_runtime = llm_runtime
+                app.state.calendar_runtime = calendar_runtime
                 logger.info(
                     "api_started",
                     version=settings.app_version,
@@ -83,6 +106,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(health.router)
     app.include_router(meetings.router)
     app.include_router(stt.router)
+    # Phase 2 feature routers, each a stub until its owner fills it (phase-2-build-order.md,
+    # section 1). The owner sets prefix, tags and routes in its own module; nobody adds or moves
+    # an include here (tests/test_app_layout.py).
+    app.include_router(vocabulary.router)
+    app.include_router(stt_usage.router)
+    app.include_router(note_templates.router)
+    app.include_router(notes.router)
+    app.include_router(notes_runs.router)
+    app.include_router(chat.router)
+    app.include_router(calendar.router)
     # A plain route keeps the endpoint at exactly /mcp (no slash redirect) and leaves every
     # other path to FastAPI, so unknown paths still get the 404 envelope.
     app.router.routes.append(Route(MCP_PATH, endpoint=mcp_http_app))
