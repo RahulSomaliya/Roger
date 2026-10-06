@@ -18,13 +18,32 @@ export interface StoppableCapture {
   readonly phase: CapturePhase;
 }
 
+/**
+ * One step of the quit's cleanup, run after the recording has stopped (or its stop timed out).
+ * Hooks run in list order, each awaited for at most its own `timeoutMs`. A hook that throws,
+ * rejects or hangs is logged and the quit goes on to the next one, so no hook can keep Roger from
+ * quitting. A synchronous hook cannot be cut short: the bound only reaches the async part.
+ */
+export interface QuitHook {
+  /** Names the hook in the log, e.g. "close the transcript store". */
+  readonly name: string;
+  readonly timeoutMs: number;
+  run(): Promise<void> | void;
+}
+
 export interface RecordingLifecycleOptions {
   capture: StoppableCapture;
   logger: Logger;
   /** How long a quit waits for the stop (costGuards.quitStopTimeoutMs). */
   quitStopTimeoutMs: number;
-  /** After the stop (or its timeout), before quitting: stop the uploader, close the store. */
-  beforeExit: () => void;
+  /**
+   * The quit's cleanup after the stop, in order; index.ts lists them, with the uploader stop and
+   * the store close last. Add a hook to that list; never a before-quit listener of your own:
+   * Electron runs it on the first Cmd+Q, while this class is still stopping the recording, so a
+   * store it closes is gone before the stop has saved the last lines, and it runs again on the
+   * quit this class re-issues.
+   */
+  quitHooks: readonly QuitHook[];
   /** Quits for real (app.quit). The quit requests it causes are let through. */
   quit: () => void;
 }
@@ -74,7 +93,7 @@ export class RecordingLifecycle {
   }
 
   private async stopThenQuit(): Promise<void> {
-    const { capture, logger, quitStopTimeoutMs, beforeExit, quit } = this.options;
+    const { capture, logger, quitStopTimeoutMs, quitHooks, quit } = this.options;
     const phase = capture.phase;
     if (phase !== 'idle') logger.warn('stopping the recording', { reason: 'quit', phase });
     try {
@@ -89,13 +108,21 @@ export class RecordingLifecycle {
         error: errorMessage(error),
       });
     }
-    try {
-      beforeExit();
-    } catch (error) {
-      logger.error('cleanup on quit failed', { error: errorMessage(error) });
-    }
+    for (const hook of quitHooks) await this.runQuitHook(hook);
     this.quitState = 'done';
     quit();
+  }
+
+  private async runQuitHook(hook: QuitHook): Promise<void> {
+    try {
+      // Inside the try: a hook that throws synchronously is caught like one that rejects.
+      await withTimeout(Promise.resolve(hook.run()), hook.timeoutMs, `quit hook "${hook.name}"`);
+    } catch (error) {
+      this.options.logger.error('cleanup on quit failed', {
+        hook: hook.name,
+        error: errorMessage(error),
+      });
+    }
   }
 }
 

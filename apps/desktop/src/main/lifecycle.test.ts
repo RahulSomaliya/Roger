@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { type CapturePhase, type CaptureStatus, idleCaptureStatus } from '../shared/capture';
 import type { StopOptions } from './capture/CaptureService';
 import { createLogger } from './logger';
-import { RecordingLifecycle, watchApp, watchWindow } from './lifecycle';
+import { type QuitHook, RecordingLifecycle, watchApp, watchWindow } from './lifecycle';
 
 function fakeCapture(phase: CapturePhase = 'recording') {
   const status: CaptureStatus = {
@@ -51,7 +51,15 @@ function harness(phase: CapturePhase = 'recording') {
     capture,
     logger: createLogger({ level: 'info', format: 'json', sink: (line) => lines.push(line) }),
     quitStopTimeoutMs: 5_000,
-    beforeExit: () => order.push('beforeExit'),
+    quitHooks: [
+      {
+        name: 'beforeExit',
+        timeoutMs: 1_000,
+        run: () => {
+          order.push('beforeExit');
+        },
+      },
+    ],
     quit: () => order.push('quit'),
   });
   return { capture, lines, order, lifecycle };
@@ -100,14 +108,140 @@ describe('RecordingLifecycle on quit', () => {
       capture,
       logger: createLogger({ level: 'error', format: 'json', sink: () => undefined }),
       quitStopTimeoutMs: 5_000,
-      beforeExit: () => {
-        throw new Error('database is not open');
-      },
+      quitHooks: [
+        {
+          name: 'close the store',
+          timeoutMs: 1_000,
+          run: () => {
+            throw new Error('database is not open');
+          },
+        },
+      ],
       quit: () => order.push('quit'),
     });
     lifecycle.onQuitRequested();
     await flush();
     expect(order).toEqual(['quit']);
+  });
+});
+
+/** A lifecycle whose quit records the stop, each hook and the quit in one list, in order. */
+function quitHarness(hooks: (order: string[]) => QuitHook[]) {
+  const capture = fakeCapture();
+  const stop = capture.stop;
+  const order: string[] = [];
+  const lines: string[] = [];
+  let quitted: () => void = () => undefined;
+  const done = new Promise<void>((resolve) => {
+    quitted = resolve;
+  });
+  capture.stop = (options) => {
+    order.push('stop');
+    return stop(options);
+  };
+  const lifecycle = new RecordingLifecycle({
+    capture,
+    logger: createLogger({ level: 'info', format: 'json', sink: (line) => lines.push(line) }),
+    quitStopTimeoutMs: 5_000,
+    quitHooks: hooks(order),
+    quit: () => {
+      order.push('quit');
+      quitted();
+    },
+  });
+  return { capture, lifecycle, order, lines, done };
+}
+
+describe('RecordingLifecycle quit hooks', () => {
+  it('runs after the stop, in list order, each awaited, then quits', async () => {
+    const h = quitHarness((order) => [
+      {
+        name: 'flush the notes',
+        timeoutMs: 1_000,
+        run: async () => {
+          await flush(); // an async hook is awaited before the next one starts
+          order.push('flush the notes');
+        },
+      },
+      {
+        name: 'close the store',
+        timeoutMs: 1_000,
+        run: () => {
+          order.push('close the store');
+        },
+      },
+    ]);
+    h.lifecycle.onQuitRequested();
+    await h.done;
+    expect(h.order).toEqual(['stop', 'flush the notes', 'close the store', 'quit']);
+  });
+
+  it('logs a hook that throws or rejects, and still runs the next ones and quits', async () => {
+    const h = quitHarness((order) => [
+      {
+        name: 'throws',
+        timeoutMs: 1_000,
+        run: () => {
+          throw new Error('database is not open');
+        },
+      },
+      {
+        name: 'rejects',
+        timeoutMs: 1_000,
+        run: () => Promise.reject(new Error('window is gone')),
+      },
+      {
+        name: 'close the store',
+        timeoutMs: 1_000,
+        run: () => {
+          order.push('close the store');
+        },
+      },
+    ]);
+    h.lifecycle.onQuitRequested();
+    await h.done;
+    expect(h.order).toEqual(['stop', 'close the store', 'quit']);
+    const failures = h.lines.filter((line) => line.includes('cleanup on quit failed'));
+    expect(failures).toHaveLength(2);
+    expect(failures[0]).toContain('"hook":"throws"');
+    expect(failures[0]).toContain('database is not open');
+    expect(failures[1]).toContain('"hook":"rejects"');
+    expect(failures[1]).toContain('window is gone');
+  });
+
+  describe('when a hook hangs', () => {
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('cuts it at its own bound and goes on to the next hook and the quit', async () => {
+      const h = quitHarness((order) => [
+        {
+          name: 'flush the notes',
+          timeoutMs: 1_000,
+          run: () => new Promise<void>(() => undefined),
+        },
+        {
+          name: 'close the store',
+          timeoutMs: 1_000,
+          run: () => {
+            order.push('close the store');
+          },
+        },
+      ]);
+      h.lifecycle.onQuitRequested();
+      await vi.advanceTimersByTimeAsync(900);
+      expect(h.order).toEqual(['stop']);
+
+      await vi.advanceTimersByTimeAsync(200);
+      expect(h.order).toEqual(['stop', 'close the store', 'quit']);
+      const failure = h.lines.find((line) => line.includes('cleanup on quit failed'));
+      expect(failure).toContain('"hook":"flush the notes"');
+      expect(failure).toContain('timed out after 1000 ms');
+    });
   });
 });
 

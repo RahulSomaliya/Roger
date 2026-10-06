@@ -85,13 +85,20 @@ async function main(): Promise<void> {
     capture,
     logger: logger.child({ component: 'lifecycle' }),
     quitStopTimeoutMs: config.costGuards.quitStopTimeoutMs,
-    beforeExit: () => {
-      uploader.stop();
-      // A tick still awaiting the API meets the closed store next ('database is not open').
-      // TranscriptUploader.tick logs that and never rejects; a rejection would be unhandled here.
-      // After a stop that timed out, a late final line meets it too; CaptureSession logs that.
-      store.close();
-    },
+    quitHooks: [
+      {
+        name: 'stop the uploader and close the transcript store',
+        // Synchronous, so the bound never cuts it; every hook names one all the same.
+        timeoutMs: 1_000,
+        run: () => {
+          uploader.stop();
+          // A tick still awaiting the API meets the closed store next ('database is not open').
+          // TranscriptUploader.tick logs that and never rejects; a rejection would be unhandled here.
+          // After a stop that timed out, a late final line meets it too; CaptureSession logs that.
+          store.close();
+        },
+      },
+    ],
     quit: () => {
       app.quit();
     },
