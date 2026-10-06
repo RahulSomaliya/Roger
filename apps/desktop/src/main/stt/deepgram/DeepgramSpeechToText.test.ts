@@ -3,7 +3,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { createLogger } from '../../logger';
 import { SttConnectError, type SttEvent, type SttStreamSettings } from '../SpeechToText';
-import { buildListenUrl, DeepgramSpeechToText, rawDataToString } from './DeepgramSpeechToText';
+import { rawDataToString } from '../websocket';
+import { buildListenUrl, DeepgramSpeechToText } from './DeepgramSpeechToText';
 
 const logger = createLogger({ level: 'error', format: 'json', sink: () => undefined });
 const settings: SttStreamSettings = {

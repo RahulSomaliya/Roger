@@ -1,4 +1,5 @@
 import type { TranscriptWord } from '../../../shared/transcript';
+import { firstString, isFiniteNumber, isRecord } from '../json';
 import type { SttEvent } from '../SpeechToText';
 
 /**
@@ -103,18 +104,6 @@ function parseWords(value: unknown): TranscriptWord[] | null {
 
 function secondsToMs(seconds: number): number {
   return Math.round(seconds * 1000);
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function isFiniteNumber(value: unknown): value is number {
-  return typeof value === 'number' && Number.isFinite(value);
-}
-
-function firstString(...values: unknown[]): string | undefined {
-  return values.find((value): value is string => typeof value === 'string');
 }
 
 /** Client → server control messages. */
