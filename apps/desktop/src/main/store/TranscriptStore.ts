@@ -157,7 +157,11 @@ export interface NewCaptureEvent {
 }
 
 export interface CaptureEvent extends Required<NewCaptureEvent> {
-  /** Increases with every event written. */
+  /**
+   * Orders one meeting's events. Never a cursor across meetings: an id is the highest stored id
+   * plus 1 (`INTEGER PRIMARY KEY`, no AUTOINCREMENT), so once `deleteMeetingIfEmpty` cascades the
+   * newest events away, their ids are given out again.
+   */
   id: number;
 }
 
