@@ -2,8 +2,14 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { WebSocket } from 'ws';
 import { createLogger, type Logger } from '../logger';
 import { WebSocketSpeechToText } from './core/WebSocketSpeechToText';
+import { KEYTERM_LIMITS } from './keyterms';
 import { LOCAL_STT_PROVIDERS, STT_VENDORS, type SttVendorOptions } from './registry';
-import { SttConnectError, type SttEvent, type SttStream } from './SpeechToText';
+import {
+  SttConnectError,
+  type SttEvent,
+  type SttStream,
+  type SttStreamSettings,
+} from './SpeechToText';
 import { CONFORMANCE_VENDORS, type ConformanceVendor } from './testing/conformanceVendors';
 import {
   FakeVendorServer,
@@ -103,12 +109,11 @@ describe.each(CONFORMANCE_VENDORS)('$provider conforms', (vendor) => {
     });
   }
 
-  async function open(adapter = stt()): Promise<{ stream: SttStream; events: SttEvent[] }> {
-    const stream = await adapter.openStream({
-      accessToken: 'token',
-      settings: vendor.settings,
-      label: 'mic',
-    });
+  async function open(
+    adapter = stt(),
+    settings: SttStreamSettings = vendor.settings,
+  ): Promise<{ stream: SttStream; events: SttEvent[] }> {
+    const stream = await adapter.openStream({ accessToken: 'token', settings, label: 'mic' });
     const events: SttEvent[] = [];
     stream.on((event) => events.push(event));
     return { stream, events };
@@ -495,6 +500,78 @@ describe.each(CONFORMANCE_VENDORS)('$provider conforms', (vendor) => {
     const price = vendor.settings.pricePerHourUsd ?? Number.NaN;
     // Rounded to 1/10000 USD, so within half of that of the exact figure.
     expect(usage.estimatedCostUsd).toBeCloseTo((150_000 / 3_600_000) * price, 3);
+  });
+
+  /**
+   * The jargon list: the core cuts it to the shared limits, the protocol maps it, and a connect the
+   * vendor refuses over it is reported as keytermsRejected after one handshake, its socket closed.
+   * The one reopen without the list is CaptureSession's, through the open budget (M3-T4b); an
+   * adapter or core that retried would open billed sessions the budget never saw (house rule 9).
+   */
+  describe('with a jargon list', () => {
+    const LIST = ['Linkt', 'order number'];
+
+    function keyterms(): NonNullable<ConformanceVendor['keyterms']> {
+      if (vendor.keyterms === null) throw new Error(`${vendor.provider} takes no jargon list`);
+      return vendor.keyterms;
+    }
+
+    function refuseAsTheVendorDoes(): void {
+      const { refusal } = keyterms();
+      if ('httpStatus' in refusal) {
+        server.rejectWith = refusal.httpStatus;
+        return;
+      }
+      server.script.onConnect = (connection) => {
+        connection.socket.close(refusal.closeBeforeReady.code, refusal.closeBeforeReady.reason);
+      };
+    }
+
+    it('declares keytermsRejected exactly when its entry says how it refuses a list', () => {
+      expect(stt().protocol.keytermsRejected !== undefined).toBe(vendor.keyterms !== null);
+    });
+
+    itIf(vendor.keyterms !== null)(
+      'sends the list cut to the shared limits, and none without one',
+      async () => {
+        const long = Array.from({ length: KEYTERM_LIMITS.maxTerms + 20 }, (_, i) => `Term${i}`);
+        const withList = await open(stt(), { ...vendor.settings, keyterms: long });
+        await withList.stream.close();
+        expect(keyterms().sent(server.last())).toEqual(long.slice(0, KEYTERM_LIMITS.maxTerms));
+
+        const without = await open();
+        await without.stream.close();
+        expect(keyterms().sent(server.last())).toEqual([]);
+      },
+    );
+
+    itIf(vendor.keyterms !== null)(
+      'reports a connect refused for its list as keytermsRejected, after exactly one handshake',
+      async () => {
+        refuseAsTheVendorDoes();
+        const error = await open(stt(), { ...vendor.settings, keyterms: LIST }).catch(
+          (e: unknown) => e,
+        );
+
+        expect(error).toBeInstanceOf(SttConnectError);
+        expect((error as SttConnectError).keytermsRejected).toBe(true);
+        await server.expectNoOpenSockets();
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        expect(server.handshakes).toBe(1);
+      },
+    );
+
+    itIf(vendor.keyterms !== null)(
+      'reports the same refusal without a list as a plain connect error',
+      async () => {
+        refuseAsTheVendorDoes();
+        const error = await open().catch((e: unknown) => e);
+
+        expect(error).toBeInstanceOf(SttConnectError);
+        expect((error as SttConnectError).keytermsRejected).toBe(false);
+        expect(server.handshakes).toBe(1);
+      },
+    );
   });
 
   describe('a failed connect leaves no socket open', () => {
