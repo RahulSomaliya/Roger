@@ -251,9 +251,14 @@ describe.concurrent('TapSystemAudio', () => {
       seen.push(onlyWarning(status()));
     });
     tap.start(RECORDING);
-    await vi.waitFor(() => {
-      expect(seen.some((warning) => warning?.kind === 'helper-hung')).toBe(true);
-    });
+    // The kill comes about 700 ms after the fake starts (3 frames, then hangKillMs): under the
+    // default 1 s, a cold start slowed by a loaded `make check` failed a correct run.
+    await vi.waitFor(
+      () => {
+        expect(seen.some((warning) => warning?.kind === 'helper-hung')).toBe(true);
+      },
+      { timeout: 5_000 },
+    );
     expect(seen.find((warning) => warning !== undefined)).toMatchObject({
       kind: 'helper-hung',
       source: 'system',
