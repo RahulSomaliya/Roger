@@ -93,6 +93,7 @@ export class FakeVendorStream implements SttStream {
     readonly options: OpenStreamOptions,
     private readonly timers: BenchTimers,
     private readonly script: FakeVendorScript,
+    private readonly wireTap: BenchWireTap,
   ) {
     this.openedAtMs = timers.now();
   }
@@ -110,6 +111,11 @@ export class FakeVendorStream implements SttStream {
 
   emit(...events: Parameters<SttEventListener>): void {
     for (const event of events) this.emitter.emit(event);
+  }
+
+  /** A text message from the vendor, as the core's wire tap reports it. */
+  receive(text: string): void {
+    this.wireTap({ kind: 'text', label: this.label, direction: 'received', text });
   }
 
   close(): Promise<void> {
@@ -164,7 +170,7 @@ export class FakeVendor {
         if (query !== null) wireTap({ kind: 'connect', label: options.label, query });
         if (this.script.connectMs !== undefined) await this.timers.sleep(this.script.connectMs);
         this.script.onOpen?.(options, index);
-        const stream = new FakeVendorStream(options, this.timers, this.script);
+        const stream = new FakeVendorStream(options, this.timers, this.script, wireTap);
         opened.push(stream);
         this.streams.push(stream);
         return stream;
