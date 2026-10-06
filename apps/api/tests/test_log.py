@@ -57,7 +57,7 @@ def store_line(text: str) -> None:
 
 @pytest.mark.usefixtures("app_logging")
 @pytest.mark.parametrize("app_env", ["development", "production"])
-def test_an_error_is_logged_without_any_frame_s_locals(app_env: str) -> None:
+def test_an_error_is_logged_without_its_frames_locals(app_env: str) -> None:
     # A frame's locals are request bodies (segment text, a calendar sign-in code) and SQL bind
     # parameters, and structlog's dict traceback renders every one by default (M4-T7, M5-T3).
     configure_logging(make_settings(UNUSED_DATABASE_URL, app_env=app_env))

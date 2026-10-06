@@ -418,7 +418,7 @@ async def test_segment_text_postgres_cannot_store_is_stored_without_it(
 ) -> None:
     # A U+0000 in one line was a 500 for its whole batch, which the uploader retries forever; an
     # unpaired surrogate (half an emoji) was a 422, and the uploader set the line aside. `words`
-    # is jsonb, which holds neither either.
+    # is jsonb, which holds neither.
     meeting = await create_meeting(client)
     line = segment_payload(
         speaker="the\x00m",
