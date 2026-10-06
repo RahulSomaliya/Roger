@@ -57,6 +57,14 @@ async function main(): Promise<void> {
     : configFile.error === null
       ? MISSING_TOKEN
       : `${MISSING_TOKEN} (${configFile.error})`;
+  // A refused cost guard blocks Start rather than fall back: a typo must never loosen a guard.
+  const settingsError =
+    config.errors.length === 0
+      ? null
+      : `Settings refused: ${config.errors.join('; ')}. Fix config.json or the ROGER_* variables and restart.`;
+  if (settingsError !== null) logger.error(settingsError);
+  const startupError =
+    [missingToken, settingsError].filter((error) => error !== null).join(' ') || null;
   const capture = new CaptureService({
     store,
     api,
@@ -65,7 +73,7 @@ async function main(): Promise<void> {
     ensureMicrophoneAccess: () => ensureMicrophoneAccess(),
     logger: logger.child({ component: 'capture' }),
     sttProviderOverride: config.sttProviderOverride,
-    startupError: missingToken,
+    startupError,
   });
 
   let window: BrowserWindow | null = null;

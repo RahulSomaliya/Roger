@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { COST_GUARD_SETTINGS, type CostGuards, loadCostGuards } from './costGuards';
 import { isLogLevel, type LogLevel } from './logger';
 
 /**
@@ -11,6 +12,10 @@ export interface DesktopConfig {
   /** Force an STT adapter regardless of what the API hands out. Development only. */
   sttProviderOverride: string | null;
   logLevel: LogLevel;
+  /** Bounds on billed speech-to-text time (costGuards.ts). */
+  costGuards: CostGuards;
+  /** Settings that were refused. Start stays blocked until they are fixed. */
+  errors: string[];
 }
 
 export interface ConfigFile {
@@ -18,6 +23,8 @@ export interface ConfigFile {
   apiToken?: string;
   sttProvider?: string;
   logLevel?: string;
+  /** The cost guard keys present in config.json, unchecked: loadCostGuards validates them. */
+  costGuards?: Record<string, unknown>;
 }
 
 export const DEFAULT_API_URL = 'http://127.0.0.1:8000';
@@ -25,11 +32,14 @@ export const DEFAULT_API_URL = 'http://127.0.0.1:8000';
 export function loadConfig(env: NodeJS.ProcessEnv, file: ConfigFile = {}): DesktopConfig {
   const apiUrl = firstNonEmpty(env.ROGER_API_URL, file.apiUrl) ?? DEFAULT_API_URL;
   const logLevelRaw = firstNonEmpty(env.ROGER_LOG_LEVEL, file.logLevel);
+  const { guards, errors } = loadCostGuards(env, file.costGuards ?? {});
   return {
     apiUrl: apiUrl.replace(/\/+$/, ''),
     apiToken: firstNonEmpty(env.ROGER_DESKTOP_API_TOKEN, file.apiToken) ?? null,
     sttProviderOverride: firstNonEmpty(env.ROGER_STT_PROVIDER, file.sttProvider) ?? null,
     logLevel: isLogLevel(logLevelRaw) ? logLevelRaw : 'info',
+    costGuards: guards,
+    errors,
   };
 }
 
@@ -57,19 +67,25 @@ export function readConfigFile(
     if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
       return { config: {}, error: `${path} must contain a JSON object` };
     }
-    return { config: pickStrings(parsed as Record<string, unknown>), error: null };
+    return { config: pickKnownKeys(parsed as Record<string, unknown>), error: null };
   } catch {
     // V8 quotes the offending input in some parse errors; the file may hold the API token.
     return { config: {}, error: `${path} is not valid JSON` };
   }
 }
 
-function pickStrings(source: Record<string, unknown>): ConfigFile {
+function pickKnownKeys(source: Record<string, unknown>): ConfigFile {
   const result: ConfigFile = {};
   for (const key of ['apiUrl', 'apiToken', 'sttProvider', 'logLevel'] as const) {
     const value = source[key];
     if (typeof value === 'string') result[key] = value;
   }
+  // Kept whatever their type: a guard given as "30" must be reported, not silently dropped.
+  const guards: Record<string, unknown> = {};
+  for (const { file } of COST_GUARD_SETTINGS) {
+    if (file in source) guards[file] = source[file];
+  }
+  if (Object.keys(guards).length > 0) result.costGuards = guards;
   return result;
 }
 
