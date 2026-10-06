@@ -263,7 +263,33 @@ Not built yet. Owner: M3-T19a, which writes its routes here, with their `409`s.
 
 ### Note templates
 
-Not built yet. Owner: M4-T3, which writes its routes here, with their `409`s.
+A template gives the AI notes their sections for one kind of call. Templates are data: one JSON
+file per template in `apps/api/src/roger_api/note_templates/`, named after its id. The API checks
+every file when it starts and does not start while one is broken. A new template is a new file,
+with no code change. Every workspace gets the same templates.
+
+#### `GET /v1/note-templates`
+
+Response: `200 { "items": NoteTemplate[] }`, ordered by `name`. No `409`s.
+
+```ts
+interface NoteTemplateSection {
+  heading: string;   // written as the notes heading, exactly as given
+  guidance: string;  // what goes under the heading; only the model reads it
+}
+
+interface NoteTemplate {
+  id: string;        // stable: stored on notes and runs as `template_id`
+  name: string;      // shown in the template picker
+  description: string;
+  sections: NoteTemplateSection[];  // in the order the notes use them; at least one
+}
+```
+
+The built-in ids are `general`, `standup`, `client_call` and `one_on_one`. Every text field is one
+non-empty line. Headings are unique in a template, ignoring case. A heading carries no Markdown
+marks and no `[L12]` refs, and it is never "From your notes": that heading closes the AI notes
+(M4 D7).
 
 ### Notes
 
