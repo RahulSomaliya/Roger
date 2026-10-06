@@ -16,6 +16,13 @@ export interface SttStreamSettings {
    * server-side). Null when the API knows no price. Only used to estimate cost in logs.
    */
   pricePerHourUsd: number | null;
+  /**
+   * The workspace's jargon list, so the vendor spells those words right. Missing means none.
+   * SttConnection cuts it to the shared limits (keyterms.ts) before the protocol maps it to the
+   * vendor's parameter; a vendor that refuses it fails the connect with
+   * SttConnectError.keytermsRejected.
+   */
+  keyterms?: readonly string[];
 }
 
 export interface OpenStreamOptions {
@@ -62,12 +69,22 @@ export interface SpeechToText {
 }
 
 export class SttConnectError extends Error {
+  /**
+   * The vendor refused the connect over the jargon list (SttProtocol.keytermsRejected). The core
+   * set it with the socket already closed and did not retry. CaptureSession reopens that source
+   * once without keyterms, through SttOpenBudget like any open (M3-T4b); a retry anywhere else, an
+   * adapter's or a loop's, would open billed sessions the budget never saw (house rule 9).
+   */
+  readonly keytermsRejected: boolean;
+
   constructor(
     message: string,
     readonly statusCode: number | null = null,
+    options: { keytermsRejected?: boolean } = {},
   ) {
     super(message);
     this.name = 'SttConnectError';
+    this.keytermsRejected = options.keytermsRejected ?? false;
   }
 }
 

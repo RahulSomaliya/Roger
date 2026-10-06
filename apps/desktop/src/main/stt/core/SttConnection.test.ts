@@ -8,7 +8,12 @@ import {
   waitFor,
 } from '../testing/fakeVendorServer';
 import { SttConnection, type SttConnectionOptions } from './SttConnection';
-import { describeCloseWith, type SttProtocol, type SttProtocolMessage } from './SttProtocol';
+import {
+  describeCloseWith,
+  type SttConnectRefusal,
+  type SttProtocol,
+  type SttProtocolMessage,
+} from './SttProtocol';
 
 /**
  * The shared lifecycle, driven through a toy vendor protocol. Real vendors run the same checks in
@@ -751,6 +756,181 @@ describe('SttConnection', () => {
       };
       expect(() => new SttConnection(options({ protocol }))).toThrow(SttConnectError);
       expect(vendor.connections).toHaveLength(0);
+    });
+  });
+
+  /**
+   * The jargon list: the core cuts it to the shared limits before any protocol sees it, and turns a
+   * connect the vendor refused over it into SttConnectError.keytermsRejected. It never retries:
+   * CaptureSession reopens once without the list, through the open budget (M3-T4b).
+   */
+  describe('keyterms', () => {
+    const LIST = ['Linkt', 'Roger'];
+
+    function withKeyterms(keyterms: readonly string[]): SttConnectionOptions['stream'] {
+      return { accessToken: 't', settings: { ...settings, keyterms }, label: 'mic' };
+    }
+
+    /** Blames an HTTP 400 at the handshake on the list, as Deepgram's protocol does. */
+    function refusingOn400(asked: SttConnectRefusal[] = []): SttProtocol {
+      return {
+        ...toyProtocol(vendor.baseUrl),
+        keytermsRejected: (refusal) => {
+          asked.push(refusal);
+          return refusal.kind === 'http-status' && refusal.status === 400;
+        },
+      };
+    }
+
+    it('hands the protocol the list cut to the shared limits, with a warning that only counts', async () => {
+      const seen: {
+        target?: readonly string[] | undefined;
+        session?: readonly string[] | undefined;
+      } = {};
+      const toy = toyProtocol(vendor.baseUrl);
+      const protocol: SttProtocol = {
+        ...toy,
+        target: (stream) => {
+          seen.target = stream.settings.keyterms;
+          return toy.target(stream);
+        },
+        session: (context) => {
+          seen.session = context.settings.keyterms;
+          return toy.session(context);
+        },
+      };
+      const long = Array.from({ length: 130 }, (_, index) => `Jargon${index}`);
+      const { connection } = await open({ protocol, stream: withKeyterms(long) });
+      await connection.close();
+
+      expect(seen).toEqual({ target: long.slice(0, 100), session: long.slice(0, 100) });
+      const warning = lines.find(
+        (line) => line.message === 'stt keyterms cut to the vendor limits',
+      );
+      expect(warning?.level).toBe('warn');
+      expect(warning?.fields).toMatchObject({ received: 130, sent: 100, dropped: 30 });
+      // Terms name clients and colleagues: counts only, in every line.
+      expect(JSON.stringify(lines)).not.toContain('Jargon');
+    });
+
+    it('flags a refusal the protocol blames on the list, after exactly one handshake', async () => {
+      vendor.rejectWith = 400;
+      const asked: SttConnectRefusal[] = [];
+      const { connection, error } = await connectError({
+        protocol: refusingOn400(asked),
+        stream: withKeyterms(LIST),
+      });
+
+      expect(error.keytermsRejected).toBe(true);
+      expect(error.statusCode).toBe(400);
+      expect(error.message).toBe(
+        'Toy: rejected with HTTP 400; the jargon list (2 terms) was rejected',
+      );
+      expect(asked).toEqual([{ kind: 'http-status', status: 400 }]);
+      expect(connection.state).toBe('closed');
+      expect(lines.find((line) => line.message === 'stt connect failed')?.fields).toMatchObject({
+        keyterms: 2,
+        keytermsRejected: true,
+      });
+      // Never retried here: that open would bypass the open budget (house rule 9).
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(vendor.handshakes).toBe(1);
+    });
+
+    it('never flags a refusal when no list was sent, and never asks the protocol', async () => {
+      vendor.rejectWith = 400;
+      const asked: SttConnectRefusal[] = [];
+      for (const stream of [withKeyterms([]), { accessToken: 't', settings, label: 'mic' }]) {
+        const { error } = await connectError({ protocol: refusingOn400(asked), stream });
+
+        expect(error.keytermsRejected).toBe(false);
+        expect(error.message).toBe('Toy: rejected with HTTP 400');
+      }
+      expect(asked).toEqual([]);
+    });
+
+    it('never flags a refusal the protocol does not blame on the list', async () => {
+      vendor.rejectWith = 401;
+      const { error } = await connectError({
+        protocol: refusingOn400(),
+        stream: withKeyterms(LIST),
+      });
+
+      expect(error.keytermsRejected).toBe(false);
+      expect(error.message).toBe('Toy: rejected with HTTP 401');
+    });
+
+    it('never flags a refusal for a protocol that reports no rejected list', async () => {
+      vendor.rejectWith = 400;
+      const { error } = await connectError({ stream: withKeyterms(LIST) });
+
+      expect(error.keytermsRejected).toBe(false);
+    });
+
+    it('asks about a close before the ready signal with its code and reason', async () => {
+      vendor.script.onConnect = (connection) => {
+        connection.socket.close(4001, 'bad prompt');
+      };
+      const asked: SttConnectRefusal[] = [];
+      const protocol: SttProtocol = {
+        ...toyProtocol(vendor.baseUrl),
+        keytermsRejected: (refusal) => {
+          asked.push(refusal);
+          return refusal.kind === 'closed-before-ready';
+        },
+      };
+      const { error } = await connectError({ protocol, stream: withKeyterms(['Linkt']) });
+
+      expect(asked).toEqual([{ kind: 'closed-before-ready', code: 4001, reason: 'bad prompt' }]);
+      expect(error.keytermsRejected).toBe(true);
+      expect(error.message).toBe(
+        'Toy ended the connection before the session began (code 4001: bad prompt); the jargon ' +
+          'list (1 term) was rejected',
+      );
+    });
+
+    it('never asks about a connect that timed out', async () => {
+      vendor.script.onConnect = () => undefined;
+      const asked: SttConnectRefusal[] = [];
+      const protocol: SttProtocol = {
+        ...toyProtocol(vendor.baseUrl),
+        keytermsRejected: (refusal) => {
+          asked.push(refusal);
+          return true;
+        },
+      };
+      const { error } = await connectError({
+        protocol,
+        stream: withKeyterms(LIST),
+        connectTimeoutMs: 60,
+      });
+
+      expect(error.keytermsRejected).toBe(false);
+      expect(asked).toEqual([]);
+    });
+
+    it('never asks about a connection that dropped before the ready signal', async () => {
+      // The TCP connection ends after the upgrade with no close frame (a Wi-Fi handoff, a proxy
+      // cutting it): ws reports 'close 1006' and no 'error', so this reaches the close path.
+      vendor.script.onConnect = (connection) => {
+        connection.socket.terminate();
+      };
+      const asked: SttConnectRefusal[] = [];
+      const protocol: SttProtocol = {
+        ...toyProtocol(vendor.baseUrl),
+        keytermsRejected: (refusal) => {
+          asked.push(refusal);
+          return true;
+        },
+      };
+      const { error } = await connectError({ protocol, stream: withKeyterms(LIST) });
+
+      expect(asked).toEqual([]);
+      expect(error.keytermsRejected).toBe(false);
+      expect(error.message).toBe(
+        'Toy ended the connection before the session began (code 1006: the connection dropped ' +
+          'without a close frame)',
+      );
     });
   });
 

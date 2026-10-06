@@ -97,6 +97,42 @@ describe('ApiClient', () => {
     });
   });
 
+  describe('getSttToken', () => {
+    const stream = {
+      model: 'universal-streaming-english',
+      language: 'en',
+      sample_rate: 16000,
+      encoding: 'linear16',
+      price_per_hour_usd: 0.19,
+    };
+    const token = (streamBody: Record<string, unknown>): Record<string, unknown> => ({
+      provider: 'assemblyai',
+      access_token: 'vendor-token',
+      expires_in: 30,
+      stream: streamBody,
+    });
+
+    it('posts to the token route and returns the jargon list with the stream settings', async () => {
+      const fetchImpl = vi
+        .fn<typeof fetch>()
+        .mockResolvedValue(jsonResponse(200, token({ ...stream, keyterms: ['Linkt', 'Roger'] })));
+      const result = await client(fetchImpl).getSttToken();
+
+      const [url, init] = fetchImpl.mock.calls[0]!;
+      expect(url).toBe('http://api.test/v1/stt/token');
+      expect(init?.method).toBe('POST');
+      expect(result).toEqual(token({ ...stream, keyterms: ['Linkt', 'Roger'] }));
+    });
+
+    it('reads a response without keyterms, from an API older than the list, as an empty list', async () => {
+      const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(jsonResponse(200, token(stream)));
+      const result = await client(fetchImpl).getSttToken();
+
+      expect(result.stream.keyterms).toEqual([]);
+      expect(result).toEqual(token({ ...stream, keyterms: [] }));
+    });
+  });
+
   it('reports non-envelope failures and network errors without throwing raw fetch errors', async () => {
     const html = vi.fn<typeof fetch>().mockResolvedValue(new Response('<html>', { status: 502 }));
     await expect(client(html).getSttToken()).rejects.toMatchObject({

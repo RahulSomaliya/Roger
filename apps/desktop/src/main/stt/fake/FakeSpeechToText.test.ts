@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import type { SttEvent } from '../SpeechToText';
 import { FakeSpeechToText } from './FakeSpeechToText';
 
 const settings = {
@@ -29,5 +30,25 @@ describe('FakeSpeechToText', () => {
       estimatedCostUsd: 0,
     });
     expect(stt.usage()).toMatchObject({ sessionsOpened: 2, connectedMs: 75_000 });
+  });
+
+  it('takes a jargon list and transcribes exactly as without one', async () => {
+    const loud = new Uint8Array(new Int16Array(16_000).fill(8_000).buffer);
+    const lines = async (keyterms: string[]): Promise<SttEvent[]> => {
+      const stream = await new FakeSpeechToText().openStream({
+        accessToken: '',
+        settings: { ...settings, keyterms },
+        label: 'mic',
+      });
+      const events: SttEvent[] = [];
+      stream.on((event) => events.push(event));
+      stream.send(loud);
+      await stream.close();
+      return events;
+    };
+
+    const withList = await lines(['Linkt', 'Roger']);
+    expect(withList.some((event) => event.type === 'final')).toBe(true);
+    expect(withList).toEqual(await lines([]));
   });
 });

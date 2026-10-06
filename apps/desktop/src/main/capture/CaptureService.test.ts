@@ -137,6 +137,7 @@ function harness(
         sample_rate: 16000,
         encoding: 'linear16',
         price_per_hour_usd: 0.15,
+        keyterms: [],
       },
     }),
     createMeeting: vi.fn<UploadApi['createMeeting']>((input) =>
@@ -362,6 +363,7 @@ describe('CaptureService', () => {
         sample_rate: 48000,
         encoding: 'linear16',
         price_per_hour_usd: null,
+        keyterms: [],
       },
     });
     const status = await h.service.start();
@@ -378,20 +380,30 @@ describe('CaptureService', () => {
     expect(status.phase).toBe('recording');
     expect(status.sttProvider).toBe('fake');
     expect(h.api.getSttToken).not.toHaveBeenCalled();
+    expect(h.stt.opened.map((options) => options.settings.keyterms)).toEqual([[], []]);
     await h.service.stop();
   });
 
-  it('hands the adapter the stream settings the API names, price included', async () => {
+  it('hands both adapters the stream settings the API names, price and jargon list included', async () => {
     const h = harness();
+    const token = await h.api.getSttToken();
+    h.api.getSttToken.mockResolvedValue({
+      ...token,
+      stream: { ...token.stream, keyterms: ['Linkt', 'Roger'] },
+    });
     await h.service.start();
 
-    expect(h.stt.opened[0]?.settings).toEqual({
-      model: 'm',
-      language: 'en',
-      sampleRate: 16000,
-      encoding: 'linear16',
-      pricePerHourUsd: 0.15,
-    });
+    expect(h.stt.opened).toHaveLength(2);
+    for (const options of h.stt.opened) {
+      expect(options.settings).toEqual({
+        model: 'm',
+        language: 'en',
+        sampleRate: 16000,
+        encoding: 'linear16',
+        pricePerHourUsd: 0.15,
+        keyterms: ['Linkt', 'Roger'],
+      });
+    }
     await h.service.stop();
   });
 
@@ -759,6 +771,8 @@ describe('CaptureService stall close', () => {
         sample_rate: 16000,
         encoding: 'linear16',
         price_per_hour_usd: 0.15,
+        // Edited since Start: a reopen's fresh token carries the list as it is now.
+        keyterms: ['Linkt'],
       },
     });
     const arrivedAt = 1_000_000 + 30_500;
@@ -771,6 +785,7 @@ describe('CaptureService stall close', () => {
 
     expect(h.api.getSttToken).toHaveBeenCalledTimes(2);
     expect(h.stt.opened.at(-1)).toMatchObject({ label: 'system', accessToken: 'fresh-token' });
+    expect(h.stt.opened.at(-1)?.settings.keyterms).toEqual(['Linkt']);
     const reopened = h.stt.streams.get('system')!;
     expect(reopened).not.toBe(firstSystem);
     // Nothing lost, nothing reordered: the chunk that woke it goes first.

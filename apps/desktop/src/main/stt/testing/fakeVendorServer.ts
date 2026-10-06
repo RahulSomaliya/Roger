@@ -27,6 +27,12 @@ export interface FakeVendorScript {
 
 export class FakeVendorServer {
   readonly connections: FakeVendorConnection[] = [];
+  /**
+   * Every websocket handshake the adapter attempted, refused ones too (`connections` holds only the
+   * accepted ones). One per open: a core that retried a refused connect itself would open a billed
+   * session the open budget never saw (house rule 9).
+   */
+  handshakes = 0;
   /** Refuse the handshake with this HTTP status instead of upgrading. */
   rejectWith: number | null = null;
   script: FakeVendorScript = {};
@@ -68,6 +74,7 @@ export class FakeVendorServer {
       port: 0,
       host: '127.0.0.1',
       verifyClient: (_info, done) => {
+        if (fake !== null) fake.handshakes += 1;
         const status = fake?.rejectWith ?? null;
         if (status !== null) done(false, status, 'refused by the fake vendor');
         else done(true);

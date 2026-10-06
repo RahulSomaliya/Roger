@@ -66,7 +66,11 @@ export interface SttProtocol {
   readonly provider: string;
   /** For people: error text and logs, e.g. "AssemblyAI". */
   readonly vendorName: string;
-  /** Throws SttConnectError when the settings cannot work; no socket is opened then. */
+  /**
+   * Throws SttConnectError when the settings cannot work; no socket is opened then. Map
+   * `settings.keyterms` (already cut to the shared limits by the core, keyterms.ts) to the vendor's
+   * jargon parameter here, and never send one when the list is empty.
+   */
   target(options: OpenStreamOptions): SttConnectTarget;
   /** `socket-open`: the handshake is the ready signal (Deepgram). Otherwise wait for `ready`. */
   readonly readyOn: 'socket-open' | 'ready-message';
@@ -93,7 +97,31 @@ export interface SttProtocol {
   describeClose(code: number, reason: string | null): string;
   /** Extra advice for a failed connect, given its explanation (AssemblyAI: wait a minute). */
   connectAdvice(explanation: string): string | null;
+  /**
+   * Whether this refusal is the vendor rejecting the jargon list (Deepgram: HTTP 400 at the
+   * handshake). The core asks only when the stream sent a non-empty list, and then rejects with
+   * SttConnectError.keytermsRejected, the socket closed. Answer for the list only: a true here makes
+   * CaptureSession reopen without it, which cannot fix a bad token or a busy account. Missing: the
+   * protocol maps no keyterms, so its refusals are plain connect errors. The conformance suite
+   * checks the declaration against the vendor's fake (conformanceVendors.ts `keyterms`).
+   */
+  keytermsRejected?(refusal: SttConnectRefusal): boolean;
 }
+
+/**
+ * A connect the vendor refused, as `keytermsRejected` sees it. A timeout or a network error is
+ * never one: nothing the vendor said blames the list.
+ */
+export type SttConnectRefusal =
+  /** The vendor answered the websocket handshake with this HTTP status instead of upgrading. */
+  | { kind: 'http-status'; status: number }
+  /**
+   * The vendor closed the socket before its ready signal (`readyOn: 'ready-message'`). `code` is
+   * always from the vendor's close frame: a connection that dropped with no frame (1006) is a
+   * network error, and the core never asks about it (SttConnection.earlyCloseError), so a
+   * predicate of "any code except ..." never blames a network drop on the list.
+   */
+  | { kind: 'closed-before-ready'; code: number; reason: string | null };
 
 /**
  * The standard close codes every vendor shares (RFC 6455), for `describeClose` when the vendor gave

@@ -1,5 +1,6 @@
 import type { WebSocket } from 'ws';
 import type { SttStreamSettings } from '../SpeechToText';
+import type { FakeVendorConnection } from './fakeVendorServer';
 
 /**
  * Test-only: how each network vendor behaves on the wire, so the conformance suite
@@ -29,6 +30,17 @@ export interface ConformanceVendor {
    * `audioPacing: 'realtime'`. False: a burst must go at once, or it would lag for nothing.
    */
   rejectsAudioFasterThanRealTime: boolean;
+  /**
+   * How the vendor takes a jargon list and how it refuses one it will not take. Null only while
+   * the protocol maps no keyterms and declares no `keytermsRejected`; the suite fails a vendor whose
+   * protocol and entry disagree.
+   */
+  keyterms: {
+    /** The terms the adapter sent, read from the connect request. */
+    sent(connection: FakeVendorConnection): string[];
+    /** The refusal: an HTTP status at the handshake, or a close before the ready message. */
+    refusal: { httpStatus: number } | { closeBeforeReady: { code: number; reason: string } };
+  } | null;
 }
 
 export const CONFORMANCE_VENDORS: readonly ConformanceVendor[] = [
@@ -72,6 +84,8 @@ export const CONFORMANCE_VENDORS: readonly ConformanceVendor[] = [
     // Close code 3007, "Audio Transmission Rate Exceeded: Received <x> sec. audio in <y> sec";
     // the API reference says to pace chunks at about real time and documents no tolerance.
     rejectsAudioFasterThanRealTime: true,
+    // M3-T5 adds `keyterms_prompt` and its refusal: a close before Begin other than 1008 and 3009.
+    keyterms: null,
   },
   {
     provider: 'deepgram',
@@ -101,5 +115,10 @@ export const CONFORMANCE_VENDORS: readonly ConformanceVendor[] = [
     keepAliveMessage: JSON.stringify({ type: 'KeepAlive' }),
     // No rate rule documented: a burst must go at once.
     rejectsAudioFasterThanRealTime: false,
+    keyterms: {
+      sent: (connection) => new URL(connection.url, 'ws://vendor').searchParams.getAll('keyterm'),
+      // Past its 500 tokens Deepgram refuses the whole request at the handshake.
+      refusal: { httpStatus: 400 },
+    },
   },
 ];

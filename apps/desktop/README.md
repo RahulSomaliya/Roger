@@ -162,7 +162,10 @@ Desktop:
    with the date read, in the file header (close codes, rate limits, billing). Declare
    `audioPacing`: `realtime` if the vendor closes a session sent audio faster than real time
    (AssemblyAI, 3007; the core then paces it), else `none`, and say the same in its conformance
-   entry (`rejectsAudioFasterThanRealTime`).
+   entry (`rejectsAudioFasterThanRealTime`). Map `settings.keyterms` (already cut to the shared
+   limits in `keyterms.ts`) to the vendor's jargon parameter, and declare `keytermsRejected` for the
+   refusal it gives a list it will not take (Deepgram: HTTP 400 at the handshake), with the same in
+   the entry's `keyterms`; never retry it, `CaptureSession` reopens once without the list.
 3. One line in `src/main/stt/registry.ts`.
 4. One entry in `src/main/stt/testing/conformanceVendors.ts`: how the vendor says ready, its finish
    messages and answer, a final line, a real mid-call close. The answer must match the protocol's
