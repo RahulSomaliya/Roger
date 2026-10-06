@@ -158,14 +158,20 @@ const MIGRATIONS: readonly string[] = [
 /**
  * A line can upload when it is not uploaded, not rejected, not hidden and not held: `upload_after`
  * unset or past `:now`. The list and the count share it, or "N lines waiting" never reaches zero
- * while a line is hidden. The compare is on text, which is right only because `holdSegment` writes
- * every instant in `toISOString` form (storeChecks.canonicalInstant). `canUpload` in
- * InMemoryTranscriptStore is its twin: change both.
+ * while a line is hidden; so does `meetingsNeedingSync`, or a meeting ended remotely comes back for
+ * a line the uploader then finds nothing to send for (or never comes back for one it would). The
+ * compare is on text, which is right only because `holdSegment` writes every instant in
+ * `toISOString` form (storeChecks.canonicalInstant). `canUpload` in InMemoryTranscriptStore is its
+ * twin: change both.
  */
 const CAN_UPLOAD = `synced_at IS NULL AND rejected_at IS NULL AND suppressed_reason IS NULL
   AND (upload_after IS NULL OR upload_after <= :now)`;
 
-/** Held: waiting on the echo sink. The same lines `listHeldSegments` settles at startup. */
+/**
+ * Held: waiting on the echo sink. The same lines `listHeldSegments` settles at startup and
+ * `countHeldSegments` counts for the uploader's end rule. `isHeld` in InMemoryTranscriptStore is
+ * its twin: change both.
+ */
 const HELD = `upload_after IS NOT NULL AND synced_at IS NULL AND rejected_at IS NULL
   AND suppressed_reason IS NULL`;
 
@@ -201,6 +207,7 @@ export class SqliteTranscriptStore implements TranscriptStore {
     release: StatementSync;
     heldSegments: StatementSync;
     heldSegmentsOfMeeting: StatementSync;
+    countHeld: StatementSync;
     saveSttUsage: StatementSync;
     getSttUsage: StatementSync;
     insertGap: StatementSync;
@@ -272,8 +279,14 @@ export class SqliteTranscriptStore implements TranscriptStore {
       resetSync: this.db.prepare(
         `UPDATE segments SET synced_at = NULL WHERE meeting_id = ? AND rejected_at IS NULL`,
       ),
+      // A meeting ended remotely comes back while it has a line that can upload; the uploader then
+      // re-sends its end (TranscriptStore.listMeetingsNeedingSync). The subquery is correlated on
+      // purpose: CAN_UPLOAD's columns are the segment's, and `meetings` has none of them.
       meetingsNeedingSync: this.db.prepare(
-        `SELECT * FROM meetings WHERE remote_state != 'ended' ORDER BY started_at ASC, id ASC`,
+        `SELECT * FROM meetings
+         WHERE remote_state != 'ended'
+            OR EXISTS (SELECT 1 FROM segments WHERE segments.meeting_id = meetings.id AND ${CAN_UPLOAD})
+         ORDER BY started_at ASC, id ASC`,
       ),
       insertSegment: this.db.prepare(
         `INSERT OR IGNORE INTO segments
@@ -329,6 +342,9 @@ export class SqliteTranscriptStore implements TranscriptStore {
       heldSegmentsOfMeeting: this.db.prepare(
         `SELECT * FROM segments WHERE meeting_id = ? AND ${HELD}
          ORDER BY start_ms ASC, source ASC, id ASC`,
+      ),
+      countHeld: this.db.prepare(
+        `SELECT COUNT(*) AS n FROM segments WHERE meeting_id = ? AND ${HELD}`,
       ),
       saveSttUsage: this.db.prepare(
         `INSERT INTO stt_usage
@@ -458,7 +474,7 @@ export class SqliteTranscriptStore implements TranscriptStore {
   }
 
   listMeetingsNeedingSync(): LocalMeeting[] {
-    return this.statements.meetingsNeedingSync.all().map(rowToMeeting);
+    return this.statements.meetingsNeedingSync.all({ now: this.now() }).map(rowToMeeting);
   }
 
   appendSegment(segment: TranscriptSegment, origin: SegmentOrigin = 'live'): void {
@@ -554,6 +570,10 @@ export class SqliteTranscriptStore implements TranscriptStore {
         ? this.statements.heldSegments.all()
         : this.statements.heldSegmentsOfMeeting.all(meetingId);
     return rows.map(rowToStoredSegment);
+  }
+
+  countHeldSegments(meetingId: string): number {
+    return Number(this.statements.countHeld.get(meetingId)?.n ?? 0);
   }
 
   saveSttUsage(usage: MeetingSttUsage): void {

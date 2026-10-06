@@ -205,7 +205,13 @@ export interface TranscriptStore {
   getMeetingStopReason(id: string): string | null;
   /** Forget that a meeting's lines were uploaded, so they are sent again (Postgres lost the meeting). */
   resetSyncForMeeting(id: string): void;
-  /** Meetings not yet fully in Postgres, oldest first. */
+  /**
+   * Meetings the uploader has work for, oldest first: every meeting not ended remotely, plus a
+   * meeting ended remotely that has a line that can upload (as `listUnsyncedSegments` selects
+   * them: a re-run line, an unhidden one, a released hold). M1 dropped a meeting from sync for good
+   * once it was ended remotely, which stranded every later line. One ended remotely with nothing
+   * to upload is never listed, so the uploader does not touch it again.
+   */
   listMeetingsNeedingSync(): LocalMeeting[];
   /** Idempotent on `segment.id`. */
   appendSegment(segment: TranscriptSegment, origin?: SegmentOrigin): void;
@@ -275,6 +281,11 @@ export interface TranscriptStore {
    * One meeting, or every meeting for the startup settle (holds a crash left behind).
    */
   listHeldSegments(meetingId?: string): StoredSegment[];
+  /**
+   * How many lines one meeting still holds, as `listHeldSegments` lists them: a line past its cap
+   * counts until it is uploaded or released. The uploader never ends a meeting while this is not 0.
+   */
+  countHeldSegments(meetingId: string): number;
 
   /** Idempotent on `gap.id`. Throws when `endMs` is not after `startMs` or the meeting is unknown. */
   addGap(gap: NewTranscriptGap): void;

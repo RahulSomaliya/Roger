@@ -108,8 +108,14 @@ export class InMemoryTranscriptStore implements TranscriptStore {
   }
 
   listMeetingsNeedingSync(): LocalMeeting[] {
+    const now = this.clock().toISOString();
+    const withLineToUpload = new Set(
+      [...this.segments.values()]
+        .filter((segment) => canUpload(segment, now))
+        .map((segment) => segment.meetingId),
+    );
     return [...this.meetings.values()]
-      .filter((meeting) => meeting.remoteState !== 'ended')
+      .filter((meeting) => meeting.remoteState !== 'ended' || withLineToUpload.has(meeting.id))
       .sort((a, b) => a.startedAt.localeCompare(b.startedAt) || a.id.localeCompare(b.id));
   }
 
@@ -237,11 +243,7 @@ export class InMemoryTranscriptStore implements TranscriptStore {
     return [...this.segments.values()]
       .filter(
         (segment) =>
-          (meetingId === undefined || segment.meetingId === meetingId) &&
-          segment.uploadAfter !== null &&
-          segment.syncedAt === null &&
-          segment.rejectedAt === null &&
-          segment.suppressedReason === null,
+          (meetingId === undefined || segment.meetingId === meetingId) && isHeld(segment),
       )
       .sort(
         (a, b) =>
@@ -251,6 +253,12 @@ export class InMemoryTranscriptStore implements TranscriptStore {
           a.id.localeCompare(b.id),
       )
       .map(toStoredSegment);
+  }
+
+  countHeldSegments(meetingId: string): number {
+    return [...this.segments.values()].filter(
+      (segment) => segment.meetingId === meetingId && isHeld(segment),
+    ).length;
   }
 
   saveSttUsage(usage: MeetingSttUsage): void {
@@ -435,6 +443,16 @@ function canUpload(segment: MemorySegment, now: string): boolean {
     segment.rejectedAt === null &&
     segment.suppressedReason === null &&
     (segment.uploadAfter === null || segment.uploadAfter <= now)
+  );
+}
+
+/** The in-memory twin of the SQL `HELD` predicate in SqliteTranscriptStore: change both. */
+function isHeld(segment: MemorySegment): boolean {
+  return (
+    segment.uploadAfter !== null &&
+    segment.syncedAt === null &&
+    segment.rejectedAt === null &&
+    segment.suppressedReason === null
   );
 }
 
