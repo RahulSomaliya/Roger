@@ -1,27 +1,10 @@
+/* Every colour, light and dark (theme/tokens.css). Rules here and in other files only read them. */
+@import './theme/tokens.css';
+
 :root {
-  color-scheme: light dark;
-  --bg: #f6f6f4;
-  --panel: #ffffff;
-  --ink: #1d1d1b;
-  --muted: #6b6b66;
-  --line: #e4e4df;
-  --accent: #2563eb;
-  --danger: #dc2626;
-  --ok: #16a34a;
-  --warn: #d97706;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
   font-size: 14px;
   line-height: 1.45;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #161615;
-    --panel: #1f1f1d;
-    --ink: #ececea;
-    --muted: #9a9a94;
-    --line: #2f2f2c;
-  }
 }
 
 * {
@@ -64,8 +47,8 @@ body {
 }
 
 .phase-recording {
-  background: color-mix(in srgb, var(--danger) 15%, transparent);
-  color: var(--danger);
+  background: var(--danger-bg);
+  color: var(--recording);
 }
 
 .controls {
@@ -80,7 +63,7 @@ body {
   border-radius: 10px;
   font-size: 16px;
   font-weight: 650;
-  color: white;
+  color: var(--on-accent);
   cursor: pointer;
 }
 
@@ -100,7 +83,7 @@ body {
 .error {
   padding: 10px 12px;
   border-radius: 8px;
-  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  background: var(--danger-bg);
   color: var(--danger);
 }
 
@@ -108,7 +91,7 @@ body {
 .notice {
   padding: 10px 12px;
   border-radius: 8px;
-  background: color-mix(in srgb, var(--warn) 14%, transparent);
+  background: var(--warn-bg);
   color: var(--ink);
 }
 
