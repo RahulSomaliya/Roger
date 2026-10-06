@@ -1,4 +1,5 @@
 import { isAbsolute } from 'node:path';
+import { isStartSource, START_SOURCES } from '../../shared/capture';
 import type { SegmentTrim } from './TranscriptStore';
 
 /**
@@ -53,5 +54,17 @@ export function checkTrim(id: string, trim: SegmentTrim): void {
 export function checkGapWindow(id: string, startMs: number, endMs: number): void {
   if (!(endMs > startMs)) {
     throw new Error(`gap ${id} must end after it starts (start ${startMs}, end ${endMs})`);
+  }
+}
+
+/**
+ * A meeting's start source is one of the five (StartSource). SQLite's CHECK refuses another too
+ * (migration 5), with a message that names neither the meeting nor the value.
+ */
+export function checkStartSource(meetingId: string, source: string): void {
+  if (!isStartSource(source)) {
+    throw new Error(
+      `could not write meeting ${meetingId}: start source "${source}" is not one of ${START_SOURCES.join(', ')}`,
+    );
   }
 }

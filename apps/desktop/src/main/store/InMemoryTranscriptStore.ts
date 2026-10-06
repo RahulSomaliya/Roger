@@ -5,6 +5,7 @@ import {
   checkAudioPath,
   checkGapWindow,
   checkListLimit,
+  checkStartSource,
   checkTrim,
 } from './storeChecks';
 import type {
@@ -47,8 +48,19 @@ export class InMemoryTranscriptStore implements TranscriptStore {
   constructor(private readonly clock: () => Date = () => new Date()) {}
 
   createMeeting(meeting: NewLocalMeeting): void {
+    const startSource = meeting.startSource ?? 'manual';
+    checkStartSource(meeting.id, startSource);
     if (this.meetings.has(meeting.id)) return;
-    this.meetings.set(meeting.id, { ...meeting, endedAt: null, remoteState: 'pending' });
+    const event = meeting.calendarEvent ?? null;
+    this.meetings.set(meeting.id, {
+      id: meeting.id,
+      title: meeting.title,
+      startedAt: meeting.startedAt,
+      endedAt: null,
+      remoteState: 'pending',
+      startSource,
+      calendarEvent: event === null ? null : structuredClone(event),
+    });
   }
 
   getMeeting(id: string): LocalMeeting | null {
@@ -443,6 +455,21 @@ export class InMemoryTranscriptStore implements TranscriptStore {
       .filter((segment) => segment.meetingId === meetingId && segment.suppressedReason === null)
       .map(toTranscriptSegment)
       .sort(compareTranscriptOrder);
+  }
+
+  findMeetingIdsByEventIds(eventIds: readonly string[]): Map<string, string> {
+    const wanted = new Set(eventIds);
+    const found = new Map<string, string>();
+    // The twin of SqliteTranscriptStore's MEETING_IDS_BY_EVENT_IDS: oldest first, so that a later
+    // meeting of the same event replaces the one before and the newest stays. Change both.
+    const oldestFirst = [...this.meetings.values()].sort(
+      (a, b) => compareText(a.startedAt, b.startedAt) || compareText(a.id, b.id),
+    );
+    for (const meeting of oldestFirst) {
+      const eventId = meeting.calendarEvent?.eventId;
+      if (eventId !== undefined && wanted.has(eventId)) found.set(eventId, meeting.id);
+    }
+    return found;
   }
 
   close(): void {

@@ -1,3 +1,5 @@
+import type { MeetingCalendarEvent } from '../../shared/calendar';
+import type { StartSource } from '../../shared/capture';
 import type { AudioSource, TranscriptSegment, TranscriptWord } from '../../shared/transcript';
 import type { StopReason } from '../capture/stopReasons';
 import type { SttUsage } from '../stt/usage';
@@ -12,6 +14,10 @@ export interface LocalMeeting {
   startedAt: string;
   endedAt: string | null;
   remoteState: RemoteState;
+  /** How its recording was started (migration 5): `manual` for every meeting from before it. */
+  startSource: StartSource;
+  /** The calendar event it was started for, sent with its create; null when none. */
+  calendarEvent: MeetingCalendarEvent | null;
 }
 
 export interface NewLocalMeeting {
@@ -23,6 +29,10 @@ export interface NewLocalMeeting {
    * against it by its characters, not by its instant, so the sidebar would list it out of order.
    */
   startedAt: string;
+  /** Default `manual`. A value outside StartSource is refused (storeChecks.checkStartSource). */
+  startSource?: StartSource;
+  /** Default null. */
+  calendarEvent?: MeetingCalendarEvent | null;
 }
 
 /**
@@ -362,5 +372,12 @@ export interface TranscriptStore {
    * rejected lines stay: each is still what was said. Empty for a meeting it does not hold.
    */
   listSegments(meetingId: string): TranscriptSegment[];
+  /**
+   * For each of `eventIds` that a local meeting was started for, the id of the newest such meeting
+   * (by `startedAt`, then id, as listMeetings orders): Home's "Open note" on an event that already
+   * has one (M5-T12). An event no meeting links is left out. Matched on the event id alone:
+   * Google's ids are letters, digits and `_`, and the fake provider's all start with `fake-`.
+   */
+  findMeetingIdsByEventIds(eventIds: readonly string[]): Map<string, string>;
   close(): void;
 }
