@@ -1,5 +1,6 @@
 import { PCM_ENCODING } from '../../../shared/ipc';
 import { DEFAULT_COST_GUARDS } from '../../costGuards';
+import { AudioFrameSizer } from '../core/AudioFrameSizer';
 import {
   describeCloseWith,
   type SttProtocol,
@@ -10,7 +11,6 @@ import {
 } from '../core/SttProtocol';
 import { WebSocketSpeechToText, type WebSocketSttOptions } from '../core/WebSocketSpeechToText';
 import { SttConnectError, type SttEvent, type SttStreamSettings } from '../SpeechToText';
-import { AudioFrameSizer } from './AudioFrameSizer';
 import { ASSEMBLYAI_TERMINATE, parseAssemblyAiMessage } from './messages';
 
 /**
