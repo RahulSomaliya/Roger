@@ -124,10 +124,27 @@ STT token and MCP (initialize, tools/list, tools/call) exercised over HTTP; an i
 review of the desktop app found one blocker (worklet code pulled into the page bundle) and five
 should-fixes, all fixed with regression tests.
 
-**Pending: the real-call check.** Needs a Mac with macOS 14.2+ and a Deepgram key on the API.
-Record here the macOS permission prompts shown (Microphone, System Audio Recording, Screen
-Recording?), whether the system audio track survives stopping the desktop video track, and the
-line Claude quoted.
+**2026-10-05/06, first real Mac (macOS 26.6.2, Apple Silicon, Postgres 16 in Docker):**
+
+- `make check` green on the Mac. After the wrap-up fixes: api 135 passed, desktop 93 passed, and
+  `make setup` works with no flags under a global uv `exclude-newer` and pnpm
+  `auto-install-peers=false` (see the CLAUDE.md failure log).
+- The packaged `Roger.app` (`make install-desktop`), with `STT_PROVIDER=fake`, captured both
+  streams: one test meeting stored 10 lines in Postgres, 4 from the mic and 6 from system audio
+  played from YouTube. So the system audio track does survive stopping the desktop video track.
+- Claude Code, connected to `/mcp` with the bearer header, read that meeting through
+  `get_transcript` and quoted its first "Them" line with the right timestamp.
+- macOS checks three privacy services for Roger, as the `tccd` log shows: Microphone,
+  ScreenCapture and AudioCapture. Call audio needs Screen & System Audio Recording turned on for
+  Roger, applied after a relaunch.
+- Trap found and fixed: an ad-hoc signed rebuild lost call audio ("No screen source is available
+  for system audio") because macOS pins grants to the code hash. `install:mac` now signs with a
+  stable per-Mac identity.
+- In dev mode the terminal is the app macOS checks, and no common terminal carries
+  `NSAudioCaptureUsageDescription`, so call audio must be tested from the installed app.
+
+**Pending: the real-call check.** A 30-minute Google Meet call with `STT_PROVIDER=deepgram` and a
+Deepgram key on the API, then Claude quoting a line from it through MCP. Record the line here.
 
 ## Review
 
