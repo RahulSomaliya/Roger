@@ -35,7 +35,11 @@ export interface VocabularyEditing {
 export interface AddResult {
   /** The terms not added that the person can fix (too long, no room), for the box to keep. */
   readonly rest: string;
-  /** Why something was not added, for the person; null when everything was. */
+  /**
+   * Why the first term in `rest` was not added; with `rest` empty, why a repeat was skipped; null
+   * when everything was added. The box's term comes first: the page shows only this line beside
+   * the box, and a skipped repeat is on the list already.
+   */
   readonly problem: string | null;
 }
 
@@ -123,19 +127,24 @@ export class VocabularyEditor {
     if (state.phase !== 'editing' || state.saving) return { rest: text, problem: null };
     const draft = [...state.draft];
     const kept: string[] = [];
-    let problem: string | null = null;
+    // Two messages, not the first refusal: a repeat skipped before a kept term would otherwise
+    // leave that term in the box with no reason, under a message naming a term shown nowhere.
+    let keptProblem: string | null = null;
+    let skippedProblem: string | null = null;
     for (const term of text.split(SEPARATORS).map((piece) => piece.trim())) {
       if (term === '') continue;
       const refusal = refuse(term, draft);
       if (refusal === null) {
         draft.push(term);
-        continue;
+      } else if (refusal.keep) {
+        kept.push(term);
+        keptProblem ??= refusal.message;
+      } else {
+        skippedProblem ??= refusal.message;
       }
-      problem ??= refusal.message;
-      if (refusal.keep) kept.push(term);
     }
     if (draft.length > state.draft.length) this.edit(state, draft);
-    return { rest: kept.join(', '), problem };
+    return { rest: kept.join(', '), problem: keptProblem ?? skippedProblem };
   }
 
   /** Takes one term off the draft. Does nothing while a save is out. */

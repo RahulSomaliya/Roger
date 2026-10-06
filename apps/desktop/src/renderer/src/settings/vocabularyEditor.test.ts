@@ -195,6 +195,22 @@ describe('adding terms', () => {
     expect(editing(editor).draft).toEqual(['Roger']);
   });
 
+  it('names why the term left in the box was refused, not a repeat skipped before it', async () => {
+    const { editor } = await loaded(['Linkt', 'Roger']);
+    const long = 'Linkt Holdings International Limited Liability Corp';
+    expect(editor.add(`Roger, ${long}`)).toEqual({
+      rest: long,
+      problem: '"Linkt Holdings International…" is 51 characters long. A term can have at most 50.',
+    });
+
+    const full = Array.from({ length: VOCABULARY_LIMITS.maxTerms - 1 }, (_, i) => `t${i}`);
+    const { editor: fullEditor } = await loaded(['Linkt', ...full]);
+    expect(fullEditor.add('Linkt, Roger')).toEqual({
+      rest: 'Roger',
+      problem: 'The list is full: it can hold 100 terms. Remove one to add another.',
+    });
+  });
+
   it('refuses a term with a control character in it', async () => {
     const { editor } = await loaded([]);
     const term = `Ro${String.fromCharCode(0x7f)}ger`;
