@@ -1,3 +1,4 @@
+import type { Unsubscribe } from '../src/shared/ipc';
 import { FakeHub } from './fakes/hub';
 import type { ScenarioId, StopScenario } from './scenarios';
 
@@ -34,7 +35,7 @@ const API_CHANNEL_PREFIXES = ['vocabulary:', 'chat:'] as const;
 /** What main's API client says when nothing answers at the API's address (`make dev-api`). */
 const API_UNREACHABLE = 'connect ECONNREFUSED 127.0.0.1:8000';
 
-/** How long settled() waits for requests to stop starting before it calls the page busy. */
+/** How long settled() waits for requests and subscriptions to stop before it calls the page busy. */
 const SETTLE_ROUNDS = 50;
 
 export function reachesApi(channel: string): boolean {
@@ -55,7 +56,7 @@ export function apiUnreachableMessage(request: string): string {
  * text, never the object: ipcRenderer.invoke rejects with a plain Error, so renderer code that
  * checks `instanceof ApiError` is wrong in the app, and the preview never hands one out either.
  */
-export function invokeError(channel: string, name: MainErrorName, message: string): Error {
+function invokeError(channel: string, name: MainErrorName, message: string): Error {
   return new Error(`Error invoking remote method '${channel}': ${name}: ${message}`);
 }
 
@@ -67,8 +68,8 @@ export interface PreviewHubOptions {
 
 /**
  * The hub the preview's fakes run on (FakeHub, P2-F1), plus main's state that no single fake owns:
- * the stored theme, an offline API, failures named like main's errors, and a count of requests in
- * flight so a script can wait for the page to settle.
+ * the stored theme, an offline API, failures named like main's errors, and counts of requests and
+ * subscriptions so a script can wait for the page to settle.
  */
 export class PreviewHub extends FakeHub {
   private readonly forcedTheme: ForcedTheme | null;
@@ -77,7 +78,9 @@ export class PreviewHub extends FakeHub {
   private readonly queuedFailures: { name: MainErrorName; message: string }[] = [];
   private apiOffline = false;
   private inFlight = 0;
+  /** Requests and subscriptions so far: settled() waits until neither moves. */
   private started = 0;
+  private subscribed = 0;
 
   constructor(options: PreviewHubOptions = {}) {
     super();
@@ -102,6 +105,11 @@ export class PreviewHub extends FakeHub {
     this.apiOffline = offline;
   }
 
+  override on(channel: string, listener: (payload: never) => void): Unsubscribe {
+    this.subscribed += 1;
+    return super.on(channel, listener);
+  }
+
   override request<T>(channel: string, answer: () => T): Promise<T> {
     const failure =
       this.queuedFailures.shift() ??
@@ -120,19 +128,29 @@ export class PreviewHub extends FakeHub {
   }
 
   /**
-   * Resolves once no request is in flight and none started over two painted frames: the app has
-   * asked main for what it shows and drawn the answers. Rejects if requests keep starting (a poll
-   * every frame), so a QA script never waits forever on a page that cannot settle.
+   * Resolves once no request is in flight and none started, and no listener subscribed, over two
+   * painted frames: the app has subscribed, asked main for what it shows and drawn the answers.
+   * Requests alone are not enough: React subscribes in effects that may run a frame after it
+   * renders, before the app's first request, and an event sent then reaches nobody. Rejects if
+   * requests keep starting (a poll every frame), so a script never waits on a page that cannot
+   * settle.
    */
   async settled(): Promise<void> {
     for (let round = 0; round < SETTLE_ROUNDS; round += 1) {
       const startedBefore = this.started;
+      const subscribedBefore = this.subscribed;
       await this.nextFrame();
       await this.nextFrame();
-      if (this.inFlight === 0 && this.started === startedBefore) return;
+      if (
+        this.inFlight === 0 &&
+        this.started === startedBefore &&
+        this.subscribed === subscribedBefore
+      ) {
+        return;
+      }
     }
     throw new Error(
-      `The preview did not settle: requests kept starting for ${SETTLE_ROUNDS * 2} frames (${this.inFlight} in flight)`,
+      `The preview did not settle: requests or subscriptions kept starting for ${SETTLE_ROUNDS * 2} frames (${this.inFlight} requests in flight)`,
     );
   }
 

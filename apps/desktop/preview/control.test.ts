@@ -98,6 +98,26 @@ describe('PreviewHub', () => {
     expect(answered).toBe(true);
   });
 
+  // The app subscribes in effects that can run a frame after it renders, before any request: a
+  // scenario started then sends its lines to nobody (the live call's transcript came out empty).
+  it('does not settle while the page is still subscribing', async () => {
+    let frames = 0;
+    const subscribed: string[] = [];
+    const hub: PreviewHub = new PreviewHub({
+      nextFrame: () => {
+        frames += 1;
+        if (frames === 2) {
+          hub.on('transcript:segment', () => subscribed.push('late'));
+        }
+        return nextTask();
+      },
+    });
+    await hub.settled();
+    hub.emit('transcript:segment', 'line');
+    expect(subscribed).toEqual(['late']);
+    expect(frames).toBe(4);
+  });
+
   it('refuses to settle while requests keep starting', async () => {
     // A page that asks main for something on every frame.
     const hub: PreviewHub = new PreviewHub({
@@ -106,7 +126,7 @@ describe('PreviewHub', () => {
         return nextTask();
       },
     });
-    await expect(hub.settled()).rejects.toThrow('requests kept starting for 100 frames');
+    await expect(hub.settled()).rejects.toThrow('kept starting for 100 frames');
   });
 });
 
