@@ -249,6 +249,26 @@ async function growToDocument(page: Page, width: number, minHeight: number): Pro
   }
 }
 
+/**
+ * Grows the viewport until the app shell's page column stops scrolling. The shell is one screen
+ * tall (app.css, `.shell` at 100vh) and scrolls inside `.shell-page`, so the document never grows
+ * and `screenshot()` alone cuts what is below the fold from the shot, and leaves it outside the
+ * viewport for `expectVisible()`. Call it before either on a page that runs in the shell; it
+ * keeps the larger viewport, as a person who made the window taller would.
+ */
+export async function fitShellPage(page: Page): Promise<void> {
+  // The column's content can reflow at the new height, so measure again until it holds.
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const hidden = await page.evaluate(() => {
+      const column = document.querySelector('.shell-page');
+      return column === null ? 0 : column.scrollHeight - column.clientHeight;
+    });
+    const viewport = page.viewportSize();
+    if (hidden <= 0 || viewport === null) return;
+    await page.setViewportSize({ width: viewport.width, height: viewport.height + hidden });
+  }
+}
+
 export interface VisibleOptions {
   /** A scrolling container the element must lie inside, such as the transcript. */
   within?: string;

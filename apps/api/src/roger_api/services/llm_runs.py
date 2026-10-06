@@ -665,9 +665,9 @@ def _log_ended(live: LiveRun, status: _EndStatus, code: RunErrorCode | None) -> 
 def _log_failure(event: str, live: LiveRun, error: BaseException) -> None:
     """Logs what failed and where, never the exception's text or traceback.
 
-    In production `dict_tracebacks` renders every frame's locals (structlog's default) and the
-    exception's text. A run's frames hold the transcript, and its exceptions can quote it, and
-    transcript text never goes to the log. The type and the innermost frame locate the bug.
+    A traceback renders the exception's text (log.py leaves out only the frames' locals), a run's
+    exceptions can quote the transcript, and transcript text never goes to the log. The type and
+    the innermost frame locate the bug.
     """
     frames = traceback.extract_tb(error.__traceback__)
     where = (

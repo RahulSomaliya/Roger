@@ -129,10 +129,16 @@ Request:
 }
 ```
 
+Postgres cannot store U+0000 or an unpaired UTF-16 surrogate (half of an emoji, which
+`JSON.stringify` sends as an escape). Neither is text anyone reads, and a refused create would keep
+the meeting off the server, so `title` and the text fields of `calendar_event` drop each U+0000 and
+replace each unpaired surrogate with U+FFFD before they are checked. `title` is then trimmed and at
+most 500 characters; blank, it is `"Untitled meeting"`.
+
 `calendar_event` links the meeting to the calendar event it was started for. Every field of it and
 of its attendees is required except `ical_uid`, `recurring_event_id` and `display_name`, which may
-be left out; any of those three sent blank is stored as `null`. Every text field loses any U+0000
-(Postgres text cannot hold it), is trimmed, and is then 1 to 2048 characters. At most 200
+be left out; any of those three sent blank is stored as `null`. Every text field is cleaned as
+above, trimmed, and is then 1 to 2048 characters. At most 200
 attendees, kept in the order sent. `scheduled_start` and `scheduled_end` are instants with an
 offset; their order is not checked, as they copy what the calendar said. A bad value is a `422` naming the field (`body.calendar_event.attendees[1].email`).
 
@@ -175,7 +181,10 @@ Request:
 }
 ```
 
-Constraints: 1..500 segments per request; `text` non-empty after trimming; `end_ms >= start_ms`.
+Constraints: 1..500 segments per request; `text`, `speaker` and each word's `text` non-empty after
+trimming; `end_ms >= start_ms`. Before the check, each of those drops every U+0000 and replaces
+every unpaired surrogate with U+FFFD, as `POST /v1/meetings` does: one such character fails
+neither its line nor the batch.
 Response: `200 { "accepted": 1, "duplicates": 0 }`.
 
 ### `POST /v1/meetings/{meeting_id}/end`

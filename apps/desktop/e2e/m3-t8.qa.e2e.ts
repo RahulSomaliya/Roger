@@ -133,26 +133,11 @@ async function reopenSettings(page: Page): Promise<void> {
 }
 
 /**
- * Grows the viewport until the shell's page column stops scrolling. The shell is one screen tall
- * (app.css, `.shell` at 100vh) and scrolls inside `.shell-page`, so the driver's grow-to-document
- * never sees content below the fold: at 390 wide, Save would be cut from the shot and outside the
- * viewport for expectVisible.
+ * qa.expectVisible on the whole page column (qa.fitShellPage first): at 390 wide, Save is below
+ * the fold of the shell's one-screen column.
  */
-async function fitShellPage(page: Page): Promise<void> {
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    const hidden = await page.evaluate(() => {
-      const column = document.querySelector('.shell-page');
-      return column === null ? 0 : column.scrollHeight - column.clientHeight;
-    });
-    const viewport = page.viewportSize();
-    if (hidden <= 0 || viewport === null) return;
-    await page.setViewportSize({ width: viewport.width, height: viewport.height + hidden });
-  }
-}
-
-/** qa.expectVisible on the whole page column (fitShellPage first). */
 async function visible(page: Page, selector: string): Promise<void> {
-  await fitShellPage(page);
+  await qa.fitShellPage(page);
   await qa.expectVisible(page, selector);
 }
 
@@ -202,7 +187,7 @@ async function shoot(
   name: string,
   caption: string,
 ): Promise<void> {
-  await fitShellPage(preview.page);
+  await qa.fitShellPage(preview.page);
   await qa.expectNoPageOverflow(preview.page);
   qa.expectNoConsoleErrors(preview);
   await gallery.shoot(preview.page, group, name, caption);

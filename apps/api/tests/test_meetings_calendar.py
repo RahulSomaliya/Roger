@@ -19,7 +19,14 @@ from roger_api.db.engine import Database
 from roger_api.db.models import Meeting, Workspace
 from roger_api.db.models_calendar import MeetingAttendee
 from roger_api.schemas.meetings import MAX_CALENDAR_TEXT_LENGTH, MAX_MEETING_ATTENDEES
-from tests.helpers import Json, append_segments, assert_error, create_meeting, segment_payload
+from tests.helpers import (
+    Json,
+    append_segments,
+    assert_error,
+    create_meeting,
+    post_ascii_json,
+    segment_payload,
+)
 
 START_SOURCES = ["manual", "notification", "home", "tray", "call_detected"]
 
@@ -212,6 +219,24 @@ async def test_nul_characters_are_dropped_from_the_link(
         "Jane",
         None,
     ]
+
+
+async def test_unpaired_surrogates_in_the_link_are_stored_as_u_fffd(
+    client: httpx.AsyncClient,
+) -> None:
+    # UTF-8 cannot hold half an emoji, which JSON.stringify sends as an escape. Refused with a 422,
+    # it kept the meeting off the server, as a U+0000 did (the test above).
+    link = calendar_event(
+        event_id="evt-\ud83d",
+        attendees=[attendee("Jane", display_name="Jane \udc00")],
+    )
+
+    response = await post_ascii_json(client, "/v1/meetings", {"calendar_event": link})
+
+    assert response.status_code == 201, response.text
+    stored = response.json()["calendar_event"]
+    assert stored["event_id"] == "evt-\ufffd"
+    assert stored["attendees"][0]["display_name"] == "Jane \ufffd"
 
 
 def with_attendee(**overrides: object) -> Json:

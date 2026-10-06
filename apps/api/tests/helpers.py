@@ -1,3 +1,4 @@
+import json
 import subprocess
 import sys
 from typing import Any
@@ -32,6 +33,14 @@ async def create_meeting(client: httpx.AsyncClient, **body: object) -> Json:
     assert response.status_code == 201, response.text
     meeting: Json = response.json()
     return meeting
+
+
+async def post_ascii_json(client: httpx.AsyncClient, path: str, body: Json) -> httpx.Response:
+    """POSTs `body` as ASCII JSON, every other character a `\\u` escape, as JSON.stringify sends
+    an unpaired surrogate. httpx's `json=` cannot send one: it encodes the body as UTF-8."""
+    return await client.post(
+        path, content=json.dumps(body), headers={"Content-Type": "application/json"}
+    )
 
 
 async def append_segments(client: httpx.AsyncClient, meeting_id: str, *segments: Json) -> Json:

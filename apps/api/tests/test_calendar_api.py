@@ -292,7 +292,7 @@ class LogRecorder(logging.Handler):
         if isinstance(record.msg, dict):
             self.events.append(dict(record.msg))
         # Rendered while the logging call runs, so `exc_info=True` still finds the exception and
-        # the traceback (frames and, in production, their locals) is part of the text.
+        # the traceback is part of the text.
         self.lines.append(self._formatter.format(record))
 
     @property
@@ -1156,8 +1156,7 @@ class _ProviderTheDatabaseRefuses(GoogleCalendarProvider):
 async def test_db_error_never_leaks_token_or_key(
     database_url: str, clean_database: None, app_env: str
 ) -> None:
-    # Both renderers: production writes JSON with each frame's locals, development a plain
-    # traceback.
+    # Both renderers: production writes the traceback as JSON, development as plain text.
     app = create_app(make_settings(database_url, app_env=app_env))
     stub = GoogleStub()
     use_runtime(app, google_runtime(stub, provider_type=_ProviderTheDatabaseRefuses))
@@ -1174,10 +1173,9 @@ async def test_db_error_never_leaks_token_or_key(
     assert_error(response, 500, "internal_error")
     assert stub.kinds == ["exchange"]
     assert_no_secret(logs.text, response.text)
-    # No frame under the failed statement is rendered. In production every frame's locals are
-    # logged, and SQLAlchemy's and asyncpg's hold the parameters in clear, token and key included;
-    # unhandled, only structlog's 80-character cut of each local hides them (two UUIDs open the
-    # parameter tuple), which is luck, not a guard.
+    # No frame under the failed statement is rendered. SQLAlchemy's and asyncpg's hold the
+    # parameters in clear, token and key included: unhandled, only log.py's renderer, which
+    # leaves every frame's locals out, would keep them from the log.
     for library in ("sqlalchemy", "asyncpg", "fastapi"):
         assert package_dir(library) not in logs.text
     assert "unhandled_exception" not in logs.names
@@ -1242,8 +1240,8 @@ async def test_lost_database_never_leaks_the_sign_in_code(
     database_url: str, clean_database: None, app_env: str, failure: DatabaseFailure
 ) -> None:
     # The code is redeemed at Google before the store fails. Unhandled, the failure would reach
-    # middleware.py, and in production its traceback lists connect()'s locals: the code and the
-    # verifier in full, and FastAPI's copy of the body.
+    # middleware.py with connect()'s frame, whose locals hold the code and the verifier in full,
+    # and FastAPI's, which hold the body.
     app = create_app(make_settings(database_url, app_env=app_env))
     stub = GoogleStub()
     use_runtime(app, google_runtime(stub))

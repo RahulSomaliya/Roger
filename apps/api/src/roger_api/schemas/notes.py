@@ -13,7 +13,6 @@ says "syncing". Change the two together, with docs/api-contract.md.
 
 import json
 import math
-import re
 from typing import Annotated, Any, Self
 from uuid import UUID
 
@@ -21,7 +20,7 @@ from pydantic import BaseModel, BeforeValidator, Field
 
 from roger_api.db.models_notes import MeetingNote
 from roger_api.domain import NoteKind
-from roger_api.schemas.common import UtcDatetime
+from roger_api.schemas.common import UtcDatetime, storable_text
 from roger_api.services.notes import MeetingNotes
 
 # `MAX_NOTE_DOC_BYTES` in shared/notes.ts: UTF-8 bytes of the compact JSON.
@@ -32,10 +31,6 @@ MAX_NOTE_DOC_DEPTH = 32
 # Keys that reach prototypes when the editor turns doc JSON into DOM attributes
 # (GHSA-cp6q-959q-f8rh). Stored docs go back to the editor, so they are refused anywhere in a doc.
 _FORBIDDEN_KEYS = ("__proto__", "constructor", "prototype")
-
-# What jsonb cannot hold in a string: U+0000, and a UTF-16 surrogate. Python's JSON parser joins an
-# escaped pair into one character, so a surrogate left in a parsed string is an unpaired one.
-_UNSTORABLE_CHARACTER = re.compile(r"[\x00\ud800-\udfff]")
 
 # Versions live in a Postgres `integer`.
 NoteVersion = Annotated[int, Field(ge=0, le=2_147_483_647)]
@@ -79,7 +74,7 @@ def note_doc_problem(doc: object) -> str | None:
             continue
         # Keys as `storable_doc` stores them. Checked only as sent, "__proto\u0000__" was stored
         # as a "__proto__" key, and "type\u0000" beside "type" as one key, losing a value.
-        keys = {_storable_text(key) for key in value}
+        keys = {storable_text(key) for key in value}
         if len(keys) < len(value):
             return "holds two keys that are one key once stored"
         forbidden = next((key for key in _FORBIDDEN_KEYS if key in keys), None)
@@ -113,23 +108,17 @@ def storable_doc(doc: dict[str, Any]) -> dict[str, Any]:
     reads, so the API stores the doc without them and answers with the doc as stored. Every other
     writer of a notes doc (the AI doc built from model text, M4-T8) passes it through here too.
     """
-    return {_storable_text(key): _storable_value(value) for key, value in doc.items()}
+    return {storable_text(key): _storable_value(value) for key, value in doc.items()}
 
 
 def _storable_value(value: object) -> object:
     if isinstance(value, str):
-        return _storable_text(value)
+        return storable_text(value)
     if isinstance(value, list):
         return [_storable_value(child) for child in value]
     if isinstance(value, dict):
         return storable_doc(value)
     return value
-
-
-def _storable_text(text: str) -> str:
-    return _UNSTORABLE_CHARACTER.sub(
-        lambda match: "" if match.group() == "\x00" else "\ufffd", text
-    )
 
 
 def _a_storable_doc(doc: object) -> dict[str, Any]:
