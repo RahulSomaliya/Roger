@@ -37,7 +37,9 @@ const RULES: readonly JoinLinkRule[] = [
     provider: 'zoom',
     // Company and regional subdomains (`us02web.zoom.us`); the leading dot keeps `evilzoom.us` out.
     host: (hostname) => hostname === 'zoom.us' || hostname.endsWith('.zoom.us'),
-    paths: [/^\/j\/\d+\/?$/, /^\/my\/[\w.-]+\/?$/],
+    // A meeting (`/j/`), a personal room (`/my/`) or a webinar a registrant joins (`/w/`, with its
+    // `tk` token in the query). Not `/s/`: that link starts the meeting as its host.
+    paths: [/^\/[jw]\/\d+\/?$/, /^\/my\/[\w.-]+\/?$/],
   },
   {
     provider: 'teams',

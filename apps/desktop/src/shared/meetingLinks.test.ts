@@ -14,6 +14,8 @@ const JOIN_LINK_CASES: readonly (readonly [url: string, expected: JoinLinkProvid
   ['https://zoom.us/j/1234567890', 'zoom'],
   ['https://us02web.zoom.us/j/81234567890?pwd=AbC123', 'zoom'],
   ['https://linkt.zoom.us/my/rahul.s', 'zoom'],
+  ['https://zoom.us/w/123456789', 'zoom'],
+  ['https://us06web.zoom.us/w/81234567890?tk=AbC123', 'zoom'],
   [
     'https://teams.microsoft.com/l/meetup-join/19%3ameeting_abc%40thread.v2/0?context=%7b%7d',
     'teams',
@@ -39,6 +41,8 @@ const JOIN_LINK_CASES: readonly (readonly [url: string, expected: JoinLinkProvid
   ['https://zoom.us/', null],
   ['https://zoom.us/signin', null],
   ['https://zoom.us/j/', null],
+  ['https://zoom.us/w/', null],
+  ['https://zoom.us/s/1234567890', null],
   ['https://teams.microsoft.com/', null],
   ['https://teams.microsoft.com/l/meetup-join/', null],
   // Refused: credentials hide the real host from a glance
