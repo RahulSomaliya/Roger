@@ -1,5 +1,10 @@
 import { useEffect, useMemo, useSyncExternalStore } from 'react';
-import type { NotesApi, ResolveNoteConflictRequest } from '../../../shared/ipc/notes';
+import {
+  type NoteSaveBase,
+  noteSaveBase,
+  type NotesApi,
+  type ResolveNoteConflictRequest,
+} from '../../../shared/ipc/notes';
 import type { Unsubscribe } from '../../../shared/ipc/unsubscribe';
 import type { LocalNote, NoteDoc, NoteKind } from '../../../shared/notes';
 import { describeError } from '../app/describeError';
@@ -15,6 +20,9 @@ import { noteDocSchemaProblem } from './citationNode';
  * typing. Any other doc (a conflict's server doc, "Use mine", a run's AI notes) is one the editor
  * must load, and bumps `docGeneration`. Changes that arrive while a save is on its way wait for
  * its answer, which names its revision; then only the newest of them is applied.
+ *
+ * Every save names the note whose doc the editor last put on screen (`base`), so main can tell
+ * typing built on a doc it has since replaced, and keep that typing aside rather than over it.
  */
 
 export interface NoteDocumentState {
@@ -61,6 +69,11 @@ export class NoteDocument {
   private run = 0;
   /** A change arrived since the load began: it is newer than what the load will answer. */
   private changedSinceLoad = false;
+  /**
+   * The note whose doc the editor last put on screen (`editorShows`): what its typing builds on.
+   * Never moved by a doc the editor has not shown yet, nor by its own saves.
+   */
+  private base: NoteSaveBase | null = null;
   private stopListening: Unsubscribe | null = null;
 
   constructor(
@@ -101,13 +114,32 @@ export class NoteDocument {
     this.load(this.run);
   }
 
+  /**
+   * The editor now shows the doc of `generation` (its first, or one `followNoteDocument` put in):
+   * its saves build on that note from here.
+   */
+  editorShows(generation: number): void {
+    if (generation === this.state.docGeneration) this.base = noteSaveBase(this.state.note);
+  }
+
   /** The saver's write: resolves once the doc is in notes.sqlite, rejects with main's reason. */
   async save(doc: NoteDoc): Promise<void> {
     this.savesInFlight += 1;
-    this.shownDoc = JSON.stringify(doc);
+    const sent = JSON.stringify(doc);
+    this.shownDoc = sent;
     try {
-      const saved = await this.api.saveNote({ meetingId: this.meetingId, kind: this.kind, doc });
-      if (saved.revisionId !== null) this.ownRevisions.add(saved.revisionId);
+      const saved = await this.api.saveNote({
+        meetingId: this.meetingId,
+        kind: this.kind,
+        doc,
+        base: this.base,
+      });
+      // A save on a doc main had replaced is kept as the conflict copy, and main answers with its
+      // own doc under a revision this editor never made (one "Use mine" made, say). Taken as this
+      // editor's, that doc's changes would count as its own saves coming back and never be shown.
+      if (saved.revisionId !== null && JSON.stringify(saved.doc) === sent) {
+        this.ownRevisions.add(saved.revisionId);
+      }
     } finally {
       this.savesInFlight -= 1;
       if (this.savesInFlight === 0) {
@@ -211,6 +243,7 @@ export function followNoteDocument(
   show: (doc: NoteDoc) => void,
 ): Unsubscribe {
   let stopped = false;
+  document.editorShows(shown);
   const follow = (): void => {
     if (stopped) return;
     const { docGeneration, note, docProblem } = document.getState();
@@ -224,20 +257,19 @@ export function followNoteDocument(
       return;
     }
     shown = docGeneration;
-    // Edits main does not have: the editor never drops them for a doc from elsewhere. It sends
-    // them, and shows what main then holds if that is not its own save. Trap, outside this file:
-    // SaveNoteRequest carries no base revision, so main cannot tell these edits (built on the
-    // doc it replaced) from edits of the doc it just took, and stores them over it; after a 409
-    // the server's version is then kept nowhere. Loading it here instead would lose the typing
-    // for good. The fix is main's: a base revision on the save, and a save on a stale base kept
-    // as the conflict copy (M4-T13, M4-T14, M4-T16), after which this branch shows the server's
-    // doc as main answers.
+    // Edits main does not have: the editor never drops them for a doc from elsewhere (loading it
+    // here would lose the typing for good). It sends them on the base of the doc they were typed
+    // on, which main has replaced, so main keeps them as the conflict copy and answers with its
+    // doc, which this branch then shows. Trap: the base moves only in `editorShows`, below, once
+    // the doc is on screen. Moved when the doc arrived, these edits would go out on the doc they
+    // never saw, and main would store them over it (the server's version then kept nowhere).
     if (saves.unsaved) {
       void saves.flush();
       return;
     }
     // NoteEditor shows the problem in place of the editor, which is about to unmount.
     if (docProblem !== null) return;
+    document.editorShows(docGeneration);
     show(note.doc);
   };
   const stopFollowing = document.subscribe(follow);

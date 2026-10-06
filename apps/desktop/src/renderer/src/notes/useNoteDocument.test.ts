@@ -143,8 +143,29 @@ describe('NoteDocument', () => {
     await main.answerLoad({});
     void document.save(docSaying('edited'));
     expect(main.saves.map(({ request }) => request)).toEqual([
-      { meetingId: MEETING, kind: 'ai', doc: docSaying('edited') },
+      { meetingId: MEETING, kind: 'ai', doc: docSaying('edited'), base: null },
     ]);
+  });
+
+  it("shows main's doc when main kept the save aside under a revision this editor never made", async () => {
+    const { main, document } = open();
+    await main.answerLoad({ user: note({ doc: docSaying('mine'), revisionId: 'rev-0' }) });
+    const generation = document.getState().docGeneration;
+    const saving = document.save(docSaying('mine, typed'));
+    // "Use mine" elsewhere left main on rev-9, so the save, built on rev-0, is kept aside: main
+    // answers with its own doc. Counted as this editor's, rev-9 would never be shown.
+    const kept = note({
+      doc: docSaying('restored'),
+      revisionId: 'rev-9',
+      conflictCopy: docSaying('mine, typed'),
+      sync: 'conflict',
+    });
+    main.emit(kept);
+    main.saves.shift()?.resolve(kept);
+    await saving;
+    expect(document.getState()).toEqual(
+      expect.objectContaining({ note: kept, docGeneration: generation + 1 }),
+    );
   });
 
   it("rejects a refused save with main's reason, for the status line", async () => {
@@ -424,10 +445,54 @@ describe('followNoteDocument', () => {
     const editor = editorOver(document);
     editor.type('mine, typed');
     main.emit(theirs('mine'));
-    // Sent at once, not after the pause; main's store decides what is current (see
-    // followNoteDocument on why this still loses the server's doc today).
-    expect(main.saves.map(({ request }) => request.doc)).toEqual([docSaying('mine, typed')]);
+    // Sent at once, not after the pause, on the doc it was typed on: never on the server's doc,
+    // which the editor has not shown, or main would store the typing over it.
+    expect(main.saves.map(({ request }) => request)).toEqual([
+      {
+        meetingId: MEETING,
+        kind: 'user',
+        doc: docSaying('mine, typed'),
+        base: { revisionId: 'rev-0', version: 3 },
+      },
+    ]);
     expect(editor.shown).toEqual([]);
+    // main keeps the typing as the conflict copy and answers with the server's doc, now shown.
+    const kept = theirs('mine, typed');
+    main.emit(kept);
+    main.saves.shift()?.resolve(kept);
+    await settle();
+    expect(editor.shown).toEqual([docSaying('theirs')]);
+    expect(main.saves).toEqual([]);
+  });
+
+  it('saves on the note the editor shows, never on a save of its own', async () => {
+    const { main, document } = open();
+    await main.answerLoad({ user: mine() });
+    const editor = editorOver(document);
+    editor.type('one');
+    void editor.saver.flush();
+    // Sent before main answered the first: its base is still the loaded note, not rev-1.
+    editor.type('one two');
+    void editor.saver.flush();
+    const one = mine({ doc: docSaying('one'), revisionId: 'rev-1' });
+    main.emit(one);
+    main.saves[0]?.resolve(one);
+    const two = mine({ doc: docSaying('one two'), revisionId: 'rev-2' });
+    main.emit(two);
+    main.saves[1]?.resolve(two);
+    await settle();
+    // A doc from elsewhere, which the editor shows: saves build on it from here.
+    main.emit(note({ doc: docSaying('theirs'), baseVersion: 4 }));
+    await settle();
+    editor.type('theirs, edited');
+    void editor.saver.flush();
+
+    expect(editor.shown).toEqual([docSaying('theirs')]);
+    expect(main.saves.map(({ request }) => request.base)).toEqual([
+      { revisionId: 'rev-0', version: 3 },
+      { revisionId: 'rev-0', version: 3 },
+      { revisionId: null, version: 4 },
+    ]);
   });
 
   it('shows nothing once stopped, even a doc it was waiting on the saver to decide', async () => {

@@ -38,12 +38,18 @@ export interface SaveNoteRequest {
   meetingId: string;
   kind: NoteKind;
   doc: NoteDoc;
+  /**
+   * The note the edits build on. Main keeps a save on a doc it has replaced since (a 409's server
+   * doc, a run's AI notes, "Use mine") as the conflict copy and leaves the doc as it is, so typing
+   * sent as such a doc arrives never overwrites it (NotesStore.saveLocal).
+   */
+  base: NoteSaveBase | null;
 }
 
 /**
- * The stored note a save's edits build on: the note as the editor last took it from main (its
- * load, or a change that was not its own save), never a save of its own, whose answer may still be
- * on its way. Null when main held no note of that kind then.
+ * The stored note a save's edits build on: the note whose doc the editor last put on screen (on
+ * open, or a doc from elsewhere it then showed), never a save of its own, whose answer may still
+ * be on its way. Null when main held no note of that kind then.
  */
 export interface NoteSaveBase {
   /** The note's `revisionId`: the local save that wrote its doc, null for a server doc. */
@@ -108,7 +114,9 @@ export interface NotesApi {
   getNotes(meetingId: string): Promise<MeetingNotes>;
   /**
    * Writes the doc to notes.sqlite before it answers, as a new local revision (`revisionId`).
-   * NotesSync uploads it later. Rejects a doc `noteDocProblem` refuses.
+   * NotesSync uploads it later. Rejects a doc `noteDocProblem` refuses. A save on a stale `base`
+   * is kept as the conflict copy instead: the answer then holds main's doc, not this one, and
+   * its `revisionId` is not this save's.
    */
   saveNote(request: SaveNoteRequest): Promise<LocalNote>;
   /** Ends a `conflict`: rejects when the note has no conflict copy. */

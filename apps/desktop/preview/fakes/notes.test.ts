@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   notesChannels,
+  noteSaveBase,
   type NotesStreamMessage,
   type PendingGenerateChange,
 } from '../../src/shared/ipc/notes';
@@ -57,7 +58,12 @@ function setUp() {
 describe('the notes fake', () => {
   it('saves a note on this Mac and announces it, as main does', async () => {
     const { notes, changed } = setUp();
-    const saved = await notes.saveNote({ meetingId: MEETING, kind: 'user', doc: doc('Pilot') });
+    const saved = await notes.saveNote({
+      meetingId: MEETING,
+      kind: 'user',
+      doc: doc('Pilot'),
+      base: null,
+    });
 
     expect(saved).toMatchObject({ kind: 'user', dirty: true, sync: 'saved_locally' });
     expect(saved.revisionId).toMatch(UUID);
@@ -73,11 +79,48 @@ describe('the notes fake', () => {
   it('refuses a doc main would refuse, and keeps nothing', async () => {
     const { notes, changed } = setUp();
     const broken = JSON.parse('{"type":"doc","__proto__":{}}') as NoteDoc;
-    await expect(notes.saveNote({ meetingId: MEETING, kind: 'user', doc: broken })).rejects.toThrow(
-      'holds a "__proto__" key',
-    );
+    await expect(
+      notes.saveNote({ meetingId: MEETING, kind: 'user', doc: broken, base: null }),
+    ).rejects.toThrow('holds a "__proto__" key');
     expect(changed).toEqual([]);
     await expect(notes.getNotes(MEETING)).resolves.toMatchObject({ user: null });
+  });
+
+  it('keeps a save built on a note it has replaced since as the conflict copy, as main does', async () => {
+    const { hub, notes, changed } = setUp();
+    const loaded = localNote({ doc: doc('Agenda'), baseVersion: 2 });
+    hub.emit(notesChannels.NotesChanged, loaded);
+    const base = noteSaveBase(loaded);
+    // Two saves sent before either answered both build on the loaded note, and are taken.
+    await notes.saveNote({ meetingId: MEETING, kind: 'user', doc: doc('Agenda, a'), base });
+    await notes.saveNote({ meetingId: MEETING, kind: 'user', doc: doc('Agenda, a b'), base });
+    // A scenario pushes the server's newer doc, as a 409 would bring it in.
+    const theirs = localNote({ doc: doc('Theirs'), baseVersion: 3 });
+    hub.emit(notesChannels.NotesChanged, theirs);
+
+    const kept = await notes.saveNote({
+      meetingId: MEETING,
+      kind: 'user',
+      doc: doc('Agenda, a b c'),
+      base,
+    });
+
+    expect(kept).toMatchObject({
+      doc: doc('Theirs'),
+      revisionId: null,
+      conflictCopy: doc('Agenda, a b c'),
+      sync: 'conflict',
+    });
+    expect(changed.at(-1)).toEqual(kept);
+    // Saves built on the server's doc are taken again.
+    await expect(
+      notes.saveNote({
+        meetingId: MEETING,
+        kind: 'user',
+        doc: doc('Theirs, edited'),
+        base: noteSaveBase(theirs),
+      }),
+    ).resolves.toMatchObject({ doc: doc('Theirs, edited'), conflictCopy: doc('Agenda, a b c') });
   });
 
   it('answers with the note a scenario last pushed', async () => {

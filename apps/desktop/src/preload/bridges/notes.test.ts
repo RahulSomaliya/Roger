@@ -43,7 +43,7 @@ describe('the notes bridge', () => {
   it('sends each request on its own channel with its one payload', async () => {
     ipc.calls.length = 0;
     await notesBridge.getNotes(MEETING);
-    await notesBridge.saveNote({ meetingId: MEETING, kind: 'user', doc: DOC });
+    await notesBridge.saveNote({ meetingId: MEETING, kind: 'user', doc: DOC, base: null });
     await notesBridge.resolveNoteConflict({ meetingId: MEETING, kind: 'ai', keep: 'mine' });
     await notesBridge.listNoteTemplates();
     await notesBridge.generateNotes({ meetingId: MEETING, templateId: 'standup' });
@@ -57,7 +57,7 @@ describe('the notes bridge', () => {
       {
         how: 'invoke',
         channel: notesChannels.NotesSave,
-        payload: { meetingId: MEETING, kind: 'user', doc: DOC },
+        payload: { meetingId: MEETING, kind: 'user', doc: DOC, base: null },
       },
       {
         how: 'invoke',
@@ -110,7 +110,7 @@ describe('the notes bridge', () => {
   it('uses every notes channel, each for one member', async () => {
     ipc.calls.length = 0;
     await notesBridge.getNotes(MEETING);
-    await notesBridge.saveNote({ meetingId: MEETING, kind: 'user', doc: DOC });
+    await notesBridge.saveNote({ meetingId: MEETING, kind: 'user', doc: DOC, base: null });
     await notesBridge.resolveNoteConflict({ meetingId: MEETING, kind: 'user', keep: 'theirs' });
     await notesBridge.listNoteTemplates();
     await notesBridge.generateNotes({ meetingId: MEETING, templateId: 'general' });
