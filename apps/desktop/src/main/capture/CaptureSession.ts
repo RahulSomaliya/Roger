@@ -652,6 +652,7 @@ export class CaptureSession {
    * give the meter the vendor's own times with the timeline's toCapturedAtMs as its clock instead:
    * it maps a word's end alone, so a word the vendor ends just past a stall would be timed from the
    * far side of the gap, its wait read short by the whole stall while its line is dated before it.
+   * LatencyMeter's CaptureClock doc says the same for any new meter.
    *
    * Called after the line is saved and shown, never before: the meter throws a RangeError on a time
    * that is not a number (the adapters' parsers already drop those), which SttConnection.deliver

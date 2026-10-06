@@ -18,10 +18,17 @@ import type { SttEvent } from './SpeechToText';
  */
 
 /**
- * The wall-clock time (epoch ms) when the sample at `streamMs` of this stream was captured. The app
- * passes the stream's AudioTimeline (M2-T5), the benchmark its replay clock. Every time the meter
- * compares sits on this one clock, so after a reconnect that restarts the vendor's stream time the
- * function must map the new connection's times: end points from the old connection stay valid.
+ * The wall-clock time (epoch ms) when the sample at `streamMs` of this stream was captured. Every
+ * time the meter compares sits on this one clock. The benchmark passes its replay clock. The app
+ * dates each event as meeting offsets first, through the stream's AudioTimeline (M2-T5) and its span
+ * cut, so its clock is the meeting's start plus the offset (CaptureSession.measureLatency).
+ *
+ * Never pass the timeline's toCapturedAtMs here: it maps one point at a time, so a word the vendor
+ * ends just past a stall is timed from the far side of the gap. A word ending 10 ms past a 20 s
+ * stall would read 390 ms, not about 20.4 s, and the stall would vanish from the numbers.
+ *
+ * A meter that spans a reconnect restarting the vendor's stream time (the benchmark's, across gate
+ * reopens) must map the new connection's times: end points from the old connection stay valid.
  */
 export type CaptureClock = (streamMs: number) => number;
 
