@@ -25,7 +25,9 @@ export type SttProtocolMessage =
   | { kind: 'ready'; sessionId: string | null }
   /**
    * The completion signal of the finish sequence, for `finishedOn: 'finished-message'`
-   * (AssemblyAI's Termination). `events` are lines it releases; they are emitted before "closed".
+   * (AssemblyAI's Termination): the core closes the socket on it. `events` are lines it releases;
+   * they are emitted before "closed". Under `vendor-close` only its lines count: the core still
+   * waits for the vendor's close.
    */
   | { kind: 'finished'; events: TranscriptEvent[] }
   /** A fatal error the vendor reports before it closes the session. */
@@ -66,8 +68,10 @@ export interface SttProtocol {
   readonly readyOn: 'socket-open' | 'ready-message';
   /**
    * `finished-message`: the vendor answers the finish sequence with a message (`finished`) and the
-   * core then closes the socket. `vendor-close`: the vendor closes the socket itself (Deepgram).
-   * Either way the core's hard finish timeout terminates a socket the vendor leaves open.
+   * core then closes the socket. `vendor-close`: the vendor closes the socket itself (Deepgram), and
+   * the core ignores any `finished` until then. Either way the core's hard finish timeout terminates
+   * a socket the vendor leaves open. The conformance suite checks the declaration against the
+   * vendor's fake (conformanceVendors.ts `answerFinish`).
    */
   readonly finishedOn: 'finished-message' | 'vendor-close';
   /** A message that keeps a quiet session from timing out, or null. Sent only while open. */

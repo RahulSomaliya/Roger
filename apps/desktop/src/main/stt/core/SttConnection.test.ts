@@ -253,14 +253,25 @@ describe('SttConnection', () => {
 
   it('waits for the vendor to close when that is its completion signal', async () => {
     vendor.script.onText = (connection, text) => {
-      if (text === FINISH) connection.socket.close(1000, 'bye');
+      if (text !== FINISH) return;
+      // A finished message mid-sequence, then more lines, then the vendor's own close.
+      connection.socket.send(JSON.stringify({ type: 'done' }));
+      setTimeout(() => {
+        connection.socket.send(JSON.stringify({ type: 'final', text: 'after done' }));
+        connection.socket.close(1000, 'bye');
+      }, 20);
     };
     const { connection, events } = await open({
       protocol: toyProtocol(vendor.baseUrl, { finishedOn: 'vendor-close' }),
     });
 
     await connection.close();
-    expect(events).toEqual([{ type: 'closed', code: 1000, reason: 'bye' }]);
+    // Closing on "done" would have lost the line after it.
+    expect(events).toEqual([
+      final('released by done'),
+      final('after done'),
+      { type: 'closed', code: 1000, reason: 'bye' },
+    ]);
   });
 
   it('emits held lines before "closed"', async () => {

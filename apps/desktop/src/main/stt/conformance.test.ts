@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { WebSocket } from 'ws';
 import { createLogger, type Logger } from '../logger';
 import { WebSocketSpeechToText } from './core/WebSocketSpeechToText';
 import { LOCAL_STT_PROVIDERS, STT_VENDORS, type SttVendorOptions } from './registry';
@@ -155,6 +156,31 @@ describe.each(CONFORMANCE_VENDORS)('$provider conforms', (vendor) => {
     expect(events.map((event) => event.type)).toEqual(['final', 'closed']);
     expect(events[0]).toMatchObject({ type: 'final', text: 'hello there' });
     await waitFor(() => server.last().closed);
+  });
+
+  it('finishes on the completion signal its protocol declares', async () => {
+    const adapter = stt();
+    let vendorClosed: boolean | null = null;
+    server.script.onText = (connection, text) => {
+      if (text !== vendor.finishMessages.at(-1)) return;
+      // The vendor's last line, then, a little later, its answer to the finish sequence.
+      connection.socket.send(vendor.finalMessage('last words'));
+      setTimeout(() => {
+        vendor.answerFinish(connection.socket);
+        vendorClosed = connection.socket.readyState !== WebSocket.OPEN;
+      }, 30);
+    };
+    const { stream, events } = await open(adapter);
+
+    await stream.close();
+
+    // The fixture plays the real vendor: it must close the socket itself exactly when the adapter
+    // declares 'vendor-close'. With 'finished-message' the core closes on the vendor's message.
+    expect(vendorClosed).toBe(adapter.protocol.finishedOn === 'vendor-close');
+    expect(events.map((event) => event.type)).toEqual(['final', 'closed']);
+    expect(events[0]).toMatchObject({ type: 'final', text: 'last words' });
+    // A graceful close, not the hard timeout's terminate (1006).
+    expect(events[1]).toMatchObject({ type: 'closed', code: 1000 });
   });
 
   it('closes within the hard timeout even when the vendor never answers the finish', async () => {

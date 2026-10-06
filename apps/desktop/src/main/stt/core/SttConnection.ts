@@ -286,6 +286,10 @@ export class SttConnection implements SttStream {
         return;
       case 'finished':
         for (const event of message.events) this.emitTranscript(event);
+        // Closed on only when the protocol declares this message its completion signal. A vendor
+        // that closes the socket itself (Deepgram) still sends results after messages mid-sequence;
+        // closing on one of those would lose its last lines. The finish deadline bounds both.
+        if (this.protocol.finishedOn !== 'finished-message') return;
         this.logger.info('stt session finished');
         // The completion signal is the vendor's last message. When Stop asked for it, close now
         // rather than wait, billed, for the vendor to close.

@@ -26,7 +26,8 @@ export interface WebSocketSttOptions {
 export class WebSocketSpeechToText implements SpeechToText {
   readonly provider: string;
   readonly vendorName: string;
-  private readonly protocol: SttProtocol;
+  /** What the adapter runs; the conformance suite checks its declarations against the vendor. */
+  readonly protocol: SttProtocol;
   private readonly logger: Logger;
   private readonly connectTimeoutMs: number;
   private readonly closeTimeoutMs: number;

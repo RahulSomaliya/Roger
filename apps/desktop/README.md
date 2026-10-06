@@ -161,8 +161,9 @@ Desktop:
    with the date read, in the file header (close codes, rate limits, billing).
 3. One line in `src/main/stt/registry.ts`.
 4. One entry in `src/main/stt/testing/conformanceVendors.ts`: how the vendor says ready, its finish
-   messages and answer, a final line, a real mid-call close. Then `pnpm test`: the conformance
-   suite fails until the vendor closes every socket on every path.
+   messages and answer, a final line, a real mid-call close. The answer must match the protocol's
+   `finishedOn`: the fake closes the socket itself exactly when it declares `vendor-close`. Then
+   `pnpm test`: the conformance suite fails until the vendor closes every socket on every path.
 
 API:
 
