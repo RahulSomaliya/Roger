@@ -75,6 +75,8 @@ vi.mock('electron', () => ({
   Notification: electron.Notification,
   app: electron.app,
   BrowserWindow: electron.BrowserWindow,
+  // createCaptureRuntime's M2-T6 slot asks this every second while a recording runs.
+  net: { isOnline: () => true },
 }));
 
 const logger = createLogger({ level: 'error', format: 'json', sink: () => undefined });
