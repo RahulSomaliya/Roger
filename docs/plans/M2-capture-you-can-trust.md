@@ -483,7 +483,8 @@ plus one slot block. Every task is TDD: the failing test first,
   Owns `src/main/detect/MeetingAppMonitor.ts`, `src/main/detect/callApps.ts`. Runs the monitor
   helper through `HelperProcess` while Roger runs, sends `recording on` and `recording off`,
   resolves call apps (FaceTime daemons included), feeds the echo filter's `RouteProvider`. Roger's
-  own processes never count.
+  own processes never count. Safari's mic use shows as WebKit's GPU process, not as Safari
+  (`Monitor.swift` header).
 - [ ] **M2-T17b Offer and auto-stop** · M · desktop · depends on: T11, T12, T17a, M5-T5,
   M5-T9b (`PromptService.offer`). M5-T11 (close hides) is needed for the exit check, not to build.
   Owns `src/main/detect/CallDetector.ts` (pure), `src/main/detect/CallOffer.ts`, the T17b runtime

@@ -421,6 +421,34 @@ describe('roger-audio monitor: who is the process', { timeout: 20_000 }, () => {
     });
   });
 
+  it('names an XPC service outside any app by its executable, as for the WebKit GPU process', async () => {
+    // Safari's mic use shows as WebKit's GPU process, an XPC service in WebKit.framework with no
+    // .app around it (Monitor.swift). The service's own Info.plist is not read: main gets no
+    // bundle id for it and can match it only by `name`.
+    const service = join(
+      workDir,
+      'System',
+      'Library',
+      'Frameworks',
+      'FakeKit.framework',
+      'Versions',
+      'A',
+      'XPCServices',
+      'ai.linkt.test.GPU.xpc',
+    );
+    writeInfoPlist(service, { CFBundleIdentifier: 'ai.linkt.test.GPU' });
+    const exe = installSleeper(join(service, 'Contents', 'MacOS', 'ai.linkt.test.GPU'));
+    const { pid } = await startSleeper(exe);
+
+    expect(resolvePid(pid)).toEqual({
+      event: 'process',
+      pid,
+      bundleId: null,
+      path: exe,
+      name: 'ai.linkt.test.GPU',
+    });
+  });
+
   it('prefers the display name, and falls back to the folder name without a plist', async () => {
     const named = join(workDir, 'Named.app');
     writeInfoPlist(named, {

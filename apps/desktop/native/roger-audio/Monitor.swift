@@ -19,6 +19,16 @@ import Foundation
 //              other: its renderer holds the mic, and the `tap` helper probably shows too, since
 //              its private aggregate device has the tap as an input (unverified). Main leaves its
 //              own pids out.
+//              Safari never shows as com.apple.Safari: WebKit captures outside Safari.app, most
+//              likely in its GPU process, an XPC service in WebKit.framework whose entitlements
+//              carry the host app's Microphone grant (`com.apple.tcc.delegated-services`). That
+//              shows as `bundleId` null, `name` "com.apple.WebKit.GPU", and a `path` under
+//              /System/Volumes/Preboot/Cryptexes/OS/ (where proc_pidpath finds it; `ps` and
+//              Activity Monitor show /System/Library/...), so main matches it by `name`, never by
+//              a path copied from `ps`. Every app that hosts WebKit runs its own, and nothing here
+//              ties one to its app, so the match cannot tell Safari from another WebKit app.
+//              Paths read on macOS 26.6; which WebKit process holds the mic in a call is
+//              unverified.
 //   route      {output, input}: the default devices, each {name, transport} or null when there is
 //              none. Transports in MonitorTransport (Route.swift).
 //   recording  {on}: main's last `recording on` or `recording off`, sent when it changes the state.
@@ -128,7 +138,8 @@ struct MicUser: Equatable {
 ///
 /// Outermost, because the process that holds the mic is often a helper app inside the one people
 /// know: in Chrome a "Google Chrome Helper.app" nested deep inside "Google Chrome.app", and main's
-/// allowlist names the outer app.
+/// allowlist names the outer app. Not Safari: its capture runs in WebKit's XPC services, outside
+/// any app (top of this file).
 /// Outside any app, by executable path: FaceTime and phone call audio runs in
 /// /usr/libexec/avconferenced and callservicesd, which have no `.app` around them (anarlog
 /// `crates/detect/src/list/macos.rs`, APPLE_CALL_DAEMON_IDS).
