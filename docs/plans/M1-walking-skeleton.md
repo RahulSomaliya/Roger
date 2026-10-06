@@ -201,6 +201,27 @@ Start again. Pass: no new prompt, call audio present, and the recipe above shows
 line. Then open each link in `src/main/settingsPanes.ts` on macOS 26 and record where it lands in
 the M2 exit check log.
 
+**2026-10-06, live AssemblyAI run on the installed app (mock meeting, main at 77960a1):**
+
+- The M2-T1 Mac check passed (owner): Start, grant, quit, relaunch, Start again with no new prompt
+  and call audio present. Roger is listed under Screen & System Audio Recording, where Granola is
+  under System Audio Recording Only; the M2 Swift helper moves Roger there.
+- API on `STT_PROVIDER=assemblyai`: `/v1/stt/token` returned a live temporary token, model
+  `universal-streaming-english`, `price_per_hour_usd` 0.15.
+- A 32-second mock meeting (macOS `say`, voice Samantha, played through the speakers with
+  `afplay` as call audio) was recorded by driving the app over the Chrome DevTools protocol. Both
+  sessions opened, ran about 39 s each, ended with `Terminate` and close code 1000, and dropped no
+  audio. Meter: "AssemblyAI · 1m 13s connected · under $0.01" (about $0.0016 per stream).
+- Them: word error rate 3/85 (3.5%) against the script, leaving out the first seven words, which
+  played before capture started. Errors: "Linked" for Linkt, "Pritaya" for Priya, "sink" for
+  sync (jargon: M3).
+- Me: the mic heard the speakers and produced a lower-quality copy of the same words. This is the
+  echo M2's filter hides (M2-T14a built, M2-T14b wires it); with headphones there is none.
+- AssemblyAI made one 30-second turn of the whole monologue (the synthetic voice never pauses long
+  enough to end a turn).
+- Claude Code (headless, MCP over `/mcp` with the bearer header) quoted Them's two action items
+  word for word with the timestamp.
+
 **Pending: the real-call check.** A 30-minute Google Meet call with `STT_PROVIDER=assemblyai` and
 an AssemblyAI key on the API (owner decision, 2026-10-06: AssemblyAI replaces Deepgram as the
 vendor for this check because it lists Granola as a customer, live text is about $0.15 per hour and
