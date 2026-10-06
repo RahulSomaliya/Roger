@@ -38,8 +38,9 @@ export function useCapture(): CaptureView {
         }
         setStatus(next);
         // Main stopped on its own (no speech, the length cap, sleep, a reload): stop capturing too,
-        // or the microphone stays on with nothing listening.
-        if (next.phase === 'idle' && controller.current.running) void controller.current.stop();
+        // a source still starting included, or the microphone stays on with nothing listening.
+        // Never gate this on `running`: it is false while the mic starts (see followMain).
+        controller.current.followMain(next.phase);
       }),
       roger.onTranscriptSegment((segment) => {
         setSegments((previous) =>

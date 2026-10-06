@@ -99,6 +99,7 @@ getDisplayMedia ───┤ worklet  ├─ SttStream(mic)  ──┐  final �
 | SQLite store append, unsynced query, mark synced, rejected lines, crash recovery, restart, per-meeting STT usage and its migration | `apps/desktop/src/main/store/SqliteTranscriptStore.test.ts` |
 | Uploader batching, retry, ordering, 422 quarantine, lost-meeting resync | `apps/desktop/src/main/upload/TranscriptUploader.test.ts` |
 | Renderer payload validation (odd-length and oversized chunks) | `apps/desktop/src/main/ipc-validation.test.ts` |
+| Renderer capture follows main: a source still starting stops when main goes idle, a start never runs on top of a capture (fake devices) | `apps/desktop/src/renderer/src/audio/AudioCaptureController.test.ts` |
 | API client request shapes and error mapping | `apps/desktop/src/main/api/ApiClient.test.ts` |
 
 ## Risks
@@ -126,7 +127,7 @@ The M1 wrap-up left these alone on purpose. Each has an owner.
 | Speech-to-text usage upload | Each meeting's usage stays in the Mac's `stt_usage` table and the logs. | M3 |
 | Warning when a live stream carries only silence | A stream that hears nothing still looks live. | M2 |
 | MCP transcript slicing | `get_transcript` returns the whole call in one block, so a long enough call can exceed an MCP client's output cap. | M7 |
-| Automated tests for the renderer capture code | `getUserMedia`, `getDisplayMedia` and the worklet wiring are only checked by a real call, as is the renderer stopping its capture when main stops a recording on its own. | M2 |
+| Automated tests for the renderer capture code | `getUserMedia`, `getDisplayMedia` and the worklet wiring are only checked by a real call. The controller's start and stop rules run against fake devices. | M2 |
 | Lockfile packages published less than 7 days before 2026-10-05 | electron 44.5.1, mcp 2.3.0, vitest 5.0.3, eslint 10.12.0 and others are inside the usual quarantine window. | Re-check at the next dependency bump |
 
 ## Exit check log
