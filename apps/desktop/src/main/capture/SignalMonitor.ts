@@ -120,7 +120,7 @@ interface Recording {
  *
  * Inputs it does not measure come from the status CaptureService emits (`observeStatus`): a
  * source's health (`ended`, `error`), an `offline` stream (M2-T6), `systemAudioVerified` (M2-T10),
- * `paused` (M2-T18) and the mic's `device`. A Bluetooth mic comes through `setMicBluetooth`
+ * `paused` (M2-T18), the phase (Stop) and the mic's `device`. A Bluetooth mic comes through `setMicBluetooth`
  * (M2-T17a's monitor knows the input's transport; the status names only the device).
  */
 export class SignalMonitor implements AudioSink {
@@ -145,6 +145,14 @@ export class SignalMonitor implements AudioSink {
   private systemAudioVerified = false;
   private offline = false;
   private asleep = false;
+  /**
+   * The status's phase is not `recording`: Stop has begun. CaptureService drops every chunk from
+   * then until the sessions close and `ended` comes, and that close can take 5 s (a vendor that
+   * never answers the finish) plus 10 s (a reopen still connecting). Checked like any other phase,
+   * both sources read as cut and post "no audio" next to the stop notice. CaptureService's own
+   * no-audio check (`checkAudioFlow`) runs only while recording for the same reason.
+   */
+  private stopping = false;
 
   constructor(private readonly options: SignalMonitorOptions) {
     this.clock = options.clock ?? (() => Date.now());
@@ -189,6 +197,7 @@ export class SignalMonitor implements AudioSink {
     this.micLineAtMs = null;
     this.offline = false;
     this.asleep = false;
+    this.stopping = false;
     this.lastCheckAtMs = now;
     this.timer = setInterval(() => {
       this.check();
@@ -236,6 +245,7 @@ export class SignalMonitor implements AudioSink {
     this.systemAudioVerified = status.systemAudioVerified === true;
     this.offline = AUDIO_SOURCES.some((source) => status.streams[source] === 'offline');
     this.asleep = status.paused === 'asleep';
+    this.stopping = status.phase !== 'recording';
     for (const source of AUDIO_SOURCES) {
       const { health, message } = status.sources[source];
       this.meters[source].stopped = health === 'ended' || health === 'error' ? { message } : null;
@@ -275,7 +285,11 @@ export class SignalMonitor implements AudioSink {
     const now = this.clock();
     const gapMs = now - this.lastCheckAtMs;
     this.lastCheckAtMs = now;
-    if (gapMs > TIMER_GAP_MS || this.asleep) {
+    // Paused for sleep (M2-T18), both sessions are closed; from Stop until its sessions close,
+    // every chunk is dropped. Either way the sources stop on purpose and nothing is wrong with the
+    // audio, so no warning holds.
+    const stoppedOnPurpose = this.asleep || this.stopping;
+    if (gapMs > TIMER_GAP_MS || stoppedOnPurpose) {
       // Silence counts in audio time, so a sleep adds none; the time since each source's last
       // chunk is wall time, so it starts again here, and a source that does not come back still
       // warns NO_AUDIO_WARNING_MS after the wake.
@@ -288,9 +302,7 @@ export class SignalMonitor implements AudioSink {
       });
       return;
     }
-    // While the recording is paused for sleep (M2-T18) both sessions are closed and the sources
-    // stop on purpose: nothing is wrong with the audio, so no warning holds until the wake.
-    const detected = this.asleep ? [] : detectWarnings(this.facts(now));
+    const detected = stoppedOnPurpose ? [] : detectWarnings(this.facts(now));
     const changes = this.spells.update(detected, now);
     for (const warning of changes.raised) this.raised(recording, warning, now);
     for (const warning of changes.cleared) this.cleared(recording, warning, now);

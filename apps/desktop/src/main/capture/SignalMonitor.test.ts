@@ -11,6 +11,7 @@ import { ApiClient } from '../api/ApiClient';
 import { createLogger } from '../logger';
 import { InMemoryTranscriptStore } from '../store/InMemoryTranscriptStore';
 import { FakeSpeechToText } from '../stt/fake/FakeSpeechToText';
+import type { SpeechToText } from '../stt/SpeechToText';
 import { TranscriptUploader } from '../upload/TranscriptUploader';
 import { CaptureService } from './CaptureService';
 import { pcmPeak, SignalMonitor } from './SignalMonitor';
@@ -377,6 +378,17 @@ describe('SignalMonitor: sleep, pauses and device switches', () => {
     ]);
   });
 
+  it('warns of nothing while Stop closes the sessions, however long that takes', () => {
+    const h = harness();
+    h.feed({ mic: VOICE, system: VOICE }, 1_000);
+    // From Stop until its sessions close, CaptureService drops every chunk: no source is cut.
+    h.monitor.observeStatus(recordingStatus({ phase: 'stopping' }));
+    h.wait(6_000);
+    expect(h.warnings()).toEqual([]);
+    expect(h.store.listCaptureEvents(MEETING)).toEqual([]);
+    expect(h.onChange).not.toHaveBeenCalled();
+  });
+
   it('shows a mic device switch as a notice, never a warning, and times its silence afresh', () => {
     const h = harness();
     h.monitor.observeStatus(recordingStatus({}, { mic: { device: 'MacBook Pro Microphone' } }));
@@ -504,33 +516,73 @@ describe('SignalMonitor: what it tells', () => {
   });
 });
 
+/** A CaptureService on the fake provider, with a SignalMonitor attached as the T11 slot does. */
+function attachedCapture(
+  store: InMemoryTranscriptStore,
+  clock: () => number,
+  createSpeechToText: () => SpeechToText,
+): { capture: CaptureService; monitor: SignalMonitor } {
+  const api = new ApiClient({ baseUrl: 'http://127.0.0.1:9', token: 'test' });
+  const capture = new CaptureService({
+    store,
+    api,
+    uploader: new TranscriptUploader({ store, api, logger }),
+    createSpeechToText,
+    ensureMicrophoneAccess: () => Promise.resolve('granted'),
+    logger,
+    // The fake provider: Start asks the API for no token.
+    sttProviderOverride: 'fake',
+    startupError: null,
+    clock,
+  });
+  const monitor = new SignalMonitor({
+    store,
+    logger,
+    clock,
+    onChange: () => {
+      capture.refreshStatus();
+    },
+  });
+  monitor.attach(capture);
+  return { capture, monitor };
+}
+
+/**
+ * `stt` whose streams take `closeMs` to close, as a vendor that never answers the finish does
+ * (WebSocketSpeechToText waits closeTimeoutMs, 5 s, for it; a reopen still connecting holds Stop
+ * up to 10 s more).
+ */
+function slowToClose(stt: SpeechToText, closeMs: number): SpeechToText {
+  return {
+    provider: stt.provider,
+    vendorName: stt.vendorName,
+    usage: (label) => stt.usage(label),
+    async openStream(options) {
+      const stream = await stt.openStream(options);
+      return {
+        send: (pcm) => {
+          stream.send(pcm);
+        },
+        on: (listener) => stream.on(listener),
+        async close() {
+          await new Promise((resolve) => setTimeout(resolve, closeMs));
+          await stream.close();
+        },
+      };
+    },
+  };
+}
+
 describe('SignalMonitor.attach', () => {
   it('follows recordings through the capture seams: audio, status, lines and Stop', async () => {
     vi.useFakeTimers();
     let now = START;
     const store = new InMemoryTranscriptStore();
-    const api = new ApiClient({ baseUrl: 'http://127.0.0.1:9', token: 'test' });
-    const capture = new CaptureService({
+    const { capture, monitor } = attachedCapture(
       store,
-      api,
-      uploader: new TranscriptUploader({ store, api, logger }),
-      createSpeechToText: () => new FakeSpeechToText({ clock: () => now }),
-      ensureMicrophoneAccess: () => Promise.resolve('granted'),
-      logger,
-      // The fake provider: Start asks the API for no token.
-      sttProviderOverride: 'fake',
-      startupError: null,
-      clock: () => now,
-    });
-    const monitor = new SignalMonitor({
-      store,
-      logger,
-      clock: () => now,
-      onChange: () => {
-        capture.refreshStatus();
-      },
-    });
-    monitor.attach(capture);
+      () => now,
+      () => new FakeSpeechToText({ clock: () => now }),
+    );
     const lineHeard = vi.spyOn(monitor, 'lineHeard');
 
     await capture.start();
@@ -559,5 +611,36 @@ describe('SignalMonitor.attach', () => {
     await capture.stop({ flushUploads: false });
     expect(capture.getStatus().warnings).toBeUndefined();
     expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('warns of no source while a Stop held open for 6 s closes the sessions', async () => {
+    vi.useFakeTimers();
+    let now = START;
+    const store = new InMemoryTranscriptStore();
+    const { capture } = attachedCapture(
+      store,
+      () => now,
+      () => slowToClose(new FakeSpeechToText({ clock: () => now }), 6_000),
+    );
+    await capture.start();
+    const meetingId = capture.getStatus().meetingId ?? '';
+    for (let fed = 0; fed < 3_000; fed += CHUNK_MS) {
+      now += CHUNK_MS;
+      capture.pushAudio('mic', chunk(VOICE));
+      capture.pushAudio('system', chunk(VOICE));
+      vi.advanceTimersByTime(CHUNK_MS);
+    }
+
+    // The call ended (M2-T17b's auto-stop): Stop waits on the vendor while the sources go quiet.
+    const stopped = capture.stop({ flushUploads: false });
+    for (let waited = 0; waited < 6_000; waited += CHUNK_MS) {
+      now += CHUNK_MS;
+      capture.pushAudio('mic', chunk(VOICE));
+      vi.advanceTimersByTime(CHUNK_MS);
+      expect(capture.getStatus()).toMatchObject({ phase: 'stopping', warnings: [] });
+    }
+    expect(store.listCaptureEvents(meetingId).map(({ kind }) => kind)).not.toContain('warning');
+    await stopped;
+    expect(capture.getStatus().phase).toBe('idle');
   });
 });
