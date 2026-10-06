@@ -72,8 +72,14 @@ final lines into `SqliteTranscriptStore` → `TranscriptUploader` → `POST /v1/
 Adapters implement `SpeechToText` in `src/main/stt/SpeechToText.ts`. The API's `/v1/stt/token`
 response names the provider; `createSpeechToText` picks the adapter. Shipping adapters:
 
-- `deepgram`: streaming websocket, bearer token minted by the API, KeepAlive every 5 s,
-  Finalize + CloseStream on stop.
+- `assemblyai`: Roger's vendor since 2026-10-06 (owner decision). Universal-Streaming v3
+  websocket; the API's temporary token goes in the `token` query parameter. Audio is sent as
+  binary PCM in 50 to 1000 ms messages (AssemblyAI closes the session otherwise; the short tail
+  on Stop is padded with silence). With `format_turns` a finished turn arrives twice, raw then
+  formatted: the adapter saves one line per `turn_order`, formatted when that copy comes within
+  2 s. On stop: Terminate, then wait for Termination (5 s cap). Sessions end after 3 hours.
+- `deepgram`: the second adapter (M3 bake-off). Streaming websocket, bearer token minted by the
+  API, KeepAlive every 5 s, Finalize + CloseStream on stop.
 - `fake`: no network. Emits one line per two seconds of non-silent audio. Used by tests and by
   `ROGER_STT_PROVIDER=fake`.
 
