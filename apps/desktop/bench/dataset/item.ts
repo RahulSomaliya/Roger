@@ -103,9 +103,14 @@ export function itemPaths(benchDir: string, itemId: string): ItemPaths {
  * instead of skipping it in silence.
  */
 export async function listItemIds(benchDir: string): Promise<string[]> {
+  return listFolders(join(benchDir, 'items'));
+}
+
+/** The names of the folders in `dir`, in name order; none when `dir` does not exist. */
+export async function listFolders(dir: string): Promise<string[]> {
   let entries;
   try {
-    entries = await readdir(join(benchDir, 'items'), { withFileTypes: true });
+    entries = await readdir(dir, { withFileTypes: true });
   } catch (error) {
     if (isMissingFile(error)) return [];
     throw error;
