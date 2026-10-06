@@ -190,6 +190,30 @@ describe('LatencyMeter', () => {
     expect(meter.summary()).toMatchObject({ words: 3, repeatedWords: 1, longestWaitMs: 1_300 });
   });
 
+  it('still measures a replayed word once when the new connection shifts its times a little', () => {
+    // Transcribing the same audio again, the vendor can put a word's end 40 ms later than the
+    // first time. Timed again, it would add a fake wait from the first line to the replay.
+    const meter = new LatencyMeter(steadyClock);
+    meter.record(final([1_000, 2_000]), BASE + 2_300);
+    meter.record(final([2_040, 3_000]), BASE + 3_400);
+
+    expect(meter.summary()).toMatchObject({ words: 3, repeatedWords: 1, longestWaitMs: 1_300 });
+  });
+
+  it('measures a word that ends inside an earlier line it was not part of, and calls it no replay', () => {
+    // Deepgram ends a line at its result window (start plus duration), which can run past the
+    // line's last word, and the next line's first word can end inside that window.
+    const meter = new LatencyMeter(steadyClock);
+    meter.record(interim(1_200), BASE + 1_400);
+    meter.record(final([1_000, 2_600], 3_000), BASE + 3_300);
+    meter.record(interim(3_500), BASE + 3_900);
+    meter.record(final([2_950, 3_400]), BASE + 4_200);
+
+    // The line that ended at 3.0 s did not hold the word ending at 2.95 s, so it did not show it:
+    // the partial after it did, 950 ms after the word.
+    expect(meter.summary()).toMatchObject({ words: 4, repeatedWords: 0, longestWaitMs: 950 });
+  });
+
   it('counts a word that shows before its capture time as 0 ms, and says how many did', () => {
     const meter = new LatencyMeter(steadyClock);
     meter.record(final([1_000]), BASE + 960); // the two clocks disagree by 40 ms

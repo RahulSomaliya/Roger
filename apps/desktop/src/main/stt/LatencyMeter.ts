@@ -41,7 +41,10 @@ export interface LatencySummary {
    * every number above reads too low.
    */
   clampedWords: number;
-  /** Words in a final for audio an earlier final already closed (a replay); measured once only. */
+  /**
+   * Words that lie mostly in audio whose words an earlier final already measured (a replay after
+   * a reconnect). Counted here and not measured again.
+   */
   repeatedWords: number;
 }
 
@@ -141,6 +144,12 @@ interface EndPoint {
   shownToMs: number;
 }
 
+/** A word of a final on the capture clock: when its middle and its last sample were captured. */
+interface FinalWord {
+  middleMs: number;
+  endMs: number;
+}
+
 /** One meter per stream: mic and system are measured, and gated, separately. */
 export class LatencyMeter {
   private readonly stats = new WordLatencyStats();
@@ -151,8 +160,13 @@ export class LatencyMeter {
    */
   private readonly endPoints: EndPoint[] = [];
   private furthestShownMs = Number.NEGATIVE_INFINITY;
-  /** A final has closed the stream up to here; a word ending at or before it was measured. */
-  private finalizedToMs = Number.NEGATIVE_INFINITY;
+  /**
+   * The latest end of a word measured so far. Only measured words set it, never a line's end:
+   * Deepgram ends a line at its result window, which can run past the line's last word, and the
+   * next line's first word can end inside that window. A line end here would count that new word
+   * as a replay and never measure it.
+   */
+  private measuredToMs = Number.NEGATIVE_INFINITY;
 
   constructor(private readonly captureTimeAt: CaptureClock) {}
 
@@ -177,8 +191,13 @@ export class LatencyMeter {
     }
     // Map every time before changing any state, so a refused event leaves the meter as it was.
     const shownToMs = this.captureTime(event.endMs);
-    const wordEndsMs =
-      event.type === 'final' ? event.words.map((word) => this.captureTime(word.endMs)) : [];
+    const words: FinalWord[] =
+      event.type === 'final'
+        ? event.words.map((word) => ({
+            middleMs: this.captureTime((word.startMs + word.endMs) / 2),
+            endMs: this.captureTime(word.endMs),
+          }))
+        : [];
 
     // An event with no text shows nothing, so it must not count as showing the words it spans:
     // a vendor that sends blank partials during speech would read as faster than it is.
@@ -187,7 +206,7 @@ export class LatencyMeter {
       this.endPoints.push({ arrivedAtMs, shownToMs });
       if (this.endPoints.length > MAX_END_POINTS) this.endPoints.shift();
     }
-    if (event.type === 'final') this.measureFinal(wordEndsMs, shownToMs, arrivedAtMs);
+    if (event.type === 'final') this.measureFinal(words, shownToMs, arrivedAtMs);
   }
 
   summary(): LatencySummary {
@@ -204,24 +223,31 @@ export class LatencyMeter {
     return this.stats.display.counts.length;
   }
 
-  private measureFinal(wordEndsMs: number[], shownToMs: number, arrivedAtMs: number): void {
-    let finalizedToMs = Math.max(this.finalizedToMs, shownToMs);
-    for (const wordEndMs of wordEndsMs) {
-      // Compare with what earlier finals closed, never with `finalizedToMs` above: this final's
-      // own end already covers its words, so every word would read as repeated.
-      if (wordEndMs <= this.finalizedToMs) {
+  private measureFinal(words: FinalWord[], shownToMs: number, arrivedAtMs: number): void {
+    let measuredToMs = this.measuredToMs;
+    for (const word of words) {
+      // A replayed word whose middle sits in measured audio is the same word, even when the new
+      // connection puts its end tens of milliseconds later; its end alone would time it twice. A
+      // new word that starts a little before the last one ended still has its middle past it.
+      // Compare with what earlier finals measured, never with `measuredToMs` above: words of one
+      // line can overlap, and the later one would read as repeated.
+      if (word.middleMs <= this.measuredToMs) {
         this.stats.repeatedWords += 1;
         continue;
       }
       // A word that ends past every event (vendors round a word's end past its line's end now
       // and then) showed with this final.
-      const shownAtMs = this.firstShownAt(wordEndMs) ?? arrivedAtMs;
-      this.stats.addWord(shownAtMs - wordEndMs, arrivedAtMs - wordEndMs);
-      finalizedToMs = Math.max(finalizedToMs, wordEndMs);
+      const shownAtMs = this.firstShownAt(word.endMs) ?? arrivedAtMs;
+      this.stats.addWord(shownAtMs - word.endMs, arrivedAtMs - word.endMs);
+      measuredToMs = Math.max(measuredToMs, word.endMs);
     }
-    this.finalizedToMs = finalizedToMs;
-    // Every later word ends after this point, so no end point at or before it can show one.
-    const firstKept = this.endPoints.findIndex((point) => point.shownToMs > finalizedToMs);
+    this.measuredToMs = measuredToMs;
+    // Pruned up to the line's end as well, so a final with no words still keeps the list short.
+    // A later new word that ends at or before this point was not in this line, so this line did
+    // not show it: it counts from the next event that reaches it, which can overstate its wait but
+    // never understate it.
+    const prunedToMs = Math.max(shownToMs, measuredToMs);
+    const firstKept = this.endPoints.findIndex((point) => point.shownToMs > prunedToMs);
     this.endPoints.splice(0, firstKept === -1 ? this.endPoints.length : firstKept);
   }
 
