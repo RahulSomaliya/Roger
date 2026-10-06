@@ -186,6 +186,66 @@ export class NoteDocument {
   }
 }
 
+/** What following main's doc needs from the open editor's saver (debouncedSaver.ts). */
+export interface EditorSaves {
+  /** Some edit has not landed in main: typed since the last save, or refused. */
+  readonly unsaved: boolean;
+  /** A save is on its way, or answered and not yet counted in `unsaved`. */
+  readonly saving: boolean;
+  /** Resolves once every save so far is counted in `unsaved`; sends nothing. */
+  settled(): Promise<void>;
+  flush(): Promise<void>;
+}
+
+/**
+ * Puts each doc the editor must show (`docGeneration` past `shown`) into it through `show`.
+ * Returns the function that stops following.
+ */
+export function followNoteDocument(
+  document: NoteDocument,
+  saves: EditorSaves,
+  shown: number,
+  show: (doc: NoteDoc) => void,
+): Unsubscribe {
+  let stopped = false;
+  const follow = (): void => {
+    if (stopped) return;
+    const { docGeneration, note, docProblem } = document.getState();
+    if (docGeneration === shown || note === null) return;
+    // NoteDocument applies the changes it held during a save from inside that save's answer,
+    // before the saver has counted the answer. Read now, `unsaved` is still true, so a doc that
+    // arrived during a save (a 409's server doc) would look as if it came over unsaved typing:
+    // never shown, while the banner says it is. Decide once the saver has counted the save.
+    if (saves.saving) {
+      void saves.settled().then(follow);
+      return;
+    }
+    shown = docGeneration;
+    // Edits main does not have: the editor never drops them for a doc from elsewhere. It sends
+    // them, and shows what main then holds if that is not its own save. Trap, outside this file:
+    // SaveNoteRequest carries no base revision, so main cannot tell these edits (built on the
+    // doc it replaced) from edits of the doc it just took, and stores them over it; after a 409
+    // the server's version is then kept nowhere. Loading it here instead would lose the typing
+    // for good. The fix is main's: a base revision on the save, and a save on a stale base kept
+    // as the conflict copy (M4-T13, M4-T14, M4-T16), after which this branch shows the server's
+    // doc as main answers.
+    if (saves.unsaved) {
+      void saves.flush();
+      return;
+    }
+    // NoteEditor shows the problem in place of the editor, which is about to unmount.
+    if (docProblem !== null) return;
+    show(note.doc);
+  };
+  const stopFollowing = document.subscribe(follow);
+  // A doc may have arrived between the editor's first render and this call.
+  follow();
+  return () => {
+    stopped = true;
+    stopFollowing();
+  };
+}
+
 export interface NoteDocumentHandle {
   document: NoteDocument;
   state: NoteDocumentState;

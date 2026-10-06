@@ -6,7 +6,12 @@ import { noteExtensions } from './citationNode';
 import { ConflictBanner } from './ConflictBanner';
 import { DebouncedSaver, notesFlushResponder, type SaverState } from './debouncedSaver';
 import { describeSaveStatus } from './saveStatus';
-import { type NoteDocument, type NoteDocumentState, useNoteDocument } from './useNoteDocument';
+import {
+  followNoteDocument,
+  type NoteDocument,
+  type NoteDocumentState,
+  useNoteDocument,
+} from './useNoteDocument';
 import './notes.css';
 
 /**
@@ -159,31 +164,15 @@ function LoadedNoteEditor({
     // change), and out of the undo history. CitationChip.tsx keeps chip clicks from ProseMirror.
     editor.chain().setMeta('addToHistory', false).run();
 
-    let shown = setup.generation;
-    const showNewDoc = (): void => {
-      const { docGeneration, note, docProblem } = document.getState();
-      if (docGeneration === shown || note === null) return;
-      shown = docGeneration;
-      // The editor never drops its own unsaved typing for a doc from elsewhere: it saves it, and
-      // main's store decides what is current (its conflict rule keeps the other doc as a copy
-      // when it can). Loading the other doc here would lose up to 400 ms of typing.
-      if (saver.unsaved) {
-        void saver.flush();
-        return;
-      }
-      // NoteEditor shows the problem in place of this editor, which is about to unmount.
-      if (docProblem !== null) return;
+    const stopFollowing = followNoteDocument(document, saver, setup.generation, (doc) => {
       // Out of the undo history: Cmd-Z must not take the editor back to a doc main replaced, and
       // then save that over it. No `update` either: loading is not an edit to save.
       editor
         .chain()
         .setMeta('addToHistory', false)
-        .setContent(note.doc, { emitUpdate: false, errorOnInvalidContent: true })
+        .setContent(doc, { emitUpdate: false, errorOnInvalidContent: true })
         .run();
-    };
-    const stopFollowing = document.subscribe(showNewDoc);
-    // A doc may have arrived between the first render and this effect.
-    showNewDoc();
+    });
     return () => {
       stopFollowing();
       editor.off('update', onUpdate);

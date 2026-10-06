@@ -84,6 +84,14 @@ export class DebouncedSaver {
     return this.edits > this.savedThrough;
   }
 
+  /**
+   * True while a save is on its way to main, or answered but not yet counted: `unsaved` reads
+   * the answer only a few microtasks after `write`'s promise settles (see `settled`).
+   */
+  get saving(): boolean {
+    return this.inFlight.size > 0;
+  }
+
   /** The editor's content changed. */
   edited(): void {
     if (this.disposed) return;
@@ -108,6 +116,15 @@ export class DebouncedSaver {
   flush(): Promise<void> {
     this.clearTimer();
     if (this.edits > this.sentThrough) this.send();
+    return this.settled();
+  }
+
+  /**
+   * Resolves once every save started so far has landed or failed and `unsaved` counts it; sends
+   * nothing. Never rejects. Code that runs inside a save's answer (NoteDocument applies the note
+   * changes it held then) reads `unsaved` from before that answer unless it waits for this.
+   */
+  settled(): Promise<void> {
     return Promise.allSettled([...this.inFlight]).then(() => undefined);
   }
 

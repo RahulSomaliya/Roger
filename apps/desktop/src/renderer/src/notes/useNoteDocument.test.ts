@@ -1,7 +1,8 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { NotesApi, SaveNoteRequest } from '../../../shared/ipc/notes';
 import type { LocalNote, MeetingNotes, NoteDoc, NoteKind } from '../../../shared/notes';
-import { NoteDocument, type NoteDocumentState } from './useNoteDocument';
+import { DebouncedSaver } from './debouncedSaver';
+import { followNoteDocument, NoteDocument, type NoteDocumentState } from './useNoteDocument';
 
 const MEETING = '3f6c2a90-1b7e-4c1d-9a55-2e8f0b6d4c11';
 const OTHER_MEETING = '8d1e5b22-7c3a-4f60-8e19-5a2b9c0d7e33';
@@ -319,5 +320,117 @@ describe('NoteDocument', () => {
     await main.answerLoad({ user: note() });
     expect(document.getState()).toEqual(expect.objectContaining({ status: 'ready', note: note() }));
     expect(main.listeners.size).toBe(1);
+  });
+});
+
+/**
+ * An open editor over the document as NoteEditor wires it: its saver writes through
+ * `document.save`, and `followNoteDocument` puts each doc to show into it (recorded in `shown`).
+ */
+function editorOver(document: NoteDocument) {
+  let content = document.getState().note?.doc ?? docSaying('');
+  const saver = new DebouncedSaver({ read: () => content, write: (doc) => document.save(doc) });
+  const shown: NoteDoc[] = [];
+  const stop = followNoteDocument(document, saver, document.getState().docGeneration, (doc) => {
+    content = doc;
+    shown.push(doc);
+  });
+  return {
+    saver,
+    shown,
+    stop,
+    content: () => content,
+    type: (text: string) => {
+      content = docSaying(text);
+      saver.edited();
+    },
+  };
+}
+
+describe('followNoteDocument', () => {
+  // The saver's 400 ms pause never fires on its own here: each test flushes when it means to.
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const mine = (overrides: Partial<LocalNote> = {}): LocalNote =>
+    note({ doc: docSaying('mine'), revisionId: 'rev-0', dirty: true, ...overrides });
+  /** main after a 409: the server's doc, with the save it pushed aside as the copy. */
+  const theirs = (copy: string): LocalNote =>
+    note({ doc: docSaying('theirs'), conflictCopy: docSaying(copy), sync: 'conflict' });
+
+  it('shows a doc from elsewhere that arrived while a save was on its way', async () => {
+    const { main, document } = open();
+    await main.answerLoad({ user: mine() });
+    const editor = editorOver(document);
+    editor.type('mine, typed');
+    void editor.saver.flush();
+    // main writes the save, then a 409 takes the server's doc and keeps the save as the copy.
+    // Both changes wait for the save's answer, and the saver counts that answer after they apply.
+    const saved = mine({ doc: docSaying('mine, typed'), revisionId: 'rev-1' });
+    main.emit(saved);
+    main.emit(theirs('mine, typed'));
+    main.saves.shift()?.resolve(saved);
+    await settle();
+    expect(editor.shown).toEqual([docSaying('theirs')]);
+    // Nothing is saved over it.
+    expect(main.saves).toEqual([]);
+  });
+
+  it('keeps edits whose save was refused while a doc from elsewhere waited', async () => {
+    const { main, document } = open();
+    await main.answerLoad({ user: mine() });
+    const editor = editorOver(document);
+    editor.type('mine, typed');
+    void editor.saver.flush();
+    main.emit(theirs('mine'));
+    main.saves.shift()?.reject(new Error('note not saved: SQLITE_FULL: database or disk is full'));
+    await settle();
+    // Loading the server's doc now would drop the only copy of the refused edits.
+    expect(editor.shown).toEqual([]);
+    expect(editor.content()).toEqual(docSaying('mine, typed'));
+    expect(editor.saver.unsaved).toBe(true);
+  });
+
+  it('saves typing not yet sent rather than drop it for a doc from elsewhere', async () => {
+    const { main, document } = open();
+    await main.answerLoad({ user: mine() });
+    const editor = editorOver(document);
+    editor.type('mine, typed');
+    main.emit(theirs('mine'));
+    // Sent at once, not after the pause; main's store decides what is current (see
+    // followNoteDocument on why this still loses the server's doc today).
+    expect(main.saves.map(({ request }) => request.doc)).toEqual([docSaying('mine, typed')]);
+    expect(editor.shown).toEqual([]);
+  });
+
+  it('shows nothing once stopped, even a doc it was waiting on the saver to decide', async () => {
+    const { main, document } = open();
+    await main.answerLoad({ user: mine() });
+    let count: () => void = () => undefined;
+    const saves = {
+      unsaved: false,
+      saving: true,
+      settled: () =>
+        new Promise<void>((resolve) => {
+          count = resolve;
+        }),
+      flush: () => Promise.resolve(),
+    };
+    const shown: NoteDoc[] = [];
+    const stop = followNoteDocument(document, saves, document.getState().docGeneration, (doc) => {
+      shown.push(doc);
+    });
+    main.emit(theirs('mine'));
+    // The editor unmounts before the saver has counted its save.
+    stop();
+    saves.saving = false;
+    count();
+    await settle();
+    expect(shown).toEqual([]);
   });
 });

@@ -277,6 +277,24 @@ describe('DebouncedSaver', () => {
     expect(states.at(-1)).toEqual({ phase: 'saved' });
   });
 
+  it('settled() waits for the saves on their way and counts them, sending nothing new', async () => {
+    const { saver, writes, type } = setUp();
+    type('one');
+    saver.blurred();
+    type('one two');
+    let settled = false;
+    void saver.settled().then(() => {
+      settled = true;
+    });
+    expect(saver.saving).toBe(true);
+    await writes.land();
+    expect(settled).toBe(true);
+    expect(saver.saving).toBe(false);
+    // "two" was typed after the save started: still unsaved, and not sent by settled().
+    expect(writes.written).toEqual([docSaying('one')]);
+    expect(saver.unsaved).toBe(true);
+  });
+
   it('sends edits made during a save in a second save, never the same edits twice', async () => {
     const { saver, writes, type } = setUp();
     type('one');
