@@ -346,7 +346,38 @@ fills its migration:
                        unique index (workspace_id, lower(term))
   ```
 
-- Notes (`meeting_notes`, `llm_runs`, `chat_messages`, revision `0003`): M4-T1.
+- Notes (revision `0003`, M4-T1). Two TipTap docs per meeting (`user`, `ai`), one row per notes
+  or chat run, one chat thread per meeting. Timestamps without a type are `timestamptz`; `now()`
+  and `0` are server defaults.
+
+  ```sql
+  llm_runs       (id uuid pk, workspace_id uuid fk, meeting_id uuid fk on delete cascade,
+                  kind text check in ('notes','chat'),
+                  status text check in ('running','succeeded','failed','cancelled'),
+                  model text, prompt_version text, template_id text null, line_count int,
+                  user_notes_version int null, ai_base_version int null,
+                  ref_map jsonb, output_text text null, output_doc jsonb null, replaced_doc jsonb null,
+                  dropped jsonb null, flagged_count int default 0, from_notes_count int default 0,
+                  error_code text null, error text null,
+                  input_tokens int null, output_tokens int null, cached_tokens int null,
+                  cost_usd numeric null,               -- null when the vendor sent no usage, never 0
+                  heartbeat_at default now(), started_at default now(), finished_at null)
+                 index (meeting_id, started_at desc)
+                 index (heartbeat_at) where status = 'running'        -- the stale sweep
+                 unique (meeting_id) where kind = 'notes' and status = 'running'
+  meeting_notes  (id uuid pk, workspace_id uuid fk, meeting_id uuid fk on delete cascade,
+                  kind text check in ('user','ai'), doc jsonb, version int,
+                  last_revision_id uuid, template_id text null,
+                  last_run_id uuid null fk llm_runs on delete set null,
+                  generated_version int null,          -- the version last_run_id wrote (ai only)
+                  created_at, updated_at)
+                 unique (meeting_id, kind)
+  chat_messages  (id uuid pk, workspace_id uuid fk, meeting_id uuid fk on delete cascade,
+                  role text check in ('user','assistant'), text text, citations jsonb null,
+                  reply_to uuid null, run_id uuid null fk llm_runs,
+                  status text check in ('complete','streaming','failed'), created_at)
+                 index (meeting_id, created_at)
+  ```
 
 - Calendar (`calendar_connections`, `meeting_attendees`, the new `meetings` columns, revision
   `0004`): M5-T1.
