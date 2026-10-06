@@ -31,13 +31,13 @@ migrated it logs `database_not_ready` and exits.
 | --- | --- | --- |
 | `DATABASE_URL` | required | `postgresql+asyncpg://...`. Plain `postgres://` and `postgresql://` URLs are accepted and switched to asyncpg. Alembic reads the same variable. |
 | `ROGER_API_TOKEN` | required | Shared bearer secret for `/v1/*` and `/mcp`. At least 16 characters; startup fails on the `.env.example` placeholder (anything starting with `change-me`). |
-| `STT_PROVIDER` | `fake` | `assemblyai` (Roger's vendor), `deepgram` (second adapter) or `fake` (no vendor). See [Speech-to-text tokens](#speech-to-text-tokens). |
-| `ASSEMBLYAI_API_KEY` | empty | Required when `STT_PROVIDER=assemblyai`; startup fails without it. Never leaves the API. |
+| `STT_PROVIDER` | `fake` | A preset: the vendor and its model together, `assemblyai` (Roger's vendor), `assemblyai-pro`, `deepgram` or `fake` (no vendor). Startup fails on any other value. See [Speech-to-text tokens](#speech-to-text-tokens). |
+| `ASSEMBLYAI_API_KEY` | empty | Required with the `assemblyai` and `assemblyai-pro` presets; startup fails without it. Never leaves the API. |
 | `DEEPGRAM_API_KEY` | empty | Required when `STT_PROVIDER=deepgram`; startup fails without it. Never leaves the API. |
-| `STT_TOKEN_TTL_SECONDS` | `30` | Lifetime of the speech-to-text token handed to the desktop (1..3600; at most 600 with `assemblyai`, the vendor's limit). |
-| `STT_MODEL` / `STT_LANGUAGE` | unset / `en` | Returned to the desktop as stream settings. Unset `STT_MODEL` means the provider's English streaming model: `universal-streaming-english` (assemblyai), `nova-3` (deepgram), `fake`. Startup fails on the other vendor's model (`nova-*` with assemblyai, `universal-*` with deepgram). |
-| `STT_PRICE_PER_HOUR_USD` | unset | USD per hour of one open stream, returned to the desktop as `stream.price_per_hour_usd`. Unset means the vendor's list price for the model (`src/roger_api/stt_vendors.py`); a model with no list price there returns `null` and logs `stt_price_unknown` at startup. |
-| `STT_SAMPLE_RATE` / `STT_ENCODING` | `16000` / `linear16` | Returned to the desktop as stream settings. |
+| `STT_TOKEN_TTL_SECONDS` | `30` | Lifetime of the speech-to-text token handed to the desktop (1..3600; at most 600 with the AssemblyAI presets, the vendor's limit). |
+| `STT_MODEL` | retired | The preset names the model. Startup fails while `STT_MODEL` has a value and names it; delete the line (a blank `STT_MODEL=` still counts as unset). |
+| `STT_PRICE_PER_HOUR_USD` | unset | USD per hour of one open stream, returned to the desktop as `stream.price_per_hour_usd`. Unset means the list price of the preset's model (`src/roger_api/stt_vendors.py`); set it for a negotiated rate. A model with no list price returns `null` and logs `stt_price_unknown` at startup. |
+| `STT_LANGUAGE` / `STT_SAMPLE_RATE` / `STT_ENCODING` | `en` / `16000` / `linear16` | Returned to the desktop as stream settings. |
 | `DEFAULT_WORKSPACE_ID` | `805dd994-ff52-405c-a3cc-58f09b32a2dd` | The one workspace every M1 request resolves to. |
 | `DEFAULT_WORKSPACE_NAME` | `Linkt` | Used only when the workspace row is first created. |
 | `APP_ENV` | `development` | `production` switches logs to JSON lines. |
@@ -52,10 +52,23 @@ The version reported by `/health` comes from the package metadata (`pyproject.to
 `POST /v1/stt/token` hands the desktop a short-lived vendor credential plus stream settings; the
 vendor key never leaves the API. Each vendor is one `SttTokenIssuer` in
 `src/roger_api/services/stt_tokens.py` and one entry in the vendor registry,
-`src/roger_api/stt_vendors.py` (issuer, default model, model-name prefix, token TTL limit, list
-price per stream-hour), picked by `STT_PROVIDER`. To add a vendor, follow "Add a speech-to-text
-vendor" in [`apps/desktop/README.md`](../desktop/README.md#add-a-speech-to-text-vendor): the
-desktop and the API change together.
+`src/roger_api/stt_vendors.py` (`STT_VENDORS`: issuer, token TTL limit, list price per
+stream-hour by model). `STT_PROVIDER` names a preset in the same file (`STT_PRESETS`): one vendor
+and one of its models, so switching vendor or model is one line in `.env`, then a restart.
+
+| `STT_PROVIDER` | Vendor (`provider` in the token) | Model | USD per stream-hour |
+| --- | --- | --- | --- |
+| `assemblyai` | `assemblyai` | `universal-streaming-english` | 0.15 |
+| `assemblyai-pro` | `assemblyai` | `universal-3-6-pro` | 0.45 |
+| `deepgram` | `deepgram` | `nova-3` | 0.462 |
+| `fake` | `fake` | `fake` | 0 |
+
+The token's `provider` is always the vendor, never the preset, so the desktop never sees presets.
+Another model is another row in `STT_PRESETS`, spelt exactly as the vendor spells it: AssemblyAI
+quietly runs another model for a name it does not know, and a test fails on a preset model with no
+list price. To add a vendor, follow "Add a speech-to-text vendor" in
+[`apps/desktop/README.md`](../desktop/README.md#add-a-speech-to-text-vendor): the desktop and the
+API change together.
 
 AssemblyAI is Roger's vendor (owner decision, 2026-10-06: AssemblyAI lists Granola as a customer,
 live text costs about $0.15 an hour per stream, and it has generous free hours). The model
@@ -67,7 +80,7 @@ STT_PROVIDER=assemblyai
 ASSEMBLYAI_API_KEY=...   # from the AssemblyAI dashboard
 ```
 
-and leave `STT_MODEL` empty. The issuer asks AssemblyAI for a temporary token
+The issuer asks AssemblyAI for a temporary token
 (`GET https://streaming.assemblyai.com/v3/token?expires_in_seconds=<STT_TOKEN_TTL_SECONDS>&max_session_duration_seconds=10800`,
 raw key as `Authorization`). The TTL is only the window to open a stream; one token opens both of
 the desktop's streams, and each session can then run for up to 3 hours, a cap asked for explicitly
@@ -195,7 +208,7 @@ src/roger_api/
   config.py            Settings (pydantic-settings); DatabaseSettings for Alembic
   config_notes.py      NotesSettings mixin of Settings (notes model)
   config_calendar.py   CalendarSettings mixin of Settings (Google Calendar)
-  stt_vendors.py       speech-to-text vendor registry (issuer, default model, price)
+  stt_vendors.py       speech-to-text registry: vendors (issuer, price) and presets
   log.py               structlog setup (console in development, JSON in production)
   middleware.py        request id, access log, 500 envelope
   error_handlers.py    the error envelope for every other error

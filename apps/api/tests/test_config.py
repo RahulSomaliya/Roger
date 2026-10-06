@@ -81,7 +81,6 @@ def test_defaults() -> None:
 
     assert settings.stt_provider == "fake"
     assert settings.stt_token_ttl_seconds == 30
-    assert settings.stt_model is None
     assert (settings.stt_stream_model, settings.stt_language) == ("fake", "en")
     assert (settings.stt_sample_rate, settings.stt_encoding) == (16000, "linear16")
     assert settings.default_workspace_name == "Linkt"
@@ -92,99 +91,36 @@ def test_defaults() -> None:
 VENDOR_KEY = "vendor-secret-key-0123"
 
 
-@pytest.mark.parametrize(
-    ("provider", "model"),
-    [
-        ("fake", "fake"),
-        ("deepgram", "nova-3"),
-        ("assemblyai", "universal-streaming-english"),
-    ],
-)
-def test_unset_stt_model_means_the_providers_english_streaming_model(
-    provider: str, model: str
-) -> None:
+@pytest.mark.parametrize("blank", ["", " "])
+def test_blank_stt_model_counts_as_unset(blank: str) -> None:
+    # STT_MODEL is retired (tests/test_stt_providers.py), but `STT_MODEL=` left in a `.env`
+    # arrives as an empty string and must not stop the API.
     settings = make_settings(
         DATABASE_URL,
-        stt_provider=provider,
-        deepgram_api_key=VENDOR_KEY,
+        stt_provider="assemblyai-pro",
+        stt_model=blank,
         assemblyai_api_key=VENDOR_KEY,
     )
 
-    assert settings.stt_model is None
-    assert settings.stt_stream_model == model
+    assert settings.stt_stream_model == "universal-3-6-pro"
 
 
-@pytest.mark.parametrize(
-    ("provider", "model"),
-    [
-        ("deepgram", "nova-3"),  # an existing Deepgram `.env` keeps working unchanged
-        ("deepgram", "nova-2"),
-        ("assemblyai", "universal-3-6-pro"),
-    ],
-)
-def test_explicit_stt_model_wins(provider: str, model: str) -> None:
-    settings = make_settings(
-        DATABASE_URL,
-        stt_provider=provider,
-        stt_model=model,
-        deepgram_api_key=VENDOR_KEY,
-        assemblyai_api_key=VENDOR_KEY,
-    )
-
-    assert settings.stt_stream_model == model
-
-
-def test_blank_stt_model_counts_as_unset() -> None:
-    # `STT_MODEL=` in a `.env` arrives as an empty string.
-    settings = make_settings(
-        DATABASE_URL, stt_provider="assemblyai", stt_model=" ", assemblyai_api_key=VENDOR_KEY
-    )
-
-    assert settings.stt_model is None
-    assert settings.stt_stream_model == "universal-streaming-english"
-
-
-@pytest.mark.parametrize(
-    ("provider", "model", "owner"),
-    [
-        ("assemblyai", "nova-3", "deepgram"),
-        ("deepgram", "universal-streaming-english", "assemblyai"),
-    ],
-)
-def test_another_vendors_model_is_rejected(provider: str, model: str, owner: str) -> None:
-    # `.env.example` shipped `STT_MODEL=nova-3` before AssemblyAI became the default. Switching a
-    # copied `.env` to assemblyai must fail at startup, not when someone presses Start on the Mac.
-    with pytest.raises(ValidationError, match=f"STT_MODEL={model} is a {owner} model"):
-        make_settings(
-            DATABASE_URL,
-            stt_provider=provider,
-            stt_model=model,
-            deepgram_api_key=VENDOR_KEY,
-            assemblyai_api_key=VENDOR_KEY,
-        )
-
-
-def test_fake_provider_ignores_a_leftover_vendor_model() -> None:
-    # A `.env` copied from the old example says STT_PROVIDER=fake and STT_MODEL=nova-3.
-    settings = make_settings(DATABASE_URL, stt_provider="fake", stt_model="nova-3")
-
-    assert settings.stt_stream_model == "nova-3"
-
-
-def test_assemblyai_token_ttl_is_capped_at_the_vendor_limit() -> None:
-    # AssemblyAI's temporary token endpoint accepts expires_in_seconds from 1 to 600.
+@pytest.mark.parametrize("preset", ["assemblyai", "assemblyai-pro"])
+def test_assemblyai_token_ttl_is_capped_at_the_vendor_limit(preset: str) -> None:
+    # AssemblyAI's temporary token endpoint accepts expires_in_seconds from 1 to 600, whichever
+    # of its models the preset streams.
     accepted = make_settings(
         DATABASE_URL,
-        stt_provider="assemblyai",
+        stt_provider=preset,
         assemblyai_api_key=VENDOR_KEY,
         stt_token_ttl_seconds=600,
     )
     assert accepted.stt_token_ttl_seconds == 600
 
-    with pytest.raises(ValidationError, match="at most 600 when STT_PROVIDER=assemblyai"):
+    with pytest.raises(ValidationError, match=f"at most 600 when STT_PROVIDER={preset} "):
         make_settings(
             DATABASE_URL,
-            stt_provider="assemblyai",
+            stt_provider=preset,
             assemblyai_api_key=VENDOR_KEY,
             stt_token_ttl_seconds=601,
         )
@@ -201,7 +137,7 @@ def test_deepgram_token_ttl_keeps_its_wider_range() -> None:
     assert settings.stt_token_ttl_seconds == 3600
 
 
-@pytest.mark.parametrize("provider", ["deepgram", "assemblyai"])
+@pytest.mark.parametrize("provider", ["deepgram", "assemblyai", "assemblyai-pro"])
 def test_vendor_key_is_not_echoed_in_validation_errors(provider: str) -> None:
     with pytest.raises(ValidationError) as raised:
         make_settings(
@@ -224,24 +160,19 @@ def test_every_provider_has_a_registry_entry() -> None:
 
 
 @pytest.mark.parametrize(
-    ("provider", "model", "price"),
+    ("preset", "price"),
     [
-        ("fake", None, 0.0),
-        ("fake", "nova-3", 0.0),  # the fake provider costs nothing, whatever the model is called
-        ("assemblyai", None, 0.15),
-        ("assemblyai", "universal-streaming-multilingual", 0.15),
-        ("assemblyai", "universal-3-6-pro", 0.45),
-        ("deepgram", None, 0.462),
-        ("deepgram", "nova-2", None),  # no list price on file: unknown, not a guess
+        ("fake", 0.0),
+        ("assemblyai", 0.15),
+        ("assemblyai-pro", 0.45),
+        ("deepgram", 0.462),
     ],
 )
-def test_price_per_hour_comes_from_the_registry(
-    provider: str, model: str | None, price: float | None
-) -> None:
+def test_price_per_hour_comes_from_the_registry(preset: str, price: float) -> None:
+    # A model with no list price is null, never a guess: tests/test_stt_token.py.
     settings = make_settings(
         DATABASE_URL,
-        stt_provider=provider,
-        stt_model=model,
+        stt_provider=preset,
         deepgram_api_key=VENDOR_KEY,
         assemblyai_api_key=VENDOR_KEY,
     )
@@ -254,7 +185,6 @@ def test_price_per_hour_can_be_overridden() -> None:
     settings = make_settings(
         DATABASE_URL,
         stt_provider="deepgram",
-        stt_model="nova-2",
         deepgram_api_key=VENDOR_KEY,
         stt_price_per_hour_usd=0.348,
     )

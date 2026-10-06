@@ -10,12 +10,11 @@ from sqlalchemy.engine import make_url
 from roger_api import __version__
 from roger_api.config_calendar import CalendarSettings
 from roger_api.config_notes import NotesSettings
-from roger_api.domain import SttProvider
 
 # The vendor registry imports the token issuers, which log through roger_api.log. That module
 # (and stt_vendors.py, and services/stt_tokens.py) must import Settings only under TYPE_CHECKING:
 # a runtime import back into this module is a cycle that fails at startup.
-from roger_api.stt_vendors import STT_VENDORS, SttVendor
+from roger_api.stt_vendors import STT_PRESETS, STT_VENDORS, SttPreset, SttPresetId, SttVendor
 
 # The monorepo keeps one `.env` at its root (see `.env.example`). Missing files are ignored, so
 # deployments that pass real environment variables are unaffected.
@@ -60,13 +59,17 @@ class DatabaseSettings(BaseSettings):
 # here. The mixins are plain pydantic models with no model_config: Settings keeps the config above.
 class Settings(NotesSettings, CalendarSettings, DatabaseSettings):
     roger_api_token: SecretStr
-    stt_provider: SttProvider = "fake"
+    # A preset id (stt_vendors.STT_PRESETS): the vendor and its model, picked by this one line.
+    # Read the vendor from `stt_vendor` and the model from `stt_stream_model`, never from this.
+    stt_provider: SttPresetId = "fake"
     deepgram_api_key: SecretStr | None = None
     assemblyai_api_key: SecretStr | None = None
     stt_token_ttl_seconds: int = Field(default=30, ge=1, le=3600)
-    # None means the provider's default (stt_vendors.py); read `stt_stream_model`, not this.
-    stt_model: str | None = None
-    # None means the registry's list price for the provider and model; read
+    # Retired: the preset names the model. Kept only so a leftover non-blank `STT_MODEL` stops
+    # startup by name. Without the field, `extra="ignore"` drops it in silence and the API runs
+    # the preset's model while the `.env` says another (M3 bake-off configurations would lie).
+    stt_model: None = None
+    # None means the registry's list price for the preset's model; read
     # `stt_stream_price_per_hour_usd`, not this.
     stt_price_per_hour_usd: float | None = Field(default=None, ge=0)
     stt_language: str = "en"
@@ -95,13 +98,25 @@ class Settings(NotesSettings, CalendarSettings, DatabaseSettings):
             )
         return value
 
-    @field_validator("stt_model", "stt_price_per_hour_usd", mode="before")
+    @field_validator("stt_price_per_hour_usd", mode="before")
     @classmethod
     def _blank_is_unset(cls, value: object) -> object:
-        """`STT_MODEL=` or `STT_PRICE_PER_HOUR_USD=` in a `.env` arrives as an empty string."""
+        """`STT_PRICE_PER_HOUR_USD=` in a `.env` arrives as an empty string."""
         if isinstance(value, str) and not value.strip():
             return None
         return value
+
+    @field_validator("stt_model", mode="before")
+    @classmethod
+    def _stt_model_is_retired(cls, value: object) -> None:
+        # `STT_MODEL=` (blank) arrives as an empty string and counts as unset.
+        unset = value is None or (isinstance(value, str) and not value.strip())
+        if not unset:
+            presets = ", ".join(f"{name} ({row.model})" for name, row in STT_PRESETS.items())
+            raise ValueError(
+                "STT_MODEL is retired; delete it from .env. STT_PROVIDER names a preset, the "
+                f"vendor and its model together: {presets}"
+            )
 
     @field_validator("mcp_allowed_hosts", mode="before")
     @classmethod
@@ -112,41 +127,36 @@ class Settings(NotesSettings, CalendarSettings, DatabaseSettings):
 
     @model_validator(mode="after")
     def _vendor_settings_fit(self) -> Self:
-        provider = self.stt_provider
-        if provider == "fake":
+        preset = self.stt_provider
+        vendor = self.stt_vendor
+        if vendor.provider == "fake":
             return self
         key = self.stt_vendor_key
         if not (key and key.get_secret_value()):
-            raise ValueError(f"{provider.upper()}_API_KEY is required when STT_PROVIDER={provider}")
-        vendor = self.stt_vendor
+            raise ValueError(
+                f"{vendor.provider.upper()}_API_KEY is required when STT_PROVIDER={preset}"
+            )
         if self.stt_token_ttl_seconds > vendor.max_token_ttl_seconds:
             raise ValueError(
                 f"STT_TOKEN_TTL_SECONDS must be at most {vendor.max_token_ttl_seconds} when "
-                f"STT_PROVIDER={provider} (the vendor's limit for a temporary token)"
+                f"STT_PROVIDER={preset} (the vendor's limit for a temporary token)"
             )
-        for owner in STT_VENDORS.values():
-            prefix = owner.model_prefix
-            if (
-                owner.provider != provider
-                and prefix is not None
-                and self.stt_model
-                and self.stt_model.startswith(prefix)
-            ):
-                raise ValueError(
-                    f"STT_MODEL={self.stt_model} is a {owner.provider} model; remove STT_MODEL to "
-                    f"use {vendor.default_model} with STT_PROVIDER={provider}"
-                )
         return self
 
     @property
+    def stt_preset(self) -> SttPreset:
+        """The `STT_PRESETS` row `stt_provider` names: its vendor and model."""
+        return STT_PRESETS[self.stt_provider]
+
+    @property
     def stt_vendor(self) -> SttVendor:
-        """The registry entry of `stt_provider`."""
-        return STT_VENDORS[self.stt_provider]
+        """The registry entry of the preset's vendor (two presets may share one)."""
+        return STT_VENDORS[self.stt_preset.vendor]
 
     @property
     def stt_vendor_key(self) -> SecretStr | None:
-        """The API key of the `stt_provider` vendor. None for the fake provider."""
-        match self.stt_provider:
+        """The API key of the preset's vendor. None for the fake provider."""
+        match self.stt_preset.vendor:
             case "deepgram":
                 return self.deepgram_api_key
             case "assemblyai":
@@ -156,8 +166,8 @@ class Settings(NotesSettings, CalendarSettings, DatabaseSettings):
 
     @property
     def stt_stream_model(self) -> str:
-        """The model the desktop asks the vendor for: STT_MODEL, else the provider's default."""
-        return self.stt_model or self.stt_vendor.default_model
+        """The model the desktop asks the vendor for: the preset's."""
+        return self.stt_preset.model
 
     @property
     def stt_stream_price_per_hour_usd(self) -> float | None:

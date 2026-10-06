@@ -79,18 +79,24 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 app.state.stt_token_issuer = issuer
                 app.state.llm_runtime = llm_runtime
                 app.state.calendar_runtime = calendar_runtime
+                # Which preset made a meeting's text, until each meeting's uploaded stt_usage row
+                # names it. `stt_provider` is the vendor, as in the token response: STT_PROVIDER
+                # itself is the preset.
                 logger.info(
                     "api_started",
                     version=settings.app_version,
                     app_env=settings.app_env,
-                    stt_provider=settings.stt_provider,
+                    stt_preset=settings.stt_provider,
+                    stt_provider=settings.stt_vendor.provider,
                     stt_model=settings.stt_stream_model,
                     stt_price_per_hour_usd=settings.stt_stream_price_per_hour_usd,
+                    stt_token_ttl_seconds=settings.stt_token_ttl_seconds,
                 )
                 if settings.stt_stream_price_per_hour_usd is None:
                     logger.warning(
                         "stt_price_unknown",
-                        stt_provider=settings.stt_provider,
+                        stt_preset=settings.stt_provider,
+                        stt_provider=settings.stt_vendor.provider,
                         stt_model=settings.stt_stream_model,
                         hint="Set STT_PRICE_PER_HOUR_USD so the desktop can meter cost",
                     )
