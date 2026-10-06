@@ -112,7 +112,7 @@ Supporting checks, run before the real calls:
 | Meetings with notes and no lines | The uploader stays the only code that creates meetings in Postgres. A pending meeting is created when it holds a line, or when it has ended and has notes; a notes-only meeting is created and ended in one pass. Neither the uploader nor `CaptureService` deletes a lineless meeting that has notes (a `hasNotes` check injected into every delete site). `NotesSync` never creates a meeting: while its meeting is pending it waits. | `NotesSync` creates the meeting on `404` | M1's invariant (`TranscriptUploader.ts`, `syncMeeting`): Postgres hears of a meeting only once it has content, or MCP's "latest meeting" is a 0-line one and a meeting the uploader never ends stays "recording". "Ended and has notes" keeps that: no meeting is in Postgres with no line while it is still recording. |
 | When notes generate | After Stop, as a pending intent in `notes.sqlite` with a run id made up front. Main runs it once the meeting's lines and notes are uploaded, exactly once, across reloads and restarts. Template: the one last picked for a meeting with the same title; else title words (standup, daily, stand-up: standup; 1:1, 1-1, one on one: 1:1; client, demo, discovery, proposal, kickoff: client call); else, once M5 lands, any attendee outside the user's email domain: client call; else Roger asks at Stop with the four templates (preference "When Roger cannot tell: ask", or "use General"). A preference turns auto-generate off. | Renderer state after Stop; always General | Renderer state is lost on a reload (M2 reloads after `render-process-gone`), on quit right after Stop, and while the API is offline: the user would get no notes and no message. Every manual start is "Untitled meeting" until M5's titles, so a title rule alone would pick General on every exit-check call. |
 | Generate inputs | Before a run starts, main uploads the meeting's waiting lines (M2-T3's unsynced query, which skips echo-suppressed lines and lines still held) and flushes its dirty user and AI notes through `NotesSync`. If either cannot finish, no run starts: the intent waits and the panel says why. The request carries `user_notes_version` and `ai_base_version`; both go on the run, and a stale one is a `409`. | Generate from whatever Postgres holds | Notes typed in the last seconds of a call, or offline, would be missing from the prompt, and they drive the 2-minute target. |
-| Saving at quit | The editor saves on `pagehide` and `beforeunload` as well as blur and unmount. On `before-quit`, main asks each window to flush its editors, waits for each ack or 1 s, then closes `notes.sqlite`. | Flush on unmount only | React does not unmount on Cmd-Q: up to 400 ms of typing would be lost while the UI says "saved on this Mac". |
+| Saving at quit | The editor saves on `pagehide` and `beforeunload` as well as blur and unmount. On quit, main asks each window to flush its editors, waits for each ack or 1 s, then closes `notes.sqlite`. It runs as a quit hook in the landed `RecordingLifecycle` (`main/lifecycle.ts`, which owns `before-quit` since the cost guards landed): P2-F1 turns its quit cleanup into an ordered list of bounded hooks, and this one runs after the recording stops and before the transcript store closes. | Flush on unmount only | React does not unmount on Cmd-Q: up to 400 ms of typing would be lost while the UI says "saved on this Mac". |
 | App shell | M4 owns it as M4-S1 to M4-S4b, in waves 1 to 3 of `phase-2-build-order.md` (the "SHELL" of M2, M3 and M5; M5's SHELL-0 is S1's `app:navigate` plus S2's `PreferencesStore`). Scope is the union of every Phase 2 plan's needs (table below). | Each milestone grows its own screens; SHELL inside M2 | C7: exactly one owner. The meeting page is most of the shell and M4 fills most of it. D6. |
 | Routing | A small hash router (`#/`, `#/meetings/:id`, `#/settings`, `#/setup`) in the shell, with tests | `react-router` | Four routes; no new dependency. A hash survives `file://` in the packaged app and a renderer reload. |
 | Theme | `renderer/src/theme/tokens.css` holds every colour as a CSS variable, light and dark. Dark follows the system unless the `theme` preference forces one (`data-theme` on `<html>`). A test fails on any literal colour outside `tokens.css`. | Keep the literal colours in `styles.css` | C7 and the global rule: colours only from tokens, both themes. A forced theme also lets QA shoot light on a dark-mode Mac. |
@@ -304,8 +304,9 @@ Stop or Generate ─IPC─▶ NotesGenerator: pending_generate row
   answers, marks the note dirty with a new `revision_id`, and `NotesSync` uploads 1.5 s after the
   last save, backing off from 2 s to 30 s while the API is away. Dirty notes upload at next launch.
 - The editor also saves on blur, unmount, `pagehide` and `beforeunload`, and when main asks
-  (`notes:flush-request`). Main's `before-quit` handler sends that request to every window, waits
-  for each ack or 1 s, then closes `notes.sqlite`.
+  (`notes:flush-request`). Main's quit hook (`[slot M4-T16 quit]`, one entry of the quit-hook list
+  in `RecordingLifecycle`, P2-F1) sends that request to every window, waits for each ack or 1 s,
+  then closes `notes.sqlite`.
 - A note whose meeting is still `pending` in `roger.sqlite` is not sent; its state is "Waiting for
   the meeting to upload", and every uploader status event re-checks it. A `404` on `PUT` keeps the
   note dirty in that state and calls `uploader.markMeetingMissing(id)` (the uploader's own repair:
@@ -448,11 +449,15 @@ App shell (desktop):
   keep working:
   "New note" in the sidebar starts capture and opens the meeting; M1's `StatusPanel` and
   `TranscriptView` move into the meeting page regions in S4 until M2-T20 and M3-T9 replace them.
+  The frame keeps what `App.tsx` shows since the cost guards landed: the stop notice
+  (`CaptureStatus.notice`, "Stopped at 14:32 because the Mac went to sleep.") above every page,
+  and `useCapture`'s status re-read on window focus; `StatusPanel` keeps the meter line.
 - [ ] **M4-S2. Theme tokens and preferences.** M. Depends on: none.
   Owns `renderer/src/theme/tokens.css`, `renderer/src/theme/useTheme.ts`,
   `renderer/src/theme/noLiteralColours.test.ts`, `renderer/src/styles.css` (literal colours become
-  tokens), `shared/preferences.ts` (the registry types plus keys `theme`, `notes.autoGenerate`,
-  `notes.whenUnsure`; other milestones register theirs from their own files),
+  tokens; the landed `.notice` rule for the stop notice stays, on tokens), `shared/preferences.ts`
+  (the registry types plus keys `theme`, `notes.autoGenerate`, `notes.whenUnsure`; other
+  milestones register theirs from their own files),
   `main/preferences/PreferencesStore.ts`, `main/preferences/preferences-ipc.ts`,
   `shared/ipc/prefs.ts` with its bridge and preview fake (`prefs:get-all`, `prefs:set`,
   `prefs:changed`), `[slot M4-S2]` in `main/index.ts`. The token set covers every plan's needs
@@ -558,8 +563,9 @@ Desktop:
   comes from P2-F1's `main/ipc/trust.ts`), the three `[slot M4-T16 …]` blocks in `main/index.ts`
   (wiring: notes store, sync, generator with S2's
   `notes.autoGenerate` and `notes.whenUnsure`, `hasNotes` into the uploader and `CaptureService`,
-  `onMeetingMissing` into `NotesSync`, the quit guard). Other tasks edit other slots of
-  `index.ts`.
+  `onMeetingMissing` into `NotesSync`, the quit guard as a hook in the lifecycle's quit-hook list,
+  before `[slot M2-T4 quit]`). Other tasks edit other slots of `index.ts`; nobody adds a
+  `before-quit` listener of their own (`main/lifecycle.ts` holds the quit).
 - [ ] **M4-T17. Notes editor.** M. Depends on: T13, T4 (fixture), T21a (contract commit).
   Owns `renderer/src/notes/NoteEditor.tsx`, `citationNode.ts`, `CitationChip.tsx`,
   `useNoteDocument.ts`, `debouncedSaver.ts` (blur, unmount, `pagehide`, `beforeunload`, flush
@@ -634,7 +640,7 @@ Desktop (`apps/desktop/src/`, vitest under Node; components are checked in the b
 | SSE parser | `main/api/sse.test.ts`: "parses events across any byte split", "handles CRLF and multi-line data", "ignores comments and pings" |
 | Stream registry | `main/notes/LlmStreams.test.ts`: "cancel aborts the fetch and asks the API to cancel the run", "forwards events in order to the requesting window only", "closing the window aborts its streams", "a stream that ends with no done or error is reported as dropped with its run id" |
 | Generate after Stop | `main/notes/NotesGenerator.test.ts`: "Stop with auto-generate on writes one pending row with a run id", "waits while lines are waiting and reports the count", "an echo-suppressed line does not block generate", "flushes dirty user and AI notes before generating", "does not start while notes cannot upload and says why", "sends both versions with the request", "a pending generate survives a restart and fires exactly once", "a retry re-sends the same run id", "a stream that ends without done polls the run and loads the notes", "done updates notes.sqlite through applyServerNote", "asks for a template when no rule applies" |
-| IPC and quit | `main/notes/notes-ipc-validation.test.ts`: "refuses oversized docs, bad ids, unknown kinds and over-long chat text"; `main/notes/notes-ipc.test.ts`: "ignores untrusted senders", "a dropped chat stream polls its run and reloads the thread"; `main/notes/notesQuitGuard.test.ts`: "before-quit waits for each window's flush ack or 1 s, then closes notes.sqlite" |
+| IPC and quit | `main/notes/notes-ipc-validation.test.ts`: "refuses oversized docs, bad ids, unknown kinds and over-long chat text"; `main/notes/notes-ipc.test.ts`: "ignores untrusted senders", "a dropped chat stream polls its run and reloads the thread"; `main/notes/notesQuitGuard.test.ts`: "the quit hook waits for each window's flush ack or 1 s, then closes notes.sqlite" |
 | Editor logic | `renderer/src/notes/debouncedSaver.test.ts`: "saves 400 ms after the last edit", "flushes on blur, unmount, pagehide and beforeunload", "answers a flush request from main after the save lands"; `saveStatus.test.ts`: "moves through saved on this Mac, waiting for the meeting, syncing, synced, offline and conflict"; `citationNode.test.ts`: "the API's fixture passes Node.fromJSON and doc.check() in the editor schema", "a list item without a paragraph fails the check" |
 | AI notes panel logic | `renderer/src/notes/aiNotesStream.test.ts`: "builds sections and items in order", "from_notes events build the closing list", "keeps partial notes with a banner after an error", "done replaces the stream view with the saved doc"; `aiNotesActions.test.ts`: "asks before regenerating AI notes edited since their run", "restore previous notes puts the replaced doc back as a new version", "shows the waiting state from the pending row" |
 | Chat logic | `renderer/src/chat/chatStream.test.ts`: "deltas append and citation events turn refs into chips", "unknown refs stay text until done", "an error keeps the partial answer and offers retry" |

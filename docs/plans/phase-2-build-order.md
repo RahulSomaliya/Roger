@@ -1,6 +1,7 @@
 # Phase 2 build order (M2 to M5)
 
-**Status:** draft for the owner's sign-off · **Owner:** Rahul · **Written:** 2026-10-06
+**Status:** draft for the owner's sign-off · **Owner:** Rahul · **Written:** 2026-10-06 ·
+**Updated:** 2026-10-06, after `m1-assemblyai` merged into `phase-2` (what changed: section 9.2)
 
 This is the integration plan that parallel coding agents run, each in its own git worktree. It
 sits above the four milestone plans:
@@ -18,22 +19,45 @@ under `apps/api/src/roger_api/` unless they start with `tests/` (`apps/api/tests
 
 M0 is closed (2026-10-05). M1 is "in review" and needs three things.
 
-1. **Land `m1-assemblyai` on `main`.** It holds a recorded owner decision of 2026-10-06:
-   AssemblyAI Universal-Streaming replaces Deepgram as the M1 vendor. Its 6 commits add the API
-   token issuer, the desktop adapter, its message parser, `AudioFrameSizer`, and shared
-   `stt/websocket.ts` and `stt/json.ts` helpers. The worktree `scratchpad/wt-aai` still has 2
-   uncommitted files (`AssemblyAiSpeechToText.ts` and its test). The session that owns it commits
-   them, `make check` passes, Rahul merges, then `phase-2` is rebased on `main`. No phase-2 agent
-   touches that worktree. The M3 tasks it overlaps were rescoped as deltas on top of it (M3-T1,
-   M3-T5, M3-T18, see section 9).
+1. **`m1-assemblyai`: merged into `phase-2` on 2026-10-06 (merge commit a3be3ee), not yet on
+   `main`.** It holds the owner decisions of 2026-10-06: AssemblyAI Universal-Streaming English
+   replaces Deepgram as the vendor (Deepgram stays as the second adapter), the STT layer must be
+   very easy to switch between providers, and opening and closing live audio sessions must be
+   very conservative about cost (AssemblyAI bills every second a session is open, silent or not,
+   and a meeting opens two). Its 38 commits add, on top of the plans as first written:
+   - API: the AssemblyAI token issuer (with the 3-hour session cap asked for explicitly), the
+     vendor registry `roger_api/stt_vendors.py` (issuer, default model, model prefix, token TTL
+     limit, list price per stream-hour by model), and `stream.price_per_hour_usd` in
+     `/v1/stt/token`.
+   - Desktop: one websocket lifecycle in `src/main/stt/core/` (`SttProtocol`, `SttConnection`,
+     `WebSocketSpeechToText`) that every vendor runs on; the AssemblyAI and Deepgram protocols on
+     it; `stt/registry.ts`; a conformance suite (`stt/conformance.test.ts`,
+     `stt/testing/{conformanceVendors,fakeVendorServer}.ts`) that fails any registered vendor that
+     leaves a socket open.
+   - Cost guards, G1 to G7: `costGuards.ts` (every number, validated, a refused value blocks
+     Start); a failed or ended source closes its session at once; a source with no chunk for 30 s
+     is `paused` and reopens with a fresh token and at most 3 s of held audio; vendor failures are
+     `retrying` with a doubling backoff; every open passes `capture/SttOpenBudget.ts` (4 a minute,
+     30 a meeting); `lifecycle.ts` stops the recording on quit (5 s bound), sleep, window close,
+     renderer crash and reload; auto-stop after 15 minutes without a final line or at 4 hours
+     (`capture/stopReasons.ts`); AssemblyAI's `inactivity_timeout`; a meter and a stop notice in
+     `CaptureStatus`; local SQLite migration 3, `stt_usage`.
+   - CLAUDE.md architecture rule 9: every vendor connection goes through the shared core and the
+     open budget.
+
+   Every Phase 2 task builds on it; none re-builds or fights it. The M2 and M3 tasks it overlaps
+   were rescoped (section 9.2). Rahul merges `m1-assemblyai` into `main` when he closes M1
+   (`main` is its ancestor, so the merge is clean); the phase gate carries it to `main` otherwise.
 2. **M2-T1's Mac check** (wave 0). On the installed app (`make install-desktop`): Start, grant,
    quit, relaunch, Start again. There must be no new prompt and call audio must be present. This
    is the field report from today ("can't detect system audio", "asks for the mic every
    restart"). The `tccd` log shows those were ad-hoc-signed builds, from before commit 30e137c
    (stable signing identity). T1 proves the fix, or finds the next cause.
 3. **The M1 real call.** First, opt AssemblyAI out of training in its dashboard (owner, free).
-   Then hold a 30-minute Meet call on the installed app with `STT_PROVIDER=assemblyai` on the API,
-   and ask Claude through MCP to quote a line. Record it in the M1 exit check log.
+   Then hold a 30-minute Meet call on the installed app (built from `phase-2` or `m1-assemblyai`)
+   with `STT_PROVIDER=assemblyai` on the API, and ask Claude through MCP to quote a line. Record it
+   in the M1 exit check log, with the call's `stt meter at stop` log line (sessions opened,
+   connected time, estimated cost).
 
 Until M2-T10 lands, call audio still goes through Electron's `desktopCapturer`. It needs Screen &
 System Audio Recording turned on for Roger.
@@ -52,6 +76,7 @@ its owner ("Stub from P2-F1; owned by M4-T13").
 | API router, service, model, settings and migration layout | **P2-F2** | Router stubs registered once, lifespan hooks, per-domain model modules, the fixed Alembic chain, every Phase 2 error class, test-database isolation and the contract skeleton |
 | Tooling, the Swift helper build step, new dependencies | **P2-F3** (Make targets, scripts, configs, dependencies, lockfile); **M2-T7** (the Swift sources, `scripts/build-native.sh` and the Darwin `make check` wiring) | One lockfile change and one Makefile change for all of Phase 2 |
 | Test fixtures | M2-T3 (`test/fixtures/backup/`, moved from M2-T15 so M3-T12 can start early), M2-T10 (`test/fixtures/fake-roger-audio.mjs`), M4-T4 then M4-T8 (`apps/api/tests/fixtures/ai_notes_doc.json`), M5-T2 (`tests/fixtures/calendar/`), M3-T5 (`stt/assemblyai/fixtures/`), P2-F1 (`preview/fakes/*` stubs), M4-S3 (preview scenarios and fixtures) | Each fixture has one writer; the tests that read it are listed in the owning plan |
+| STT layer and cost guards (landed, `m1-assemblyai`) | Not a Phase 2 task. Later edits are owned per file in section 3.1: `stt/core/*`, `stt/conformance.test.ts` and `stt/testing/*` (M3-T18, T4a, T5, M2-T6, M3-T15), `stt/registry.ts` (M3-T15), `costGuards.ts` (M3-T20), `lifecycle.ts` (P2-F1, M2-T12, M2-T18, M5-T11), `capture/stopReasons.ts` (M2-T12, M2-T17b), `stt_vendors.py` (M3-T1, T3, T14) | The shared lifecycle every vendor runs on, the registries on both sides, the conformance suite, `costGuards.ts`, `capture/SttOpenBudget.ts`, `capture/stopReasons.ts`, `lifecycle.ts`, the meter and local migration 3 (`stt_usage`). Every task keeps their tests green; a vendor is one protocol file, one issuer, one line per registry and one conformance entry |
 
 ### P2-F1. Desktop seams (S/M, no dependencies)
 
@@ -61,7 +86,12 @@ its owner ("Stub from P2-F1; owned by M4-T13").
   `notes.ts`, `chat.ts`, `calendar.ts`, `loginItem.ts`, and `prompt.ts` (the prompt panel's own
   API; it is not part of `RogerApi`). After F1 nobody edits `shared/ipc.ts`.
   `shared/ipc.test.ts` asserts that channel names and keys are unique across features, because a
-  duplicate key in a spread overwrites another channel with no error.
+  duplicate key in a spread overwrites another channel with no error. The barrel keeps exporting
+  `PCM_SAMPLE_RATE` and `PCM_ENCODING`: `CaptureSession`, `CaptureService`, `stt/streamSettings.ts`
+  and the AssemblyAI protocol import them from `shared/ipc`. `shared/capture.ts` does not move; its
+  landed status fields (`streams` with `paused` and `retrying`, `streamMessages`, `meter`,
+  `notice`) come through unchanged, and `preview/fakes/capture.ts` builds every status from
+  `idleCaptureStatus()` so the fakes always carry them.
 - `preload/index.ts` composes `preload/bridges/<feature>.ts` with the helpers in
   `preload/bridge.ts`. After F1 nobody edits `preload/index.ts`. `renderer/src/roger.d.ts` does
   not change.
@@ -74,10 +104,22 @@ its owner ("Stub from P2-F1; owned by M4-T13").
   trusted-sender check".
 - `main/api/http.ts`: `apiRequest(method, path, body)` for GET, POST, PUT and DELETE, plus
   `toApiError` and `authHeaders`. `ApiClient.ts` is rebuilt on top of it with no change in
-  behaviour. Feature clients live in their own files: `api/vocabularyClient.ts` (M3-T8),
-  `api/notesClient.ts` (M4-T14), `api/streamRequest.ts` (M4-T15) and `api/calendarClient.ts`
-  (M5-T6). This replaces M4-T13's ApiClient prep. DELETE is included because M5-T6 needs it.
-  After F1, only M3-T4a (the token type) and M5-T5 (the create payload) edit `ApiClient.ts`.
+  behaviour (the token response type keeps `price_per_hour_usd` optional, as an older API omits
+  it). Feature clients live in their own files: `api/vocabularyClient.ts` (M3-T8),
+  `api/sttUsageClient.ts` (M3-T19b), `api/notesClient.ts` (M4-T14), `api/streamRequest.ts`
+  (M4-T15) and `api/calendarClient.ts` (M5-T6). This replaces M4-T13's ApiClient prep. DELETE is
+  included because M5-T6 needs it. After F1, only M3-T4a (the token type) and M5-T5 (the create
+  payload) edit `ApiClient.ts`.
+- **The quit sequence** (`main/lifecycle.ts`, landed): `RecordingLifecycle` owns `before-quit` and
+  `will-quit` since the cost guards landed (stop the recording within `quitStopTimeoutMs`, then a
+  synchronous `beforeExit` that stops the uploader and closes the store, then `app.quit()`). F1
+  turns `beforeExit` into an ordered list of quit hooks, each awaited with its own bound and each
+  failure logged, so M4-T16's notes flush (asynchronous, up to 1 s) runs after the stop and before
+  M2-T4's uploader stop and store close; with a test in `lifecycle.test.ts` (order, a hook that
+  throws or hangs still quits). Nobody adds a `before-quit` listener of their own.
+- **Conformance stays green.** F1 moves no file under `src/main/stt/`, `costGuards.ts`,
+  `capture/SttOpenBudget.ts` or `capture/stopReasons.ts`. Its gate includes the conformance suite,
+  `costGuards.test.ts` and `lifecycle.test.ts` unchanged except for the quit-hook cases.
 - `main/index.ts` gets named **slots**, with no change in behaviour. Each slot is a marker comment
   line, `// [slot <task>] <what>`, followed by a blank line. A task inserts its block under its
   own marker and never moves a marker. Two tasks that edit different slots merge cleanly, because
@@ -93,39 +135,52 @@ its owner ("Stub from P2-F1; owned by M4-T13").
      `CrashRecovery`.
   6. `[slot M4-T16 notes store]` creates `notes.sqlite`. It sits before the uploader because the
      uploader and capture need `hasNotes`.
-  7. `[slot M2-T4 runtime]` today's API client, uploader, capture service and capture IPC.
+  7. `[slot M2-T4 runtime]` today's API client, uploader, capture service and capture IPC, with
+     the cost-guard wiring as it is today: `config.costGuards` into `createSpeechToText` and
+     `CaptureService`, `config.errors` into the startup error (a refused guard blocks Start), and
+     the `RecordingLifecycle` with `watchApp`.
   8. `[slot M4-S1]` navigation and the app menu.
   9. `[slot M4-S4b]` meetings IPC.
   10. `[slot M3-T8]` vocabulary IPC.
   11. `[slot M4-T16 notes]` notes and chat IPC, the generator and the sync.
   12. `[slot M5-T9c]` the calendar runtime and the start-request enricher.
-  13. Window creation (today's lines).
+  13. Window creation (today's lines, `watchWindow(lifecycle, window)` included).
   14. `[slot M5-T11 lifecycle]` the tray, the login item, `activate`, and today's
       `window-all-closed` handler, which moves into this slot.
-  15. Inside `before-quit`: `[slot M4-T16 quit]` (flush notes) before `[slot M2-T4 quit]` (today's
-      stop, uploader stop and store close).
+  15. In the lifecycle's quit-hook list (see "The quit sequence" above): `[slot M4-T16 quit]`
+      (flush notes) before `[slot M2-T4 quit]` (today's uploader stop and store close; the stop
+      itself is `RecordingLifecycle`'s).
 
-  M2's own features (T10, T11, T14b, T15, T16, T17a, T17b, T18, T19) register through the slots
-  that M2-T4 makes in `capture/createCaptureRuntime.ts`, not in `index.ts`.
+  M2's own features (T6, T10, T11, T14b, T15, T16, T17a, T17b, T18, T19) and M3-T19b's usage
+  uploader register through the slots that M2-T4 makes in `capture/createCaptureRuntime.ts`, not
+  in `index.ts`.
 
 ### P2-F2. API seams (M, no dependencies)
 
 - **Routers.** Stub `routers/vocabulary.py`, `note_templates.py`, `notes.py`, `notes_runs.py`,
-  `chat.py` and `calendar.py`, each with an empty `router = APIRouter()`. All of them are included
-  in `app.py` once. After F2, only M3-T1 edits `app.py` (the `api_started` fields).
-- **Lifespan hooks.** `app.py` enters `open_llm_runtime(settings)` (stub in `services/llm_runs.py`,
-  owned by M4-T7) and `open_calendar_runtime(settings)` (stub in `services/calendar/runtime.py`,
-  owned by M5-T3), and stores both on `app.state`. **Rule:** a feature's FastAPI getters and `Dep`
-  aliases live in its own service module, never in `dependencies.py`. Nobody edits
-  `dependencies.py` in Phase 2.
-- **Models.** Stub modules `db/models_vocabulary.py` (M3-T2), `db/models_notes.py` (M4-T1) and
-  `db/models_calendar.py` (M5-T1), imported at the end of `db/models.py` so that Alembic and the
-  test truncation see them. Only M5-T1 edits `db/models.py` afterwards (the new `Meeting` columns).
-- **The Alembic chain** (section 2): three no-op revisions with fixed ids. `test_migrations.py`
-  gains `test_alembic_has_one_head` and `test_revision_chain_is_fixed`.
+  `chat.py`, `calendar.py` and `stt_usage.py` (M3-T19a), each with an empty
+  `router = APIRouter()`. All of them are included in `app.py` once. After F2, only M3-T1 edits
+  `app.py` (the `api_started` fields).
+- **Lifespan hooks.** `app.py` already enters `open_stt_token_issuer(settings)` (from
+  `stt_vendors.py`, landed); F2 adds `open_llm_runtime(settings)` (stub in
+  `services/llm_runs.py`, owned by M4-T7) and `open_calendar_runtime(settings)` (stub in
+  `services/calendar/runtime.py`, owned by M5-T3) beside it, and stores both on `app.state`.
+  **Rule:** a feature's FastAPI getters and `Dep` aliases live in its own service module, never in
+  `dependencies.py`. Nobody edits `dependencies.py` in Phase 2.
+- **Models.** Stub modules `db/models_vocabulary.py` (M3-T2), `db/models_notes.py` (M4-T1),
+  `db/models_calendar.py` (M5-T1) and `db/models_stt_usage.py` (M3-T19a), imported at the end of
+  `db/models.py` so that Alembic and the test truncation see them. Only M5-T1 edits
+  `db/models.py` afterwards (the new `Meeting` columns).
+- **The Alembic chain** (section 2): four no-op revisions with fixed ids (`0002` to `0005`).
+  `test_migrations.py` gains `test_alembic_has_one_head` and `test_revision_chain_is_fixed`.
 - **Settings.** `config.py` composes `Settings` from two pydantic mixins with no `model_config`:
   `NotesSettings` in `config_notes.py` (M4-T2) and `CalendarSettings` in `config_calendar.py`
-  (M5-T1). M3-T1 keeps owning the STT fields in `config.py`.
+  (M5-T1). The STT fields stay in `config.py`, owned by M3-T1, with the landed registry wiring
+  untouched: `config.py` imports `STT_VENDORS` from `stt_vendors.py`, while `stt_vendors.py`,
+  `services/stt_tokens.py` and `log.py` import `Settings` only under `TYPE_CHECKING` (a runtime
+  import back is an import cycle that fails at startup; the comments at each site say so). The
+  mixin files import neither. `test_config.py`'s STT cases and `test_stt_token.py` stay green
+  unchanged.
 - **Errors.** `errors.py` gains every Phase 2 error class:
   - `LlmProviderError` (502 `llm_provider_error`)
   - `EmptyMeetingError` (422 `empty_meeting`)
@@ -135,15 +190,19 @@ its owner ("Stub from P2-F1; owned by M4-T13").
 
   Each has an envelope test.
 - **Domain types.** `domain.py` gains `NoteKind`, `RunKind`, `RunStatus` and `StartSource` (all
-  five values, `call_detected` included).
+  five values, `call_detected` included). It keeps the landed `SttProvider` (the vendor ids;
+  M3-T14 adds `soniox` in wave 3).
 - **Contract skeleton.** In `docs/api-contract.md`: the title loses "(M1)". The error table gains
   the five codes above. The 409 row is generalised and "This is the only `409`" is deleted. Each
   route's 409s are written in that route's section by its owner. Empty sections are added, each
-  with its owner: Vocabulary (M3-T2), Note templates (M4-T3), Notes (M4-T6), Notes runs and
-  streaming (M4-T8), Chat (M4-T10) and Calendar (M5-T3). The Database section gets one line per
-  table group: M3-T2, M4-T1 and M5-T1.
+  with its owner: Vocabulary (M3-T2), STT usage (M3-T19a), Note templates (M4-T3), Notes (M4-T6),
+  Notes runs and streaming (M4-T8), Chat (M4-T10) and Calendar (M5-T3). The Database section gets
+  one line per table group: M3-T2, M3-T19a, M4-T1 and M5-T1. The token section (provider table,
+  `price_per_hour_usd`, landed) is left as it is for M3-T1.
 - **`.env.example`.** Empty sections, each filled by its owner: Notes and AI (M4-T2), Calendar
-  (M5-T1) and, in the desktop part, Benchmark (M3-T13).
+  (M5-T1) and, in the desktop part, Benchmark (M3-T13). The landed STT section (M3-T1's next) and
+  the desktop cost-guard block (`ROGER_STT_*` and the other guards; `costGuards.test.ts` fails if
+  a guard is missing from it or from the README table; M3-T20 adds its three) stay as they are.
 - **`tests/conftest.py`.** It creates the database named in `TEST_DATABASE_URL` when it is
   missing, connecting through the `postgres` maintenance database. It refuses any database whose
   name does not start with `roger_test`, so a worktree never truncates the dev database `roger`.
@@ -200,14 +259,19 @@ revisions, so every worktree has the whole chain and one head from the start. Th
 | `0002` | `0002_vocabulary_terms.py` | `0001` | M3-T2 | `vocabulary_terms` |
 | `0003` | `0003_notes.py` | `0002` | M4-T1 | `meeting_notes`, `llm_runs`, `chat_messages` |
 | `0004` | `0004_calendar.py` | `0003` | M5-T1 | `pgcrypto`, `calendar_connections`, `meeting_attendees`, the new `meetings` columns with the five-value `start_source` check |
+| `0005` | `0005_stt_usage.py` | `0004` | M3-T19a | `stt_usage`, one row per workspace and meeting, no foreign key to `meetings` |
 
 This replaces M3's `apps/api/migrations/versions/0002_...` (wrong folder), M4's unnamed revision,
 M5's `0005_calendar`, and every "down_revision is whatever head phase-2 has at merge" note.
 
 **Local SQLite.**
 
-- `roger.sqlite` (`SqliteTranscriptStore.MIGRATIONS`): migration 3 is M2-T3's and migration 4 is
-  M5-T5's (`meetings.start_source`, `meetings.calendar_event_json`). M5-T5 starts after M2-T3.
+- `roger.sqlite` (`SqliteTranscriptStore.MIGRATIONS`): migration 3 is taken by M1's cost guards
+  (`stt_usage`, landed with `m1-assemblyai`). Migration 4 is M2-T3's, migration 5 is M5-T5's
+  (`meetings.start_source`, `meetings.calendar_event_json`) and migration 6 is M3-T19b's
+  (`stt_usage.synced_at`, `stt_usage.gated_ms`). Each starts after the one before has merged
+  (waves 1, 4 and 5). A migration test winds a file back to the schema before it, as the landed
+  `stt_usage` test does.
 - `notes.sqlite` (M4-T14) and `calendar.sqlite` (M5-T7) have their own `user_version` and take no
   number from this list.
 
@@ -221,16 +285,19 @@ the task depends on an owner decision.
 
 **Wave 0. Foundations, the M1 close, pure modules**
 
+Merged on `phase-2` by 2026-10-06: M2-T1, M2-T14a, M3-T6a, M4-T4, M4-T5, M4-T21a, M5-T8, P2-F3,
+and `m1-assemblyai` (a3be3ee). Still to run: P2-F1, P2-F2 and M3-T18 (M2-T0 is the human spike).
+
 | Task | Size | Owns | Needs |
 | --- | --- | --- | --- |
-| P2-F1 | S/M | see section 1 | `m1-assemblyai` on main |
-| P2-F2 | M | see section 1 | `m1-assemblyai` on main (it edits `config.py` and `app.py` too) |
+| P2-F1 | S/M | see section 1 (also `main/lifecycle.ts` and its test: the quit hooks) | `m1-assemblyai` (merged into `phase-2`) |
+| P2-F2 | M | see section 1 | `m1-assemblyai` (merged; it edits `config.py` and `app.py` too) |
 | P2-F3 | S | see section 1 | OD-8 |
 | M2-T0 | S | throwaway branch, never merged; the result goes into M2 D2 | human (Mac) |
 | M2-T1 | S | `main/signing.ts`, `main/settingsPanes.ts` (with tests), the M1 exit log entry | (Mac) |
 | M2-T14a | S | `main/capture/echo/EchoFilter.ts` (with test): pure, no Electron imports | - |
 | M3-T6a | S | `main/stt/LatencyMeter.ts` (with test) | - |
-| M3-T18 | S | `main/stt/AudioFramer.ts` (with test). It replaces `stt/assemblyai/AudioFrameSizer.ts` (deleted in M3-T5) | - |
+| M3-T18 | M | Pacing in the STT core: `stt/core/AudioPacer.ts` (with test), `audioPacing` in `stt/core/SttProtocol.ts` and the paced queue in `stt/core/SttConnection.ts`, `stt/assemblyai/AudioFrameSizer.ts` moved unchanged to `stt/core/` (with its test), the `audioPacing` lines in the AssemblyAI and Deepgram protocol files, a conformance case for every vendor, one line of the README's vendor checklist | - |
 | M4-T4 | S | `services/notes_markdown.py`, `tests/fixtures/ai_notes_doc.json`, `tests/test_notes_markdown.py` | - |
 | M4-T5 | M | `services/notes_prompt.py`, `notes_protocol.py`, `citations.py` (with tests) | - |
 | M4-T21a | S | `renderer/src/transcript/transcriptNavigator.ts` (the contract commit, with test) | - |
@@ -240,12 +307,12 @@ the task depends on an owner decision.
 
 | Task | Size | Owns |
 | --- | --- | --- |
-| M2-T2 | M | `shared/capture.ts`, `shared/ipc/capture.ts`, `shared/ipc/setup.ts`, the `capture` and `setup` bridges and fakes, `main/config.ts`, `main/ipc-validation.ts` (with tests) |
-| M2-T3 | M | `main/store/*` except the sync statements; `test/fixtures/backup/` (a small `roger.sqlite` plus WAV and m4a chunks with a gap, and the script that makes them) |
+| M2-T2 | M | `shared/capture.ts` (adds `offline`; keeps every landed status field), `shared/ipc/capture.ts`, `shared/ipc/setup.ts`, the `capture` and `setup` bridges and fakes, `main/config.ts`, `main/ipc-validation.ts` (with tests) |
+| M2-T3 | M | `main/store/*` except the sync statements, with local migration 4; `test/fixtures/backup/` (a small `roger.sqlite` plus WAV and m4a chunks with a gap, and the script that makes them) |
 | M2-T7 | M | `native/roger-audio/{main,Protocol,Tap,RingBuffer,Lifecycle,SelfTest}.swift`, stub `Probe.swift` and `Monitor.swift` (called by `main.swift`), `scripts/build-native.sh`, the Darwin lines of `make check` |
-| M3-T1 | M | `config.py` (the STT fields and presets), `schemas/stt.py`, `services/stt_tokens.py`, `app.py` (`api_started` fields), `tests/test_stt_providers.py`, `tests/test_stt_token_assemblyai.py`, `tests/test_config.py` (STT cases), `.env.example` (STT section), the contract's token `provider` line |
+| M3-T1 | S | `stt_vendors.py` (`STT_PRESETS`), `config.py` (the STT fields: a preset id, `STT_MODEL` refused), `schemas/stt.py`, `app.py` (`api_started` fields), `tests/test_stt_providers.py`, `tests/test_config.py` (STT cases), `.env.example` (STT section), the STT settings in `apps/api/README.md`, the contract's token `provider` line and presets. The landed issuers, price table and `test_stt_token.py` are not rewritten |
 | M3-T2 | M | `db/models_vocabulary.py`, `0002_vocabulary_terms.py`, `services/vocabulary.py`, `schemas/vocabulary.py`, `routers/vocabulary.py`, `tests/test_vocabulary.py`, the contract's Vocabulary section and its Database line |
-| M3-T4a | M | `main/stt/SpeechToText.ts` (`keyterms`, `inlineReplay`, `warning`), `main/stt/keyterms.ts`, `main/stt/deepgram/DeepgramSpeechToText.ts`, `main/stt/fake/FakeSpeechToText.ts`, `main/api/ApiClient.ts` (token type), the one fake-settings literal in `CaptureService.ts`, their tests |
+| M3-T4a | M | `main/stt/SpeechToText.ts` (optional `keyterms`, `SttConnectError.keytermsRejected`), `main/stt/keyterms.ts`, `stt/core/{SttProtocol,SttConnection}.ts` (the keyterm-rejection signal; no retry), `main/stt/deepgram/DeepgramSpeechToText.ts` (`keyterm`, `mip_opt_out`), the keyterm case in `stt/conformance.test.ts` and Deepgram's in `stt/testing/conformanceVendors.ts`, `main/stt/fake/FakeSpeechToText.ts`, `main/api/ApiClient.ts` (token type), the fake-settings literal and the `keyterms` line of `resolveStt` in `CaptureService.ts`, one line of the README's vendor checklist, their tests |
 | M3-T10 | M | `bench/core/*` (with tests) |
 | M4-S1 | M | `renderer/src/main.tsx`, `App.tsx`, `renderer/src/app/*`, placeholder `meeting/MeetingPage.tsx` and `app/RecentMeetings.tsx` (M4-S4 owns them afterwards), `app/slots/{m2-capture-status,m2-setup,m2-capture-details,m3-transcript,m4-notes,m5-calendar}.ts` (empty; each owned by its mount task), `main/navigation.ts`, `main/appMenu.ts`, `shared/ipc/app.ts` with its bridge and fake, `[slot M4-S1]`. Merges after M4-S2 (it adds `useTheme()` in `AppLayout`) |
 | M4-S2 | M | `renderer/src/theme/*`, `renderer/src/styles.css`, `shared/preferences.ts`, `main/preferences/*`, `shared/ipc/prefs.ts` with its bridge and fake, `[slot M4-S2]` |
@@ -263,15 +330,15 @@ the task depends on an owner decision.
 | Task | Size | Owns |
 | --- | --- | --- |
 | M2-T3b | S | `upload/TranscriptUploader.ts` (with test), the sync statements in `store/SqliteTranscriptStore.ts` and `store/InMemoryTranscriptStore.ts` |
-| M2-T4 | M | `capture/CaptureService.ts` (adds a status-contributor seam, so warnings, echo and backup add status without editing it), `capture/AudioFanout.ts`, `capture/createCaptureRuntime.ts` (with slots for T10, T11, T14b, T15, T16, T17a, T17b, T18 and T19), `main/ipc.ts`, the `[slot M2-T4 …]` blocks |
+| M2-T4 | M | `capture/CaptureService.ts` (adds a status-contributor seam, so warnings, echo and backup add status without editing it; session event listeners; a resume start that takes the saved `stt_usage` row; keeps every landed cost guard and its tests), `capture/AudioFanout.ts`, `capture/createCaptureRuntime.ts` (with slots for T6, T10, T11, T14b, T15, T16, T17a, T17b, T18, T19 and M3-T19b), `main/ipc.ts`, the `[slot M2-T4 …]` blocks |
 | M2-T7b | S | `native/roger-audio/Probe.swift`, the route-switch case in `SelfTest.swift` |
 | M2-T8 | M | `native/roger-audio/{Monitor,Route,ParentWatch}.swift`, `main/native/monitorRelaunch.mac.test.ts` |
 | M2-T9 | S | `electron-builder.yml`, `scripts/install-mac.sh`, `main/native/helperPath.ts` (with test) |
-| M3-T3 | S | `routers/stt.py`, the `keyterms` field in `schemas/stt.py`, the keyterm tests in `tests/test_stt_token.py`, the contract's token section |
-| M3-T5 | M | `main/stt/assemblyai/*` (extends the M1 adapter; deletes `AudioFrameSizer`), `stt/streamSettings.ts` (comment and one test case), `stt/createSpeechToText.ts` (with test) |
+| M3-T3 | S | `routers/stt.py`, the `keyterms` field in `schemas/stt.py`, the keyterm surcharge in `stt_vendors.py`, the keyterm tests in `tests/test_stt_token.py`, the contract's token section |
+| M3-T5 | M | `main/stt/assemblyai/*` (extends the landed protocol: Pro model, keyterms, keyterm rejection, model warning, wire fixtures), AssemblyAI's keyterm entry in `stt/testing/conformanceVendors.ts`, the wire tap in `stt/core/{WebSocketSpeechToText,SttConnection}.ts` with its conformance case, `stt/streamSettings.ts` (comment and one test case) |
 | M3-T7 | M | `renderer/src/transcript/{liveTranscript.ts,LiveTranscript.tsx,useLiveTranscript.ts,transcript.css}` (with tests) |
 | M3-T8 | M | `shared/vocabulary.ts`, `shared/ipc/vocabulary.ts` with its bridge and fake, `main/vocabulary/vocabularyIpc.ts` (validation included), `main/api/vocabularyClient.ts`, `renderer/src/settings/*`, `[slot M3-T8]`, their tests |
-| M3-T11 | M | `bench/{cli.ts,vite.config.ts,canary.ts}`, `bench/run/*`, `bench/report/*` (with tests) |
+| M3-T11 | M | `bench/{cli.ts,vite.config.ts,canary.ts}`, `bench/run/*` (adapters from the registry, opens through a bench `SttOpenBudget`), `bench/report/*` (cost from each token's price; no price table of its own) (with tests) |
 | M3-T12 | M | `bench/dataset/*` (with tests) |
 | M4-S4 | M | `renderer/src/meeting/*`, `app/RecentMeetings.tsx`, `shared/meetings.ts`, `shared/ipc/meetings.ts` with its bridge and fake; it seeds the M1 `StatusPanel` and `TranscriptView` into `slots/m2-capture-status.ts` and `slots/m3-transcript.ts` |
 | M4-T6 | M | `services/notes.py`, `schemas/notes.py`, `routers/notes.py`, `tests/test_notes_api.py`, the contract's Notes section |
@@ -290,9 +357,10 @@ the task depends on an owner decision.
 | M2-T5 | M | `capture/AudioTimeline.ts`, `capture/CaptureSession.ts` (with tests) |
 | M2-T10 | M | `main/native/HelperProcess.ts`, `main/audio/system/*`, `test/fixtures/fake-roger-audio.mjs`, the T10 runtime slot |
 | M2-T11 | M | `capture/SignalMonitor.ts`, `capture/warnings.ts`, `notify/Notifier.ts`, the T11 runtime slot. (Mac: input volume 0 and a revoked mic) |
-| M2-T12 | M | `renderer/src/audio/*`, `renderer/src/state/useCapture.ts`, `main/window.ts` |
+| M2-T12 | M | `renderer/src/audio/*`, `renderer/src/state/useCapture.ts`, `main/window.ts`, `main/lifecycle.ts` (a renderer crash or reload no longer stops the recording), `capture/stopReasons.ts` (drops `page-reloaded`) |
 | M3-T13 | S | CLAUDE.md commands and benchmark lines, `docs/research/stt-benchmark.md`, `.env.example` (Benchmark section) |
-| M3-T14 | S | Optional (OD-10). `services/stt_tokens.py` (one class), `config.py` (one preset), `tests/test_stt_token_soniox.py`, the contract's provider line |
+| M3-T14 | S | Optional (OD-10). `services/stt_tokens.py` (one class), `stt_vendors.py` (one vendor entry and its preset), `domain.py` (`soniox`), `config.py` (the key and its case), `.env.example` (the key line), the Soniox lines in `apps/api/README.md`, `tests/test_stt_token_soniox.py`, the contract's provider line |
+| M3-T19a | M | `db/models_stt_usage.py`, `0005_stt_usage.py`, `services/stt_usage.py`, `schemas/stt_usage.py`, `routers/stt_usage.py`, `tests/test_stt_usage.py`, the contract's STT usage section and its Database line |
 | M4-S4b | S | `store/{TranscriptStore,SqliteTranscriptStore,InMemoryTranscriptStore}.ts` (adds `listMeetings` and `listSegments`), `main/meetings/meetings-ipc.ts` (with test), `[slot M4-S4b]` |
 | M4-T8 | M | `services/notes_generation.py`, `schemas/notes_runs.py`, `routers/notes_runs.py`, the fixture (owned by T8 from here on), its tests, the contract's runs and SSE section |
 | M4-T10 | M | `services/chat.py`, `services/chat_prompt.py`, `schemas/chat.py`, `routers/chat.py`, its tests, the contract's Chat section |
@@ -305,26 +373,27 @@ the task depends on an owner decision.
 
 | Task | Size | Owns |
 | --- | --- | --- |
-| M2-T6 | M | `stt/ResilientSttStream.ts`, `stt/networkStatus.ts`, `stt/createSpeechToText.ts` (with test; wraps every adapter), `stt/deepgram/DeepgramSpeechToText.ts` (ping), and the same liveness check in the AssemblyAI adapter |
+| M2-T6 | M | Deltas on the landed reopen, no wrapper: ping liveness in `stt/core/SttConnection.ts` with its conformance cases and the pong control in `stt/testing/fakeVendorServer.ts`, `stt/networkStatus.ts` (with test), the T6 runtime slot, and in `capture/CaptureSession.ts` `suspendStreams`/`resumeStreams`, the `offline` state, gap rows, capture events and the watermark. Merges before M3-T6b |
 | M2-T13 | M | `e2e/{harness.ts,capture.e2e.ts}`, `main/e2eMode.ts` (with test), `[slot M2-T13]` |
 | M2-T15 | M | `main/backup/*` (with tests, `AudioCompressor.mac.test.ts` included), the T15 runtime slot |
-| M3-T6b | S | `capture/CaptureSession.ts` (one meter call per event and the `stt latency` line), its test |
+| M3-T6b | S | `capture/CaptureSession.ts` (one meter call per event and the `stt latency` line), its test. Merges after M2-T6 and rebases on it |
 | M4-T9 | M | `services/notes_long.py`, the budget switch in `notes_generation.py` |
 | M4-T12 | M | the `roger_api/evals/` package, `apps/api/evals/notes/cases/synthetic_standup.json`, `tests/test_notes_eval.py` |
 | M4-T16 | M | `main/notes/{notes-ipc,notes-ipc-validation,notesQuitGuard}.ts` (with tests), `[slot M4-T16 …]` (three slots) |
-| M5-T5 | M | `shared/capture.ts` (`StartSource`, `StartCaptureRequest`, `title`), `shared/ipc/capture.ts` with its bridge and fake, `main/ipc.ts`, `main/ipc-validation.ts`, `capture/CaptureService.ts` (`start(request)`, the enricher port, `requestStart` and `takePendingStart`), `roger.sqlite` migration 4 and `findMeetingIdsByEventIds`, `upload/TranscriptUploader.ts` (the create payload), `ApiClient.createMeeting`, `renderer/src/state/useCapture.ts` |
+| M5-T5 | M | `shared/capture.ts` (`StartSource`, `StartCaptureRequest`, `title`), `shared/ipc/capture.ts` with its bridge and fake, `main/ipc.ts`, `main/ipc-validation.ts`, `capture/CaptureService.ts` (`start(request)`, the enricher port, `requestStart` and `takePendingStart`), `roger.sqlite` migration 5 and `findMeetingIdsByEventIds`, `upload/TranscriptUploader.ts` (the create payload), `ApiClient.createMeeting`, `renderer/src/state/useCapture.ts` |
 
 **Wave 5**
 
 | Task | Size | Owns |
 | --- | --- | --- |
 | M2-T14b | M | `capture/echo/*` except `EchoFilter.ts` (with tests), the T14b runtime slot (including T3b's `beforeFirstTick`) |
-| M2-T18 | S | `power/PowerCoordinator.ts` (with test), the T18 runtime slot |
+| M2-T18 | S | `power/PowerCoordinator.ts` (with test), the T18 runtime slot, the `suspend` handling in `main/lifecycle.ts` (a sleep no longer stops the recording unless it lasts `noSpeechStopMs`) |
 | M2-T19 | M | `main/setup/*`, `renderer/src/components/setup/*`, `e2e/setup.shots.e2e.ts`, `app/slots/m2-setup.ts`, the T19 runtime slot |
-| M2-T20a | S | `renderer/src/components/capture/{WarningBanner,StreamStatus,LevelMeter,Notices}.tsx`, `e2e/capture-status.shots.e2e.ts`, `app/slots/m2-capture-status.ts` |
-| M3-T4b | S | `capture/CaptureSession.ts` (`case 'warning'`), `capture/CaptureService.ts` (the `keyterms_rejected` capture warning), their tests |
+| M2-T20a | S | `renderer/src/components/capture/{WarningBanner,StreamStatus,LevelMeter,Notices}.tsx`, `e2e/capture-status.shots.e2e.ts`, `app/slots/m2-capture-status.ts`, the stream wording in `renderer/src/format.ts` (keeps the meter line and the stop notice) |
+| M3-T4b | S | `capture/CaptureSession.ts` (a connect rejected for its keyterms reopens once without them, through `SttOpenBudget`), `capture/CaptureService.ts` (the `keyterms_rejected` capture warning), their tests |
 | M3-T9 | S | `app/slots/m3-transcript.ts` (`LiveTranscript` and `VocabularySettings`), `renderer/src/state/useCapture.ts` (drops the segment and interim state), deletes `components/TranscriptView.tsx` |
-| M3-T15 | M | Optional (OD-10). `main/stt/soniox/*`, one case in `stt/createSpeechToText.ts` |
+| M3-T15 | M | Optional (OD-10). `main/stt/soniox/*`, one line in `stt/registry.ts`, one entry in `stt/testing/conformanceVendors.ts`, the opening-messages hook in `stt/core/{SttProtocol,SttConnection}.ts` if Soniox needs it, the Soniox note in `apps/desktop/README.md` |
+| M3-T19b | M | `upload/SttUsageUploader.ts`, `api/sttUsageClient.ts`, local migration 6 and the usage sync statements in `store/*`, the M3-T19b runtime slot (with tests) |
 | M4-T18 | M | `renderer/src/notes/{AiNotesPanel,TemplatePicker,NotesSettings}.tsx`, `aiNotesStream.ts`, `aiNotesActions.ts` (with tests) |
 | M4-T19 | M | `renderer/src/chat/*` (with tests) |
 | M5-T6 | M | `main/calendar/{oauthLoopback,CalendarAccount,calendarIpc}.ts`, `main/api/calendarClient.ts`, `shared/ipc/calendar.ts` with its bridge and fake (with tests) |
@@ -339,13 +408,14 @@ the task depends on an owner decision.
 | M4-T20 | S | `app/slots/m4-notes.ts`, the M4 QA script and gallery |
 | M5-T9c | M | `main/calendar/createCalendarRuntime.ts`, the enricher, `calendarFlow.test.ts`, `[slot M5-T9c]` |
 | M5-T10 | M | `main/prompt/{PromptWindow,promptBounds}.ts`, `preload/prompt.ts`, `renderer/prompt.html`, `renderer/src/prompt/*`, `electron.vite.config.ts`, `main/page-policy.ts` |
-| M5-T11 | M | `main/app/*`, `shared/ipc/loginItem.ts` with its bridge and fake, `build/tray*.png`, `main/window.ts`, `[slot M5-T11 …]` (two slots) |
+| M5-T11 | M | `main/app/*` (`windowLifecycle.ts`, not `lifecycle.ts`), `shared/ipc/loginItem.ts` with its bridge and fake, `build/tray*.png`, `main/window.ts`, `main/lifecycle.ts` (`watchWindow` stops only on a real close, never on a hide), `[slot M5-T11 …]` (two slots) |
+| M3-T20 | M | Silence-gated streaming: `capture/SilenceGate.ts` (with test), `capture/CaptureSession.ts`, `capture/CaptureService.ts` (meter), `main/costGuards.ts` (three settings), `shared/capture.ts` (`SttMeter.gatedMs`, `estimatedSavedUsd`), `renderer/src/format.ts` (savings wording), the gate rows of the README's "Cost guards" table and their `.env.example` lines, `bench/run/replay.ts` (`--gate`) (with tests) |
 
 **Wave 7**
 
 | Task | Size | Owns |
 | --- | --- | --- |
-| M2-T17b | M | `detect/{CallDetector,CallOffer}.ts` (with test), the T17b runtime slot |
+| M2-T17b | M | `detect/{CallDetector,CallOffer}.ts` (with test), the T17b runtime slot, `capture/stopReasons.ts` (`call-ended`) |
 | M2-T23 | M | `recovery/CrashRecovery.ts` (with test), `[slot M2-T23]` |
 | M5-T12 | M | `renderer/src/calendar/*` (with tests) |
 
@@ -373,14 +443,16 @@ the task depends on an owner decision.
 These are in section 6.
 
 **Critical path:** P2-F1 → M2-T2 → M2-T4 → M2-T5 → M2-T6 → M2-T14b → M2-T16 → M2-T17a →
-M2-T23 and M2-T17b → M2-T20b → M2-T21 (waves 0 to 9). M3 is code complete after wave 5, M4 after
-wave 6 and M5 after wave 8. **If the day runs short, keep this order:**
+M2-T23 and M2-T17b → M2-T20b → M2-T21 (waves 0 to 9). M3 is code complete after wave 6 (T20, the
+silence gate), M4 after wave 6 and M5 after wave 8. **If the day runs short, keep this order:**
 
-1. Waves 0 to 5. They include M2's exit-check core set (T1 to T15, T3b, T7b, T20a) and all of M3.
-2. M4 to wave 6.
+1. Waves 0 to 5. They include M2's exit-check core set (T1 to T15, T3b, T7b, T20a) and all of M3
+   but T20 (the usage upload and the pacing included).
+2. M3-T20 (the owner's cost ask) and M4 to wave 6.
 3. M5 to wave 8.
 4. M2-T16, T17b, T23 and T20b. The M2 plan already lets these land after the first exit-check
-   calls.
+   calls; the Wi-Fi cut call waits for T16 (AssemblyAI takes no replay, so the window comes back
+   from the backup).
 
 ### 3.1 Files more than one task edits, and in what order
 
@@ -388,30 +460,41 @@ Every other file has exactly one writer in Phase 2.
 
 | File | Who edits it, in merge order | How collisions are avoided |
 | --- | --- | --- |
-| `docs/api-contract.md` | P2-F2 (skeleton, error rows) → wave 1: M3-T1 (token `provider`), M3-T2, M4-T1, M4-T3, M5-T1 → wave 2: M3-T3, M4-T6, M5-T3, M5-T4 → wave 3: M4-T8, M4-T10, M4-T11, M3-T14 | Each task edits only its own section, which P2-F2 created. The token section has a different writer in each wave (M3-T1, then M3-T3, then M3-T14). Contract and code change in the same commit (house rule 8). |
-| `src/shared/ipc.ts` and `src/preload/index.ts` | P2-F1 only | Feature tasks own `shared/ipc/<feature>.ts`, `preload/bridges/<feature>.ts` and `preview/fakes/<feature>.ts`. `capture.ts` and its bridge: M2-T2 (wave 1), then M5-T5 (wave 4). |
-| `src/main/index.ts` | P2-F1 (slots) → M4-S2, M4-S1 (wave 1) → M2-T4, M3-T8 (2) → M4-S4b (3) → M2-T13, M4-T16 (4) → M5-T9c, M5-T11 (6) → M2-T23 (7) | Named slots (section 1). Inside a wave the slots differ, so the merges are clean. Nobody edits outside their slot. |
-| `src/main/capture/createCaptureRuntime.ts` | M2-T4 (slots) → T10, T11 (3) → T15 (4) → T14b, T18, T19 (5) → T16, T17a (6) → T17b (7) | Runtime slots made by M2-T4, used the same way as the `index.ts` slots |
-| `src/main/capture/CaptureService.ts` | M3-T4a (wave 1, one literal) → M2-T4 (2) → M4-T22 (3) → M5-T5 (4) → M3-T4b (5) | One writer per wave |
-| `src/main/capture/CaptureSession.ts` | M2-T5 (3) → M3-T6b (4) → M3-T4b (5) | One writer per wave |
-| `src/main/upload/TranscriptUploader.ts` | M2-T3b (2) → M4-T22 (3) → M5-T5 (4) | One writer per wave |
-| `src/main/store/*` | M2-T3 (1) → M2-T3b (2) → M4-S4b (3) → M5-T5 (4) | One writer per wave |
+| `docs/api-contract.md` | P2-F2 (skeleton, error rows) → wave 1: M3-T1 (token `provider` and presets), M3-T2, M4-T1, M4-T3, M5-T1 → wave 2: M3-T3, M4-T6, M5-T3, M5-T4 → wave 3: M4-T8, M4-T10, M4-T11, M3-T14, M3-T19a (STT usage) | Each task edits only its own section, which P2-F2 created. The token section has a different writer in each wave (M3-T1, then M3-T3, then M3-T14). Contract and code change in the same commit (house rule 8). |
+| `src/shared/ipc.ts` and `src/preload/index.ts` | P2-F1 only | Feature tasks own `shared/ipc/<feature>.ts`, `preload/bridges/<feature>.ts` and `preview/fakes/<feature>.ts`. `capture.ts` and its bridge: M2-T2 (wave 1), then M5-T5 (wave 4). The barrel keeps exporting `PCM_SAMPLE_RATE` and `PCM_ENCODING`. |
+| `src/shared/capture.ts` | M2-T2 (1, `offline` and M2's fields) → M5-T5 (4, `StartSource`, `title`) → M3-T20 (6, `SttMeter.gatedMs`, `estimatedSavedUsd`) | One writer per wave; every writer keeps the landed fields (`paused`, `retrying`, `streamMessages`, `meter`, `notice`) |
+| `src/main/index.ts` | P2-F1 (slots) → M4-S2, M4-S1 (wave 1) → M2-T4, M3-T8 (2) → M4-S4b (3) → M2-T13, M4-T16 (4) → M5-T9c, M5-T11 (6) → M2-T23 (7) | Named slots (section 1). Inside a wave the slots differ, so the merges are clean. Nobody edits outside their slot. The cost-guard wiring and the `RecordingLifecycle` stay inside `[slot M2-T4 runtime]`. |
+| `src/main/lifecycle.ts` (landed `RecordingLifecycle`, with `lifecycle.test.ts`) | P2-F1 (0, quit hooks) → M2-T12 (3, a renderer crash or reload no longer stops) → M2-T18 (5, `suspend` moves to `PowerCoordinator`) → M5-T11 (6, a hide never stops) | One writer per wave; each changes one decision and keeps every other G4 stop and its test |
+| `src/main/capture/stopReasons.ts` | M2-T12 (3, drops `page-reloaded`) → M2-T17b (7, adds `call-ended`) | - |
+| `src/main/capture/createCaptureRuntime.ts` | M2-T4 (slots) → T10, T11 (3) → T6, T15 (4) → T14b, T18, T19, M3-T19b (5) → T16, T17a (6) → T17b (7) | Runtime slots made by M2-T4, used the same way as the `index.ts` slots |
+| `src/main/capture/CaptureService.ts` | M3-T4a (wave 1, the fake literal and `keyterms` in `resolveStt`) → M2-T4 (2) → M4-T22 (3) → M5-T5 (4) → M3-T4b (5) → M3-T20 (6, the meter) | One writer per wave. Every writer keeps the landed cost guards (G1 to G7) and their tests green. |
+| `src/main/capture/CaptureSession.ts` | M2-T5 (3) → M2-T6, then M3-T6b (4, in that merge order) → M3-T4b (5) → M3-T20 (6) | One writer per wave, except wave 4, where M3-T6b (one call per event, the log line) rebases on M2-T6 |
+| `src/main/upload/TranscriptUploader.ts` | M2-T3b (2) → M4-T22 (3) → M5-T5 (4) | One writer per wave. M3-T19b's usage uploader is its own file. |
+| `src/main/store/*` | M2-T3 (1, migration 4) → M2-T3b (2) → M4-S4b (3) → M5-T5 (4, migration 5) → M3-T19b (5, migration 6) | One writer per wave; migration 3 (`stt_usage`) is landed and nobody edits it |
 | `src/main/api/ApiClient.ts` | P2-F1 (0) → M3-T4a (1) → M5-T5 (4) | Feature clients live in their own files |
-| `src/main/stt/createSpeechToText.ts` | M3-T5 (2) → M2-T6 (4) → M3-T15 (5) | One writer per wave |
-| `src/main/stt/deepgram/DeepgramSpeechToText.ts` | M3-T4a (1) → M2-T6 (4) | - |
+| `src/main/stt/core/{SttProtocol,SttConnection,WebSocketSpeechToText}.ts`, `src/main/stt/conformance.test.ts`, `src/main/stt/testing/*` | M3-T18 (0, pacing) → M3-T4a (1, keyterm rejection) → M3-T5 (2, wire tap) → M2-T6 (4, ping liveness) → M3-T15 (5, opening messages) | One writer per wave. Each adds a field the core applies and a conformance case; no adapter opens, times, retries or closes a socket (house rule 9) |
+| `src/main/stt/registry.ts` | M3-T15 (5, one line) | - |
+| `src/main/stt/deepgram/DeepgramSpeechToText.ts` | M3-T18 (0, `audioPacing`) → M3-T4a (1) | - |
+| `src/main/stt/assemblyai/*` | M3-T18 (0, `AudioFrameSizer` moves to `stt/core/`, `audioPacing`) → M3-T5 (2) | - |
+| `src/main/costGuards.ts` | M3-T20 (6) only | `costGuards.test.ts` checks every guard against the README table and `.env.example`, so the three change together |
 | `src/main/ipc.ts`, `src/main/ipc-validation.ts` | P2-F1 (0, trust helpers) → M2-T2 (`ipc-validation.ts`, 1) → M2-T4 (`ipc.ts`, 2) → M5-T5 (4) | Other features register in their own modules |
-| `src/renderer/src/state/useCapture.ts` | M2-T12 (3) → M5-T5 (4) → M3-T9 (5) | - |
+| `src/renderer/src/state/useCapture.ts` | M2-T12 (3) → M5-T5 (4) → M3-T9 (5) | Each keeps the landed `followMain` call and the status re-read on focus |
+| `src/renderer/src/format.ts` | M2-T20a (5, stream wording) → M3-T20 (6, savings on the meter line) | - |
 | `src/main/window.ts` | M2-T12 (3) → M5-T11 (6) | - |
-| `src/renderer/src/styles.css`, `theme/tokens.css` | M4-S2 only. Later tasks never write colours; they use tokens. A task that needs a new token adds it at the end of `tokens.css`, in both themes, and never renames one. | S2 ships the union the plans need: `--bg`, `--panel`, `--ink`, `--muted`, `--line`, `--accent`, `--danger`, `--warn`, `--ok`, `--danger-bg`, `--warn-bg`, `--ok-bg`, `--interim-ink`, `--hidden-ink`, `--cited-bg`, `--recording`, `--focus-ring`, `--sidebar-bg`, `--chip-bg`, `--conflict-bg` |
+| `src/renderer/src/styles.css`, `theme/tokens.css` | M4-S2 only. Later tasks never write colours; they use tokens. A task that needs a new token adds it at the end of `tokens.css`, in both themes, and never renames one. | S2 ships the union the plans need: `--bg`, `--panel`, `--ink`, `--muted`, `--line`, `--accent`, `--danger`, `--warn`, `--ok`, `--danger-bg`, `--warn-bg`, `--ok-bg`, `--interim-ink`, `--hidden-ink`, `--cited-bg`, `--recording`, `--focus-ring`, `--sidebar-bg`, `--chip-bg`, `--conflict-bg`. It keeps the landed `.notice` rule (the stop notice). |
 | `src/renderer/src/app/slots.ts` | M4-S1 only | Each mount task owns its own `app/slots/<task>.ts` |
 | `app.py` | P2-F2 → M3-T1 (the `api_started` fields only) | Router includes and lifespan hooks are already in place |
 | `config.py` | P2-F2 (mixins) → M3-T1 (1) → M3-T14 (3) | Notes and calendar settings are in their own mixin files |
+| `stt_vendors.py` | M3-T1 (1, presets) → M3-T3 (2, keyterm surcharge) → M3-T14 (3, Soniox) | One writer per wave |
+| `domain.py` | P2-F2 (0) → M3-T14 (3, `soniox` in `SttProvider`) | - |
 | `db/models.py` | P2-F2 (imports) → M5-T1 (the `Meeting` columns) | New tables live in per-domain modules |
-| `.env.example` | P2-F2 (sections) → M3-T1, M4-T2, M5-T1 (1) → M3-T13 (3) | Each task writes in its own section |
+| `.env.example` | P2-F2 (sections) → M3-T1, M4-T2, M5-T1 (1) → M3-T13 (Benchmark), M3-T14 (the Soniox key) (3) → M3-T20 (6, its cost-guard lines) | Each task writes in its own section; the landed cost-guard block keeps every guard |
+| `apps/api/README.md` | M3-T1 (1, STT settings and presets; `STT_MODEL` retired) → M5-T3 (2, the calendar pointer) → M3-T14 (3, Soniox) | Each its own section |
+| `apps/desktop/README.md` | M3-T18 (0) and M3-T4a (1), one line each in "Add a speech-to-text vendor" (declare `audioPacing`; map keyterms and `keytermsRejected`) → M3-T15 (5, the Soniox vendor note) → M3-T20 (6, the gate rows of "Cost guards") → M2-T21 (9, helper, permissions, audio folder, M2's sleep and crash changes) | Each its own section |
 | `apps/desktop/package.json`, `pnpm-lock.yaml` | P2-F3 only | A task that truly needs a new package asks the controller, which makes a separate F3-style commit |
 | root `Makefile` | P2-F3 → M2-T7 (the Darwin `check` lines) | - |
-| `CLAUDE.md` | M4-T2 (rule 4, wave 1) → M3-T13 (commands, wave 3) → M2-T21 (repo map, commands, wave 9). The controller appends failure-log lines. | Tasks put proposed failure-log lines in their hand-off note. The controller appends them once per wave. |
-| `apps/desktop/src/renderer/src/App.tsx` | M4-S1 only | No milestone mounts in M1's window any more: the shell lands in waves 1 and 2, before any UI that would mount |
+| `CLAUDE.md` | M4-T2 (rule 4, wave 1) → M3-T13 (commands, wave 3) → M2-T21 (repo map, commands, wave 9). The controller appends failure-log lines. | Tasks put proposed failure-log lines in their hand-off note. The controller appends them once per wave. Architecture rule 9 (the STT core and the open budget) is landed; no task loosens it. |
+| `apps/desktop/src/renderer/src/App.tsx` | M4-S1 only | No milestone mounts in M1's window any more: the shell lands in waves 1 and 2, before any UI that would mount. S1 keeps the landed stop notice. |
 
 ## 4. Test databases per worktree
 
@@ -472,9 +555,9 @@ the roadmap line. A milestone closes only when it is met.
 | Milestone | Done-when (roadmap) | Can finish today | Needs real calls, keys or days |
 | --- | --- | --- | --- |
 | M0 | One command runs tests and lint for both apps | Done (2026-10-05) | - |
-| M1 | After a real 30-minute Meet call, Claude quotes a line from it through MCP | Land `m1-assemblyai`; M2-T1's Mac check | AssemblyAI key and its training opt-out; the 30-minute call (one person, today if a call happens) |
+| M1 | After a real 30-minute Meet call, Claude quotes a line from it through MCP | `m1-assemblyai` is on `phase-2` (a3be3ee); M2-T1's Mac check | AssemblyAI key and its training opt-out; the 30-minute call (one person, today if a call happens) |
 | M2 | 10 real calls in a row with no lost or doubled text; cutting the audio mid-call warns within 10 s | Code complete (waves 0 to 9). Mac checks: T0 spike, T1 anchors, T11 input volume 0 and revoked mic, `make test-native-route` | 10 real calls (2 on speakers, AirPods mid-call, lid closed, `kill -9`, 2 from the offer), 3 timed cuts filmed on a phone, a 2-hour soak. About 2 to 4 working days. |
-| M3 | The chosen vendor's error rate is written down; swapping vendor is one config change | Code complete after wave 5; the canary against the fake provider | AssemblyAI and Deepgram keys and opt-outs. About 10 consented internal calls recorded through M2's backup and clipped within 7 days, then about 90 minutes of hand-fixing. The bake-off runs, then a 10-minute real call and two vendor flips. |
+| M3 | The chosen vendor's error rate is written down; swapping vendor is one config change | Code complete after wave 6 (T20, the silence gate); the canary against the fake provider | AssemblyAI and Deepgram keys and opt-outs. About 10 consented internal calls recorded through M2's backup and clipped within 7 days, then about 90 minutes of hand-fixing. The bake-off runs (C, A, D, B only if worth it, then E and the gate run F), then a 10-minute real call with its cost per meeting hour, and two vendor flips. |
 | M4 | Notes from 5 real calls each need under 2 minutes of fixing | Code complete after wave 6, with the eval on the fake model in `make check` | `OPENROUTER_API_KEY`. M2's call audio verified across a relaunch, M3's vendor chosen, 5 real calls with a stopwatch, `make eval-notes` on exported calls |
 | M5 | 20 calls in a row are started from the notification | Code complete after wave 8, with `calendarFlow.test.ts` on the fake calendar | A Google Cloud project, OAuth client and `CALENDAR_TOKEN_KEY`. The six real-Mac checks, the three real-key checks, and 20 calendar calls (runs alongside Gate 2) |
 
@@ -494,7 +577,7 @@ or a done-when line on purpose. A plan's engineering calls are not repeated here
 
 | Id | Question | Recommendation | Alternative | From |
 | --- | --- | --- | --- | --- |
-| OD-1 | Land `m1-assemblyai` (owner decision 2026-10-06: AssemblyAI is the M1 vendor) before Phase 2 starts? | Yes. Its session commits the last 2 files, `make check` passes, Rahul merges to `main`, and `phase-2` is rebased. M3-T1, T5 and T18 build on it. | Close it unmerged and let M3 rebuild it from scratch | this plan |
+| OD-1 | Land `m1-assemblyai` (owner decision 2026-10-06: AssemblyAI is the M1 vendor) before Phase 2 starts? | **Done 2026-10-06:** merged into `phase-2` (a3be3ee) with the STT core, the registries, the conformance suite and the cost guards. Rahul merges it into `main` when M1 closes. Every M2 and M3 task builds on it (section 9.2). | Close it unmerged and let M3 rebuild it from scratch | this plan |
 | OD-2 | Who merges task branches? (House rule: "Agents never merge.") | The controller merges task branches into the `phase-2` integration branch after review and the gate. Rahul reviews each wave. `phase-2` → `main` is Rahul's alone. | Rahul merges every task branch himself (about 75 merges) | this plan |
 | OD-3 | Where does call audio come from? | A Swift helper with a Core Audio process tap, with Electron's path kept as the fallback | Stay on Electron's `desktopCapturer` | M2 D1 |
 | OD-4 | How is echo removed? | Text-level dedupe in main. Spike T0 decides whether `echoCancellation: 'all'` is also turned on. | Acoustic cancellation only; signal correlation | M2 D2 |
@@ -503,7 +586,7 @@ or a done-when line on purpose. A plan's engineering calls are not repeated here
 | OD-7 | Audio backup format and retention | Per-stream WAV of at most 60 s, turned into 48 kbps AAC by `afconvert`. Kept 7 days (configurable). Gaps not yet re-run keep their audio up to 30 days. Paused below 2 GiB free. Never uploaded. | webm/opus; WAV only; FLAC | M2 D5 |
 | OD-8 | New dependencies | `playwright-core` 1.63.0 (dev). It is the one driver for the Electron smoke test and all browser QA (M5-T13 drops puppeteer). TipTap ×5 pinned to 3.31.3. | A hand-written CDP client; raw ProseMirror | M2 D8, M4 new deps |
 | OD-9 | `workspace_id` on local SQLite (**deviation** from C5) | A nullable column on M2's three new tables. `meetings`, `segments`, `app_state`, `notes.sqlite` and `calendar.sqlite` wait for M6's backfill. | No column anywhere until M6 | M2 D9, M4 known gaps |
-| OD-10 | A third STT vendor? | Yes: Soniox (M3-T14, T15), built last and dropped if the day runs out | Two vendors, three configurations | M3 D1 |
+| OD-10 | A third STT vendor? | Yes: Soniox (M3-T14, T15), built last and dropped if the day runs out; one protocol file, one issuer, a line in each registry and one conformance entry | Two vendors (AssemblyAI and Deepgram, plus U3.6 Pro if it is worth running) | M3 D1 |
 | OD-11 | Keep a standing test set of colleagues' audio (**deviation** from C6) | Yes, as a signed exception: internal calls only, per-person consent, FileVault, mode 0700, `bench forget`. Linked from the roadmap's audio-policy decision. | Re-clip every 7 days; include client calls | M3 D2 |
 | OD-12 | Never train vendors on calls | Deepgram: `mip_opt_out=true` on every request, even at a higher price. AssemblyAI: opted out in its dashboard before any real call, M1's included. | Stay in Deepgram's program for the discount | M3 D3 |
 | OD-13 | How is the STT vendor chosen? | The rule fixed in M3 before any scoring: latency and failure gates, then pooled WER, then term recall, then cost | Decide after seeing the numbers | M3 D4 |
@@ -520,16 +603,19 @@ or a done-when line on purpose. A plan's engineering calls are not repeated here
 | OD-24 | Who owns the prompt panel and call-detected offers? | M5's `PromptService.offer`. M2-T17b feeds it and builds no card or notification of its own. A click stores `call_detected`, or `notification` when one calendar event matches. | M2 owns it | M5 D5, M2 D6 |
 | OD-25 | Crash relaunch | The monitor helper relaunches Roger once per meeting and resumes the same meeting, with a visible Stop | End the meeting at launch | M2 D7 |
 | OD-26 | Call detection method | Poll Core Audio process objects every 1 s against an allowlist of call apps. Offer after 5 s (15 s for a browser). Never auto-start. | Window titles; a deny-list; auto-start | M2 D6 |
+| OD-27 | Silence-gated streaming on by default? (the owner's cost ask of 2026-10-06) | Yes: a source's session closes after 30 s without speech and reopens on speech with a 2 s pre-roll (M3-T20). If bake-off run F shows a cost of more than 1.0 point of pooled WER or a failed 2.0 s latency gate, the default becomes off | Off by default, on per Mac in `config.json` | M3 D5 |
 
 ## 8. Owner and human inputs, by day
 
-- **Today, before wave 0:** sign OD-1, OD-2 and OD-8 (they gate the foundations); finish
-  `m1-assemblyai`.
+- **Today, before wave 0:** sign OD-2 and OD-8 (they gate the foundations). OD-1 is done:
+  `m1-assemblyai` merged into `phase-2`.
 - **Today, during waves 0 to 2:** sign the rest. Run T0, T1 and T11 on the Mac. Opt AssemblyAI out
   of training.
-- **Today, after waves:** check the installed app at the end of each wave.
+- **Today, after waves:** check the installed app at the end of each wave, including the meter
+  line in the status and the `stt meter at stop` log line after a short Start and Stop.
 - **Keys, any time:**
-  - `ASSEMBLYAI_API_KEY` and `DEEPGRAM_API_KEY` (M1, M3)
+  - `ASSEMBLYAI_API_KEY` (M1, M2's calls, M3) and `DEEPGRAM_API_KEY` (M3's bake-off run A and the
+    two-vendor draft only)
   - `OPENROUTER_API_KEY` (M4)
   - The Google Cloud project and Desktop OAuth client, plus `CALENDAR_TOKEN_KEY` (M5, about 10
     minutes; the steps are in the M5 plan)
@@ -539,7 +625,10 @@ or a done-when line on purpose. A plan's engineering calls are not repeated here
 
 ## 9. Changes made to the milestone plans
 
-Made in this change, so each agent reads one consistent story in its own plan:
+### 9.1 First pass (with the plans, 2026-10-06)
+
+Made in this change, so each agent reads one consistent story in its own plan. Items marked
+"superseded" were changed again in 9.2.
 
 - **All four plans:** "SHELL", "APP-SHELL" and "SHELL-0" now name M4-S1, S2, S4 and S4b. The
   fallback mounts in M1's window are dropped. Each mount task owns its own `app/slots/<task>.ts`.
@@ -551,18 +640,19 @@ Made in this change, so each agent reads one consistent story in its own plan:
     one event for hide, trim and unhide.
   - T3 owns the backup fixture (it was T15's).
   - T4 makes runtime slots and a status-contributor seam.
-  - T6 depends on M3-T4a (`inlineReplay`) and M3-T5 (file order).
+  - T6 depends on M3-T4a (`inlineReplay`) and M3-T5 (file order). Superseded: no `inlineReplay`
+    (9.2).
   - T7 keeps only the Darwin `check` wiring of the tooling; P2-F3 has the rest. T7 creates stub
     `Probe.swift` and `Monitor.swift`.
   - T14 is split into T14a (pure, wave 0) and T14b.
   - T17b calls `PromptService.offer`, depends on M5-T9b and no longer on M5-T11. The
     `call_detected` gate is confirmed: M5-T1, T4 and T5 carry it.
   - T20b drops `CallCard`.
-  - Local migration 3 is T3's and 4 is M5-T5's.
+  - Local migration 3 is T3's and 4 is M5-T5's. Superseded: 4 and 5 (9.2).
 - **M3:**
   - Builds on `m1-assemblyai`. T1 adds presets on top of the existing issuer, T5 extends the
     existing adapter, and T18 replaces `AudioFrameSizer`. "Today's vendor" now reads AssemblyAI
-    Universal-Streaming.
+    Universal-Streaming. Superseded: T18 keeps `AudioFrameSizer` and paces in the core (9.2).
   - T2 uses `models_vocabulary.py` and the fixed `0002` in the right folder.
   - T4 is split into T4a and T4b, and T6 into T6a and T6b.
   - T7 registers through M4-T21's navigator and no longer owns `CitationNavigator.ts`. It handles
@@ -598,6 +688,95 @@ Made in this change, so each agent reads one consistent story in its own plan:
   - T12 has no mount in M1's window. T13 uses `slots/m5-calendar.ts` and playwright-core.
   - "The only 409 stays the segment one" is replaced.
   - The controller edits to M2 are marked applied.
+
+### 9.2 After `m1-assemblyai` landed (2026-10-06)
+
+`m1-assemblyai` merged into `phase-2` (a3be3ee) after 9.1, with the STT core, both registries,
+the conformance suite and the cost guards (section 0). The plans were edited so no task re-builds
+or fights that code. In short: a vendor is one protocol file, one issuer, a line in each registry
+and one conformance entry; anything new about how a socket behaves is a field the core applies,
+with a conformance case; every open passes `SttOpenBudget`.
+
+- **Local SQLite numbers.** Migration 3 is the landed `stt_usage`. M2-T3 is now migration 4,
+  M5-T5 migration 5, and the new M3-T19b migration 6 (section 2; M2 local schema, M5 file order,
+  M5-T5).
+- **New Alembic revision** `0005_stt_usage.py` (M3-T19a, down `0004`), stubbed by P2-F2 with
+  `db/models_stt_usage.py`, `routers/stt_usage.py` and an "STT usage" contract section.
+- **New tasks:**
+  - **M3-T19a** (M, wave 3, api): STT usage in Postgres and cost per meeting hour: the idempotent
+    `PUT /v1/stt-usage/meetings/{id}` and `GET /v1/stt-usage/summary`. Needs P2-F2.
+  - **M3-T19b** (M, wave 5, desktop): `SttUsageUploader` from the local `stt_usage` rows, local
+    migration 6 (`synced_at`, `gated_ms`), `sttUsageClient.ts`, a runtime slot. Needs T19a, M2-T4,
+    M5-T5 (store order).
+  - **M3-T20** (M, wave 6, desktop): silence-gated streaming: an energy gate per source
+    (`rmsInt16`), a 30 s hang-over, a 2 s pre-roll, reopen through `SttOpenBudget` with a 60 s
+    minimum and a reserve of 10 opens, paced by the core, offsets meeting-relative, three settings
+    in `costGuards.ts`, savings in the meter. It shares the close-and-reopen path with the landed
+    stall pause (stall: no chunks; silence: chunks of near-zero energy). Needs T4b, T6b, T11, T18,
+    T19b, M2-T5, M2-T6, M2-T20a, M5-T5 (file order). New owner decision OD-27 (M3 D5): on by
+    default unless bake-off run F shows a real cost.
+- **Rescoped M2 tasks:**
+  - **M2-T6** is now "STT liveness, offline and gap records": no `ResilientSttStream`, no wrapper
+    in `createSpeechToText.ts`, no replay. It adds ping liveness to `stt/core/SttConnection.ts`
+    (with conformance cases), `networkStatus.ts`, and in `CaptureSession.ts` the `offline` and
+    `asleep` suspend, gap rows, capture events and the watermark, all on the landed reopen. It no
+    longer edits a vendor file or `createSpeechToText.ts`; it merges before M3-T6b in wave 4.
+  - **M2-T2** adds only `offline` (the landed `retrying` is the reconnecting state) and keeps
+    every landed status field.
+  - **M2-T3** writes migration 4 and leaves `stt_usage` alone.
+  - **M2-T4** keeps the cost guards as they are, adds session listeners, a resume start that
+    carries the saved `stt_usage`, `meetings.stop_reason`, and slots for T6 and M3-T19b.
+  - **M2-T5** keeps one timeline per vendor stream; runs replace the landed `BUFFER_GAP_MS` drop.
+  - **M2-T12** and **M2-T18** change one landed G4 decision each in `lifecycle.ts`: a renderer
+    crash or reload reloads and goes on (a failed reload still stops), and a sleep pauses the
+    sessions instead of stopping (a sleep of `noSpeechStopMs` or more still stops).
+  - **M2-T13** raises `ROGER_STT_OPENS_PER_MINUTE` in the e2e harness; **M2-T16** re-runs through
+    the shared budget and adds its usage to the meeting; **M2-T17b** adds a `call-ended` stop
+    reason; **M2-T19**'s STT check opens no session; **M2-T20a** keeps the meter line and the stop
+    notice; **M2-T23** carries the saved usage into a resumed meeting.
+  - The Wi-Fi cut in M2's exit check now needs T16 (AssemblyAI takes no replay faster than real
+    time; the window comes back from the backup). The exit check runs on `STT_PROVIDER=assemblyai`.
+- **Rescoped M3 tasks:**
+  - **M3-T1** (now S): presets as rows in `stt_vendors.py` (`assemblyai` stays Universal-Streaming
+    English; `assemblyai-pro` is Universal-3.6 Pro; `deepgram`; `fake`; `soniox` with T14);
+    `STT_MODEL` retired; the landed TTL refusal kept (no clamp); the issuer and price table not
+    rewritten; `test_stt_token_assemblyai.py` dropped (the landed `test_stt_token.py` covers it).
+  - **M3-T3** adds the keyterm surcharge to the price per stream-hour.
+  - **M3-T4a**: keyterms and their rejection go through `SttProtocol` and the core
+    (`SttConnectError.keytermsRejected`) with a conformance case; no adapter retry, no
+    `inlineReplay`, no held `warning` event.
+  - **M3-T4b**: `CaptureSession` reopens once without keyterms, through `SttOpenBudget`.
+  - **M3-T5**: extends the landed AssemblyAI protocol (Pro model, keyterms, model warning,
+    fixtures) and adds the core's wire tap; it keeps the landed framing, held turns, close codes
+    and `Terminate` (no `ForceEndpoint`) and no longer touches `createSpeechToText.ts`.
+  - **M3-T18** (now M): pacing in the core (`audioPacing`, `AudioPacer`, the paced queue in
+    `SttConnection`), and `AudioFrameSizer` moved to `stt/core/`. This takes the cost work's open
+    issue: the reopen flush of up to 3 s of held audio was not paced and could draw AssemblyAI's
+    3007.
+  - **M3-T11** opens through a bench `SttOpenBudget` and prices runs from each token's price
+    (`bench/report/prices.ts` dropped). **M3-T14** adds Soniox to `stt_vendors.py`, `domain.py`
+    and `config.py`. **M3-T15** is one protocol file, one registry line and one conformance entry
+    (plus an opening-messages hook in the core if Soniox needs it).
+  - Deepgram is no longer the default anywhere. The bake-off compares C `assemblyai`
+    (universal-streaming-english), A `deepgram` (nova-3), D `soniox` (optional) and B
+    `assemblyai-pro` (universal-3-6-pro) only if it is worth its price, then E (no keyterms) and F
+    (the gate). M3-T4a no longer gates M2's exit calls, only Deepgram bench runs.
+- **Foundations:** P2-F1 turns the landed quit cleanup into ordered quit hooks (M4-T16's notes
+  flush runs there), keeps the PCM constants in the barrel and the landed status fields in the
+  fakes, moves nothing under `stt/`, and keeps the cost-guard wiring in `[slot M2-T4 runtime]`.
+  P2-F2 adds the `stt_usage` stubs and revision `0005`, keeps the `stt_vendors.py` import rule
+  (`Settings` only under `TYPE_CHECKING`) and the landed STT section and cost-guard block of
+  `.env.example`.
+- **M4:** the quit flush is a quit hook in `RecordingLifecycle`; S1 keeps the stop notice; S2
+  keeps the `.notice` rule.
+- **M5:** T11's file is `main/app/windowLifecycle.ts`, and T11 makes `watchWindow` stop only on a
+  real close; T5 writes migration 5 and keeps the budget on a requested start.
+- **M1 plan:** the known gaps and the reopen-flush risk now name their owners (M2-T6, T15, T16;
+  M3-T18, T19a, T19b, T20).
+- **Section 3.1** gained rows for `shared/capture.ts`, `lifecycle.ts`, `stopReasons.ts`,
+  `stt/core/*` and the conformance suite, `registry.ts`, `stt/assemblyai/*`, `costGuards.ts`,
+  `format.ts`, `stt_vendors.py`, `domain.py` and both READMEs; `createSpeechToText.ts` left it (no
+  Phase 2 task edits it now).
 
 ## 10. Notes from built tasks (read this if your task id appears below)
 
@@ -635,3 +814,30 @@ later tasks. Each bullet names the task that must act on it.
   through `filterStored`), pass the line as the vendor first wrote it (`original_text` and its
   words), as the doc comment on `filterEcho` says. `ECHO_FILTER_VERSION` is 1.
 - **M3-T6b:** the per-stream `stt latency` log line at Stop is yours (M3-T6a built only the meter).
+
+From `m1-assemblyai` (merged a3be3ee, 2026-10-06), the open issues its cost work left:
+
+- **M3-T18:** the reopen flush sends up to `sttReopenBufferMs` (3 s) of held audio at once right
+  after `Begin`; AssemblyAI may close with 3007 for audio faster than real time (M1 risk table,
+  "The reopen flush trips..."). Pace it in the core, not in `CaptureSession`, so the stall reopen,
+  the failure reopen, M2-T6's offline reopen, M2-T16's re-run and M3-T20's pre-roll are all
+  covered.
+- **M2-T6, M2-T16:** audio between a failure and its reopen is lost beyond the 3 s held, and
+  nothing records it (M1 known gaps). There is no replay: record the gap, re-run it from the
+  backup.
+- **M3-T19a, M3-T19b:** nothing uploads `stt_usage` yet; the API already returns
+  `stream.price_per_hour_usd`, and an older API may omit it (the desktop reads that as unknown).
+- **M3-T20:** M1 named silence-gated streaming as the next guard. `CaptureService.pushAudio`
+  carries a comment placing "M2's silence warning" there; the warning is M2-T11's fan-out sink and
+  the gate lives in `CaptureSession`. M2-T4 updates that comment.
+- **M2-T12, M2-T18, M5-T11:** `lifecycle.ts` stops the recording on a renderer crash, a reload,
+  sleep and a window close. Each of these tasks changes exactly one of those decisions, with a
+  test, and keeps the rest.
+- **M2-T13:** the fake provider passes `SttOpenBudget` too; a third Start inside a minute is
+  refused unless the harness raises `ROGER_STT_OPENS_PER_MINUTE`.
+- **M2-T20a, M4-S1, M4-S2:** the meter line and each source's connected time live in M1's
+  `StatusPanel` (`format.ts` helpers); the stop notice lives in `App.tsx` with a `.notice` rule.
+  Replacing those files must keep both.
+- **M2-T4, M2-T23:** `SttOpenBudget` lives on `CaptureService` and outlives meetings (the vendor
+  counts per account); `stt_usage` is upserted per meeting. A resumed meeting must add to its saved
+  row, not overwrite it.

@@ -133,7 +133,7 @@ the milestone closes when the streak is logged. It runs alongside Gate 2.
 | When the prompt shows | From 1 minute before start (setting: 0, 1, 2, 5 or 10) until start + 10 min, Dismiss, or an action. A 10 s tick reads the local copy; waking from sleep ticks at once. From 2 min before the next due prompt until it shows, the scheduler holds `powerSaveBlocker.start('prevent-app-suspension')`. Every prompt-worthy event gets a `prompts` row: shown, its outcome, or `missed` with a reason. | One `setTimeout` per meeting (openwhispr) | A tick over a small local list survives sleep, clock changes and zone changes with no timer bookkeeping (anarlog ticks every 30 s). With the window hidden, App Nap may coalesce a background app's timers, so a 1-minute lead could become "Started 2 min ago"; the blocker covers only the minutes that matter. A restart never shows a prompt twice. Waking 4 minutes into a call still offers "Started 4 min ago". |
 | Prompt log | `prompts` rows are keyed by account and event key and never deleted; Disconnect clears only `events` and `fetch_state`. Each tick and at launch, an event after the account's first connect whose start + 10 min has passed with no row gets `missed` with the first matching reason: `disconnected` (no connection then), `not_running` (no Roger run covered start − lead), `api_stale` (the event first reached the cache after start − lead), `policy` (Roger ran with the event cached and still showed nothing; `detail` names the rule). A click is logged `starting`, then `started` or `joined_and_started` once both sources deliver audio and both speech streams are open, within 20 s; otherwise `started_degraded` with the source, or `start_failed`. At launch, a `starting` row left by a crash becomes `start_failed` and an unanswered card whose window closed becomes `expired`, both with reason `app_exit`. The streak is one query, `apps/desktop/scripts/calendar-streak.sql`, which its test also runs. | Clear the log on Disconnect; log only shown prompts; log `started` when `CaptureService.start` resolves | The exit check needs durable, honest evidence. The events cache is replaced on every poll, so a call with no prompt left no trace. M1's `start` resolves with a dead "Them" stream. M2's silence warnings are not used for the outcome: before the others join, call audio is legitimately silent. The Postgres check (lines from both sources) covers a stream that delivers only zeros. |
 | One click starts the note | The prompt tells main; main logs the action, sends `app:navigate` to the meeting route and hands the renderer a start request; the renderer runs its normal start path. A prompt action never calls `show()` or `focus()`. If the window is hidden it is ordered in with `showInactive()`; if real-Mac check 3 shows that still pulls the Space away from a full-screen call, the window stays hidden and the panel shows "Taking notes · Open Roger" for 5 s. The menu bar icon shows recording either way. While a note is recording, the button reads "Stop current note and start". "Join and take notes" also opens the event's Meet, Zoom or Teams link (host allowlist), then starts. A request waits in main up to 60 s for a window that is still loading. | Show the main window on the meeting page; main starts capture by itself | `show()` activates Roger: over a full-screen Meet macOS switches Spaces away from the call, and after "Join" it covers the tab that just opened, undoing the panel's `focusable: false`. Audio capture lives in the renderer (`useCapture` → `AudioCaptureController`), so the renderer must run it. Join links are opened only for known hosts: openwhispr `meetingJoinUrl.js`. |
-| Roger keeps running | Closing the window hides it; the renderer and any recording keep running (`backgroundThrottling: false`). Roger lives in the menu bar; Cmd+Q or the menu's Quit ends it. Open at login turns on when the calendar first connects (packaged builds only, once real-Mac check 1 passes), with a toggle in Settings. A login launch is detected with `app.getLoginItemSettings().wasOpenedAtLogin` and starts with the window hidden; when that reads false the window shows, which is only cosmetic. A dev build sets `userData` to "Roger Dev" before `requestSingleInstanceLock`. | Quit when the last window closes (today); `openAsHidden` | A prompt needs a running app, and today closing the window quits and would end a recording. `openAsHidden` does nothing on macOS 13+ and is gone from Electron 44's `Settings` type; openwhispr `autoStartPolicy.js` reads `wasOpenedAtLogin` for the same reason. macOS 13+ registers login items through SMAppService, and registration from a build signed without an Apple team id is unverified here, hence check 1. A login item can wait for approval: Settings shows `requires-approval` with the path System Settings → General → Login Items & Extensions (macOS 15+). `productName` is "Roger" in dev and packaged builds, so both used the same `userData` and the same single-instance lock (Electron keys it on `userData`): with Roger.app always in the menu bar, `make dev-desktop` would quit at once, and two copies would share `roger.sqlite` and `calendar.sqlite`. A dev build must never register Electron.app as a login item. |
+| Roger keeps running | Closing the window hides it; the renderer and any recording keep running (`backgroundThrottling: false`). Roger lives in the menu bar; Cmd+Q or the menu's Quit ends it. Open at login turns on when the calendar first connects (packaged builds only, once real-Mac check 1 passes), with a toggle in Settings. A login launch is detected with `app.getLoginItemSettings().wasOpenedAtLogin` and starts with the window hidden; when that reads false the window shows, which is only cosmetic. A dev build sets `userData` to "Roger Dev" before `requestSingleInstanceLock`. | Quit when the last window closes (today); `openAsHidden` | A prompt needs a running app, and today closing the window quits and ends a recording (the landed cost guard G4 stops it on the window's `close`; T11 moves that stop to a real close). `openAsHidden` does nothing on macOS 13+ and is gone from Electron 44's `Settings` type; openwhispr `autoStartPolicy.js` reads `wasOpenedAtLogin` for the same reason. macOS 13+ registers login items through SMAppService, and registration from a build signed without an Apple team id is unverified here, hence check 1. A login item can wait for approval: Settings shows `requires-approval` with the path System Settings → General → Login Items & Extensions (macOS 15+). `productName` is "Roger" in dev and packaged builds, so both used the same `userData` and the same single-instance lock (Electron keys it on `userData`): with Roger.app always in the menu bar, `make dev-desktop` would quit at once, and two copies would share `roger.sqlite` and `calendar.sqlite`. A dev build must never register Electron.app as a login item. |
 | Linking a meeting to its event | The meeting create carries `start_source` and an optional `calendar_event` (event id, iCal UID, recurring event id, scheduled start and end, attendees). The API stores the ids on `meetings` and attendees in `meeting_attendees`. `start_source` includes `call_detected` for M2. | A JSON snapshot column; linking after the fact | One create keeps idempotency simple (house rule 7). A table lets M7 and M8 filter by person and M9 attach a speaker name per attendee. The iCal UID is the same for every invitee, so from M6 two teammates' notes of one call can be matched. `start_source` turns the exit check into a query. M5 owns the `meetings` column and its check constraint, so M2's value lands in the same migration rather than a second one. |
 | Manual start near a meeting | A start from Home "New note", the menu bar or a call-detected card links to an event only when exactly one prompt-worthy event is running or starts within 5 min. Applied by a `StartRequestEnricher` that T9c injects into `CaptureService.start`. | Never link a manual start | Title and attendees still come from the invite when the prompt was missed. Two overlapping calls link nothing rather than the wrong one. `CaptureService` cannot see the calendar cache, so the rule reaches it through one injected port. |
 | Notice to others | On by default. The prompt has "Copy notice"; the meeting page shows a banner with the same button until copied or dismissed. The text is a setting. Copy goes through Electron `clipboard` in main, which works from the unfocused panel. | Post it into the Meet chat for the user | The roadmap asks M5 for a reminder and a one-click message; posting into Meet is M9's extension. **Owner decision D3** for the wording. |
@@ -214,7 +214,8 @@ follows M2-T3 and M4-T22.
 | `src/main/capture/CaptureService.ts`, `src/main/index.ts`, `src/main/ipc.ts` | M2-T4 (seams, composition root), then M5-T5, then M5-T9c and M5-T11 (one block each in `index.ts`; whichever merges second rebases) |
 | `src/renderer/src/state/useCapture.ts` | M2-T12, then M5-T5 (`start(request)` as a thin wrapper over the existing start), then M3-T9, which keeps the wrapper |
 | `src/main/window.ts` | M2-T12, then M5-T11 |
-| `roger.sqlite` migrations | M2-T3's migration 3, then M5-T5's migration 4 |
+| `src/main/lifecycle.ts` (the landed `RecordingLifecycle`) | P2-F1 (quit hooks), M2-T12, M2-T18, then M5-T11 (a hide never stops the recording) |
+| `roger.sqlite` migrations | M1's migration 3 (`stt_usage`, landed), M2-T3's migration 4, then M5-T5's migration 5 (M3-T19b's 6 follows) |
 | Alembic | `0004_calendar`, `down_revision = "0003"`, fixed (M3 is `0002`, M4 is `0003`) |
 
 ### API contract changes (`docs/api-contract.md`, in the same commits as the code)
@@ -514,11 +515,14 @@ T11 in wave 6; T12 in wave 7; T13 in wave 8.
   bridge and preview fake, `src/main/ipc.ts`, `src/main/ipc-validation.ts`;
   `CaptureService.start(request)` with an optional injected `StartRequestEnricher` port, and
   `requestStart(request)` / `takePendingStart()` (a request expires after 60 s); `roger.sqlite`
-  migration 4 (after M2-T3's migration 3), `findMeetingIdsByEventIds` in the store; the create payload in
-  `TranscriptUploader.ts` and `ApiClient.createMeeting`. Edits `src/renderer/src/state/useCapture.ts`
-  after M2-T12: `start(request)` as a thin wrapper over the existing start, and taking a pending
-  request on mount. Edits `CaptureService.ts` after M2-T4 and M4-T22, and `TranscriptUploader.ts`
-  after M2-T3b and M4-T22.
+  migration 5 (after M2-T3's migration 4; 3 is M1's `stt_usage`), `findMeetingIdsByEventIds` in
+  the store; the create payload in `TranscriptUploader.ts` and `ApiClient.createMeeting`. Edits
+  `src/renderer/src/state/useCapture.ts` after M2-T12: `start(request)` as a thin wrapper over the
+  existing start (it keeps the landed `followMain` call and the status re-read on focus), and
+  taking a pending request on mount. Edits `CaptureService.ts` after M2-T4 and M4-T22, and
+  `TranscriptUploader.ts` after M2-T3b and M4-T22. `start(request)` keeps the landed cost guards:
+  a requested start passes `SttOpenBudget` like a pressed one, and a refusal (a third quick start
+  in a minute) reaches `PromptService` as the start's outcome.
 - [ ] **M5-T6** Owns `src/main/calendar/oauthLoopback.ts`, `src/main/calendar/CalendarAccount.ts`,
   `src/main/api/calendarClient.ts` (implementing T8's `CalendarApiPort` on P2-F1's `http.ts`,
   DELETE included), `src/shared/ipc/calendar.ts` (account status, connect, disconnect, events, sync
@@ -560,7 +564,9 @@ T11 in wave 6; T12 in wave 7; T13 in wave 8.
   Calendar card: "Starting in 1 min" or "Started 3 min ago", title, time range, "Jane, Ali and 3
   others", Join and take notes (only with a video link), Take notes, Copy notice (when on),
   Dismiss. Call-detected card, stale-calendar card, and the 5 s "Taking notes · Open Roger" state.
-- [ ] **M5-T11** Owns `src/main/app/{tray,trayMenu,loginItem,loginItemPolicy,lifecycle,userDataPath}.ts`,
+- [ ] **M5-T11** Owns `src/main/app/{tray,trayMenu,loginItem,loginItemPolicy,windowLifecycle,userDataPath}.ts`
+  (named `windowLifecycle.ts`, not `lifecycle.ts`: the landed `src/main/lifecycle.ts` is the
+  recording's `RecordingLifecycle`),
   `src/shared/ipc/loginItem.ts` with its bridge and preview fake, `src/main/app/loginItemIpc.ts`,
   `build/trayTemplate.png`, `build/trayRecordingTemplate.png`, `build/trayWarningTemplate.png` and
   their `@2x`, and two slots in `src/main/index.ts`. `[slot M5-T11 userData]`: `userData` set to
@@ -569,10 +575,15 @@ T11 in wave 6; T12 in wave 7; T13 in wave 8.
   slot comes first). `[slot M5-T11 lifecycle]`:
   `window-all-closed` no longer quits; `activate` shows the window; login launch from
   `wasOpenedAtLogin`. Edits `src/main/window.ts` after M2-T12: close hides, `backgroundThrottling:
-  false`. Menu: next meeting, Start notes now, Stop note while recording, "Calendar not updated
-  since …" when stale, "Reconnect Google Calendar (before <date>)" when needed, Open Roger, Quit
-  Roger. Icon states: idle, recording, warning. Default-on at first connect ships only after
-  real-Mac check 1 passes; until then `app.openAtLogin` defaults to `off`. Adds the dev-data
+  false`. Edits `src/main/lifecycle.ts` (wave 6, after M2-T12 and M2-T18): today `watchWindow` stops
+  the recording on the window's `close` event (cost guard G4, reason `window-closed`), which still
+  fires when the close is turned into a hide; it now stops only when the window is really closed
+  (`closed`, which with close-hides happens only while quitting), with a test that a hide keeps
+  recording. Quit still goes through `RecordingLifecycle`; the tray's Quit calls `app.quit()` and
+  adds no stop of its own. Menu: next meeting, Start notes now, Stop note while recording, "Calendar
+  not updated since …" when stale, "Reconnect Google Calendar (before <date>)" when needed, Open
+  Roger, Quit Roger. Icon states: idle, recording, warning. Default-on at first connect ships only
+  after real-Mac check 1 passes; until then `app.openAtLogin` defaults to `off`. Adds the dev-data
   failure-log line to `CLAUDE.md`.
 - [ ] **M5-T12** Owns `src/renderer/src/calendar/*`: `TodaySection`, `NextMeetingCard`,
   `ConnectCalendarCard`, `CalendarSettings` (open at login status and toggle, with
@@ -591,7 +602,7 @@ T11 in wave 6; T12 in wave 7; T13 in wave 8.
 ## Tests
 
 Tests are named per behaviour. API tests run against the real Postgres test database and mock
-Google with `httpx.MockTransport`, as `test_stt_token.py` does for Deepgram.
+Google with `httpx.MockTransport`, as `test_stt_token.py` does for AssemblyAI and Deepgram.
 
 | What | Test |
 | --- | --- |
@@ -633,7 +644,7 @@ Google with `httpx.MockTransport`, as `test_stt_token.py` does for Deepgram.
 | Panel placement: top right with a 16 px margin, on the display under the cursor, clamped on a display with a negative origin | `src/main/prompt/promptBounds.test.ts` |
 | The prompt page navigates as the app but gets no `media` | `src/main/page-policy.test.ts` |
 | Card text: "Starting in 1 min", "Started 3 min ago", "Jane, Ali and 3 others", "Untitled meeting", "Zoom is using the mic" | `src/renderer/src/prompt/promptFormat.test.ts` |
-| Close hides unless quitting; quit still stops capture and closes the store; a login launch (`wasOpenedAtLogin`) stays hidden, any other launch shows the window; reopening shows the window | `src/main/app/lifecycle.test.ts` |
+| Close hides unless quitting, and a hide never stops the recording (the landed `window-closed` stop fires only on a real close); quit still stops capture and closes the store through `RecordingLifecycle`; a login launch (`wasOpenedAtLogin`) stays hidden, any other launch shows the window; reopening shows the window | `src/main/app/windowLifecycle.test.ts`, `src/main/lifecycle.test.ts` |
 | A dev build's data folder is "Roger Dev" and a packaged build's is "Roger" | `src/main/app/userDataPath.test.ts` |
 | Menu model: next meeting line, Start notes now, Stop note while recording, stale line, Reconnect (with date), Quit; icon idle, recording, warning | `src/main/app/trayMenu.test.ts` |
 | Login item never registered when not packaged; turned on at first connect unless the user turned it off; reports `requires-approval` | `src/main/app/loginItemPolicy.test.ts` |
