@@ -14,7 +14,8 @@ import Foundation
 //   payload        mono Int16 little-endian PCM at the output rate (16 kHz: `linear16`)
 // A frame is one chunk long (100 ms, 3,200 bytes) except the last frame before a discontinuity (the
 // tap was rebuilt, the ring dropped audio, the tap clock jumped) and the last one at exit, which
-// are shorter. So a frame never spans a gap: each sample's time follows from its frame's header.
+// may be shorter. So a frame never spans a gap: each sample's time follows from its frame's header,
+// and a parser must take the length from the header, not assume 3,200.
 //
 // stderr carries one JSON object per line, "event" first:
 //   ready      {format: {encoding, sampleRate, channels, chunkMs}, tapFormat: {sampleRate, channels}}
@@ -35,8 +36,10 @@ import Foundation
 //
 // `monitor` (M2-T8) and `probe` (M2-T7b) define their own output in their files.
 
-/// The helper's exit codes. HelperProcess restarts the helper on any code but `ok`.
+/// The helper's exit codes.
 enum ExitCode: Int32 {
+  /// A deliberate exit: stdin ended, the parent died, a termination signal, or stdout or stderr
+  /// closed.
   case ok = 0
   /// A runtime failure, reported first as an `error` event; or a failed selftest.
   case failure = 1

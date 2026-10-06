@@ -4,10 +4,12 @@ import Foundation
 // `roger-audio selftest`: the helper's own tests. `make check` runs them on a Mac.
 //
 // They cover everything that needs no audio permission: the frame header and capture times, the
-// ring and its overflow count, the converter, the writer thread, stdin commands, the parent watch
-// and the rebuild debounce. Nothing here creates a process tap or opens an audio device, so it
-// never raises a macOS privacy prompt and runs unattended. The tap itself is exercised by
-// `selftest --route-switch` (`make test-native-route`: opt-in, audible, M2-T7b) and by the probe.
+// ring and its overflow count, the converter, the writer thread, the IO block's mixdown, stdin
+// commands, the parent watch, signals, the rebuild debounce, and the tap session driven through a
+// fake TapDevice. Nothing here creates a process tap or opens an audio device, so it never raises
+// a macOS privacy prompt and runs unattended; keep it that way, since `make check` runs it on
+// every pass. The real tap is exercised by `selftest --route-switch` (`make test-native-route`:
+// opt-in, audible, M2-T7b) and by the probe.
 
 func runSelfTest(arguments: [String]) -> Int32 {
   switch arguments {
