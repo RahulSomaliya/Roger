@@ -368,6 +368,10 @@ The desktop refuses a save over these limits before sending it (`noteDocProblem`
 saved but the API refused would stay unsynced on the Mac and be sent again forever. A body nested
 past what the JSON parser reads (thousands of levels) is a `400 bad_request` before these checks.
 
+Postgres cannot store U+0000 or an unpaired UTF-16 surrogate (half of an emoji) in a doc. Neither
+is text anyone reads, so the API drops each U+0000 and replaces each unpaired surrogate with
+U+FFFD, in keys and values alike, and answers with the doc as stored.
+
 ### Notes runs and streaming
 
 Not built yet. Owner: M4-T8, which writes its routes here, with their `409`s.

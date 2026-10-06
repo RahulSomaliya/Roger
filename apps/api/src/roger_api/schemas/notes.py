@@ -13,6 +13,7 @@ says "syncing". Change the two together, with docs/api-contract.md.
 
 import json
 import math
+import re
 from typing import Annotated, Any, Self
 from uuid import UUID
 
@@ -31,6 +32,10 @@ MAX_NOTE_DOC_DEPTH = 32
 # Keys that reach prototypes when the editor turns doc JSON into DOM attributes
 # (GHSA-cp6q-959q-f8rh). Stored docs go back to the editor, so they are refused anywhere in a doc.
 _FORBIDDEN_KEYS = ("__proto__", "constructor", "prototype")
+
+# What jsonb cannot hold in a string: U+0000, and a UTF-16 surrogate. Python's JSON parser joins an
+# escaped pair into one character, so a surrogate left in a parsed string is an unpaired one.
+_UNSTORABLE_CHARACTER = re.compile(r"[\x00\ud800-\udfff]")
 
 # Versions live in a Postgres `integer`.
 NoteVersion = Annotated[int, Field(ge=0, le=2_147_483_647)]
@@ -75,11 +80,44 @@ def note_doc_problem(doc: object) -> str | None:
             free = key == "content" and isinstance(child, list)
             stack.append((child, level if free else level + 1))
     # `JSON.stringify`'s length for everything a doc holds (strings, whole numbers, booleans):
-    # compact separators, and characters as they are, not as \u escapes.
-    size = len(json.dumps(doc, ensure_ascii=False, separators=(",", ":")).encode())
+    # compact separators, and characters as they are, not as \u escapes. An unpaired surrogate,
+    # which plain UTF-8 cannot encode, counts 3 bytes, as the U+FFFD stored for it
+    # (`storable_doc`); JSON.stringify writes it as a 6-byte escape, so this stays more lenient.
+    text = json.dumps(doc, ensure_ascii=False, separators=(",", ":"))
+    size = len(text.encode("utf-8", "surrogatepass"))
     if size > MAX_NOTE_DOC_BYTES:
         return f"larger than {MAX_NOTE_DOC_BYTES} bytes"
     return None
+
+
+def storable_doc(doc: dict[str, Any]) -> dict[str, Any]:
+    """A copy of `doc` that jsonb can hold: every U+0000 dropped and every unpaired surrogate
+    replaced by U+FFFD, in keys and values alike. Call it only on a doc `note_doc_problem` passed,
+    which bounds the recursion.
+
+    Postgres refuses either one in jsonb, so a doc stored as sent was a 500. The desktop's
+    `noteDocProblem` lets both through (a pasted NUL, half an emoji), and refusing them would leave
+    a character nobody can see holding the note dirty on the Mac forever. Neither is text anyone
+    reads, so the API stores the doc without them and answers with the doc as stored. Every other
+    writer of a notes doc (the AI doc built from model text, M4-T8) passes it through here too.
+    """
+    return {_storable_text(key): _storable_value(value) for key, value in doc.items()}
+
+
+def _storable_value(value: object) -> object:
+    if isinstance(value, str):
+        return _storable_text(value)
+    if isinstance(value, list):
+        return [_storable_value(child) for child in value]
+    if isinstance(value, dict):
+        return storable_doc(value)
+    return value
+
+
+def _storable_text(text: str) -> str:
+    return _UNSTORABLE_CHARACTER.sub(
+        lambda match: "" if match.group() == "\x00" else "\ufffd", text
+    )
 
 
 def _a_storable_doc(doc: object) -> dict[str, Any]:
@@ -88,10 +126,11 @@ def _a_storable_doc(doc: object) -> dict[str, Any]:
     problem = note_doc_problem(doc)
     if problem is not None:
         raise ValueError(f"Doc {problem}")
-    return doc
+    return storable_doc(doc)
 
 
 # Checked before pydantic reads it as a dict, so a list or a string says "not a TipTap doc" too.
+# What the route stores is `storable_doc` of what was sent.
 NoteDoc = Annotated[dict[str, Any], BeforeValidator(_a_storable_doc)]
 
 

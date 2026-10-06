@@ -573,6 +573,36 @@ def test_size_is_utf8_bytes_of_the_compact_json() -> None:
     assert note_doc_problem(doc_saying("\u00e9" * (half + 1))) is not None
 
 
+async def test_text_postgres_cannot_store_is_stored_without_it(client: httpx.AsyncClient) -> None:
+    # jsonb holds no U+0000 and no unpaired surrogate; both were a 500. The desktop's check lets
+    # them through (JSON.stringify escapes them), so refusing them would leave an invisible
+    # character holding the note dirty forever: they are stored the way Postgres can.
+    meeting = await create_meeting(client)
+    sent = (
+        '{"type":"doc","attrs":{"a\\u0000b":"c\\u0000d"},"content":['
+        '{"type":"text","text":"high \\ud83d, low \\ude00, pair \\ud83d\\ude00"}]}'
+    )
+    stored = {
+        "type": "doc",
+        "attrs": {"ab": "cd"},
+        "content": [{"type": "text", "text": "high \ufffd, low \ufffd, pair \U0001f600"}],
+    }
+
+    body = f'{{"doc":{sent},"base_version":0,"revision_id":"{uuid4()}"}}'
+    note = saved(await put_raw_note(client, meeting["id"], "user", body))
+
+    assert note["doc"] == stored
+    assert (await get_notes(client, meeting["id"]))["user"] == note
+
+
+def test_an_unpaired_surrogate_is_measured_no_larger_than_the_desktop_measures_it() -> None:
+    # JSON.stringify writes one as a six-byte \u escape; stored, it is a three-byte U+FFFD.
+    overhead = compact_size(doc_saying(""))
+    lone = "\ud83d" * ((MAX_NOTE_DOC_BYTES - overhead) // 6)
+
+    assert note_doc_problem(doc_saying(lone)) is None
+
+
 def test_values_json_cannot_carry_are_refused() -> None:
     for value in (float("nan"), float("inf"), float("-inf")):
         doc = {"type": "doc", "content": [{"type": "paragraph", "attrs": {"value": value}}]}
