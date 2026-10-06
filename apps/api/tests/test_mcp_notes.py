@@ -160,12 +160,12 @@ async def test_get_notes_returns_ai_and_user_notes_as_markdown(
         "\n"
         "# AI notes\n"
         "\n"
-        "## Decisions\n"
+        "### Decisions\n"
         "\n"
         "- Beta ships Friday [00:03:12]\n"
         "- The pilot stays at $50k for the first year [00:05:05]\n"
         "\n"
-        "## Action items\n"
+        "### Action items\n"
         "\n"
         "- Them: send the security questionnaire by Wednesday [01:02:05]\n"
         "- Me: book the follow-up for the 14th [00:10:10] [00:10:55]\n"
@@ -179,7 +179,7 @@ async def test_get_notes_returns_ai_and_user_notes_as_markdown(
         "\n"
         "# My notes\n"
         "\n"
-        "### Pricing\n"
+        "#### Pricing\n"
         "\n"
         "- 50k **first year**\n"
         "- Q3 renewal?\n"
@@ -299,11 +299,11 @@ async def test_get_notes_keeps_a_section_added_after_from_your_notes_in_the_ai_n
     assert notes.endswith(
         "# AI notes\n"
         "\n"
-        "## Decisions\n"
+        "### Decisions\n"
         "\n"
         "- Beta ships Friday [00:03:12]\n"
         "\n"
-        "## Follow-ups\n"
+        "### Follow-ups\n"
         "\n"
         "- Legal signed off [00:03:12]\n"
         "\n"
@@ -317,6 +317,53 @@ async def test_get_notes_keeps_a_section_added_after_from_your_notes_in_the_ai_n
         "\n"
         "(No notes yet.)"
     )
+
+
+async def test_get_notes_puts_every_doc_heading_under_its_section(
+    app: FastAPI, client: httpx.AsyncClient
+) -> None:
+    # Typing "# " in either editor makes a level-1 heading. Kept at level 1 it would read as a
+    # section of the tool's own: the user's "# AI notes" would start a second AI notes section.
+    meeting_id = await create_ended_meeting(
+        client, "Level one", "2026-10-05T10:00:00Z", "2026-10-05T10:30:00Z"
+    )
+    ai_doc: Json = {
+        "type": "doc",
+        "content": [
+            {"type": "heading", "attrs": {"level": 1}, "content": [text("Acme call")]},
+            bullets(paragraph(text("Beta ships Friday "), chip(192_000))),
+        ],
+    }
+    user_doc: Json = {
+        "type": "doc",
+        "content": [
+            {"type": "heading", "attrs": {"level": 1}, "content": [text("AI notes")]},
+            bullets(paragraph(text("call Bob"))),
+        ],
+    }
+    await put_note(client, meeting_id, "ai", ai_doc)
+    await put_note(client, meeting_id, "user", user_doc)
+
+    notes, is_error = await call_get_notes(app, meeting_id=meeting_id)
+
+    assert not is_error
+    assert notes.endswith(
+        "# AI notes\n"
+        "\n"
+        "## Acme call\n"
+        "\n"
+        "- Beta ships Friday [00:03:12]\n"
+        "\n"
+        "# My notes\n"
+        "\n"
+        "## AI notes\n"
+        "\n"
+        "- call Bob"
+    )
+    assert [line for line in notes.splitlines() if line.startswith("# ")] == [
+        "# AI notes",
+        "# My notes",
+    ]
 
 
 async def test_get_notes_in_an_empty_workspace_says_no_meetings_yet(app: FastAPI) -> None:

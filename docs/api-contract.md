@@ -643,11 +643,11 @@ Started: 2026-10-05T10:00:00Z   Ended: 2026-10-05T10:31:12Z
 
 # AI notes
 
-## Decisions
+### Decisions
 
 - Beta ships Friday [00:03:12]
 
-## Action items
+### Action items
 
 - Me: book the follow-up for the 14th [00:10:10] [00:10:55]
 
@@ -659,7 +659,7 @@ Started: 2026-10-05T10:00:00Z   Ended: 2026-10-05T10:31:12Z
 
 # My notes
 
-### Pricing
+#### Pricing
 
 - 50k **first year**
 ```
@@ -678,7 +678,8 @@ Started: 2026-10-05T10:00:00Z   Ended: 2026-10-05T10:31:12Z
 - `# My notes`: the user's doc; "(No notes yet.)" when there is none or it is empty.
 - Lines the app flags "check this" (citation `support: "weak"`) carry no mark here: their times
   read like any other. A cue for MCP is an open product call.
-- Text is Markdown as written, never escaped. Headings inside the docs keep their own levels.
+- Text is Markdown as written, never escaped. Headings inside the docs go one level lower, so
+  each sits under its section: a doc's level-1 heading reads `##`, and level 6 stays at 6.
 
 A missing id, or one in another workspace, returns a tool error "Meeting not found". An empty
 workspace returns "No meetings yet". Both docs come back whole in one text block; date ranges and

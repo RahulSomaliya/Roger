@@ -74,6 +74,10 @@ NO_AI_NOTES_YET = "(No AI notes yet.)"
 # say a run is still to come when it already ran.
 NO_AI_NOTES_FROM_THE_TRANSCRIPT = f"(No lines from the transcript. See {FROM_YOUR_NOTES_HEADING}.)"
 NO_NOTES_YET = "(No notes yet.)"
+# The section headings above are level 1, and typing "# " in either editor makes a level-1 heading.
+# At its own level a user's "# AI notes" would start a second AI notes section, so every doc
+# heading goes one level lower.
+DOC_HEADING_OFFSET = 1
 
 # The SDK's own localhost allowlist, kept when MCP_ALLOWED_HOSTS adds deployment hostnames.
 _LOCAL_HOSTS = ["127.0.0.1:*", "localhost:*", "[::1]:*"]
@@ -152,13 +156,17 @@ def render_notes(meeting: Meeting, meeting_notes: MeetingNotes) -> str:
     ai = (
         AiNotesMarkdown(notes="", from_your_notes="")
         if meeting_notes.ai is None
-        else render_ai_notes(meeting_notes.ai.doc)
+        else render_ai_notes(meeting_notes.ai.doc, heading_offset=DOC_HEADING_OFFSET)
     )
     empty_ai = NO_AI_NOTES_FROM_THE_TRANSCRIPT if ai.from_your_notes else NO_AI_NOTES_YET
     parts = [header, f"# {AI_NOTES_HEADING}", ai.notes or empty_ai]
     if ai.from_your_notes:
         parts += [f"# {FROM_YOUR_NOTES_HEADING}", ai.from_your_notes]
-    mine = "" if meeting_notes.user is None else render_markdown(meeting_notes.user.doc)
+    mine = (
+        ""
+        if meeting_notes.user is None
+        else render_markdown(meeting_notes.user.doc, heading_offset=DOC_HEADING_OFFSET)
+    )
     parts += [f"# {MY_NOTES_HEADING}", mine or NO_NOTES_YET]
     return "\n\n".join(parts)
 

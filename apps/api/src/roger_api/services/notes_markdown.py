@@ -65,27 +65,34 @@ class NoteBlock:
     not things the user wrote."""
 
 
-def render_markdown(doc: Mapping[str, object]) -> str:
-    """Any notes doc as Markdown: the user's notes, or the whole AI doc as chat context."""
-    return _render(_node(doc).content)
+def render_markdown(doc: Mapping[str, object], *, heading_offset: int = 0) -> str:
+    """Any notes doc as Markdown: the user's notes, or the whole AI doc as chat context.
+
+    `heading_offset` lowers every heading that many levels, capped at 6, for a caller that puts the
+    doc under a heading of its own: at its own level, a doc heading reads as a sibling of it.
+    """
+    return _render(_node(doc).content, heading_offset)
 
 
-def render_ai_notes(doc: Mapping[str, object]) -> AiNotesMarkdown:
+def render_ai_notes(doc: Mapping[str, object], *, heading_offset: int = 0) -> AiNotesMarkdown:
     """The AI doc with its "From your notes" section split off, so MCP can show it apart.
 
     The section runs from that heading to the next top-level heading at its level or higher, not to
     the end of the doc. The doc is editable and its end is where a user adds a section: a line they
     copy there with its chip came from the call, and inside the list it would read "Not said on the
     call". A section after the list stays with the AI notes.
+
+    `heading_offset` is `render_markdown`'s. The split reads the doc's own levels: lowered first, a
+    level-6 subsection would meet a level-5 list heading at the cap and end the list.
     """
     nodes = _node(doc).content
     start = _from_your_notes_index(nodes)
     if start is None:
-        return AiNotesMarkdown(notes=_render(nodes), from_your_notes="")
+        return AiNotesMarkdown(notes=_render(nodes, heading_offset), from_your_notes="")
     end = _section_end(nodes, start)
     return AiNotesMarkdown(
-        notes=_render((*nodes[:start], *nodes[end:])),
-        from_your_notes=_render(nodes[start + 1 : end]),
+        notes=_render((*nodes[:start], *nodes[end:]), heading_offset),
+        from_your_notes=_render(nodes[start + 1 : end], heading_offset),
     )
 
 
@@ -177,13 +184,29 @@ class _Block:
         return "\n".join([self.lead + first, *later])
 
 
-def _render(nodes: Sequence[_Node]) -> str:
+def _render(nodes: Sequence[_Node], heading_offset: int = 0) -> str:
     out = ""
-    for block in _walk(nodes, "", joined=False):
+    for block in _walk(_headings_lowered(nodes, heading_offset), "", joined=False):
         if out:
             out += "\n" if block.joined else "\n\n"
         out += block.markdown
     return out
+
+
+def _headings_lowered(nodes: Sequence[_Node], by: int) -> tuple[_Node, ...]:
+    """`nodes` with every heading, at any depth, `by` levels lower, capped at 6."""
+    if by == 0:
+        return tuple(nodes)
+    return tuple(
+        replace(
+            node,
+            attrs={**node.attrs, "level": min(6, _heading_level(node.attrs) + by)}
+            if node.type == "heading"
+            else node.attrs,
+            content=_headings_lowered(node.content, by),
+        )
+        for node in nodes
+    )
 
 
 def _walk(nodes: Sequence[_Node], hang: str, *, joined: bool) -> Iterator[_Block]:

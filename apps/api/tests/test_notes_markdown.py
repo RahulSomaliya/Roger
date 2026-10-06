@@ -271,6 +271,38 @@ def test_from_your_notes_ends_at_the_next_heading_at_its_level_or_higher(level: 
     )
 
 
+def test_heading_offset_lowers_every_heading_up_to_level_six() -> None:
+    notes = doc(
+        heading(1, "Acme call"),
+        heading(5, "Detail"),
+        heading(6, "Fine print"),
+        bullets(item(heading(2, "Nested"))),
+        {"type": "heading", "attrs": {"level": 9}, "content": inline("Odd level")},
+    )
+
+    assert render_markdown(notes, heading_offset=1) == (
+        "## Acme call\n\n###### Detail\n\n###### Fine print\n\n- ### Nested\n\n## Odd level"
+    )
+
+
+def test_ai_notes_heading_offset_splits_on_the_doc_s_own_levels() -> None:
+    # Lowered first, the level-6 subsection would meet the list's level-5 heading at the cap and
+    # end the list early.
+    ai_doc = doc(
+        heading(1, "Decisions"),
+        bullets(item("Beta ships Friday")),
+        heading(5, "From your notes"),
+        bullets(item("Ask about Q3")),
+        heading(6, "Pricing"),
+        bullets(item("Ask about seats")),
+    )
+
+    assert render_ai_notes(ai_doc, heading_offset=1) == AiNotesMarkdown(
+        notes="## Decisions\n\n- Beta ships Friday",
+        from_your_notes="- Ask about Q3\n\n###### Pricing\n\n- Ask about seats",
+    )
+
+
 def test_ai_notes_without_from_your_notes_have_an_empty_list() -> None:
     ai_doc = doc(heading(2, "Decisions"), bullets(item("Beta ships Friday")))
 
