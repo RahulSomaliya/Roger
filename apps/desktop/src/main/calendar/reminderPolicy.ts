@@ -143,7 +143,14 @@ export interface MissedReasonInput {
   leadMinutes: ReminderLeadMinutes;
   /** The account's `connections_log` rows; `disconnectedAtMs` is null while connected. */
   connections: readonly { connectedAtMs: number; disconnectedAtMs: number | null }[];
-  /** Roger's `runs` rows: each run's start and its last heartbeat tick. */
+  /**
+   * Roger's `runs` rows: each one stretch Roger was awake, from its launch or wake to its last
+   * heartbeat tick. The scheduler (M5-T9a) opens a new row on `powerMonitor` `resume`, before that
+   * tick writes anything, and never extends a row across a sleep: a row covers every moment from
+   * its start to its last tick, so a call due while the lid was shut would be logged `policy` (or
+   * `api_stale`, for an invite that arrived during the sleep) instead of `not_running`, and the
+   * owner would tune rules that never ran.
+   */
   runs: readonly { startedAtMs: number; lastTickAtMs: number }[];
   /**
    * When this key first reached the `events` cache, or null when it never did: it came only from
@@ -156,7 +163,8 @@ export interface MissedReasonInput {
  * The first reason that explains a missed prompt, judged at the moment it was due (start − lead):
  * no connection then, no Roger run covering it, the event not yet in the local copy, or else the
  * policy (Roger ran with the event cached and showed nothing). For `policy`, the scheduler writes
- * the `PolicyRule` it last saw for the key into `detail`.
+ * the `PolicyRule` it last saw for the key into `detail`. "Ran" is read from the `runs` rows, which
+ * say nothing about a sleep inside a row: the rows must be split at each wake (see `runs`).
  */
 export function missedReason(input: MissedReasonInput): MissedReason {
   const dueAtMs = dueWindow(input.event, input.leadMinutes).fromMs;
@@ -165,7 +173,8 @@ export function missedReason(input: MissedReasonInput): MissedReason {
       connectedAtMs <= dueAtMs && (disconnectedAtMs === null || dueAtMs < disconnectedAtMs),
   );
   if (!connected) return 'disconnected';
-  // A run whose last tick came before the due moment died (or quit) before it could show anything.
+  // A run whose last tick came before the due moment quit, crashed or slept before it could show
+  // anything; a run that resumes after a sleep is a new row, so it cannot cover a moment it slept.
   const running = input.runs.some(
     ({ startedAtMs, lastTickAtMs }) => startedAtMs <= dueAtMs && dueAtMs <= lastTickAtMs,
   );

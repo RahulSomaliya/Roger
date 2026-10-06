@@ -303,6 +303,22 @@ describe('missedReason', () => {
     );
   });
 
+  it('is not_running for a call due while the Mac slept, once the run is split at the wake', () => {
+    // Roger ran from 08:00 and the Mac slept from 08:50 to 09:30, across the 08:59 prompt time.
+    const beforeSleep = {
+      startedAtMs: ms('2026-10-06T08:00:00Z'),
+      lastTickAtMs: ms('2026-10-06T08:49:50Z'),
+    };
+    const afterWake = {
+      startedAtMs: ms('2026-10-06T09:30:00Z'),
+      lastTickAtMs: ms('2026-10-06T09:40:00Z'),
+    };
+    const runs = [beforeSleep, afterWake];
+    expect(reason({ runs })).toBe('not_running');
+    // An invite that arrived during the sleep and was cached after the wake: the sleep, not the API.
+    expect(reason({ runs, firstSeenAtMs: ms('2026-10-06T09:30:20Z') })).toBe('not_running');
+  });
+
   it('is api_stale when the event first reached the cache after the prompt time', () => {
     expect(reason({ firstSeenAtMs: promptAt + 1 })).toBe('api_stale');
   });
