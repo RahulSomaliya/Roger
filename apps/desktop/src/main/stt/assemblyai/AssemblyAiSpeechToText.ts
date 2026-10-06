@@ -14,10 +14,16 @@ import { SttConnectError, type SttEvent, type SttStreamSettings } from '../Speec
 import { ASSEMBLYAI_TERMINATE, parseAssemblyAiMessage } from './messages';
 
 /**
- * AssemblyAI Universal-Streaming (v3) adapter. Docs relied on, read 2026-10-06:
+ * AssemblyAI streaming (v3) adapter: Universal-Streaming English (preset `assemblyai`) and the
+ * Universal-3 Pro models (`assemblyai-pro`). Docs relied on, read 2026-10-06:
  * - https://www.assemblyai.com/docs/streaming/api-spec/streaming-websocket (URL, query
  *   parameters, messages; 50 to 1000 ms of audio per message; sessions capped at 3 hours;
  *   `inactivity_timeout` 5 to 3600 s, unset meaning none)
+ * - https://www.assemblyai.com/docs/api-reference/streaming-api/streaming-api (`keyterms_prompt`
+ *   and `language_codes` as JSON arrays; Begin's `configuration.model`)
+ * - https://www.assemblyai.com/docs/streaming/migration-guides/universal-to-universal-3-5-pro-streaming
+ *   (on the Pro models formatting is always on, not a parameter, and end_of_turn and
+ *   turn_is_formatted always agree: one formatted end of turn per turn; pass `language_codes`)
  * - https://www.assemblyai.com/docs/streaming/authenticate-with-a-temporary-token (the `token`
  *   query parameter; one token may open several sessions, so mic and system share one)
  * - https://www.assemblyai.com/docs/streaming/message-sequence (format_turns sends a turn twice)
@@ -79,6 +85,23 @@ export type AssemblyAiOptions = WebSocketSttOptions & AssemblyAiProtocolOptions;
 const MIN_INACTIVITY_TIMEOUT_S = 5;
 const MAX_INACTIVITY_TIMEOUT_S = 3600;
 
+/**
+ * Universal-Streaming (`universal-streaming-*`) finishes a turn raw and, with `format_turns`, sends
+ * it again punctuated and cased. The Universal-3 Pro models (`universal-3-*-pro`) send one end of
+ * turn, always formatted, and take no `format_turns` (AssemblyAI's migration guide to Universal-3
+ * Pro). The URL and the held-turn rule (AssemblyAiSession) both read this one predicate: a Pro
+ * turn held for a formatted copy would wait formattedTurnWaitMs for one that never comes, and
+ * every line of the call would show 2 s late with a warning.
+ */
+function sendsEachTurnTwice(model: string): boolean {
+  return model.startsWith('universal-streaming');
+}
+
+/** The Universal-3 Pro models, the only ones that take `language_codes`. */
+function isUniversal3Pro(model: string): boolean {
+  return /^universal-3-.+-pro$/.test(model);
+}
+
 /** The websocket URL for one stream. It carries the token: never log it. */
 export function buildStreamingUrl(
   baseUrl: string,
@@ -96,14 +119,20 @@ export function buildStreamingUrl(
   url.searchParams.set('sample_rate', String(settings.sampleRate));
   // Our `linear16` (16-bit signed little-endian mono PCM) under AssemblyAI's name.
   url.searchParams.set('encoding', 'pcm_s16le');
-  // Universal-Streaming finishes a turn raw, then sends it again punctuated and cased when asked.
-  // The Universal-3 Pro models always format and do not take the parameter.
-  if (settings.model.startsWith('universal-streaming'))
-    url.searchParams.set('format_turns', 'true');
-  // M3: the jargon list plugs in here as `keyterms_prompt`.
+  // The Pro models switch between languages by themselves: without the hint, accented English can
+  // come back partly in another language or script, and the migration guide says to pass it (a
+  // JSON list, one code for one language). The English model takes only English, and nothing
+  // Roger runs uses the multilingual one, so neither is sent it.
+  if (isUniversal3Pro(settings.model)) {
+    url.searchParams.set('language_codes', JSON.stringify([settings.language]));
+  }
+  if (sendsEachTurnTwice(settings.model)) url.searchParams.set('format_turns', 'true');
+  // The jargon list, so names like Linkt come out spelled right: one parameter holding a JSON
+  // array (up to 100 terms of 50 characters; the core has already cut the list to the shared
+  // limits, keyterms.ts). Never sent empty: no list, no parameter.
+  const keyterms = settings.keyterms ?? [];
+  if (keyterms.length > 0) url.searchParams.set('keyterms_prompt', JSON.stringify(keyterms));
   // M9: streaming speaker labels plug in here as `speaker_labels=true` (then see messages.ts).
-  // Not sent: `settings.language` (the English model takes only English; `language_codes` is for
-  // the multilingual one).
   // The vendor-side safety net. AssemblyAI bills the time a session is open, not the audio in it,
   // and with no `inactivity_timeout` it never closes a quiet session: one Roger cannot close (the
   // Mac slept with the socket half-open, main hung) bills to the 3-hour cap, $0.45 a stream. The
@@ -148,6 +177,18 @@ export function assemblyAiProtocol(options: AssemblyAiProtocolOptions = {}): Stt
     describeClose: (code, reason) => describeCloseWith(ASSEMBLYAI_CLOSE_MEANINGS, code, reason),
     connectAdvice: (explanation) =>
       SESSION_LIMIT_REASON.test(explanation) ? SESSION_LIMIT_ADVICE : null,
+    // AssemblyAI documents no refusal for a list it will not take, so any close before Begin is
+    // put down to the list (the core asks only when one was sent), except the two codes that name
+    // another cause: 1008 (a bad or expired token, an account problem) and 3009 (too many sessions
+    // started this minute). A reopen without the list cannot fix those, and CaptureSession would
+    // keep the list off that source for the rest of the meeting under a false warning. A close
+    // blamed wrongly (3005, a server error) costs one reopen without the list, and if that fails
+    // too its error carries both reasons (M3-T4b). An HTTP status at the handshake is never put
+    // down to the list: AssemblyAI documents its refusals as close codes. A connection that
+    // dropped with no close frame (1006) never gets here: the core calls it a network error and
+    // does not ask (SttConnectRefusal).
+    keytermsRejected: (refusal) =>
+      refusal.kind === 'closed-before-ready' && refusal.code !== 1008 && refusal.code !== 3009,
   };
 }
 
@@ -165,18 +206,24 @@ interface HeldTurn {
   timer: NodeJS.Timeout;
 }
 
-/** One stream's protocol state: the frame sizer and the turn waiting for its formatted copy. */
+/**
+ * One stream's protocol state: the frame sizer and, on Universal-Streaming, the turn waiting for its
+ * formatted copy.
+ */
 class AssemblyAiSession implements SttProtocolSession {
   private readonly frames: AudioFrameSizer;
   /** turn_order of the last line emitted. Turn orders only grow, so anything at or below is a copy. */
   private lastFinalTurnOrder = -1;
   /** An unformatted finished turn waiting for its formatted copy. */
   private held: HeldTurn | null = null;
+  /** False on the Pro models: their one end of turn is the final line (sendsEachTurnTwice). */
+  private readonly turnsComeTwice: boolean;
 
   constructor(
     private readonly context: SttProtocolContext,
     private readonly formattedTurnWaitMs: number,
   ) {
+    this.turnsComeTwice = sendsEachTurnTwice(context.settings.model);
     this.frames = new AudioFrameSizer({
       sampleRate: context.settings.sampleRate,
       minMs: MIN_FRAME_MS,
@@ -197,6 +244,7 @@ class AssemblyAiSession implements SttProtocolSession {
     const parsed = parseAssemblyAiMessage(raw, this.context.audioSentMs());
     switch (parsed.kind) {
       case 'begin':
+        this.checkModel(parsed.model);
         return { kind: 'ready', sessionId: parsed.sessionId };
       case 'turn': {
         const events = this.acceptTurn(parsed.turnOrder, parsed.formatted, parsed.event);
@@ -222,10 +270,27 @@ class AssemblyAiSession implements SttProtocolSession {
   }
 
   /**
+   * AssemblyAI ignores query parameters it does not know and runs a model of its choosing, so a
+   * misspelt or retired `speech_model` transcribes with another model, at another price, without an
+   * error (openwhispr `assemblyAiStreaming.js:461-475`). Begin says which model runs: a session
+   * that differs from the one asked for is logged, so a bake-off run or a meeting never passes for
+   * the model its preset names. Only a warning: the session works, and the API's presets
+   * (stt_vendors.py) are what keeps the model right.
+   */
+  private checkModel(running: string | null): void {
+    const asked = this.context.settings.model;
+    if (running !== null && running !== asked) {
+      this.context.logger.warn('assemblyai runs another model than asked for', { asked, running });
+    }
+  }
+
+  /**
    * One saved line per turn_order. With format_turns a finished turn arrives unformatted, then
    * formatted with the same turn_order: the unformatted copy is held until the formatted one
    * replaces it, the next turn starts, the stream ends, or formattedTurnWaitMs passes. A formatted
-   * copy arriving after that is a duplicate and dropped. Returns the lines to emit now, in order.
+   * copy arriving after that is a duplicate and dropped. On the Pro models a turn ends once,
+   * formatted, so its end of turn is saved at once, whatever turn_is_formatted says. Returns the
+   * lines to emit now, in order.
    */
   private acceptTurn(
     turnOrder: number,
@@ -242,7 +307,7 @@ class AssemblyAiSession implements SttProtocolSession {
       if (this.held === null) events.push(event);
       return events;
     }
-    if (formatted) {
+    if (formatted || !this.turnsComeTwice) {
       this.dropHeldTurn();
       this.lastFinalTurnOrder = turnOrder;
       events.push(event);

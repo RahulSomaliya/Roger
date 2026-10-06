@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { WebSocket } from 'ws';
 import { createLogger, type Logger } from '../logger';
+import type { SttWireRecord } from './core/SttConnection';
 import { WebSocketSpeechToText } from './core/WebSocketSpeechToText';
 import { KEYTERM_LIMITS } from './keyterms';
 import { LOCAL_STT_PROVIDERS, STT_VENDORS, type SttVendorOptions } from './registry';
@@ -12,6 +13,7 @@ import {
 } from './SpeechToText';
 import { CONFORMANCE_VENDORS, type ConformanceVendor } from './testing/conformanceVendors';
 import {
+  type FakeVendorConnection,
   FakeVendorServer,
   manualClock,
   SilentTcpServer,
@@ -387,6 +389,75 @@ describe.each(CONFORMANCE_VENDORS)('$provider conforms', (vendor) => {
   });
 
   /**
+   * The benchmark's wire tap (WebSocketSttOptions.wireTap): `bench run` stores its query in
+   * run.json, `bench canary --save-wire` writes its messages as wire fixtures. It sees the wire as
+   * the vendor does, both ways, and never the token, whether the vendor takes it in the URL
+   * (AssemblyAI) or in a header (Deepgram): run.json and the fixtures are kept and committed.
+   */
+  it('shows the wire tap every message both ways and the query without the token', async () => {
+    const token = 'temporary-token-dG9rZW4';
+    const tapped: SttWireRecord[] = [];
+    const sentByVendor: string[] = [];
+    const vendorSends = (connection: FakeVendorConnection, text: string): void => {
+      sentByVendor.push(text);
+      connection.socket.send(text);
+    };
+    server.script = {
+      onConnect: (connection) => {
+        if (vendor.readyMessage !== null) vendorSends(connection, vendor.readyMessage);
+      },
+      onBinary: (connection, frame) => {
+        if (frame === 1) vendorSends(connection, vendor.finalMessage('hello there'));
+      },
+      onText: (connection, text) => {
+        if (text !== vendor.finishMessages.at(-1)) return;
+        vendorSends(connection, vendor.finalMessage('last words'));
+        connection.socket.close(1000);
+      },
+    };
+    const stream = await stt({ wireTap: (record) => tapped.push(record) }).openStream({
+      accessToken: token,
+      settings: { ...vendor.settings, keyterms: ['Linkt'] },
+      label: 'mic',
+    });
+    const events: SttEvent[] = [];
+    stream.on((event) => events.push(event));
+
+    stream.send(new Uint8Array(CHUNK_100_MS));
+    await waitFor(() => events.some((event) => event.type === 'final'));
+    await stream.close();
+
+    const connection = server.last();
+    // The token was on the wire, so its absence below means the tap was kept from it.
+    expect(connection.url + JSON.stringify(connection.headers)).toContain(token);
+    expect(JSON.stringify(tapped)).not.toContain(token);
+
+    const connects = tapped.flatMap((record) => (record.kind === 'connect' ? [record] : []));
+    expect(tapped[0]?.kind).toBe('connect');
+    expect(connects).toHaveLength(1);
+    const query = connects[0]?.query ?? '';
+    const url = new URL(connection.url, 'ws://vendor');
+    // The query as the vendor got it, its token parameter left out; never the host or the path.
+    expect([...new URLSearchParams(query)]).toEqual(
+      [...url.searchParams].filter(([, value]) => value !== token),
+    );
+    expect(query).not.toContain('://');
+    expect(query).not.toContain(url.pathname);
+
+    const texts = (direction: 'sent' | 'received'): string[] =>
+      tapped.flatMap((record) =>
+        record.kind === 'text' && record.direction === direction ? [record.text] : [],
+      );
+    const frames = tapped.flatMap((record) =>
+      record.kind === 'binary' && record.direction === 'sent' ? [record.bytes] : [],
+    );
+    expect(texts('sent')).toEqual(connection.texts);
+    expect(frames).toEqual(connection.binaryFrames);
+    expect(texts('received')).toEqual(sentByVendor);
+    expect(tapped.every((record) => record.label === 'mic')).toBe(true);
+  });
+
+  /**
    * A reopen hands the core a burst right after ready: the audio CaptureSession held while it
    * connected. A vendor that rejects audio faster than real time must get it paced; any other must
    * get it at once, or the burst becomes lag for nothing. On a manual pace clock: it decides what
@@ -618,6 +689,23 @@ describe.each(CONFORMANCE_VENDORS)('$provider conforms', (vendor) => {
 
       expect(error).toBeInstanceOf(SttConnectError);
       expect((error as SttConnectError).message).toContain('Invalid token');
+    });
+
+    // The ready message is tapped before it opens the stream, and openStream hands the stream over
+    // only once open: no listener exists yet to hear a non-fatal error (SttConnection.tap).
+    itIf(vendor.readyMessage !== null)('when the wire tap fails on the ready message', async () => {
+      const adapter = stt({
+        wireTap: (record) => {
+          if (record.kind === 'text') throw new Error('disk full');
+        },
+      });
+      const error = await open(adapter).catch((e: unknown) => e);
+
+      expect(error).toBeInstanceOf(SttConnectError);
+      expect((error as SttConnectError).message).toBe(
+        `${adapter.vendorName} wire tap failed: disk full`,
+      );
+      await waitFor(() => server.last().closed);
     });
   });
 });

@@ -84,8 +84,17 @@ export const CONFORMANCE_VENDORS: readonly ConformanceVendor[] = [
     // Close code 3007, "Audio Transmission Rate Exceeded: Received <x> sec. audio in <y> sec";
     // the API reference says to pace chunks at about real time and documents no tolerance.
     rejectsAudioFasterThanRealTime: true,
-    // M3-T5 adds `keyterms_prompt` and its refusal: a close before Begin other than 1008 and 3009.
-    keyterms: null,
+    keyterms: {
+      // One `keyterms_prompt` parameter holding a JSON array (AssemblyAI's streaming API reference).
+      sent: (connection) => {
+        const prompt = new URL(connection.url, 'ws://vendor').searchParams.get('keyterms_prompt');
+        return prompt === null ? [] : (JSON.parse(prompt) as string[]);
+      },
+      // AssemblyAI documents no close for a list it will not take. The protocol blames any close
+      // before Begin on the list except 1008 (token, account) and 3009 (session limit), so the
+      // fake refuses with its catch-all, 3005, in the vendor's own words.
+      refusal: { closeBeforeReady: { code: 3005, reason: 'Session Cancelled: An error occurred' } },
+    },
   },
   {
     provider: 'deepgram',

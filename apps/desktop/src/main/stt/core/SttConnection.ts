@@ -34,7 +34,7 @@ import type {
  * - connecting: the handshake plus the vendor's ready signal, under one connect timeout. A failure
  *   terminates the socket and rejects `whenOpen()` only once the socket is closed. A refusal the
  *   protocol blames on the jargon list rejects with `keytermsRejected` set; it is never retried
- *   here (see keytermsRefused).
+ *   here (see keytermsRefused). A wire tap that fails here fails the connect too (see tap).
  * - open: audio flows, paced to real time for a vendor that declares it (see pump). The keep-alive
  *   runs only while audio was sent within keepAliveForMs. A vendor close here is one fatal error,
  *   then "closed".
@@ -59,6 +59,23 @@ export interface SttStreamUsage {
   droppedChunks: number;
 }
 
+/**
+ * One thing on a stream's wire, as the wire tap sees it (WebSocketSttOptions.wireTap). It holds
+ * transcript text: hand it to the bench's files, never to a log line.
+ */
+export type SttWireRecord =
+  /**
+   * The connect, once, before the handshake: the URL's query with every parameter that carries the
+   * access token left out (queryWithoutToken). Never the URL, never the headers.
+   */
+  | { kind: 'connect'; label: string; query: string }
+  /** A text message, as it went to the vendor or came from it. */
+  | { kind: 'text'; label: string; direction: 'sent' | 'received'; text: string }
+  /** A binary message by its size: the audio Roger sent, which the bench holds itself. */
+  | { kind: 'binary'; label: string; direction: 'sent' | 'received'; bytes: number };
+
+export type SttWireTap = (record: SttWireRecord) => void;
+
 export interface SttConnectionOptions {
   protocol: SttProtocol;
   stream: OpenStreamOptions;
@@ -81,6 +98,8 @@ export interface SttConnectionOptions {
    * Node's timers run on monotonic time too, so the pace timer shares the pacer's time base.
    */
   paceClock: () => number;
+  /** Sees every message both ways and the query without the token (SttWireRecord). Bench only. */
+  wireTap?: SttWireTap | null;
 }
 
 /** ws's close code when the connection ended without a close frame (RFC 6455: never on the wire). */
@@ -127,6 +146,8 @@ export class SttConnection implements SttStream {
   private lastAudioAtMs: number | null = null;
   private audioSentBytes = 0;
   private droppedChunks = 0;
+  /** Null without one, and from its first failure on (tap). */
+  private wireTap: SttWireTap | null;
 
   constructor(options: SttConnectionOptions) {
     this.protocol = options.protocol;
@@ -142,10 +163,22 @@ export class SttConnection implements SttStream {
     this.closeTimeoutMs = options.closeTimeoutMs;
     this.keepAliveForMs = options.keepAliveForMs;
     this.pacer = new AudioPacer({ pacing: this.protocol.audioPacing, sampleRate: this.sampleRate });
+    this.wireTap = options.wireTap ?? null;
     const stream = this.withCappedKeyterms(options.stream);
     this.keyterms = stream.settings.keyterms ?? [];
     // Throws SttConnectError on settings the vendor cannot take, before any socket exists.
     const target = this.protocol.target(stream);
+    // Before the socket exists, and never the URL: an AssemblyAI URL carries the temporary token.
+    // A tap that cannot take this first record (the bench opens its file on it) fails the connect
+    // here, with nothing opened or billed: no listener exists yet to hear an error event (tap).
+    if (this.wireTap !== null) {
+      const failure = this.recordOnTap({
+        kind: 'connect',
+        label: this.label,
+        query: queryWithoutToken(target.url, stream.accessToken),
+      });
+      if (failure !== null) throw new SttConnectError(failure);
+    }
     this.session = this.protocol.session({
       logger: this.logger,
       settings: stream.settings,
@@ -188,7 +221,18 @@ export class SttConnection implements SttStream {
       this.endAfterFatal(`${this.protocol.vendorName} connection failed: ${error.message}`);
     });
     this.socket.on('message', (data, isBinary) => {
-      if (!isBinary) this.handleMessage(rawDataToString(data));
+      if (isBinary) {
+        this.tap({
+          kind: 'binary',
+          label: this.label,
+          direction: 'received',
+          bytes: byteLength(data),
+        });
+        return;
+      }
+      const text = rawDataToString(data);
+      this.tap({ kind: 'text', label: this.label, direction: 'received', text });
+      this.handleMessage(text);
     });
     this.socket.on('close', (code, reason) => {
       this.finalize(code, reason.length > 0 ? reason.toString() : null);
@@ -264,7 +308,10 @@ export class SttConnection implements SttStream {
   }
 
   private becomeOpen(sessionId: string | null): void {
-    if (this.currentState !== 'connecting') return;
+    // A failed connect stays failed while its socket is terminated: a ready message read after it
+    // (the one a wire tap just failed on, or one that raced the connect timeout) would resolve
+    // whenOpen() on a dead session and lose the connect error to a false "closed the stream".
+    if (this.currentState !== 'connecting' || this.connectError !== null) return;
     this.clearConnectTimer();
     this.currentState = 'open';
     this.logger.info('stt stream open', { sessionId });
@@ -279,7 +326,7 @@ export class SttConnection implements SttStream {
         const since = this.lastAudioAtMs ?? this.openedAtMs ?? this.clock();
         if (this.clock() - since >= this.keepAliveForMs) return;
         if (this.currentState === 'open' && this.socket.readyState === WebSocket.OPEN) {
-          this.socket.send(keepAlive.message);
+          this.transmit(keepAlive.message);
         }
       }, keepAlive.intervalMs);
     }
@@ -445,7 +492,7 @@ export class SttConnection implements SttStream {
       }
       const message = this.finishQueue.shift();
       if (message === undefined) return;
-      if (typeof message === 'string') this.socket.send(message);
+      if (typeof message === 'string') this.transmit(message);
       else this.pacer.enqueue(message);
     }
   }
@@ -465,8 +512,52 @@ export class SttConnection implements SttStream {
    * dropping or skipping leading audio would shift every line of the stream.
    */
   private sendFrame(frame: Uint8Array): void {
-    this.socket.send(frame);
+    this.transmit(frame);
     this.audioSentBytes += frame.byteLength;
+  }
+
+  /**
+   * Every message to the vendor goes through here, so the wire tap sees what the vendor sees. Audio
+   * reaches it only through pump() and sendFrame (pacing); text is the finish sequence and the
+   * keep-alive.
+   */
+  private transmit(data: string | Uint8Array): void {
+    this.socket.send(data);
+    this.tap(
+      typeof data === 'string'
+        ? { kind: 'text', label: this.label, direction: 'sent', text: data }
+        : { kind: 'binary', label: this.label, direction: 'sent', bytes: data.byteLength },
+    );
+  }
+
+  /**
+   * Hands one record to the wire tap, if there is one. A tap that throws (the bench's disk is
+   * full) must not end a billed session mid-item, or escape a socket handler and kill the process
+   * with sockets open. It is switched off for this stream at its first failure, because a
+   * recording with holes would pass for the whole wire, and the bench is told, so it can fail the
+   * item it no longer records: once open by a non-fatal error, before that by a failed connect.
+   * Before ready no listener exists (openStream hands the stream over only once it is open), so an
+   * error event there reached no one and the item ran to its end unrecorded, with nothing to say
+   * so. The connect record itself fails in the constructor, before any socket (see there).
+   */
+  private tap(record: SttWireRecord): void {
+    const failure = this.recordOnTap(record);
+    if (failure === null) return;
+    if (this.currentState === 'connecting') this.failConnect(new SttConnectError(failure));
+    else this.deliver({ type: 'error', message: failure, fatal: false });
+  }
+
+  /** Runs the tap on one record. Returns why it failed (logged, the tap switched off), else null. */
+  private recordOnTap(record: SttWireRecord): string | null {
+    if (this.wireTap === null) return null;
+    try {
+      this.wireTap(record);
+      return null;
+    } catch (error) {
+      this.wireTap = null;
+      this.logger.error('stt wire tap failed', { record: record.kind, error: errorMessage(error) });
+      return `${this.protocol.vendorName} wire tap failed: ${errorMessage(error)}`;
+    }
   }
 
   /**
@@ -603,6 +694,40 @@ export class SttConnection implements SttStream {
     if (this.paceTimer !== null) clearTimeout(this.paceTimer);
     this.paceTimer = null;
   }
+}
+
+/**
+ * The URL's query with every parameter that carries the token left out, in the order and encoding
+ * it was sent. Matched on the token's value, not on a parameter name, so a vendor that takes it in
+ * the query under any name is covered without declaring anything (AssemblyAI's `token`), and a
+ * vendor that takes it in a header (Deepgram) loses nothing. Never throws: it runs before the
+ * socket exists. String work rather than `new URL`, so an odd URL cannot throw here either.
+ */
+function queryWithoutToken(url: string, token: string): string {
+  const start = url.indexOf('?');
+  if (start === -1) return '';
+  const end = url.indexOf('#', start);
+  return url
+    .slice(start + 1, end === -1 ? undefined : end)
+    .split('&')
+    .filter((pair) => pair !== '' && !carriesToken(pair, token))
+    .join('&');
+}
+
+function carriesToken(pair: string, token: string): boolean {
+  if (token === '') return false;
+  if (pair.includes(token)) return true;
+  try {
+    return decodeURIComponent(pair.replaceAll('+', ' ')).includes(token);
+  } catch {
+    // Not valid percent-encoding, so it cannot be read for the token: left out, never risked.
+    return true;
+  }
+}
+
+function byteLength(data: WebSocket.RawData): number {
+  if (Array.isArray(data)) return data.reduce((total, part) => total + part.byteLength, 0);
+  return data.byteLength;
 }
 
 interface Deferred {
