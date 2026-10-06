@@ -93,4 +93,44 @@ describe('the preview capture fake', () => {
       `no hidden line ${SEGMENT}`,
     );
   });
+
+  // Main's store unhides only a line with `suppressed_reason` set, and a trim never sets it: a
+  // trimmed line already uploads, so an Unhide on it would work here and do nothing in the app.
+  it('refuses to unhide a line that was only trimmed, as main would', async () => {
+    const hub = new FakeHub();
+    const capture = createCaptureFake(hub);
+    const seen: TranscriptSegmentChange[] = [];
+    capture.onTranscriptSegmentChanged((change) => seen.push(change));
+    const trimmed: TranscriptSegmentChange = { ...hidden, change: 'trimmed', text: 'we ship' };
+    hub.emit(IpcChannel.TranscriptSegmentChanged, trimmed);
+
+    await expect(capture.unhideSegment({ meetingId: MEETING, segmentId: SEGMENT })).rejects.toThrow(
+      `no hidden line ${SEGMENT}`,
+    );
+    expect(seen).toEqual([trimmed]);
+  });
+
+  it('keeps a hidden line hidden through a trim, and unhides it as trimmed', async () => {
+    const hub = new FakeHub();
+    const capture = createCaptureFake(hub);
+    const seen: TranscriptSegmentChange[] = [];
+    capture.onTranscriptSegmentChanged((change) => seen.push(change));
+    const trimmed: TranscriptSegmentChange = { ...hidden, change: 'trimmed', text: 'we ship' };
+    hub.emit(IpcChannel.TranscriptSegmentChanged, hidden);
+    hub.emit(IpcChannel.TranscriptSegmentChanged, trimmed);
+
+    await capture.unhideSegment({ meetingId: MEETING, segmentId: SEGMENT });
+    expect(seen.at(-1)).toEqual({ ...hidden, change: 'unhidden', echoOf: null, text: 'we ship' });
+  });
+
+  it('refuses a second unhide of the same line', async () => {
+    const hub = new FakeHub();
+    const capture = createCaptureFake(hub);
+    hub.emit(IpcChannel.TranscriptSegmentChanged, hidden);
+    await capture.unhideSegment({ meetingId: MEETING, segmentId: SEGMENT });
+
+    await expect(capture.unhideSegment({ meetingId: MEETING, segmentId: SEGMENT })).rejects.toThrow(
+      `no hidden line ${SEGMENT}`,
+    );
+  });
 });

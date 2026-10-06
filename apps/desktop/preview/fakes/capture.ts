@@ -17,8 +17,9 @@ import type { FakeHub } from './hub';
  * Capture reports have no event of their own, so a scenario describes a meeting's report by
  * emitting it on the CaptureGetReport channel (`hub.emit(IpcChannel.CaptureGetReport, report)`):
  * it becomes that meeting's answer, and a re-run or a delete changes it as main would. A meeting
- * no scenario described has an empty report. A line a scenario hides or trims (an event on
- * TranscriptSegmentChanged) can be unhidden, which sends the `unhidden` event main sends.
+ * no scenario described has an empty report. A line a scenario hides (a `hidden` event on
+ * TranscriptSegmentChanged) can be unhidden, which sends the `unhidden` event main sends; a line
+ * it only trims cannot, as in main.
  */
 export function createCaptureFake(hub: FakeHub): CaptureApi {
   let status = idleCaptureStatus({
@@ -47,11 +48,18 @@ export function createCaptureFake(hub: FakeHub): CaptureApi {
     return report;
   };
 
-  /** Lines hidden or trimmed and not unhidden since, by segment id. */
-  const changed = new Map<string, TranscriptSegmentChange>();
+  /**
+   * Lines hidden and not unhidden since, by segment id, as they now read. Only `hidden` adds one:
+   * main's store unhides a line only while `suppressed_reason` is set, and a trim never sets it
+   * (TranscriptStore.unhideSegment), so a merely trimmed line here would get a working Unhide in
+   * the preview that does nothing in the app. A trim of a hidden line keeps it hidden, as in main.
+   */
+  const hidden = new Map<string, TranscriptSegmentChange>();
   hub.on(captureChannels.TranscriptSegmentChanged, (change: TranscriptSegmentChange) => {
-    if (change.change === 'unhidden') changed.delete(change.segmentId);
-    else changed.set(change.segmentId, change);
+    const line = hidden.get(change.segmentId);
+    if (change.change === 'hidden') hidden.set(change.segmentId, change);
+    else if (change.change === 'unhidden') hidden.delete(change.segmentId);
+    else if (line !== undefined) hidden.set(change.segmentId, { ...line, text: change.text });
   });
 
   return {
@@ -114,10 +122,10 @@ export function createCaptureFake(hub: FakeHub): CaptureApi {
       ),
     unhideSegment: ({ segmentId }) =>
       hub.request(captureChannels.TranscriptUnhideSegment, () => {
-        const change = changed.get(segmentId);
-        if (change === undefined) throw new Error(`no hidden line ${segmentId}`);
+        const line = hidden.get(segmentId);
+        if (line === undefined) throw new Error(`no hidden line ${segmentId}`);
         hub.emit(captureChannels.TranscriptSegmentChanged, {
-          ...change,
+          ...line,
           change: 'unhidden',
           echoOf: null,
         } satisfies TranscriptSegmentChange);

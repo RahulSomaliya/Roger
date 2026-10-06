@@ -99,6 +99,10 @@ export interface CaptureApi {
   rerunGaps(request: MeetingRequest): Promise<CaptureReport>;
   /** Deletes the meeting's local audio backup (its lines stay) and answers the report after it. */
   deleteMeetingAudio(request: MeetingRequest): Promise<CaptureReport>;
-  /** Shows a hidden echo line again, which uploads it; a segment change event follows. */
+  /**
+   * Shows a hidden echo line again, which uploads it; a segment change event follows. Only a
+   * `hidden` line: a `trimmed` one already uploads, and main's store will not unhide it
+   * (TranscriptStore.unhideSegment), so offer no Unhide on trimmed text.
+   */
   unhideSegment(request: SegmentRequest): Promise<void>;
 }
