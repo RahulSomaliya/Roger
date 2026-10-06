@@ -13,8 +13,10 @@ UV_RUN := uv run --frozen
 
 # `make check TEST_DB=roger_test_<task>` points the API tests at that database on the `make dev-db`
 # Postgres, so parallel worktrees never truncate each other's tables. Left empty, TEST_DATABASE_URL
-# comes from the environment or the repo-root `.env` as before. apps/api/tests/conftest.py checks
-# the name (anything not starting with roger_test is refused): one guard, next to the TRUNCATE.
+# comes from the environment or the repo-root `.env` as before. Make does not check the name. The
+# test session migrates that database down to base and truncates it, so the one guard belongs next
+# to the TRUNCATE: apps/api/tests/conftest.py refuses any name not starting with roger_test (added
+# by P2-F2, not by this file). Without that check, TEST_DB=roger wipes the dev database.
 TEST_DB ?=
 TEST_DB_SERVER := postgresql+asyncpg://postgres:postgres@localhost:5432
 TEST_DB_ENV := $(if $(TEST_DB),TEST_DATABASE_URL=$(TEST_DB_SERVER)/$(TEST_DB))
