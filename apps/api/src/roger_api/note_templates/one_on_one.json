@@ -1,0 +1,27 @@
+{
+  "id": "one_on_one",
+  "name": "1:1",
+  "description": "A one-to-one: updates, challenges, feedback, growth and agreed follow-ups.",
+  "sections": [
+    {
+      "heading": "Updates",
+      "guidance": "Progress, wins and news each person shared."
+    },
+    {
+      "heading": "Challenges",
+      "guidance": "Problems, blockers or worries raised, and any support offered."
+    },
+    {
+      "heading": "Feedback",
+      "guidance": "Feedback given in either direction, stated plainly, with who gave it to whom."
+    },
+    {
+      "heading": "Growth",
+      "guidance": "Goals, career and development topics discussed."
+    },
+    {
+      "heading": "Action items",
+      "guidance": "What each person agreed to do, as Owner: what, by when."
+    }
+  ]
+}

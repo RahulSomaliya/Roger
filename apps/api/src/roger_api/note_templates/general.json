@@ -1,0 +1,27 @@
+{
+  "id": "general",
+  "name": "General",
+  "description": "Any call: what was discussed, what was decided and what happens next.",
+  "sections": [
+    {
+      "heading": "Summary",
+      "guidance": "Why the call happened and how it ended, in two or three bullets."
+    },
+    {
+      "heading": "Discussion",
+      "guidance": "The main topics in the order they came up, with the points made on each."
+    },
+    {
+      "heading": "Decisions",
+      "guidance": "What was agreed on the call, and who agreed it when that was said."
+    },
+    {
+      "heading": "Action items",
+      "guidance": "Tasks someone took on or was given on the call, as Owner: what, by when."
+    },
+    {
+      "heading": "Open questions",
+      "guidance": "Questions raised and left unanswered, and who will follow up when that was said."
+    }
+  ]
+}
