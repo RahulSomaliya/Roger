@@ -71,9 +71,10 @@ export interface CalendarSyncOptions {
  * `424` (Google refused the grant) stops polling until the next connect. The copy turns stale
  * 1 h after its last success.
  *
- * Connect and disconnect go through `connected` and `disconnected`, never straight to the cache:
- * they also stop the polling and drop an answer still on its way, which would otherwise write a
- * disconnected account's events back into the copy.
+ * Connect and disconnect go through `connected` and `disconnected`, never straight to the cache
+ * (its `recordConnected` and `recordDisconnected` say the same): they also stop the polling and
+ * drop an answer still on its way, which would otherwise write a disconnected account's events
+ * back into the copy.
  */
 export class CalendarSync {
   private readonly notifier = new Emitter<CalendarSyncEvents>();

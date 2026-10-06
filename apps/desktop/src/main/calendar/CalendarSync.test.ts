@@ -584,6 +584,23 @@ describe('CalendarSync', () => {
     });
   });
 
+  it('drops an answer for the previous account that lands after a connect to another', async () => {
+    const { sync, listEvents, cache } = harness();
+    const answer = deferred<CalendarEventsPage>();
+    listEvents.mockReturnValueOnce(answer.promise);
+
+    sync.start({ previousRunLastTickAt: null });
+    await vi.advanceTimersByTimeAsync(0);
+    listEvents.mockResolvedValueOnce(page([call('new', '2026-10-06T11:00:00Z')]));
+    await sync.connected('other@example.com');
+    answer.resolve(page([call('old', '2026-10-06T10:00:00Z')]));
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(cache.activeConnection()?.accountEmail).toBe('other@example.com');
+    expect(cache.listEvents().map((event) => event.id)).toEqual(['new']);
+    sync.stop();
+  });
+
   it('drops an answer that lands after a disconnect, and polls no more', async () => {
     const { sync, listEvents, cache } = harness();
     const answer = deferred<CalendarEventsPage>();

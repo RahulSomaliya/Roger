@@ -12,7 +12,8 @@ import {
  * away for the exit check (docs/plans/M5-calendar.md, "Desktop storage").
  *
  * Every table's schema lives here. This class reads and writes `events`, `fetch_state` and
- * `connections_log`; PromptLog (M5-T9a) writes `prompts` and `runs` through `database`.
+ * `connections_log`; PromptLog (M5-T9a) writes `prompts` and `runs` through `database`. A connect
+ * or disconnect is written through CalendarSync, never straight here (`recordConnected` says why).
  *
  * - `events`: the last good window from the API, replaced in one transaction on each poll.
  * - `fetch_state`: one row, the health of that copy. Gone while no calendar is connected.
@@ -236,10 +237,14 @@ export class SqliteCalendarCache {
   // connections_log ------------------------------------------------------------------------------
 
   /**
-   * An account connected (Settings → Connect). Any open row is closed at the same moment. A grant
-   * for the same account keeps the copy, which is still that account's calendar, and clears a
-   * refused-grant mark; another account, or none before, starts from an empty copy, so one
-   * account's events never prompt under another's name.
+   * An account connected. Any open row is closed at the same moment. A grant for the same account
+   * keeps the copy, which is still that account's calendar, and clears a refused-grant mark;
+   * another account, or none before, starts from an empty copy, so one account's events never
+   * prompt under another's name.
+   *
+   * Settings → Connect (M5-T6) calls `CalendarSync.connected`, never this: called straight, an
+   * answer already on its way for the old account lands in the new account's empty copy, and a
+   * refused grant's stopped polling never restarts.
    */
   recordConnected(accountEmail: string, at: string): void {
     const account = accountEmail.trim();
@@ -264,6 +269,11 @@ export class SqliteCalendarCache {
   /**
    * The calendar was disconnected. Clears `events` and `fetch_state` only: the log, the prompts
    * and the runs are the exit check's evidence and survive a disconnect.
+   *
+   * Settings → Disconnect (M5-T6) calls `CalendarSync.disconnected`, never this: called straight,
+   * a poll already on its way writes the disconnected account's events and a fresh `fetch_state`
+   * row straight back, and the polling goes on, so prompts keep coming from a calendar the user
+   * just disconnected.
    */
   recordDisconnected(at: string): void {
     const disconnectedAt = toUtcInstant(at);
