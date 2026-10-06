@@ -1,66 +1,32 @@
-import { StatusPanel } from './components/StatusPanel';
-import { TranscriptView } from './components/TranscriptView';
-import { useCapture } from './state/useCapture';
+// First, so the shell's own rules (app/app.css, imported by AppLayout) come after the base ones.
+import './styles.css';
+import { useEffect, useState, useSyncExternalStore } from 'react';
+import { AppLayout } from './app/AppLayout';
+import { routeFromApp, RouteStore } from './app/router';
+import { ShellProvider } from './app/ShellContext';
 
-const PHASE_LABEL = {
-  idle: 'Not recording',
-  starting: 'Starting…',
-  recording: 'Recording',
-  stopping: 'Stopping…',
-} as const;
-
+/**
+ * The app shell: the route, the routes main sends, and the window's one capture view
+ * (ShellContext) around the layout. The preview harness can render this same component over its
+ * fake `window.roger`, so the styles are imported here rather than in main.tsx.
+ */
 export function App() {
-  const { status, segments, interim, localError, busy, start, stop } = useCapture();
-  const phase = status?.phase ?? 'idle';
-  const recording = phase === 'recording';
-  const canStart = phase === 'idle' && !busy;
-  const canStop = recording && !busy;
-  const error = localError ?? status?.error ?? null;
+  const [routes] = useState(() => new RouteStore(window));
+  const route = useSyncExternalStore(routes.subscribe, routes.getSnapshot);
+
+  useEffect(() => {
+    // Listen first, then say ready: main sends a route it held as soon as it hears app:ready.
+    const stopListening = window.roger.onNavigate((payload) => {
+      const next = routeFromApp(payload);
+      if (next !== null) routes.navigate(next);
+    });
+    window.roger.appReady();
+    return stopListening;
+  }, [routes]);
 
   return (
-    <main className="app">
-      <header className="header">
-        <h1>Roger</h1>
-        <span className={`phase phase-${phase}`}>{PHASE_LABEL[phase]}</span>
-      </header>
-
-      <div className="controls">
-        {recording ? (
-          <button
-            type="button"
-            className="button stop"
-            onClick={() => void stop()}
-            disabled={!canStop}
-          >
-            Stop
-          </button>
-        ) : (
-          <button
-            type="button"
-            className="button start"
-            onClick={() => void start()}
-            disabled={!canStart}
-          >
-            Start
-          </button>
-        )}
-      </div>
-
-      {error ? (
-        <div role="alert" className="error">
-          {error}
-        </div>
-      ) : null}
-
-      {status?.notice ? (
-        <div role="status" className="notice">
-          {status.notice}
-        </div>
-      ) : null}
-
-      {status ? <StatusPanel status={status} /> : null}
-
-      <TranscriptView segments={segments} interim={interim} recording={recording} />
-    </main>
+    <ShellProvider route={route} navigate={routes.navigate}>
+      <AppLayout />
+    </ShellProvider>
   );
 }
