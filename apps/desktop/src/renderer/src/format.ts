@@ -82,6 +82,18 @@ export function formatDuration(ms: number): string {
   return `${seconds}s`;
 }
 
+/**
+ * A source's connected time for its row: summed over every session it opened this meeting, so once
+ * its session closed it is time it was connected ("not connected · 12s connected" contradicted
+ * itself). Null before any session opened.
+ */
+export function describeSourceConnected(state: SttStreamState, connectedMs: number): string | null {
+  if (connectedMs <= 0) return null;
+  // formatDuration floors to whole seconds; a session open under one still counts.
+  const time = connectedMs < 1000 ? 'under 1s' : formatDuration(connectedMs);
+  return state === 'open' || state === 'connecting' ? `${time} connected` : `was connected ${time}`;
+}
+
 /** An estimate from the API's list price, so never shown as exact. */
 export function describeCost(usd: number | null): string {
   if (usd === null) return 'cost unknown';
@@ -90,7 +102,11 @@ export function describeCost(usd: number | null): string {
   return `about $${usd.toFixed(2)}`;
 }
 
-/** The status line: what the vendor bills for this meeting so far (open time, silent or not). */
+/**
+ * The status line: what the vendor bills for this meeting so far (open time, silent or not). The
+ * time sums both sources' sessions, each billed on its own, so a 12m 30s call with both open
+ * reads "25m 00s connected".
+ */
 export function describeMeter(meter: SttMeterStatus): string {
   const { total } = meter;
   return `${meter.vendorName} · ${formatDuration(total.connectedMs)} connected · ${describeCost(total.estimatedCostUsd)}`;

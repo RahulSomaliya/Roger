@@ -7,6 +7,7 @@ import {
   formatDuration,
   meterDetails,
   describeSaved,
+  describeSourceConnected,
   describeStream,
   describeUpload,
   formatOffset,
@@ -88,6 +89,22 @@ describe('formatDuration', () => {
     expect(formatDuration(45_400)).toBe('45s');
     expect(formatDuration(750_000)).toBe('12m 30s');
     expect(formatDuration(3_720_000)).toBe('1h 02m');
+  });
+});
+
+describe('describeSourceConnected', () => {
+  it("says a source's connected time without contradicting its state", () => {
+    expect(describeSourceConnected('open', 12_000)).toBe('12s connected');
+    expect(describeSourceConnected('connecting', 12_000)).toBe('12s connected');
+    // Its session closed: the time is what it was connected, not "not connected · 12s connected".
+    expect(describeSourceConnected('closed', 12_000)).toBe('was connected 12s');
+    expect(describeSourceConnected('paused', 75_000)).toBe('was connected 1m 15s');
+    expect(describeSourceConnected('retrying', 12_000)).toBe('was connected 12s');
+  });
+
+  it('shows nothing before any session opened, and never "0s"', () => {
+    expect(describeSourceConnected('connecting', 0)).toBeNull();
+    expect(describeSourceConnected('open', 400)).toBe('under 1s connected');
   });
 });
 

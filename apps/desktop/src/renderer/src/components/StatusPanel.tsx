@@ -4,9 +4,9 @@ import {
   describeHealth,
   describeMeter,
   describeSaved,
+  describeSourceConnected,
   describeStream,
   describeUpload,
-  formatDuration,
   meterDetails,
 } from '../format';
 
@@ -18,7 +18,12 @@ export function StatusPanel({ status }: { status: CaptureStatus }) {
         {AUDIO_SOURCES.map((source) => {
           const health = status.sources[source];
           const streamMessage = status.streamMessages[source];
-          const connectedMs = status.meter?.sources[source].connectedMs ?? 0;
+          const connected = recording
+            ? describeSourceConnected(
+                status.streams[source],
+                status.meter?.sources[source].connectedMs ?? 0,
+              )
+            : null;
           return (
             <div key={source} className={`status-row health-${health.health}`}>
               <dt>{AUDIO_SOURCE_LABEL[source]}</dt>
@@ -32,9 +37,7 @@ export function StatusPanel({ status }: { status: CaptureStatus }) {
                 {streamMessage !== null && streamMessage !== health.message ? (
                   <span className="muted"> ({streamMessage})</span>
                 ) : null}
-                {recording && connectedMs > 0 ? (
-                  <span className="muted"> · {formatDuration(connectedMs)} connected</span>
-                ) : null}
+                {connected !== null ? <span className="muted"> · {connected}</span> : null}
               </dd>
             </div>
           );

@@ -89,12 +89,13 @@ Fixed behaviour, not settings:
 | Quit, sleep, close, crash | Quit (Cmd+Q included), the Mac going to sleep, the window closing, the renderer crashing or reloading all stop the recording through the normal stop, logged and kept as the meeting's `stt_usage.stop_reason`. Sleep, a crash or a reload leave a notice saying why; quit and a closed window (which quits Roger) leave no window to show one. |
 | Connect and close         | A connect times out after 10 s; Stop terminates any socket the vendor has not closed 5 s after the finish sequence (`SttConnection`).                                                                                                                                                                                                           |
 
-What it cost shows in the status panel ("AssemblyAI · 12m 30s connected · about $0.06", sessions,
-audio and each source in its tooltip; "Last recording" after Stop), in the log (`stt meter` after
-every session that closes mid-meeting, `stt meter at stop` with the reason) and in `roger.sqlite`'s
-`stt_usage` table, one row per meeting, kept even when the meeting itself is discarded. The cost is
-an estimate from the price the API returns (`stream.price_per_hour_usd`). Nothing is uploaded yet
-(M3).
+What it cost shows in the status panel ("AssemblyAI · 25m 00s connected · about $0.06" for a
+12½-minute call: the time sums both sources' sessions, since each bills; sessions, audio and each
+source in its tooltip; each source's own time on its row; "Last recording" after Stop), in the log
+(`stt meter` after every session that closes mid-meeting, `stt meter at stop` with the reason) and
+in `roger.sqlite`'s `stt_usage` table, one row per meeting, kept even when the meeting itself is
+discarded. The cost is an estimate from the price the API returns (`stream.price_per_hour_usd`).
+Nothing is uploaded yet (M3).
 
 ## Layout
 
