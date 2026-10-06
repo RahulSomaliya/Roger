@@ -8,8 +8,8 @@ import { writePrivateFile } from './files';
 /**
  * The run files of the benchmark and their one reader and writer. `bench run` (M3-T11) writes
  * them, `score` and `report` read them, `draft` and `forget` (M3-T12) read and delete them, and
- * the silence gate's replay (M3-T20) fills the gate fields. Scores are never stored: they are
- * computed from these files on every `score`, so a new normaliser version rescores old runs.
+ * the silence gate's replay (M3-T20) fills the gate fields. They hold what the vendor sent, never
+ * a score: `score` works from them every time, so a new normaliser version rescores old runs.
  *
  *   runs/<run-id>/run.json                            RunRecord
  *   runs/<run-id>/<item-id>/{mic,system}.events.jsonl one EventRecord per line

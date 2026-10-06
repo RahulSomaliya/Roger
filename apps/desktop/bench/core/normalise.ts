@@ -27,7 +27,7 @@
  *     `5000000`), so it reads the same as the words.
  *
  * Every run stores `NORMALISER_VERSION`. Changing any rule bumps it; stored runs are then scored
- * again (scores are always computed from the stored events, never stored themselves).
+ * again (`score` always works from a run's stored events, which hold vendor text, not scores).
  */
 export const NORMALISER_VERSION = 1;
 
