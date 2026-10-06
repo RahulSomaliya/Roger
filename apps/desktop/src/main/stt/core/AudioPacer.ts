@@ -28,6 +28,8 @@ export class AudioPacer {
   /** Bytes of PCM per second, so the comparisons below stay in whole numbers. */
   private readonly bytesPerSecond: number;
   private startedAtMs: number | null = null;
+  /** The latest `nowMs` seen, to notice the wall clock stepping back. */
+  private lastNowMs: number | null = null;
   private sentBytes = 0;
   private readonly queue: Uint8Array[] = [];
   private queuedBytes = 0;
@@ -40,6 +42,7 @@ export class AudioPacer {
   /** The vendor's ready signal: real time counts from here. Nothing goes before it. */
   start(atMs: number): void {
     this.startedAtMs = atMs;
+    this.lastNowMs = atMs;
   }
 
   enqueue(frame: Uint8Array): void {
@@ -49,6 +52,7 @@ export class AudioPacer {
 
   /** The frames that may go at `nowMs`, oldest first. They count as sent. */
   take(nowMs: number): Uint8Array[] {
+    this.followClock(nowMs);
     const due: Uint8Array[] = [];
     for (;;) {
       const frame = this.queue[0];
@@ -78,6 +82,19 @@ export class AudioPacer {
     this.queue.length = 0;
     this.queuedBytes = 0;
     return discardedMs;
+  }
+
+  /**
+   * The wall clock can step back (a manual change, an NTP step) while real time goes on, so the
+   * count since ready steps back with it. Otherwise a backlog would wait the step out, sending
+   * nothing, and a step past AssemblyAI's inactivity timeout (costGuards.sttVendorIdleTimeoutMs)
+   * would let the vendor close a live session. A step forward cannot be told from time passing.
+   */
+  private followClock(nowMs: number): void {
+    if (this.startedAtMs !== null && this.lastNowMs !== null && nowMs < this.lastNowMs) {
+      this.startedAtMs -= this.lastNowMs - nowMs;
+    }
+    this.lastNowMs = nowMs;
   }
 
   /** sentMs <= elapsedMs, multiplied out so a 44.1 kHz stream compares whole numbers too. */
