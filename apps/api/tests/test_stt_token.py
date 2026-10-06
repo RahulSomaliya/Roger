@@ -1,5 +1,6 @@
 import json
 from collections.abc import AsyncIterator, Callable
+from types import MappingProxyType
 
 import httpx
 import pytest
@@ -7,6 +8,7 @@ from asgi_lifespan import LifespanManager
 from fastapi import FastAPI
 from pydantic import ValidationError
 
+from roger_api import config
 from roger_api.app import create_app
 from roger_api.config import Settings
 from roger_api.dependencies import get_stt_token_issuer
@@ -20,13 +22,13 @@ from roger_api.services.stt_tokens import (
     FakeSttTokenIssuer,
     SttCredential,
 )
-from roger_api.stt_vendors import open_stt_token_issuer
+from roger_api.stt_vendors import STT_PRESETS, SttPreset, open_stt_token_issuer
 from tests.conftest import make_settings
 from tests.helpers import AUTH_HEADERS, BASE_URL, assert_error
 
 DEEPGRAM_KEY = "dg-secret-key"
 ASSEMBLYAI_KEY = "aai-secret-key"
-# The stream settings the test app (STT_PROVIDER=fake, STT_MODEL unset) returns.
+# The stream settings the test app (STT_PROVIDER=fake) returns.
 STREAM = {
     "model": "fake",
     "language": "en",
@@ -142,12 +144,19 @@ async def test_vendor_failure_is_a_502_envelope(
 
 
 def test_stream_settings_come_from_config(database_url: str) -> None:
-    settings = make_settings(database_url, stt_model="nova-2", stt_sample_rate=48000)
+    # The model and its price come from the preset; the rest from the stream settings.
+    settings = make_settings(
+        database_url,
+        stt_provider="assemblyai-pro",
+        assemblyai_api_key=ASSEMBLYAI_KEY,
+        stt_sample_rate=48000,
+    )
 
     assert SttStreamSettings.from_settings(settings).model_dump() == {
         **STREAM,
-        "model": "nova-2",
+        "model": "universal-3-6-pro",
         "sample_rate": 48000,
+        "price_per_hour_usd": 0.45,
     }
 
 
@@ -156,19 +165,26 @@ def test_stream_price_is_the_override_when_set(database_url: str) -> None:
         database_url,
         stt_provider="deepgram",
         deepgram_api_key=DEEPGRAM_KEY,
-        stt_model="nova-2",
         stt_price_per_hour_usd=0.348,
     )
 
     assert SttStreamSettings.from_settings(settings).price_per_hour_usd == 0.348
 
 
-def test_unknown_stream_price_is_null(database_url: str) -> None:
-    settings = make_settings(
-        database_url, stt_provider="deepgram", deepgram_api_key=DEEPGRAM_KEY, stt_model="nova-2"
+def test_unknown_stream_price_is_null(database_url: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Every real preset has a list price (tests/test_stt_providers.py), so this one is patched in:
+    # a model the registry has no price for is null, never a guess.
+    unpriced = SttPreset(vendor="deepgram", model="nova-2")
+    monkeypatch.setattr(
+        config, "STT_PRESETS", MappingProxyType({**STT_PRESETS, "deepgram": unpriced})
     )
+    settings = make_settings(database_url, stt_provider="deepgram", deepgram_api_key=DEEPGRAM_KEY)
 
-    assert SttStreamSettings.from_settings(settings).model_dump()["price_per_hour_usd"] is None
+    assert SttStreamSettings.from_settings(settings).model_dump() == {
+        **STREAM,
+        "model": "nova-2",
+        "price_per_hour_usd": None,
+    }
 
 
 async def test_factory_builds_the_configured_issuer(settings: Settings) -> None:

@@ -17,6 +17,7 @@ class SttStreamSettings(BaseModel):
 
     @classmethod
     def from_settings(cls, settings: Settings) -> Self:
+        """The stream of the `STT_PROVIDER` preset: its model, and that model's price."""
         return cls(
             model=settings.stt_stream_model,
             language=settings.stt_language,
@@ -27,6 +28,9 @@ class SttStreamSettings(BaseModel):
 
 
 class SttTokenOut(BaseModel):
+    # The vendor id, never the preset: both AssemblyAI presets answer `assemblyai`. The desktop
+    # picks its adapter by this id (apps/desktop/src/main/stt/registry.ts), and a preset id there
+    # would fail Start with an unknown provider.
     provider: SttProvider
     access_token: str
     expires_in: int
