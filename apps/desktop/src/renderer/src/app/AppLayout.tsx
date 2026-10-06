@@ -1,4 +1,5 @@
 import { MeetingPage } from '../meeting/MeetingPage';
+import { useTheme } from '../theme/useTheme';
 import './app.css';
 import { BannerSlot } from './BannerSlot';
 import { HomePage } from './HomePage';
@@ -14,13 +15,16 @@ import { Sidebar } from './Sidebar';
  * must reach the user wherever they are.
  */
 export function AppLayout() {
+  // The one useTheme call (M4-S2): it puts the `theme` preference on <html> as data-theme. Without
+  // it Light and Dark in the preferences do nothing and the page always follows macOS.
+  const theme = useTheme();
   const { route } = useShell();
   const fullWindow = route.name === 'setup';
   return (
     <div className={fullWindow ? 'shell shell-full-window' : 'shell'}>
       {fullWindow ? null : <Sidebar />}
       <div className="shell-main">
-        <BannerSlot />
+        <BannerSlot themeError={theme.error} />
         {/* Keyed by route, so each page starts at its top rather than the last page's scroll. */}
         <main key={formatRoute(route)} className="shell-page">
           <Page route={route} />
