@@ -653,23 +653,29 @@ describe.each([
     store.close();
   });
 
-  it('keeps a meeting with no lines while it holds an unrecovered gap or kept audio', () => {
+  it('keeps a meeting with no lines only while it has audio kept, which a re-run or the sweeper needs', () => {
     const { store } = openWithMeeting();
-    store.addGap(gap('g1'));
-    // Deleting it would cascade the gap away and the re-run could never fill it.
-    expect(store.deleteMeetingIfEmpty('m1')).toBe(false);
-    store.markGapRecovered('g1', T0);
-    expect(store.deleteMeetingIfEmpty('m1')).toBe(true);
-
-    store.createMeeting({ id: 'm1', title: 'T', startedAt: '2026-10-06T09:00:00.000Z' });
     store.addAudioFile(audioFile('mic-0'));
     // Deleting it would cascade the row away and leave the file on disk for no sweeper to find.
     expect(store.deleteMeetingIfEmpty('m1')).toBe(false);
+    store.addGap(gap('g1'));
+    expect(store.deleteMeetingIfEmpty('m1')).toBe(false);
+    // The user deleted the audio, or the 30-day cap did: the gap can never be re-run now, so it
+    // holds nothing back.
     store.markMeetingAudioDeleted('m1', T0);
     store.addCaptureEvent({ meetingId: 'm1', at: T0, offsetMs: 0, source: null, kind: 'stall' });
     expect(store.deleteMeetingIfEmpty('m1')).toBe(true);
+    expect(store.listUnrecoveredGaps()).toEqual([]);
     expect(store.listCaptureEvents('m1')).toEqual([]);
-    expect(store.listAudioFiles('m1')).toEqual([]);
+    expect(store.listMeetingIdsWithAudio()).toEqual([]);
+
+    // Backup off (`audioRetentionDays` 0): a gap with no audio at all would otherwise keep the
+    // meeting pending, and in every uploader tick, for good.
+    store.createMeeting({ id: 'm2', title: 'T', startedAt: '2026-10-06T09:30:00.000Z' });
+    store.addGap(gap('g2', { meetingId: 'm2', reason: 'offline' }));
+    expect(store.deleteMeetingIfEmpty('m2')).toBe(true);
+    expect(store.listUnrecoveredGaps()).toEqual([]);
+    expect(store.getMeeting('m2')).toBeNull();
     store.close();
   });
 });

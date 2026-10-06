@@ -240,11 +240,11 @@ export class SqliteTranscriptStore implements TranscriptStore {
       setRemoteState: this.db.prepare(
         `UPDATE meetings SET remote_state = ?, updated_at = ? WHERE id = ?`,
       ),
-      // The gap and audio checks guard the cascade: see TranscriptStore.deleteMeetingIfEmpty.
+      // The audio check guards the cascade; no gap check on purpose: see
+      // TranscriptStore.deleteMeetingIfEmpty.
       deleteEmptyMeeting: this.db.prepare(
         `DELETE FROM meetings WHERE id = :id
            AND NOT EXISTS (SELECT 1 FROM segments WHERE meeting_id = :id)
-           AND NOT EXISTS (SELECT 1 FROM transcript_gaps WHERE meeting_id = :id AND recovered_at IS NULL)
            AND NOT EXISTS (SELECT 1 FROM audio_files WHERE meeting_id = :id AND deleted_at IS NULL)`,
       ),
       endLeftOpen: this.db.prepare(

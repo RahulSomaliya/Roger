@@ -58,8 +58,9 @@ export class InMemoryTranscriptStore implements TranscriptStore {
 
   deleteMeetingIfEmpty(id: string): boolean {
     if (this.countSegments(id) > 0) return false;
-    // Kept while the cascade would lose a re-run or orphan files: see TranscriptStore.
-    if (this.listUnrecoveredGaps(id).length > 0 || this.listAudioFiles(id).length > 0) return false;
+    // Kept while it has audio, which a re-run reads and the sweeper finds; no gap check on
+    // purpose: see TranscriptStore.deleteMeetingIfEmpty.
+    if (this.listAudioFiles(id).length > 0) return false;
     if (!this.meetings.delete(id)) return false;
     this.stopReasons.delete(id);
     for (const [gapId, gap] of this.gaps) if (gap.meetingId === id) this.gaps.delete(gapId);

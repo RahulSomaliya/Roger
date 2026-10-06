@@ -172,10 +172,14 @@ export interface TranscriptStore {
   markMeetingEnded(id: string, endedAt: string): void;
   setMeetingRemoteState(id: string, state: RemoteState): void;
   /**
-   * Delete a meeting that never produced a line (a failed start, or Stop before anyone spoke).
-   * A meeting that still has an unrecovered gap or audio not yet deleted is kept: the delete
-   * cascades to `transcript_gaps` and `audio_files`, which would lose the re-run and leave files on
-   * disk that no sweeper finds. It goes once the gap is recovered or the audio deleted.
+   * Delete a meeting that never produced a line (a failed start, or Stop before anyone spoke),
+   * with its gaps, audio rows and capture events (the cascade). A meeting with audio not yet
+   * deleted is kept: the cascade would drop the rows a gap re-run reads and leave files on disk
+   * that no sweeper finds. It goes once its audio is deleted (by the user, the retention sweep or
+   * the 30-day cap), whether or not a gap is still unrecovered. Do not add an unrecovered-gap
+   * check: a gap with no audio kept can never be re-run (backup off, or the audio deleted), so such
+   * a check would keep the meeting pending, and in every uploader tick, for good; and a gap whose
+   * audio is kept is already covered by the audio check.
    */
   deleteMeetingIfEmpty(id: string): boolean;
   /**
