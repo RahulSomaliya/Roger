@@ -410,8 +410,14 @@ describe('NotesSync: meetings not in Postgres', () => {
     expect(sync.save(MEETING, 'user', paragraphs('Agenda', 'pricing')).sync).toBe(
       'waiting_for_meeting',
     );
-    uploaderStatus();
-    await vi.advanceTimersByTimeAsync(60_000);
+    await vi.advanceTimersByTimeAsync(1_500);
+    // The uploader's status events, every 2 s, read no doc and start no pass while it is pending.
+    const readDocs = vi.spyOn(store, 'listDirtyNotes');
+    for (let tick = 0; tick < 30; tick += 1) {
+      uploaderStatus();
+      await vi.advanceTimersByTimeAsync(2_000);
+    }
+    expect(readDocs).not.toHaveBeenCalled();
     expect(api.calls).toEqual([]);
 
     meetings.set(MEETING, 'created');
@@ -465,13 +471,16 @@ describe('NotesSync: meetings not in Postgres', () => {
     api.missing.add(MEETING);
     sync.start();
 
+    // Text the user wrote: never deleted, unlike an empty note (below).
     sync.save(MEETING, 'user', paragraphs('Orphaned'));
     await vi.advanceTimersByTimeAsync(1_500);
+    const readDocs = vi.spyOn(store, 'listDirtyNotes');
     for (let tick = 0; tick < 10; tick += 1) {
       uploaderStatus();
       await vi.advanceTimersByTimeAsync(2_000);
     }
 
+    expect(readDocs).not.toHaveBeenCalled();
     expect(onMeetingMissing).toHaveBeenCalledOnce();
     expect(api.puts()).toHaveLength(1);
     expect(store.getNote(MEETING, 'user')).toMatchObject({
@@ -487,6 +496,34 @@ describe('NotesSync: meetings not in Postgres', () => {
     uploaderStatus();
     await vi.advanceTimersByTimeAsync(0);
     expect(store.getNote(MEETING, 'user')).toMatchObject({ dirty: false, sync: 'synced' });
+    sync.stop();
+  });
+  it('deletes the empty notes of a meeting discarded as empty, after one 404', async () => {
+    const { api, store, sync, meetings, uploaderStatus, onMeetingMissing } = harness();
+    meetings.set(MEETING, 'pending');
+    // Never created: Postgres hears of a meeting only once it has content.
+    api.missing.add(MEETING);
+    sync.start();
+    // The notepad was focused, and its blur saved an empty paragraph.
+    sync.save(MEETING, 'user', { type: 'doc', content: [{ type: 'paragraph' }] });
+    await vi.advanceTimersByTimeAsync(1_500);
+    expect(store.getNote(MEETING, 'user')?.sync).toBe('waiting_for_meeting');
+
+    // Stop: nobody spoke and hasNotes is false, so CaptureService discards the meeting (M4-T22).
+    meetings.delete(MEETING);
+    uploaderStatus();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(api.puts()).toHaveLength(1);
+    expect(onMeetingMissing).toHaveBeenCalledExactlyOnceWith(MEETING);
+    expect(store.getNote(MEETING, 'user')).toBeNull();
+    // Nothing waits any more: no request, at the next launch either.
+    for (let tick = 0; tick < 10; tick += 1) {
+      uploaderStatus();
+      await vi.advanceTimersByTimeAsync(2_000);
+    }
+    expect(store.listDirtyNotes()).toEqual([]);
+    expect(api.puts()).toHaveLength(1);
     sync.stop();
   });
 });

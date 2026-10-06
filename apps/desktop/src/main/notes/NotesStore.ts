@@ -88,12 +88,27 @@ export interface NotesStore {
   /** Notes with edits the server has not stored, oldest save first, across meetings. */
   listDirtyNotes(): LocalNote[];
   /**
+   * The meetings with a dirty note `waiting_for_meeting`, each once, oldest save first. NotesSync
+   * asks on every uploader status event (every 2 s while the uploader runs), so this reads ids in
+   * the database and never parses a doc, as `listDirtyNotes` does.
+   */
+  listWaitingMeetingIds(): string[];
+  /**
    * Whether the meeting holds notes with text in them: the check TranscriptUploader and
    * CaptureService make before discarding a meeting nobody spoke in (M4-T22). A doc with no text
    * (the editor saves an empty paragraph on blur) does not count, or every empty meeting whose
-   * notepad was opened would be kept and uploaded.
+   * notepad was opened would be kept and uploaded. Such a note outlives its discarded meeting
+   * until NotesSync deletes it (`deleteNoteIfEmpty`).
    */
   hasNotes(meetingId: string): boolean;
+  /**
+   * Delete the note if it holds no text by `hasNotes`'s rule (a conflict copy with text counts),
+   * and say whether it did. NotesSync calls it for a meeting neither roger.sqlite nor Postgres
+   * holds: one discarded as empty, whose notepad saved an empty paragraph on blur. Nothing the
+   * user wrote is lost; kept, the note would wait for its meeting for good. Emits nothing: no page
+   * shows a discarded meeting, and `notes:changed` carries a note.
+   */
+  deleteNoteIfEmpty(meetingId: string, kind: NoteKind): boolean;
   /**
    * Trap: NotesSync's own attempts write here too (`syncing`, then `synced`, `offline` or
    * `saved_locally`), so a listener that calls `NotesSync.flushMeeting` (NotesGenerator's

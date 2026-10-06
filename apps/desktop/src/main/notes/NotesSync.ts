@@ -89,7 +89,8 @@ type SyncOutcome =
  * one here on a `404` would put a meeting in Postgres the uploader never ends, stuck "recording",
  * or one with no line while it is still being recorded, which MCP then serves as the latest
  * meeting. So a note waits while its meeting is pending, and a `404` asks the uploader to take the
- * meeting back (`onMeetingMissing`) and waits for it.
+ * meeting back (`onMeetingMissing`) and waits for it. A note with no text whose meeting answers
+ * `404` and is gone from roger.sqlite too is deleted instead: its meeting was discarded as empty.
  *
  * Attempts at one note run one at a time (`serialised`): a pass, flushMeeting and a load's
  * `applyServerNote` never cross on the same note, so a load that reads the version an upload just
@@ -102,9 +103,9 @@ export class NotesSync {
   private readonly clock: () => Date;
   private readonly queues = new Map<string, Promise<void>>();
   /**
-   * Meetings that answered `404` and that the uploader did not take back to pending (roger.sqlite
-   * does not know them). Their notes wait until the meeting turns up pending: without this, every
-   * uploader status event would send them again, every 2 s, for good.
+   * Meetings that answered `404` and that the uploader did not take back to pending. Their notes,
+   * which hold text (an empty one is deleted), wait until the meeting turns up pending: without
+   * this, every uploader status event would send them again, every 2 s, for good.
    */
   private readonly stranded = new Set<string>();
   private running = false;
@@ -265,17 +266,15 @@ export class NotesSync {
    */
   private meetingsChanged(): void {
     try {
-      // Seen here, on the event, not in the pass that follows: by then the uploader may have
-      // created the meeting again, and a stranded meeting never seen pending would wait for good.
-      for (const meetingId of this.stranded) {
-        if (this.options.meetings.remoteState(meetingId) === 'pending') {
-          this.stranded.delete(meetingId);
-        }
-      }
-      const waiting = this.options.store
-        .listDirtyNotes()
-        .some((note) => note.sync === 'waiting_for_meeting');
-      if (waiting) this.soon();
+      // Ids only, read in the database: this runs every 2 s. A pass only when a waiting meeting
+      // may take its notes now; one still pending or stranded would make a pass that does nothing.
+      // Checked here, on the event, not in the pass that follows: waitsForMeeting un-strands a
+      // meeting it sees pending, and by the pass the uploader may have created it again, so a
+      // stranded meeting never seen pending would wait for good.
+      const ready = this.options.store
+        .listWaitingMeetingIds()
+        .some((meetingId) => !this.waitsForMeeting(meetingId));
+      if (ready) this.soon();
     } catch (error) {
       this.options.logger.error('notes sync could not check waiting notes', {
         error: errorMessage(error),
@@ -440,10 +439,18 @@ export class NotesSync {
     // Not an answer from the API: a bug or a store failure, for the caller to report.
     if (!(error instanceof ApiError)) throw error;
     if (error.isNotFound) {
-      store.setSyncState(meetingId, kind, 'waiting_for_meeting');
       // Never create it here (see the class comment): the uploader takes it back and creates it.
       this.options.onMeetingMissing(meetingId);
-      if (meetings.remoteState(meetingId) !== 'pending') {
+      const state = meetings.remoteState(meetingId);
+      // Neither roger.sqlite nor Postgres holds the meeting: CaptureService or the uploader
+      // discarded it as empty (hasNotes ignores the empty paragraph a blur saves). Nothing the
+      // user wrote is lost; kept, the note would wait for good and go again at every launch.
+      if (state === null && store.deleteNoteIfEmpty(meetingId, kind)) {
+        logger.info('empty notes of a discarded meeting deleted', { meetingId, kind });
+        return 'clean';
+      }
+      store.setSyncState(meetingId, kind, 'waiting_for_meeting');
+      if (state !== 'pending') {
         this.stranded.add(meetingId);
         logger.warn('notes wait for a meeting the uploader did not take back', {
           meetingId,

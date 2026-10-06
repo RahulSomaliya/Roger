@@ -265,11 +265,31 @@ export class SqliteNotesStore implements NotesStore {
       .map((row) => toLocalNote(rowToNote(row)));
   }
 
+  listWaitingMeetingIds(): string[] {
+    // Not SELECT DISTINCT: SQLite then walks the primary key, every row and doc in the file, on a
+    // query that runs every 2 s. This one scans only the dirty rows (the notes_dirty partial
+    // index), and a meeting has two at most, so the repeats go here.
+    const rows = this.database
+      .prepare(
+        `SELECT meeting_id FROM notes WHERE dirty = 1 AND sync_state = 'waiting_for_meeting'
+         ORDER BY updated_at`,
+      )
+      .all();
+    return Array.from(new Set(rows.map((row) => text(row, 'meeting_id'))));
+  }
+
   hasNotes(meetingId: string): boolean {
     const row = this.database
       .prepare('SELECT 1 AS found FROM notes WHERE meeting_id = ? AND has_text = 1 LIMIT 1')
       .get(meetingId);
     return row !== undefined;
+  }
+
+  deleteNoteIfEmpty(meetingId: string, kind: NoteKind): boolean {
+    const result = this.database
+      .prepare('DELETE FROM notes WHERE meeting_id = ? AND kind = ? AND has_text = 0')
+      .run(meetingId, kind);
+    return Number(result.changes) > 0;
   }
 
   onNoteChanged(listener: (note: LocalNote) => void): () => void {

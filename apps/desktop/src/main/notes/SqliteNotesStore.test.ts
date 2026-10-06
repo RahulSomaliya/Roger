@@ -2,7 +2,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { LocalNote, Note, NoteDoc, NoteKind } from '../../shared/notes';
 import type { StoredPendingGenerate } from './NotesStore';
 import { SqliteNotesStore } from './SqliteNotesStore';
@@ -390,6 +390,48 @@ describe('SqliteNotesStore: hasNotes', () => {
 
     expect(store.getNote(MEETING, 'user')?.sync).toBe('conflict');
     expect(store.hasNotes(MEETING)).toBe(true);
+    store.close();
+  });
+
+  it('deletes a note only when it holds no text, and emits nothing', () => {
+    const store = openStore();
+    // The blur's empty paragraph, in a meeting that was then discarded as empty.
+    store.saveLocal(MEETING, 'user', paragraphs('', '   '));
+    store.saveLocal(MEETING, 'ai', paragraphs('Kept'));
+    const changed = vi.fn();
+    store.onNoteChanged(changed);
+
+    expect(store.deleteNoteIfEmpty(MEETING, 'ai')).toBe(false);
+    expect(store.deleteNoteIfEmpty(MEETING, 'user')).toBe(true);
+    expect(store.getNote(MEETING, 'user')).toBeNull();
+    expect(store.getNote(MEETING, 'ai')?.doc).toEqual(paragraphs('Kept'));
+    expect(store.deleteNoteIfEmpty(MEETING, 'user')).toBe(false);
+    expect(changed).not.toHaveBeenCalled();
+
+    // An empty doc whose conflict copy holds text is notes.
+    store.applyServerNote(OTHER_MEETING, serverNote('user', 1, paragraphs('')));
+    store.saveLocal(OTHER_MEETING, 'user', paragraphs('Kept aside'));
+    store.applyServerNote(OTHER_MEETING, serverNote('user', 2, paragraphs('')));
+    expect(store.deleteNoteIfEmpty(OTHER_MEETING, 'user')).toBe(false);
+    store.close();
+  });
+});
+
+describe('SqliteNotesStore: waiting notes', () => {
+  it('lists each meeting whose dirty notes wait for it once, oldest save first', () => {
+    const store = openStore();
+    const third = '3c2b1a09-8f7e-4d6c-9b5a-4f3e2d1c0b9a';
+    store.saveLocal(OTHER_MEETING, 'user', paragraphs('Agenda'));
+    store.setSyncState(OTHER_MEETING, 'user', 'waiting_for_meeting');
+    store.saveLocal(MEETING, 'user', paragraphs('Pricing'));
+    store.setSyncState(MEETING, 'user', 'waiting_for_meeting');
+    store.saveLocal(MEETING, 'ai', paragraphs('Generated'));
+    store.setSyncState(MEETING, 'ai', 'waiting_for_meeting');
+    // Dirty for another reason: not waiting.
+    store.saveLocal(third, 'user', paragraphs('Offline'));
+    store.setSyncState(third, 'user', 'offline');
+
+    expect(store.listWaitingMeetingIds()).toEqual([OTHER_MEETING, MEETING]);
     store.close();
   });
 });
