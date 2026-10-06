@@ -10,6 +10,9 @@ enum RogerAudio {
   static let usage = """
     usage: roger-audio <command> [options]
 
+      tap [--sample-rate 16000] [--chunk-ms 100]
+          Call audio from a Core Audio process tap: framed PCM on stdout, JSON events on stderr.
+          stdin: "rebuild" rebuilds the tap; end of input exits. Exits when its parent does.
       monitor --parent-pid <pid> [--relaunch-dry-run]
           Which apps use the mic and which output is in use, as JSON lines on stdout.
       probe [--seconds 2]
@@ -22,6 +25,7 @@ enum RogerAudio {
   static func run(_ arguments: [String]) -> Int32 {
     let rest = Array(arguments.dropFirst())
     switch arguments.first {
+    case "tap": return runTap(arguments: rest)
     case "monitor": return runMonitor(arguments: rest)
     case "probe": return runProbe(arguments: rest)
     case "selftest": return runSelfTest(arguments: rest)

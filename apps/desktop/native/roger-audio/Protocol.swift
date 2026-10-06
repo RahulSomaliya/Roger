@@ -277,6 +277,15 @@ struct HelperFailure: Error, CustomStringConvertible {
     self.status = status
   }
 
+  /// Keeps a HelperFailure as it is; wraps any other error under `code`.
+  init(wrapping error: Error, code: String) {
+    if let failure = error as? HelperFailure {
+      self = failure
+    } else {
+      self.init(code: code, message: String(describing: error))
+    }
+  }
+
   var description: String { message }
   var errorEvent: HelperEvent { .error(code: code, message: message, status: status) }
 }

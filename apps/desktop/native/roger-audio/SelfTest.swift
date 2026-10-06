@@ -30,6 +30,8 @@ func runSelfTest(arguments: [String]) -> Int32 {
   converterCases(&suite)
   writerCases(&suite)
   tapInputCases(&suite)
+  lifecycleCases(&suite)
+  sessionCases(&suite)
   suite.skip(
     "Core Audio tap",
     because: "it needs the System Audio Recording permission; `make test-native-route` runs it")
@@ -531,6 +533,393 @@ private func tapInputCases(_ suite: inout SelfTestSuite) {
   }
 }
 
+// MARK: - Lifecycle
+
+private func lifecycleCases(_ suite: inout SelfTestSuite) {
+  suite.run("stdin: lines split across reads, CR LF, an overlong line cut, the last line at EOF") {
+    t in
+    var splitter = LineSplitter()
+    var lines: [String] = []
+    for chunk in ["rebu", "ild\nhello\r\n\n  rebuild  \nla", "st"] {
+      lines += Array(chunk.utf8).withUnsafeBytes { splitter.append($0) }
+    }
+    t.expectEqual(lines, ["rebuild", "hello", "", "  rebuild  "], "complete lines")
+    t.expectEqual(splitter.finish(), "last", "the unterminated last line")
+    t.expectEqual(splitter.finish(), nil, "nothing after that")
+
+    var long = LineSplitter()
+    let overlong = String(repeating: "a", count: 5_000) + "\nrebuild\n"
+    let cut = Array(overlong.utf8).withUnsafeBytes { long.append($0) }
+    t.expectEqual(cut.map(\.count), [LineSplitter.maxLineBytes, 7], "cut at 4,096 bytes, rest dropped")
+
+    t.expectEqual(TapCommand(line: "rebuild"), .rebuild, "rebuild")
+    t.expectEqual(TapCommand(line: "  rebuild  "), .rebuild, "whitespace ignored")
+    t.expectEqual(TapCommand(line: "hello"), .unknown("hello"), "anything else is unknown")
+    t.expectEqual(TapCommand(line: " "), nil, "blank lines are ignored")
+  }
+
+  suite.run("stdin reader: lines, then the end of input, arrive on the queue in order") { t in
+    let pipe = try makePipe()
+    let queue = DispatchQueue(label: "selftest.stdin")
+    let seen = Locked<[String]>([])
+    let ended = DispatchSemaphore(value: 0)
+    LineReader(
+      fd: pipe.read, queue: queue,
+      onLine: { line in seen.withValue { $0.append(line) } },
+      onEnd: { end in
+        seen.withValue { $0.append(end == .endOfFile ? "<eof>" : "<error>") }
+        ended.signal()
+      }
+    ).start()
+    try Array("rebuild\nhello\nno newline".utf8).withUnsafeBytes { try writeAll(fd: pipe.write, $0) }
+    close(pipe.write)
+    t.expect(ended.wait(timeout: .now() + 5) == .success, "end of input reported")
+    t.expectEqual(seen.value, ["rebuild", "hello", "no newline", "<eof>"], "in order")
+    close(pipe.read)
+  }
+
+  suite.run("parent watch: an exit is noticed, also one before the watch (zombie or reaped)") {
+    t in
+    let queue = DispatchQueue(label: "selftest.watch")
+    let sleeper = Process()
+    sleeper.executableURL = URL(fileURLWithPath: "/bin/sleep")
+    sleeper.arguments = ["0.2"]
+    try sleeper.run()
+    let exited = DispatchSemaphore(value: 0)
+    let fired = Locked(0)
+    let watch = ProcessExitWatch(pid: sleeper.processIdentifier, queue: queue) {
+      fired.withValue { $0 += 1 }
+      exited.signal()
+    }
+    t.expect(exited.wait(timeout: .now() + 5) == .success, "its exit is noticed")
+
+    // Exited and not yet reaped, like a parent that died while the helper was starting.
+    var zombie: pid_t = 0
+    var arguments: [UnsafeMutablePointer<CChar>?] = [strdup("/usr/bin/true"), nil]
+    defer { free(arguments[0]) }
+    guard posix_spawn(&zombie, "/usr/bin/true", nil, nil, &arguments, environ) == 0 else {
+      throw SelfTestError(description: "posix_spawn /usr/bin/true failed: errno \(errno)")
+    }
+    usleep(200_000)
+    let zombieSeen = DispatchSemaphore(value: 0)
+    let zombieWatch = ProcessExitWatch(pid: zombie, queue: queue) { zombieSeen.signal() }
+    t.expect(zombieSeen.wait(timeout: .now() + 5) == .success, "a zombie counts as exited")
+    var status: Int32 = 0
+    waitpid(zombie, &status, 0)
+
+    let quick = Process()
+    quick.executableURL = URL(fileURLWithPath: "/usr/bin/true")
+    try quick.run()
+    quick.waitUntilExit()
+    let gone = DispatchSemaphore(value: 0)
+    let late = ProcessExitWatch(pid: quick.processIdentifier, queue: queue) { gone.signal() }
+    t.expect(gone.wait(timeout: .now() + 5) == .success, "so does a process already reaped")
+    queue.sync {}
+    t.expectEqual(fired.value, 1, "the first watch fired once")
+    withExtendedLifetime((watch, zombieWatch, late)) {}
+  }
+
+  suite.run("signals: SIGHUP becomes a call on the queue, and cancel restores the default") { t in
+    let queue = DispatchQueue(label: "selftest.signals")
+    let received = DispatchSemaphore(value: 0)
+    let number = Locked<Int32>(0)
+    let signals = TerminationSignals(queue: queue) { signal in
+      number.withValue { $0 = signal }
+      received.signal()
+    }
+    kill(getpid(), SIGHUP)
+    t.expect(received.wait(timeout: .now() + 5) == .success, "the handler ran")
+    t.expectEqual(number.value, SIGHUP, "with the signal's number")
+    signals.cancel()
+    var action = sigaction()
+    sigaction(SIGHUP, nil, &action)
+    // SIG_DFL is the null handler.
+    t.expect(action.__sigaction_u.__sa_handler == nil, "SIGHUP's default action is back")
+  }
+
+  suite.run("debounce: changes within 300 ms rebuild once under the most telling reason") { t in
+    let queue = DispatchQueue(label: "selftest.debounce")
+    let rebuilds = Locked<[(reason: RestartReason, at: DispatchTime)]>([])
+    let debouncer = RebuildDebouncer(delay: .milliseconds(300), queue: queue) { reason in
+      rebuilds.withValue { $0.append((reason, .now())) }
+    }
+    queue.async { debouncer.changed(.tapFormatChanged) }
+    usleep(100_000)
+    queue.async { debouncer.changed(.outputDeviceChanged) }
+    usleep(100_000)
+    let lastChange = Locked(DispatchTime.now())
+    queue.async {
+      lastChange.withValue { $0 = .now() }
+      debouncer.changed(.tapFormatChanged)
+    }
+    usleep(150_000)
+    t.expect(rebuilds.value.isEmpty, "nothing before 300 ms of quiet")
+    t.expect(waitUntil(seconds: 3) { !rebuilds.value.isEmpty }, "then one rebuild")
+    usleep(400_000)
+    let first = rebuilds.value
+    t.expectEqual(first.map(\.reason), [.outputDeviceChanged], "once, as an output device change")
+    if let rebuilt = first.first {
+      let quietMs = Double(rebuilt.at.uptimeNanoseconds - lastChange.value.uptimeNanoseconds) / 1e6
+      t.expect(quietMs >= 290, "300 ms after the last change, got \(quietMs) ms")
+    }
+
+    queue.sync {
+      debouncer.changed(.tapFormatChanged)
+      debouncer.rebuildNow(.rebuildRequested)
+    }
+    t.expectEqual(
+      rebuilds.value.map(\.reason), [.outputDeviceChanged, .rebuildRequested],
+      "a requested rebuild runs at once")
+    usleep(500_000)
+    t.expectEqual(rebuilds.value.count, 2, "and cancels the change pending before it")
+    queue.sync { debouncer.changed(.tapFormatChanged) }
+    queue.sync { debouncer.cancel() }
+    usleep(500_000)
+    t.expectEqual(rebuilds.value.count, 2, "cancel drops a pending change")
+  }
+}
+
+// MARK: - Tap session (with a fake device: no Core Audio)
+
+private func sessionCases(_ suite: inout SelfTestSuite) {
+  suite.run("tap session: ready, stdin rebuild at once, unknown command warned, EOF exits clean") {
+    t in
+    let harness = try SessionHarness()
+    harness.start()
+    t.expect(harness.waitFor { if case .ready = $0 { return true } else { return false } }, "ready")
+    t.expect(
+      harness.events.all.contains {
+        guard case .ready(let format, let tapFormat) = $0 else { return false }
+        return format == output16k && tapFormat == FakeTapDevice.format
+      }, "ready names the output and the tap format")
+    t.expectEqual(harness.device.log.value, ["build", "watch"], "built, then watching the route")
+
+    let quarter = tone(rate: 48_000, seconds: 0.25, hz: 440, amplitude: 0.25)
+    writeToRing(harness.ring, quarter, rate: 48_000)
+    try harness.send("rebuild")
+    t.expect(harness.waitFor(restartedBecause: .rebuildRequested), "restarted on request")
+    t.expectEqual(
+      harness.device.log.value, ["build", "watch", "teardown", "build"],
+      "the old tap goes before the new one")
+    // On time to the ms, but from the rebuilt tap: it must not join the old tap's run.
+    writeToRing(harness.ring, quarter, rate: 48_000, from: startMs + 250)
+
+    try harness.send("make coffee")
+    t.expect(
+      harness.waitFor {
+        guard case .warning(let code, _) = $0 else { return false }
+        return code == "unknown_command"
+      }, "an unknown command is warned about")
+
+    harness.closeStdin()
+    t.expectEqual(harness.waitForExit(), .ok, "end of stdin exits with 0")
+    t.expectEqual(
+      Array(harness.device.log.value.suffix(2)), ["stop watching", "teardown"],
+      "the tap is torn down before the exit")
+    checkRuns(
+      t, try decodeFrames(harness.finish()), [(startMs, 250), (startMs + 250, 250)],
+      "the rebuild splits the audio into two runs, each written in full")
+  }
+
+  suite.run("tap session: route changes rebuild once; a failed rebuild warns and is retried") { t in
+    let harness = try SessionHarness()
+    harness.start()
+    t.expect(harness.waitFor { if case .ready = $0 { return true } else { return false } }, "ready")
+    harness.device.routeChanged(.tapFormatChanged)
+    harness.device.routeChanged(.outputDeviceChanged)
+    t.expect(harness.waitFor(restartedBecause: .outputDeviceChanged), "restarted for the route")
+    usleep(200_000)
+    t.expectEqual(harness.restarts, 1, "once for both changes")
+
+    harness.device.failNextBuilds.withValue { $0 = 1 }
+    try harness.send("rebuild")
+    t.expect(harness.waitFor(restartedBecause: .rebuildRequested), "restarted after one retry")
+    t.expect(
+      harness.events.all.contains {
+        guard case .warning(let code, _) = $0 else { return false }
+        return code == "tap_create_failed"
+      }, "the failed attempt is a warning")
+    harness.closeStdin()
+    t.expectEqual(harness.waitForExit(), .ok, "exits")
+    harness.finish()
+  }
+
+  suite.run("tap session: a rebuild that keeps failing ends with an error event and code 1") { t in
+    let harness = try SessionHarness()
+    harness.start()
+    t.expect(harness.waitFor { if case .ready = $0 { return true } else { return false } }, "ready")
+    harness.device.failNextBuilds.withValue { $0 = TapSession.Timing().maxBuildAttempts }
+    try harness.send("rebuild")
+    t.expectEqual(harness.waitForExit(), .failure, "exit code 1")
+    t.expect(
+      harness.events.all.contains {
+        guard case .error(let code, _, let status) = $0 else { return false }
+        return code == "tap_create_failed" && status == -50
+      }, "an error event with the OSStatus")
+    t.expectEqual(harness.device.log.value.last, "teardown", "nothing left running")
+    harness.closeStdin()
+    harness.finish()
+  }
+
+  suite.run("tap session: a first build that fails exits with the error, never ready") { t in
+    let harness = try SessionHarness()
+    harness.device.failNextBuilds.withValue { $0 = 1 }
+    harness.start()
+    t.expectEqual(harness.waitForExit(), .failure, "exit code 1")
+    t.expect(
+      !harness.events.all.contains { if case .ready = $0 { return true } else { return false } },
+      "no ready event")
+    t.expect(
+      harness.events.all.contains { if case .error = $0 { return true } else { return false } },
+      "an error event")
+    harness.closeStdin()
+    harness.finish()
+  }
+
+  suite.run("tap session: the parent's exit ends it, and so does a closed stdout") { t in
+    let parent = Process()
+    parent.executableURL = URL(fileURLWithPath: "/bin/sleep")
+    parent.arguments = ["0.3"]
+    try parent.run()
+    let orphan = try SessionHarness(parent: parent.processIdentifier)
+    orphan.start()
+    t.expectEqual(orphan.waitForExit(), .ok, "parent gone: exit 0")
+    orphan.closeStdin()
+    orphan.finish()
+
+    let deaf = try SessionHarness(readStdout: false)
+    deaf.start()
+    t.expect(deaf.waitFor { if case .ready = $0 { return true } else { return false } }, "ready")
+    writeToRing(
+      deaf.ring, tone(rate: 48_000, seconds: 0.3, hz: 440, amplitude: 0.25), rate: 48_000)
+    t.expectEqual(deaf.waitForExit(), .ok, "stdout closed: exit 0")
+    t.expectEqual(deaf.device.log.value.last, "teardown", "torn down")
+    deaf.closeStdin()
+    deaf.finish()
+  }
+}
+
+/// A tap that records what the session asks of it and fails builds on demand.
+private final class FakeTapDevice: TapDevice, @unchecked Sendable {
+  static let format = TapFormat(sampleRate: 48_000, channels: 1, interleaved: true)
+  let log = Locked<[String]>([])
+  let failNextBuilds = Locked(0)
+  private let onChange = Locked<((RestartReason) -> Void)?>(nil)
+  private let queue: DispatchQueue
+
+  init(queue: DispatchQueue) { self.queue = queue }
+
+  func build() throws -> TapFormat {
+    let fail = failNextBuilds.withValue { remaining -> Bool in
+      guard remaining > 0 else { return false }
+      remaining -= 1
+      return true
+    }
+    if fail {
+      log.withValue { $0.append("build failed") }
+      throw HelperFailure(code: "tap_create_failed", message: "fake tap refused", status: -50)
+    }
+    log.withValue { $0.append("build") }
+    return Self.format
+  }
+
+  func teardown() { log.withValue { $0.append("teardown") } }
+
+  func watchRoute(onChange: @escaping (RestartReason) -> Void) throws {
+    log.withValue { $0.append("watch") }
+    self.onChange.withValue { $0 = onChange }
+  }
+
+  func stopWatching() {
+    log.withValue { $0.append("stop watching") }
+    onChange.withValue { $0 = nil }
+  }
+
+  /// What a Core Audio property listener does: call back on the control queue.
+  func routeChanged(_ reason: RestartReason) {
+    queue.async { [onChange] in onChange.value?(reason) }
+  }
+}
+
+/// A TapSession wired to pipes, a fake device and an exit that is recorded instead of taken.
+private final class SessionHarness {
+  let queue = DispatchQueue(label: "selftest.session")
+  let device: FakeTapDevice
+  let events = RecordingEventSink()
+  let ring = AudioRing()
+  private let session: TapSession
+  private let stdin: (read: Int32, write: Int32)
+  private let stdout: (read: Int32, write: Int32)
+  private let stdoutDrain: PipeDrain?
+  private var stdinOpen = true
+  private let exitCode = Locked<ExitCode?>(nil)
+
+  /// `readStdout: false` closes stdout's read end at once, as a main that went away would.
+  init(parent: pid_t = getpid(), readStdout: Bool = true) throws {
+    device = FakeTapDevice(queue: queue)
+    stdin = try makePipe()
+    stdout = try makePipe()
+    let stdoutWrite = stdout.write
+    let pipeline = try FramePipeline(output: output16k) { try writeAll(fd: stdoutWrite, $0) }
+    let writer = FrameWriter(
+      ring: ring, pipeline: pipeline, events: events, statsInterval: 0.2, pollInterval: 0.005)
+    var timing = TapSession.Timing()
+    timing.debounce = .milliseconds(50)
+    timing.retryDelay = .milliseconds(50)
+    session = TapSession(
+      output: output16k, device: device, ring: ring, writer: writer, events: events, queue: queue,
+      stdin: stdin.read, parent: parent, timing: timing
+    ) { [exitCode] code in exitCode.withValue { $0 = code } }
+    if readStdout {
+      stdoutDrain = PipeDrain(fd: stdout.read)
+    } else {
+      stdoutDrain = nil
+      close(stdout.read)
+    }
+  }
+
+  func start() { queue.async { [session] in session.start() } }
+
+  func send(_ line: String) throws {
+    try Array((line + "\n").utf8).withUnsafeBytes { try writeAll(fd: stdin.write, $0) }
+  }
+
+  func closeStdin() {
+    guard stdinOpen else { return }
+    stdinOpen = false
+    close(stdin.write)
+  }
+
+  var restarts: Int {
+    events.all.filter { if case .restarted = $0 { return true } else { return false } }.count
+  }
+
+  func waitFor(_ match: @escaping (HelperEvent) -> Bool) -> Bool {
+    waitUntil(seconds: 5) { self.events.all.contains(where: match) }
+  }
+
+  func waitFor(restartedBecause reason: RestartReason) -> Bool {
+    waitFor {
+      guard case .restarted(let why, _) = $0 else { return false }
+      return why == reason
+    }
+  }
+
+  func waitForExit() -> ExitCode? {
+    _ = waitUntil(seconds: 5) { self.exitCode.value != nil }
+    return exitCode.value
+  }
+
+  /// Ends the stdout drain and returns what the session wrote there. Call once it has exited.
+  @discardableResult
+  func finish() -> [UInt8] {
+    close(stdout.write)
+    let written = stdoutDrain?.finish() ?? []
+    queue.sync {}
+    return written
+  }
+}
+
 // MARK: - Helpers
 
 /// One frame as main would parse it from stdout.
@@ -622,15 +1011,18 @@ private func feed(
   }
 }
 
-/// Writes samples to a ring in `spanMs` callbacks, as the IO block does, from `startMs` on.
-private func writeToRing(_ ring: AudioRing, _ samples: [Float], rate: Double, spanMs: Double = 10) {
+/// Writes samples to a ring in `spanMs` callbacks, as the IO block does, from `from` on.
+private func writeToRing(
+  _ ring: AudioRing, _ samples: [Float], rate: Double, spanMs: Double = 10,
+  from wallMs: Double = startMs
+) {
   let spanFrames = Int(rate * spanMs / 1_000)
   samples.withUnsafeBufferPointer { all in
     for offset in stride(from: 0, to: all.count, by: spanFrames) {
       let count = min(spanFrames, all.count - offset)
       ring.write(
         UnsafeBufferPointer(rebasing: all[offset..<offset + count]), sampleRate: rate,
-        captureWallMs: startMs + Double(offset) / rate * 1_000)
+        captureWallMs: wallMs + Double(offset) / rate * 1_000)
     }
   }
 }
