@@ -301,8 +301,9 @@ plus one slot block. Every task is TDD: the failing test first,
   that "system audio verified" is stored against. Owns `src/main/settingsPanes.ts` (+ test): the
   anchors for Microphone and for "System Audio Recording Only", checked by hand on macOS 26 and
   hardcoded. Adds the `tccd` log recipe (`/usr/bin/log show ... "Failed to match existing code
-  requirement"`) to the CLAUDE.md failure log and the field report to the M1 exit check log. Mac
-  check: Start, grant, quit, relaunch, Start again with no prompt and call audio present.
+  requirement"`) to the failure log (now `apps/desktop/CLAUDE.md`) and the field report to the M1
+  exit check log. Mac check: Start, grant, quit, relaunch, Start again with no prompt and call
+  audio present.
 - [x] **M2-T2 Contracts, config, IPC validation** · M · desktop · depends on: P2-F1.
   Owns `src/shared/capture.ts`, `src/shared/ipc/capture.ts`, `src/shared/ipc/setup.ts`, their
   bridges in `src/preload/bridges/` and fakes in `preview/fakes/`, `src/main/config.ts`,
@@ -445,7 +446,7 @@ plus one slot block. Every task is TDD: the failing test first,
   raises no warning of its own, T11's source-ended rule shows it; while a helper restarts it shows
   `helper-hung` or `source-ended`, then a `helper-restarted` notice. `systemCapture` is `tap` or
   `electron` from `starting` to `stopping`, null when idle, and the renderer opens Electron's call
-  audio only for `electron` (T12).
+  audio for `electron` or a missing field (a main from before T10), never for `tap` or null (T12).
 - [x] **M2-T11 Signal health and loud warnings** · M · desktop · depends on: T2, T3, T4.
   (Code merged; the Mac check below has not run, so the flat-level rule is built and off, the
   `flatLevelRule` option of the T11 slot. D4's Bluetooth window and the "Switched to <device>"
@@ -476,7 +477,8 @@ plus one slot block. Every task is TDD: the failing test first,
   `StopReason` with its notice and tests. Close-hides is M5-T11's. As built: `window.ts` needed
   no change (the reload lives in `lifecycle.ts`); a page that crashes before it loads, or 3 times
   in 60 s, stops with `renderer-gone` instead of reloading again; a mic that opens dead 3 times in
-  a row is reported to main as `error`; a reload leaves call audio shut when main gave up on it.
+  a row is reported to main as `error`; a reload leaves call audio shut when main gave up on it;
+  call audio also opens when `systemCapture` is missing (a main from before T10).
   The "switched" report reaches main as an `active` source state whose message main drops: the
   notice comes from T17a's mic device instead.
 - [ ] **M2-T13 Electron smoke test** · M · desktop · depends on: T10, T12.
@@ -583,10 +585,10 @@ plus one slot block. Every task is TDD: the failing test first,
   re-run progress, capture report, "Roger restarted and kept taking notes" with Stop.
 - [ ] **M2-T21 Docs** · S · docs · depends on: all others.
   CLAUDE.md repo map (`apps/desktop/native`), commands (`make native`, `make e2e-desktop`,
-  `make test-native-route`), failure log lines found during M2; `apps/desktop/README.md` (helper,
-  permissions, audio folder, and what M2 changed in the cost guards' sleep and crash rows; the
-  guard table itself is M3-T20's in wave 6); "Adopted in M2" in
-  `docs/research/reference-repos.md`.
+  `make test-native-route`), failure log lines found during M2 (each in the file its trap belongs
+  in, section 3.1 of the build order); `apps/desktop/README.md` (helper, permissions, audio folder,
+  and what M2 changed in the cost guards' sleep and crash rows; the guard table itself is M3-T20's
+  in wave 6); "Adopted in M2" in `docs/research/reference-repos.md`.
 - [ ] **M2-T22 Exit check on real calls** · human plus agent · starts after T1 to T15, T3b, T7b
   and T20a (the "no lost or doubled text" set and the three cuts). The kill -9 call and the Wi-Fi
   cut also need T16 (AssemblyAI takes no replay, so that window comes back from the backup), the

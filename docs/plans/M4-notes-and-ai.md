@@ -23,8 +23,9 @@ theme tokens and preferences. M2, M3 and M5 mount their screens into it.
      after a restart, the mic asked for again) blocks this check: a call with no "Them" lines
      cannot pass.
   2. The speech-to-text vendor is chosen and set in `.env` (M3-T17).
-  3. Calls started from the calendar carry their invite title and attendees (M5-T5), so a template
-     can be suggested. Without them Roger asks for the template at Stop, which still works.
+  3. Calls started from the calendar carry their invite title and attendees (M5-T5 stores them;
+     M5-T9c passes the attendees to `NotesGenerator`), so a template can be suggested. Without them
+     Roger asks for the template at Stop, which still works.
 
   Run: in the repo-root `.env` set `STT_PROVIDER` to M3's choice with its key, and
   `NOTES_PROVIDER=openrouter` with `OPENROUTER_API_KEY`. `make dev-db && make migrate && make
@@ -639,7 +640,8 @@ Desktop:
 - [x] **M4-T23. Generate after Stop, in main.** M. Depends on: T14, T15, M2-T3, M2-T4.
   Owns `main/notes/NotesGenerator.ts` (pending rows, preconditions, flush, versions, stream, poll
   after a dropped stream, `applyServerNote` on `done`; preferences come in through an injected
-  getter, so it builds before S2 is wired), `shared/suggestTemplate.ts`.
+  getter, so it builds before S2 is wired), `shared/suggestTemplate.ts`. As built: the attendee
+  cue reads an optional `attendees` getter that nothing passes yet; M5-T9c adds it in wave 6.
 
 Not code: the exit check on 5 real calls, and the real-model eval report (owner, with keys).
 

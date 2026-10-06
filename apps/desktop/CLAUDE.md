@@ -109,6 +109,11 @@ Extends the root `CLAUDE.md`, whose house rules and repo-wide failure log apply 
 - A jitter test whose first chunk has no jitter passes on code that ignores jitter: M1 dated a
   stream from its first chunk only, so delays of `(i * 137) % 401` (zero at i = 0) proved nothing.
   Start such a pattern off zero, and see the test fail on the old code first (M2-T5).
+- Map a vendor span (a line, a word, an interim) through `AudioTimeline.toCapturedSpan`, never as
+  two `toCapturedAtMs` calls: a vendor almost never stamps an edge exactly on a run boundary, and
+  an end 10 ms past one lands on the far side of the gap. A 20 s mic stall made a 2-word line 20 s
+  long and slipped the echo filter (M2-T5 review, 2026-10-07). Keep a final's span widened over its
+  words (`CaptureSession.lineSpan`): `EchoFilter` reaches call-audio lines by span.
 - Inside `describe.concurrent`, Vitest's global `onTestFinished` is not tied to the running test:
   it ran another test's cleanup and stopped its helpers (0 frames). Use the test context's hook,
   `async (context) => { context.onTestFinished(...) }` (M2-T10).

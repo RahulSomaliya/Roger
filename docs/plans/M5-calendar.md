@@ -564,7 +564,10 @@ T11 in wave 6; T12 in wave 7; T13 in wave 8.
   `src/main/prompt/promptIpc.ts` (accepts the prompt window as sender, nothing else).
 - [ ] **M5-T9c** Owns `src/main/calendar/createCalendarRuntime.ts`, `[slot M5-T9c]` in
   `src/main/index.ts`, the `StartRequestEnricher` it injects into `CaptureService`
-  (one clear match), and `src/main/calendar/calendarFlow.test.ts`.
+  (one clear match), and `src/main/calendar/calendarFlow.test.ts`. Also passes M4's template rule
+  the invite's attendees: the optional `attendees` getter on the `new NotesGenerator` call in
+  `[slot M4-T16 notes]`, read from the local meeting's `calendar_event_json` (build order,
+  section 10, "From wave 3").
 - [ ] **M5-T10** Owns `src/main/prompt/PromptWindow.ts`, `src/main/prompt/promptBounds.ts`,
   `src/preload/prompt.ts` (exposes only `window.rogerPrompt`), `src/renderer/prompt.html`,
   `src/renderer/src/prompt/*`; adds the second preload and page to `electron.vite.config.ts`;
@@ -597,7 +600,7 @@ T11 in wave 6; T12 in wave 7; T13 in wave 8.
   recording, "Calendar not updated since …" when stale, "Reconnect Google Calendar (before <date>)"
   when needed, Open Roger, Quit Roger. Icon states: idle, recording, warning. Default-on at first
   connect ships only after real-Mac check 1 passes; until then `app.openAtLogin` defaults to `off`.
-  Adds the dev-data failure-log line to `CLAUDE.md`.
+  Adds the dev-data failure-log line to `apps/desktop/CLAUDE.md`.
 - [ ] **M5-T12** Owns `src/renderer/src/calendar/*`: `TodaySection`, `NextMeetingCard`,
   `ConnectCalendarCard`, `CalendarSettings` (open at login status and toggle, with
   `requires-approval` and its System Settings path), `NoticeBanner`, `CalendarStatusBanner`
@@ -609,7 +612,8 @@ T11 in wave 6; T12 in wave 7; T13 in wave 8.
   meeting banner), and the QA script (on M4-S3's `qa/driver.ts`, playwright-core) and gallery for
   the screens below.
 - [ ] Each task proposes the traps it hit as failure-log lines in its hand-off note; the controller
-  appends them to `CLAUDE.md` once per wave.
+  appends them once per wave, each to the file its trap belongs in (`CLAUDE.md`,
+  `apps/desktop/CLAUDE.md` or `apps/api/CLAUDE.md`).
 - [ ] Exit check: 20 calls, logged below.
 
 ## Tests
