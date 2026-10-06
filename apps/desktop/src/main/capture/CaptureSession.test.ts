@@ -536,6 +536,58 @@ describe('CaptureSession', () => {
       await s.close();
     });
 
+    it('never stretches a line across a stall for a word edge the vendor put just past it', async () => {
+      const { l, s, mic } = await recording();
+      pushContiguous(s, 'mic', 10_000, 10); // stream 0-1 s, captured 10-11 s
+      // The mic stalls 20 s, under the 30 s that would pause the session: the stream stays open.
+      pushContiguous(s, 'mic', 31_000, 10); // stream 1-2 s, captured 31-32 s
+      // The vendor heard no hole: it ends the cut word 10 ms past the splice and starts the next
+      // line 1 ms before it. Dated as stamped, the first line would end 20 s after it started (an
+      // echo of it could no longer be hidden) and the second would start 20 s early.
+      final(mic, 'yes exactly', 400, 1_010, [
+        [400, 700],
+        [700, 1_010],
+      ]);
+      final(mic, 'go on', 999, 1_600, [
+        [999, 1_300],
+        [1_300, 1_600],
+      ]);
+      expect(l.segments.map(({ startMs, endMs }) => [startMs, endMs])).toEqual([
+        [400, 1_000],
+        [21_000, 21_600],
+      ]);
+      expect(l.segments.map((segment) => segment.words?.map((w) => [w.startMs, w.endMs]))).toEqual([
+        [
+          [400, 700],
+          [700, 1_000],
+        ],
+        [
+          [21_000, 21_300],
+          [21_300, 21_600],
+        ],
+      ]);
+      await s.close();
+    });
+
+    it('keeps every word inside its line when a word at its edge falls the other side of a stall', async () => {
+      const { l, s, mic } = await recording();
+      pushContiguous(s, 'mic', 10_000, 10); // stream 0-1 s, captured 10-11 s
+      pushContiguous(s, 'mic', 31_000, 10); // stream 1-2 s, captured 31-32 s
+      // The line's first 100 ms sit before the splice, short enough to read as spill on their own,
+      // but they hold a whole word: the word is real audio from before the stall. The echo filter
+      // reaches call-audio lines by their spans, trusting their words to lie inside them.
+      final(mic, 'so the rest', 900, 2_000, [
+        [900, 980],
+        [1_000, 2_000],
+      ]);
+      expect(l.segments[0]).toMatchObject({ startMs: 900, endMs: 22_000 });
+      expect(l.segments[0]?.words?.map(({ startMs, endMs }) => [startMs, endMs])).toEqual([
+        [900, 980],
+        [21_000, 22_000],
+      ]);
+      await s.close();
+    });
+
     it('starts a reopened stream at its own first chunk, and keeps the old stream on its own clock', async () => {
       const { stt, l, s, system, at } = await recording();
       pushContiguous(s, 'system', 10_000, 50); // 5 s
@@ -575,10 +627,11 @@ describe('CaptureSession', () => {
       const { l, s, mic } = await recording();
       pushContiguous(s, 'mic', 12_000, 10); // stream 0-1 s, captured 12-13 s
       pushContiguous(s, 'mic', 11_000, 10); // the wall clock was set back 2 s
-      final(mic, 'stepped', 900, 1_100, [[900, 1_100]]);
+      // 500 ms each side of the step: more than spill (RUN_EDGE_SNAP_MS), so the span keeps both.
+      final(mic, 'stepped', 500, 1_500, [[500, 1_500]]);
       // The API refuses end_ms < start_ms, so the end is held at the start.
-      expect(l.segments[0]).toMatchObject({ startMs: 2_900, endMs: 2_900 });
-      expect(l.segments[0]?.words?.[0]).toMatchObject({ startMs: 2_900, endMs: 2_900 });
+      expect(l.segments[0]).toMatchObject({ startMs: 2_500, endMs: 2_500 });
+      expect(l.segments[0]?.words?.[0]).toMatchObject({ startMs: 2_500, endMs: 2_500 });
       await s.close();
     });
 

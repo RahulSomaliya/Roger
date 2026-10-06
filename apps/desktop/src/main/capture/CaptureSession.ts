@@ -12,7 +12,7 @@ import {
 import { errorMessage, type Logger } from '../logger';
 import type { TranscriptStore } from '../store/TranscriptStore';
 import type { SpeechToText, SttEvent, SttStream, SttStreamSettings } from '../stt/SpeechToText';
-import { AudioTimeline, type TimelineEdge } from './AudioTimeline';
+import { AudioTimeline } from './AudioTimeline';
 import type { SttOpenBudget, SttOpenDecision } from './SttOpenBudget';
 
 export interface CaptureSessionListeners {
@@ -129,7 +129,8 @@ interface SourceLink {
  * was sent on its own AudioTimeline: a vendor time maps to the meeting through the run of audio
  * that holds it. A stall, a held reconnect or a sleep leaves no hole in what the vendor hears, so
  * dating lines from a stream's first chunk alone (M1) made every line after a gap early by the
- * gap.
+ * gap; and a word edge the vendor puts just across a gap is cut back to it (meetingSpan), or the
+ * line would stretch over the whole gap.
  *
  * A stream the vendor ends mid-call (an error, a close, AssemblyAI's 3-hour cap) reopens the same
  * way after a backoff that doubles per failure in a row. Every open, Start's two included, passes
@@ -499,31 +500,58 @@ export class CaptureSession {
     handle.stream.send(pcm);
   }
 
-  /** A span on one stream's own clock (the vendor's) as meeting offsets: see meetingOffset. */
+  /**
+   * A span on one stream's own clock (the vendor's: ms from the first byte it was sent) as meeting
+   * offsets, through the runs of audio that hold it. Always the span, never its two edges one at a
+   * time: only AudioTimeline.toCapturedSpan cuts a vendor's spill across a run boundary, and an edge
+   * mapped alone lands on the far side of the gap. See meetingOffset for the units.
+   */
   private meetingSpan(
     handle: StreamHandle,
     span: { startMs: number; endMs: number },
   ): { startMs: number; endMs: number } {
-    const startMs = this.meetingOffset(handle, span.startMs, 'start');
-    // A run that starts earlier than its predecessor predicted (the wall clock was set back) would
-    // date the end of a span across it before its start, which the API refuses (end_ms >= start_ms).
-    return { startMs, endMs: Math.max(startMs, this.meetingOffset(handle, span.endMs, 'end')) };
-  }
-
-  /**
-   * A time on the stream's own clock (ms from the first byte it was sent) as ms from the meeting
-   * start, through the run of audio that holds it. Whole ms: the renderer's capture times are
-   * fractional (performance.now) and the API's offsets are integers (OffsetMs), so it would refuse
-   * a fraction with a 422 and the uploader would set the line aside for good. Never negative
-   * (OffsetMs again): audio captured just before the start counts from 0.
-   */
-  private meetingOffset(handle: StreamHandle, streamMs: number, edge: TimelineEdge): number {
     const { meetingStartedAtMs } = this.options;
     // No audio sent yet, so no run to map through: a vendor sends no line before it heard any, and
     // the landed rule (the stream's offset 0) stands in if one ever does.
-    const capturedAtMs =
-      handle.timeline.toCapturedAtMs(streamMs, edge) ?? meetingStartedAtMs + streamMs;
-    return Math.max(0, Math.round(capturedAtMs - meetingStartedAtMs));
+    const captured = handle.timeline.toCapturedSpan(span.startMs, span.endMs) ?? {
+      startMs: meetingStartedAtMs + span.startMs,
+      endMs: meetingStartedAtMs + span.endMs,
+    };
+    const startMs = this.meetingOffset(captured.startMs);
+    // A run that starts earlier than its predecessor predicted (the wall clock was set back) would
+    // date the end of a span across it before its start, which the API refuses (end_ms >= start_ms).
+    return { startMs, endMs: Math.max(startMs, this.meetingOffset(captured.endMs)) };
+  }
+
+  /**
+   * A final's span as meeting offsets, widened to hold its words (already meeting offsets). The
+   * line and each word are cut at a run boundary on their own evidence, so they can disagree: a
+   * line whose first 100 ms sit before a stall reads them as spill and starts after it, while a
+   * whole word in those 100 ms is real audio from before it. The word wins, and the line keeps it:
+   * EchoFilter reaches call-audio lines by their spans, trusting every word to lie inside its line
+   * ("Words lie inside their own line's span"), so a word outside it would go unmatched and its
+   * echo on the mic would be kept.
+   */
+  private lineSpan(
+    handle: StreamHandle,
+    line: { startMs: number; endMs: number },
+    words: readonly { startMs: number; endMs: number }[],
+  ): { startMs: number; endMs: number } {
+    const span = this.meetingSpan(handle, line);
+    return {
+      startMs: Math.min(span.startMs, ...words.map((word) => word.startMs)),
+      endMs: Math.max(span.endMs, ...words.map((word) => word.endMs)),
+    };
+  }
+
+  /**
+   * A capture time (wall clock) as ms from the meeting start. Whole ms: the renderer's capture
+   * times are fractional (performance.now) and the API's offsets are integers (OffsetMs), so it
+   * would refuse a fraction with a 422 and the uploader would set the line aside for good. Never
+   * negative (OffsetMs again): audio captured just before the start counts from 0.
+   */
+  private meetingOffset(capturedAtMs: number): number {
+    return Math.max(0, Math.round(capturedAtMs - this.options.meetingStartedAtMs));
   }
 
   private setState(source: AudioSource, state: SttStreamState, message: string | null): void {
@@ -535,15 +563,16 @@ export class CaptureSession {
     const { listeners, logger } = this.options;
     switch (event.type) {
       case 'final': {
+        const words = event.words.map((word) => ({ ...word, ...this.meetingSpan(handle, word) }));
         const segment: TranscriptSegment = {
           id: randomUUID(),
           meetingId: this.meetingId,
           source,
           speaker: SPEAKER_FOR_SOURCE[source],
-          ...this.meetingSpan(handle, event),
+          ...this.lineSpan(handle, event, words),
           text: event.text,
           confidence: event.confidence,
-          words: event.words.map((word) => ({ ...word, ...this.meetingSpan(handle, word) })),
+          words,
           createdAt: new Date(this.clock()).toISOString(),
         };
         try {
