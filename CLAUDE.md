@@ -27,7 +27,12 @@ make migrate    # alembic upgrade head
 make dev-api    # API on http://127.0.0.1:8000 (docs at /docs, MCP at /mcp)
 make dev-desktop
 make install-desktop  # build Roger.app for this Mac's CPU, sign with a local identity, install it
+make bench ARGS="run" # STT benchmark: clip, run, draft, check, score, report, forget, canary
+make stt-canary       # synthetic jargon clip through the vendor the local API serves (make dev-api)
 ```
+
+The benchmark's method, results and vendor log are in `docs/research/stt-benchmark.md`, which
+also says how to run each command.
 
 `make help` lists everything. Per-app commands live in `apps/api/pyproject.toml` and
 `apps/desktop/package.json`; the Makefile only delegates.
@@ -101,6 +106,9 @@ milestone plan.
 ## Things agents must not do
 
 - Do not commit secrets, `.env` files or vendor keys. `.env.example` documents every variable.
+- Do not copy anything from `ROGER_BENCH_DIR` (default `~/Roger-bench`) into the repo: it holds
+  recordings of colleagues and their transcripts (M3 D2). Only the aggregate numbers that
+  `make bench ARGS="report --summary"` prints go in `docs/research/stt-benchmark.md`.
 - Do not add a third app, a shared package or a new service without a plan that says why.
 - Do not change the API contract on one side only.
 - Do not skip, disable or quarantine a test to get green.
