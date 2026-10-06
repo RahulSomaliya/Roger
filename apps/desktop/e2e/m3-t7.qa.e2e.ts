@@ -5,7 +5,12 @@ import type * as ReactDomClient from 'react-dom/client';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { LIVE_CALL, PAST_MEETING, segmentIdForLine } from '../preview/scenarios';
 import * as qa from '../qa/driver';
-import type { TranscriptSegmentChange } from '../src/shared/capture';
+import {
+  type CaptureStatus,
+  idleCaptureStatus,
+  type SttStreamState,
+  type TranscriptSegmentChange,
+} from '../src/shared/capture';
 import { captureChannels } from '../src/shared/ipc/capture';
 import {
   type AudioSource,
@@ -16,7 +21,8 @@ import {
 
 /*
  * Browser QA for M3-T7's transcript panel (qa/README.md): both themes, 1440 and 390 wide, a
- * 500-line live call, reading back with "Jump to live", an echo line shown again, a past meeting,
+ * 500-line live call, reading back with "Jump to live", a scroll up that lands in the frame of new
+ * lines, an echo line shown again, a stream that drops and a Stop mid-sentence, a past meeting,
  * the empty states, and a failure path (another meeting's events, a hide before its line, a stale
  * interim).
  *
@@ -141,7 +147,8 @@ async function renderPanel(page: Page, props: PanelProps, title: string): Promis
 type MainEvent =
   | { channel: typeof captureChannels.TranscriptSegment; payload: TranscriptSegment }
   | { channel: typeof captureChannels.TranscriptInterim; payload: InterimTranscript }
-  | { channel: typeof captureChannels.TranscriptSegmentChanged; payload: TranscriptSegmentChange };
+  | { channel: typeof captureChannels.TranscriptSegmentChanged; payload: TranscriptSegmentChange }
+  | { channel: typeof captureChannels.CaptureStatusChanged; payload: CaptureStatus };
 
 /** Sends main's events in one go, as one IPC burst would arrive. */
 async function emitAll(page: Page, events: readonly MainEvent[]): Promise<void> {
@@ -182,6 +189,30 @@ const changeOf = (
     reason: 'echo',
     echoOf,
     text: segment.text,
+  },
+});
+
+/**
+ * Main's capture status for the live call: `phase`, each source's session, all uploaded. The
+ * panel reads only the meeting, the phase and the sessions; the rest is as main sends it.
+ */
+const captureStatus = (
+  phase: CaptureStatus['phase'],
+  streams: Record<AudioSource, SttStreamState>,
+): MainEvent => ({
+  channel: captureChannels.CaptureStatusChanged,
+  payload: {
+    ...idleCaptureStatus({
+      state: 'idle',
+      pending: 0,
+      rejected: 0,
+      lastError: null,
+      nextAttemptAt: null,
+    }),
+    phase,
+    meetingId: LIVE_CALL.meetingId,
+    startedAt: '2026-10-06T10:00:00.000Z',
+    streams,
   },
 });
 
@@ -250,6 +281,66 @@ async function nextFrames(page: Page): Promise<void> {
       }),
   );
 }
+
+/**
+ * Sends `events`, and scrolls the log up `px` once React has drawn them: a MutationObserver runs
+ * after the task that committed them, so after the panel's own scroll to the new bottom, and
+ * before the frame's scroll event, which then carries both scrolls as one.
+ */
+async function scrollUpAfterDraw(page: Page, px: number, events: readonly MainEvent[]) {
+  await nextFrames(page);
+  await page.evaluate(
+    ({ up, burst }) => {
+      const log = document.querySelector('.live-transcript-lines');
+      const control = window.__rogerPreview;
+      if (log === null || control === undefined) throw new Error('No transcript log or preview');
+      const observer = new MutationObserver(() => {
+        observer.disconnect();
+        log.scrollTop -= up;
+      });
+      observer.observe(log, { childList: true, subtree: true });
+      for (const { channel, payload } of burst) control.emit(channel, payload);
+    },
+    { up: px, burst: events },
+  );
+}
+
+/**
+ * Sends `events`, and scrolls the log up `px` after the frame's scroll events but before React
+ * draws them: a frame callback asked for after the panel's own (FrameBatcher's) runs once that
+ * one has handed React the lines, and React renders them in a later task.
+ */
+async function scrollUpBeforeDraw(page: Page, px: number, events: readonly MainEvent[]) {
+  await nextFrames(page);
+  await page.evaluate(
+    ({ up, burst }) => {
+      const log = document.querySelector('.live-transcript-lines');
+      const control = window.__rogerPreview;
+      if (log === null || control === undefined) throw new Error('No transcript log or preview');
+      for (const { channel, payload } of burst) control.emit(channel, payload);
+      requestAnimationFrame(() => {
+        log.scrollTop -= up;
+      });
+    },
+    { up: px, burst: events },
+  );
+}
+
+/** Fails, saying `what`, unless following has stopped within a second. */
+async function expectPaused(page: Page, what: string): Promise<void> {
+  try {
+    await page.waitForFunction(
+      () => document.querySelector('.live-transcript')?.getAttribute('data-following') === 'false',
+      undefined,
+      { timeout: 1000 },
+    );
+  } catch (error) {
+    throw new Error(`Still following after ${what}`, { cause: error });
+  }
+}
+
+const scrollTopOf = (page: Page): Promise<number> =>
+  page.evaluate(() => document.querySelector('.live-transcript-lines')?.scrollTop ?? -1);
 
 const rowsIn = (page: Page): Promise<number> =>
   page.evaluate(() => document.querySelectorAll('.live-transcript [data-segment-id]').length);
@@ -361,7 +452,7 @@ describe.each(qa.QA_THEMES.flatMap((theme) => qa.QA_WIDTHS.map((width) => ({ the
       const { page } = preview;
       try {
         await mountHarness(page);
-        const call = liveCallLines(FIRST_LINES + 12);
+        const call = liveCallLines(FIRST_LINES + 20);
         const stored = call.slice(0, FIRST_LINES);
         const props: PanelProps = {
           meetingId: LIVE_CALL.meetingId,
@@ -376,7 +467,9 @@ describe.each(qa.QA_THEMES.flatMap((theme) => qa.QA_WIDTHS.map((width) => ({ the
         await renderPanel(page, props, LIVE_CALL.title);
 
         // Live: three new finals (one with a long link), then both speakers mid-sentence.
-        const [n1, n2, n3, ...later] = call.slice(FIRST_LINES);
+        const [n1, n2, n3, ...later] = call.slice(FIRST_LINES, FIRST_LINES + 12);
+        // The newest lines of all: the scroll races' lines, then two interims after every final.
+        const spare = call.slice(FIRST_LINES + 12);
         const upcomingMic = later.find((line) => line.source === 'mic');
         const upcomingSystem = later.find((line) => line.source === 'system');
         const rest = later.filter((line) => line !== upcomingMic && line !== upcomingSystem);
@@ -495,6 +588,84 @@ describe.each(qa.QA_THEMES.flatMap((theme) => qa.QA_WIDTHS.map((width) => ({ the
         await renderPanel(page, props, LIVE_CALL.title);
         await waitForRows(page, FIRST_LINES + 7);
         expect(await page.locator(`[data-segment-id="${echoed.id}"]`).count()).toBe(0);
+
+        // A scroll up that lands in the frame of new lines: after the panel scrolled to them (one
+        // scroll event carries both), and before React drew them (scrolling then would undo it).
+        const [race1, race2, race3, after1, race4, after2, micLater, systemLater] = spare;
+        if (!race1 || !race2 || !race3 || !after1 || !race4 || !after2) {
+          throw new Error('Too few call lines');
+        }
+        if (!micLater || !systemLater) throw new Error('Too few call lines');
+        await shootChecked(
+          preview,
+          'Reading back',
+          `race-${tag}`,
+          'Scrolled up in the very frame new lines arrived: following still pauses, Jump to live shows, and later lines leave the view where the reader put it',
+          async () => {
+            expect(await following(page)).toBe(true);
+            // Three lines, taller together than the 40 px scroll, so the event lands below the
+            // view's last scroll event: compared with that alone it reads as a scroll down.
+            await scrollUpAfterDraw(page, 40, [final(race1), final(race2), final(race3)]);
+            await expectPaused(
+              page,
+              'a scroll up in the frame of the panel scrolling to new lines',
+            );
+            let readAt = await scrollTopOf(page);
+            await emitAll(page, [final(after1)]);
+            await waitForRows(page, FIRST_LINES + 11);
+            await nextFrames(page);
+            expect(await scrollTopOf(page)).toBe(readAt);
+            await page.click('.jump-to-live');
+            await page.waitForFunction(
+              () =>
+                document.querySelector('.live-transcript')?.getAttribute('data-following') ===
+                'true',
+            );
+
+            await scrollUpBeforeDraw(page, 40, [final(race4)]);
+            await expectPaused(page, 'a scroll up just before React drew new lines');
+            readAt = await scrollTopOf(page);
+            await emitAll(page, [final(after2)]);
+            await waitForRows(page, FIRST_LINES + 13);
+            await nextFrames(page);
+            expect(await scrollTopOf(page)).toBe(readAt);
+            await qa.expectVisible(page, '.jump-to-live');
+          },
+        );
+        await page.click('.jump-to-live');
+        await page.waitForFunction(
+          () =>
+            document.querySelector('.live-transcript')?.getAttribute('data-following') === 'true',
+        );
+
+        // Mid-sentence, the mic's stream drops (no final for its words ever comes), then Stop.
+        // Main says either only through its capture status; the grey words were never saved.
+        await emitAll(page, [
+          interimOf({ ...micLater, source: 'mic', speaker: 'me' }, 4),
+          interimOf({ ...systemLater, source: 'system', speaker: 'them' }, 5),
+        ]);
+        await page.waitForFunction(() => document.querySelectorAll('[data-interim]').length === 2);
+        await emitAll(page, [captureStatus('recording', { mic: 'retrying', system: 'open' })]);
+        await page.waitForFunction(() => document.querySelectorAll('[data-interim]').length === 1);
+        expect(await page.getAttribute('[data-interim]', 'data-speaker')).toBe('them');
+        await emitAll(page, [captureStatus('stopping', { mic: 'retrying', system: 'open' })]);
+        await shootChecked(
+          preview,
+          'Stopped',
+          `stopped-${tag}`,
+          "Stopped while both spoke: the mic's dropped stream took its grey words at once, Stop took the rest; every saved line stays",
+          async () => {
+            await page.waitForFunction(
+              () => document.querySelectorAll('[data-interim]').length === 0,
+              undefined,
+              { timeout: 1000 },
+            );
+            expect(await rowsIn(page)).toBe(FIRST_LINES + 13);
+            await qa.expectVisible(page, `[data-segment-id="${after2.id}"]`, {
+              within: '.live-transcript-lines',
+            });
+          },
+        );
       } finally {
         await preview.close();
       }
