@@ -23,6 +23,12 @@ const START = Date.parse('2026-10-07T10:00:00.000Z');
 const CHUNK_MS = 100;
 /** About -20 dBFS: a voice at a normal distance. */
 const VOICE = 3_277;
+/** About -65 dBFS: a quiet room's hiss on the built-in mic (noise suppression is off). */
+const HISS = 18;
+/** About -30 dBFS: a loud room (a cafe, a fan), the kind where the flat-level rule can fire. */
+const LOUD_ROOM = 1_036;
+/** About -81 dBFS: what input volume 0 may give on a Mac that does not give digital zero. */
+const FAINT = 3;
 
 /** 100 ms of Int16 little-endian mono whose samples swing between +peak and -peak. */
 function chunk(peak: number): Uint8Array {
@@ -95,6 +101,16 @@ function harness(options: { flatLevelRule?: boolean } = {}) {
           monitor.onChunk(source, chunk(peak));
         }
         vi.advanceTimersByTime(CHUNK_MS);
+      }
+    },
+    /**
+     * Speech as the mic hears it, with call audio playing: 2.4 s of voice, then a 0.6 s pause at
+     * the room's level, repeated; it starts with the voice and ends with a pause.
+     */
+    talk(room: number, ms: number): void {
+      for (let talked = 0; talked < ms; talked += 3_000) {
+        this.feed({ mic: VOICE, system: VOICE }, 2_400);
+        this.feed({ mic: room, system: VOICE }, 600);
       }
     },
     /** Wall time with no audio at all. */
@@ -215,34 +231,46 @@ describe('SignalMonitor: warnings', () => {
     expect(h.warnings()).toEqual([{ kind: 'mic-dead', source: 'mic', loud: true }]);
   });
 
-  it('calls a mic dead on a level 40 dB under its running floor only when the flat-level rule is on', () => {
-    // Input volume 0 may give a faint level rather than digital zero on some Macs: about -70 dBFS
-    // after a voice at -20 is 50 dB under the floor.
-    const faint = 10;
+  it('calls a mic dead on a flat level 40 dB under the room only when the flat-level rule is on', () => {
+    // Input volume 0 may give a faint level rather than digital zero on some Macs: about -81 dBFS
+    // in a room at -30 is 50 dB under the floor.
     const on = harness({ flatLevelRule: true });
-    on.feed({ mic: VOICE, system: VOICE }, 10_000);
-    on.feed({ mic: faint, system: VOICE }, 7_900);
+    on.talk(LOUD_ROOM, 12_000);
+    on.feed({ mic: FAINT, system: VOICE }, 7_900);
     expect(on.warnings()).toEqual([]);
     expect(on.monitor.contribution().sources?.mic?.signal).toBe('quiet');
-    on.feed({ mic: faint, system: VOICE }, 100);
+    on.feed({ mic: FAINT, system: VOICE }, 100);
     expect(on.warnings()).toEqual([{ kind: 'mic-dead', source: 'mic', loud: true }]);
-    on.feed({ mic: VOICE, system: VOICE }, 1_000);
+    on.talk(LOUD_ROOM, 3_000);
     expect(on.warnings()).toEqual([]);
 
     vi.useRealTimers();
     const off = harness();
-    off.feed({ mic: VOICE, system: VOICE }, 10_000);
-    off.feed({ mic: faint, system: VOICE }, 20_000);
+    off.talk(LOUD_ROOM, 12_000);
+    off.feed({ mic: FAINT, system: VOICE }, 20_000);
     expect(off.warnings()).toEqual([]);
     expect(off.monitor.contribution().sources?.mic?.signal).toBe('signal');
   });
 
-  it('follows a slow fall in level with the floor: a quiet room is not a dead mic', () => {
+  it('takes a pause in a quiet room for a pause, not a dead mic, with the flat-level rule on', () => {
+    // The voice is 45 dB over the room's hiss: a floor at the voice's level would call the pause
+    // dead. The floor is the room's level, which the pauses between phrases show it.
     const h = harness({ flatLevelRule: true });
-    h.feed({ mic: VOICE, system: VOICE }, 10_000);
-    // Down 10 dB each 10 s, to about -70 dBFS, as a voice that stops leaves the room's hiss.
-    for (const peak of [1_036, 328, 104, 33, 10]) h.feed({ mic: peak, system: VOICE }, 10_000);
+    h.talk(HISS, 30_000);
+    h.feed({ mic: HISS, system: VOICE }, 20_000);
     expect(h.warnings()).toEqual([]);
+    expect(h.monitor.contribution().sources?.mic?.signal).toBe('signal');
+  });
+
+  it('counts only a flat level toward a dead mic: a level under the room that moves is no dead input', () => {
+    const h = harness({ flatLevelRule: true });
+    h.talk(LOUD_ROOM, 12_000);
+    // About -81 and -72 dBFS, both 40 dB under the room, 8.5 dB apart.
+    for (let fed = 0; fed < 20_000; fed += CHUNK_MS) {
+      h.feed({ mic: fed % 200 === 0 ? FAINT : 8, system: VOICE }, CHUNK_MS);
+    }
+    expect(h.warnings()).toEqual([]);
+    expect(h.monitor.contribution().sources?.mic?.signal).toBe('signal');
   });
 
   it('warns of call audio never heard for 20 s: loud while unverified, on screen once verified', () => {

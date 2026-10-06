@@ -41,12 +41,24 @@ const TIMER_GAP_MS = 5_000;
 const LEVEL_WINDOW_MS = 1_000;
 
 /**
- * The flat-level rule's running floor follows the mic's level with this time constant: a slow
- * fall (a voice that stops, leaving the room's hiss) is followed, a sudden drop of more than
- * FLAT_LEVEL_UNDER_FLOOR_DB (input volume 0 on a Mac that gives a faint level, not digital zero)
- * is not, and that drop held for the mic's dead window is a dead mic.
+ * How fast the flat-level rule's floor (MicFloor) may rise toward louder chunks: 80 s of loud
+ * speech with no quieter chunk would be needed to lift it the rule's 40 dB over the room.
  */
-const FLOOR_TIME_CONSTANT_MS = 10_000;
+const FLOOR_RISE_DB_PER_S = 0.5;
+
+/**
+ * For this much of the mic's audio after Start or a device switch, the floor follows every
+ * quieter chunk down, however far: a pause in the first seconds teaches it the room before it
+ * judges anything, so a call that opens on speech is not judged against the voice.
+ */
+const FLOOR_SETTLE_MS = 10_000;
+
+/**
+ * A run of chunks under the floor is a flat level while their peaks stay within this many dB of
+ * each other: an input at volume 0 gives a steady faint level, and one that moves is something
+ * heard. Noise a few LSB high peaks at 3 to 5 LSB from chunk to chunk, about 4.4 dB apart.
+ */
+const FLAT_LEVEL_SPREAD_DB = 6;
 
 /** The device switches a recording keeps on screen; AirPods that flap would grow it forever. */
 const MAX_NOTICES = 20;
@@ -79,6 +91,11 @@ export interface SignalMonitorOptions {
    * silence rule already catches it, and this rule could only add false warnings. Turn it on in
    * the M2-T11 slot of createCaptureRuntime.ts and write the measured peak into the M2 exit check
    * log in the same change.
+   *
+   * Check the room too: the floor is the room's level (MicFloor), and in 16-bit audio a peak of
+   * 2 LSB (-84 dBFS) is FLAT_LEVEL_UNDER_FLOOR_DB under it only in a room louder than about
+   * -44 dBFS. In a quiet room the rule cannot see input volume 0 at a faint level; that is a
+   * change to the threshold in the M2 plan, not here.
    */
   flatLevelRule?: boolean;
 }
@@ -96,8 +113,6 @@ interface SourceMeter {
   heard: boolean;
   /** Peaks of the chunks of the last LEVEL_WINDOW_MS, oldest first. */
   recent: { atMs: number; peak: number }[];
-  /** The flat-level rule's running floor in dBFS; null before a chunk with sound. */
-  floorDb: number | null;
   /** The status says the track or helper ended or failed (CaptureService's source health). */
   stopped: SourceSignal['stopped'];
 }
@@ -129,6 +144,8 @@ export class SignalMonitor implements AudioSink {
   private readonly spells = new WarningSpells();
   private recording: Recording | null = null;
   private meters: Record<AudioSource, SourceMeter>;
+  /** The flat-level rule's floor; the mic's own (call audio has rules of its own). */
+  private micFloor = new MicFloor();
   private timer: NodeJS.Timeout | null = null;
   private lastCheckAtMs = 0;
   private warnings: CaptureWarning[] = [];
@@ -188,6 +205,7 @@ export class SignalMonitor implements AudioSink {
     const now = this.clock();
     this.recording = { meetingId, meetingStartedAtMs };
     this.meters = { mic: newMeter(now), system: newMeter(now) };
+    this.micFloor = new MicFloor();
     this.spells.clear();
     this.warnings = [];
     this.notices = [];
@@ -230,7 +248,7 @@ export class SignalMonitor implements AudioSink {
     meter.lastChunkAtMs = now;
     meter.recent.push({ atMs: now, peak });
     while ((meter.recent[0]?.atMs ?? now) <= now - LEVEL_WINDOW_MS) meter.recent.shift();
-    if (this.carriesSound(source, meter, peak, durationMs)) {
+    if (this.carriesSound(source, peak, durationMs)) {
       meter.silentForMs = 0;
       meter.silentSinceMs = null;
       meter.heard = true;
@@ -359,22 +377,10 @@ export class SignalMonitor implements AudioSink {
   }
 
   /** Whether a chunk counts as sound; digital silence never does, a flat level only by the rule. */
-  private carriesSound(
-    source: AudioSource,
-    meter: SourceMeter,
-    peak: number,
-    durationMs: number,
-  ): boolean {
+  private carriesSound(source: AudioSource, peak: number, durationMs: number): boolean {
     if (peak <= DIGITAL_SILENCE_PEAK) return false;
     if (!this.flatLevelRule || source !== 'mic') return true;
-    const level = toDbfs(peak);
-    if (meter.floorDb !== null && level < meter.floorDb - FLAT_LEVEL_UNDER_FLOOR_DB) return false;
-    meter.floorDb =
-      meter.floorDb === null
-        ? level
-        : meter.floorDb +
-          (level - meter.floorDb) * Math.min(1, durationMs / FLOOR_TIME_CONSTANT_MS);
-    return true;
+    return !this.micFloor.flatUnderFloor(toDbfs(peak), durationMs);
   }
 
   /**
@@ -391,7 +397,7 @@ export class SignalMonitor implements AudioSink {
     meter.lastChunkAtMs = now;
     meter.silentForMs = 0;
     meter.silentSinceMs = null;
-    meter.floorDb = null;
+    this.micFloor = new MicFloor();
     const notice: CaptureNotice = {
       kind: 'device-switched',
       source: 'mic',
@@ -471,9 +477,52 @@ function newMeter(now: number): SourceMeter {
     silentSinceMs: null,
     heard: false,
     recent: [],
-    floorDb: null,
     stopped: null,
   };
+}
+
+/**
+ * The flat-level rule's view of the mic (M2 design: "a level flat for 8 s more than 40 dB under
+ * the running floor"). The floor is the room's level, the quietest the mic has been lately, never
+ * the voice's: it follows a quieter chunk down at once and rises toward louder ones at most
+ * FLOOR_RISE_DB_PER_S, so the pauses between phrases hold it at the room. An average of the
+ * chunks would sit at the voice's level and call the first pause in a quiet room a dead mic.
+ *
+ * A chunk more than FLAT_LEVEL_UNDER_FLOOR_DB under the floor leaves the floor where it is (a dead
+ * input must not teach the floor its level, or the warning would end while the mic is still
+ * dead), and counts toward a dead mic while the run of such chunks stays flat.
+ */
+class MicFloor {
+  private floorDb: number | null = null;
+  private judgedMs = 0;
+  /** The quietest and loudest chunk of the current run under the floor; null outside one. */
+  private run: { minDb: number; maxDb: number } | null = null;
+
+  /** Whether a chunk at `levelDb`, above digital silence, is part of a flat level under the floor. */
+  flatUnderFloor(levelDb: number, durationMs: number): boolean {
+    const floorDb = this.floorDb;
+    const settled = this.judgedMs >= FLOOR_SETTLE_MS;
+    this.judgedMs += durationMs;
+    if (floorDb !== null && settled && levelDb < floorDb - FLAT_LEVEL_UNDER_FLOOR_DB) {
+      const run = this.run;
+      const minDb = Math.min(run?.minDb ?? levelDb, levelDb);
+      const maxDb = Math.max(run?.maxDb ?? levelDb, levelDb);
+      if (maxDb - minDb <= FLAT_LEVEL_SPREAD_DB) {
+        this.run = { minDb, maxDb };
+        return true;
+      }
+      // The level moved: not flat, so this chunk counts as sound (it restarts the mic's silence)
+      // and a new run may start from it.
+      this.run = { minDb: levelDb, maxDb: levelDb };
+      return false;
+    }
+    this.run = null;
+    this.floorDb =
+      floorDb === null
+        ? levelDb
+        : Math.min(levelDb, floorDb + (FLOOR_RISE_DB_PER_S * durationMs) / 1_000);
+    return false;
+  }
 }
 
 /** The largest sample magnitude of Int16 little-endian PCM (32768 for a full-scale negative). */
