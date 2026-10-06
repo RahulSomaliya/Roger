@@ -26,11 +26,14 @@ branch in `open_notes_model`; callers never change.
 """
 
 from collections.abc import AsyncIterator, Mapping
-from contextlib import AbstractAsyncContextManager
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Literal, Protocol
 
+import httpx
+
+from roger_api.config_notes import NotesSettings
 from roger_api.domain import RunKind
 from roger_api.services.notes_prompt import NotesPrompt
 
@@ -131,3 +134,27 @@ class NotesModel(Protocol):
     ) -> AbstractAsyncContextManager[AsyncIterator[ModelEvent]]:
         """Send `request` and stream its answer (see the module docstring for the contract)."""
         ...
+
+
+@asynccontextmanager
+async def open_notes_model(settings: NotesSettings) -> AsyncIterator[NotesModel]:
+    """The model for NOTES_PROVIDER, holding any HTTP client it needs for the app's lifetime.
+
+    The run registry enters it once in `open_llm_runtime` (llm_runs.py, M4-T7).
+    """
+    # Imported here, not at the top: both adapters import this module's types, so a top-level
+    # import of either is a cycle that fails with "partially initialized module".
+    from roger_api.services.notes_model_fake import FakeNotesModel
+    from roger_api.services.notes_model_openrouter import OpenRouterNotesModel
+
+    match settings.notes_provider:
+        case "fake":
+            yield FakeNotesModel()
+        case "openrouter":
+            key = settings.openrouter_api_key
+            if key is None:  # NotesSettings validation already guarantees this.
+                raise RuntimeError("OPENROUTER_API_KEY is required when NOTES_PROVIDER=openrouter")
+            async with httpx.AsyncClient(
+                timeout=httpx.Timeout(settings.notes_timeout_seconds)
+            ) as http:
+                yield OpenRouterNotesModel(http, api_key=key.get_secret_value(), settings=settings)
