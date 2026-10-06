@@ -15,9 +15,14 @@ bind parameters of the statements here. Two traps would put them in the logs:
   Only structlog's 80-character cut of each local hides the token and the key today, because two
   UUIDs open the parameter tuple: luck, not a guard. So a failed statement here never reaches
   middleware.py as an unhandled error: `_store_failed` logs one `calendar_store_failed` line
-  (operation, driver error class, SQLSTATE) and raises `CalendarStoreError`, a handled 500, `from
-  None`, so no traceback is rendered at all.
-tests/test_calendar_api.py::test_db_error_never_leaks_token_or_key renders both log formats.
+  (operation, error class, SQLSTATE) and raises `CalendarStoreError`, a handled 500, `from None`,
+  so no traceback is rendered at all. The guard covers the commit too and catches every
+  `_STORE_ERRORS`, not only a driver's `DBAPIError`: a lost or busy database fails with errors
+  that are not DBAPIErrors, and connect()'s own frame holds the sign-in code and the verifier in
+  full. Any other unhandled error under connect() (a bug in the provider, say) still logs them
+  in production until log.py stops rendering locals.
+Both log formats are tested: tests/test_calendar_api.py::test_db_error_never_leaks_token_or_key
+and test_lost_database_never_leaks_the_sign_in_code.
 """
 
 from dataclasses import dataclass, field
@@ -27,7 +32,7 @@ from uuid import UUID, uuid4
 from pydantic import SecretStr
 from sqlalchemy import ColumnElement, LargeBinary, Row, delete, func, literal, select, update
 from sqlalchemy.dialects.postgresql import insert
-from sqlalchemy.exc import DBAPIError
+from sqlalchemy.exc import DBAPIError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from roger_api.auth import Principal
@@ -48,6 +53,11 @@ _WRONG_KEY_SQLSTATE = "39000"
 # The one unique constraint (db/models_calendar.py, migration 0004): one row per workspace and
 # user, NULLS NOT DISTINCT, so a NULL user_id row is replaced too.
 _ONE_PER_OWNER = "uq_calendar_connections_workspace_id_user_id"
+# Every way a statement here can fail. A driver error is a DBAPIError, but a pool that gives up
+# waiting raises sqlalchemy.exc.TimeoutError (a SQLAlchemyError, not a DBAPIError), and asyncpg's
+# refused or timed-out connect comes up raw as an OSError (builtin TimeoutError is one). Catch
+# less and that failure reaches middleware.py with its frames (module docstring).
+_STORE_ERRORS = (SQLAlchemyError, OSError)
 
 UNREADABLE_GRANT_MESSAGE = (
     "Roger can no longer read its stored calendar access. Connect Google Calendar again."
@@ -153,6 +163,7 @@ async def read_refresh_token(
 
     Raises `CalendarReconnectRequiredError` when the key cannot decrypt it: CALENDAR_TOKEN_KEY
     changed or is gone, so only connecting again can give Roger a token it can read.
+    `CalendarStoreError` (500) when the database fails.
     """
     if connection.refresh_token is None:
         return None
@@ -170,6 +181,8 @@ async def read_refresh_token(
     )
     try:
         decrypted = await session.execute(decrypt)
+    # DBAPIError first: it is one of _STORE_ERRORS too, and only a driver error carries the wrong
+    # key's SQLSTATE. The other way round, a changed key would be a 500, not a 424.
     except DBAPIError as exc:
         if getattr(exc.orig, "sqlstate", None) != _WRONG_KEY_SQLSTATE:
             raise _store_failed("read the refresh token", exc) from None
@@ -180,6 +193,8 @@ async def read_refresh_token(
             hint="CALENDAR_TOKEN_KEY changed since the calendar was connected",
         )
         raise CalendarReconnectRequiredError(UNREADABLE_GRANT_MESSAGE) from None
+    except _STORE_ERRORS as exc:
+        raise _store_failed("read the refresh token", exc) from None
     refresh_token: str | None = decrypted.scalar_one()
     return None if refresh_token is None else SecretStr(refresh_token)
 
@@ -299,20 +314,24 @@ async def _save(
     ).returning(*_COLUMNS)
     try:
         row = (await session.execute(upsert)).one()
-    except DBAPIError as exc:
+        await session.commit()
+    except _STORE_ERRORS as exc:
         raise _store_failed("store the connection", exc) from None
-    await session.commit()
     return _stored(row)
 
 
-def _store_failed(operation: str, exc: DBAPIError) -> CalendarStoreError:
+def _store_failed(operation: str, exc: SQLAlchemyError | OSError) -> CalendarStoreError:
     """Logs a failed statement that binds the token or the key, naming no value (module
     docstring). Raise what it returns `from None`: the original error's frames hold both."""
+    # A DBAPIError wraps the driver's error, which carries the SQLSTATE.
+    cause = exc.orig if isinstance(exc, DBAPIError) and exc.orig is not None else exc
     logger.error(
         "calendar_store_failed",
         operation=operation,
-        driver_error=type(exc.orig).__name__,
-        sqlstate=getattr(exc.orig, "sqlstate", None),
+        # Qualified: sqlalchemy.exc.TimeoutError (pool) and builtins.TimeoutError (network) share
+        # a name.
+        error=f"{type(cause).__module__}.{type(cause).__qualname__}",
+        sqlstate=getattr(cause, "sqlstate", None),
     )
     return CalendarStoreError("Internal server error")
 

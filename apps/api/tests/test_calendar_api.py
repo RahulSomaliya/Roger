@@ -8,11 +8,12 @@ import base64
 import importlib.util
 import json
 import logging
-from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+import socket
+from collections.abc import AsyncIterator, Callable, Iterator
+from contextlib import asynccontextmanager, contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, cast
 from urllib.parse import parse_qs, urlsplit
 from uuid import uuid4
 
@@ -22,8 +23,9 @@ import structlog
 from asgi_lifespan import LifespanManager
 from fastapi import FastAPI
 from pydantic import SecretStr
-from sqlalchemy import func, select, text
+from sqlalchemy import func, make_url, select, text
 from sqlalchemy.exc import DBAPIError
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import QueuePool
 
 from roger_api.app import create_app
@@ -33,8 +35,11 @@ from roger_api.config_calendar import GoogleOAuthAudience
 from roger_api.db.engine import Database
 from roger_api.db.models import Workspace
 from roger_api.db.models_calendar import CalendarConnection
+from roger_api.dependencies import get_database
 from roger_api.log import get_logger
+from roger_api.services.calendar import connections
 from roger_api.services.calendar import google as google_module
+from roger_api.services.calendar.connections import CalendarStoreError, StoredConnection
 from roger_api.services.calendar.fake import FAKE_ACCOUNT_EMAIL, FakeCalendarProvider
 from roger_api.services.calendar.google import (
     GOOGLE_AUTHORIZATION_URL,
@@ -1181,6 +1186,107 @@ def package_dir(name: str) -> str:
     assert spec is not None
     assert spec.origin is not None
     return str(Path(spec.origin).parent)
+
+
+type DatabaseFailure = Literal["postgres_gone", "pool_exhausted"]
+# The error each failure raises, as calendar_store_failed names it. Neither is a DBAPIError.
+DATABASE_FAILURE_ERRORS: dict[DatabaseFailure, str] = {
+    "postgres_gone": "builtins.ConnectionRefusedError",
+    "pool_exhausted": "sqlalchemy.exc.TimeoutError",
+}
+
+
+def closed_port() -> int:
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port: int = probe.getsockname()[1]
+    return port
+
+
+@asynccontextmanager
+async def failing_database(database_url: str, failure: DatabaseFailure) -> AsyncIterator[Database]:
+    """A database whose next statement fails before it reaches Postgres."""
+    if failure == "postgres_gone":
+        # Postgres stopped after the API started: nothing listens on the port, and asyncpg's
+        # refused connection comes up raw, not wrapped in a DBAPIError.
+        url = make_url(database_url).set(host="127.0.0.1", port=closed_port())
+        database = Database(url.render_as_string(hide_password=False))
+        try:
+            yield database
+        finally:
+            await database.dispose()
+        return
+    # Every pooled connection is taken: the checkout gives up with sqlalchemy's TimeoutError.
+    database = Database(database_url)
+    database.engine = create_async_engine(
+        database_url, pool_size=1, max_overflow=0, pool_timeout=0.1, hide_parameters=True
+    )
+    database.session_factory = async_sessionmaker(database.engine, expire_on_commit=False)
+    try:
+        async with database.engine.connect():
+            yield database
+    finally:
+        await database.dispose()
+
+
+@pytest.mark.parametrize("app_env", ["development", "production"])
+@pytest.mark.parametrize("failure", ["postgres_gone", "pool_exhausted"])
+async def test_lost_database_never_leaks_the_sign_in_code(
+    database_url: str, clean_database: None, app_env: str, failure: DatabaseFailure
+) -> None:
+    # The code is redeemed at Google before the store fails. Unhandled, the failure would reach
+    # middleware.py, and in production its traceback lists connect()'s locals: the code and the
+    # verifier in full, and FastAPI's copy of the body.
+    app = create_app(make_settings(database_url, app_env=app_env))
+    stub = GoogleStub()
+    use_runtime(app, google_runtime(stub))
+
+    async with (
+        LifespanManager(app),
+        httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url=BASE_URL, headers=AUTH_HEADERS
+        ) as client,
+        failing_database(database_url, failure) as broken,
+    ):
+        app.dependency_overrides[get_database] = lambda: broken
+        with recorded_logs() as logs:
+            response = await client.post("/v1/calendar/google/connection", json=CONNECTION_BODY)
+
+    assert_error(response, 500, "internal_error")
+    assert stub.kinds == ["exchange"]
+    [stored] = [event for event in logs.events if event["event"] == "calendar_store_failed"]
+    assert stored["operation"] == "store the connection"
+    assert stored["error"] == DATABASE_FAILURE_ERRORS[failure]
+    assert "unhandled_exception" not in logs.names
+    assert_no_secret(logs.text, response.text)
+    for library in ("sqlalchemy", "asyncpg", "fastapi"):
+        assert package_dir(library) not in logs.text
+
+
+@pytest.mark.usefixtures("app")
+@pytest.mark.parametrize("failure", ["postgres_gone", "pool_exhausted"])
+async def test_lost_database_on_a_token_read_is_a_handled_500(
+    database_url: str, failure: DatabaseFailure
+) -> None:
+    # The decrypt binds CALENDAR_TOKEN_KEY: like the upsert, it never fails unhandled.
+    connection = StoredConnection(
+        id=uuid4(),
+        provider="google",
+        account_email=ACCOUNT_EMAIL,
+        status="active",
+        last_error=None,
+        connected_at=datetime.now(UTC),
+        refresh_token=b"pgp-ciphertext",
+    )
+
+    async with failing_database(database_url, failure) as broken, broken.session() as session:
+        with recorded_logs() as logs, pytest.raises(CalendarStoreError):
+            await connections.read_refresh_token(session, connection, SecretStr(TOKEN_KEY))
+
+    [stored] = [event for event in logs.events if event["event"] == "calendar_store_failed"]
+    assert stored["operation"] == "read the refresh token"
+    assert stored["error"] == DATABASE_FAILURE_ERRORS[failure]
+    assert TOKEN_KEY not in logs.text
 
 
 async def test_database_errors_never_render_bind_parameters(database_url: str) -> None:
