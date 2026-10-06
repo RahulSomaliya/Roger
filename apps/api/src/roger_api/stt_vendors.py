@@ -13,15 +13,22 @@ Adding a vendor: "Add a speech-to-text vendor" in apps/desktop/README.md. Its pa
 
 Prices are USD per hour of ONE open stream, from the vendor's published list price. A meeting
 opens two streams (mic and system audio), and AssemblyAI bills the time a stream is open, silent
-or not, so a meeting hour costs twice the price. `STT_PRICE_PER_HOUR_USD` overrides the table
+or not, so a meeting hour costs twice the price. `STT_PRICE_PER_HOUR_USD` overrides the base price
 for every preset (a negotiated rate, or Deepgram's unpublished price with training opted out).
+A stream that carries keyterms (the workspace's jargon list, sent with every token) also pays the
+vendor's keyterm surcharge for its model, added to the base price, the override included
+(schemas/stt.py). It is per stream hour, whatever the list's length; 0.0 where the model's price
+includes keyterms.
 - AssemblyAI, https://www.assemblyai.com/pricing (read 2026-10-06): Universal-Streaming English
   and Multilingual $0.15/hr, Universal-3.6 Pro realtime $0.45/hr base, "billed on session
   duration: the time the WebSocket connection is open, not the duration of audio sent".
+  Keyterms prompting: Universal-Streaming English "+$0.04/hr"; Universal-3.6 Pro Realtime and
+  Universal-Streaming Multilingual "Included".
 - Deepgram, https://deepgram.com/pricing (read 2026-10-06): Nova-3 monolingual streaming, Pay As
   You Go, regular price $0.0077/min = $0.462/hr (a promotional $0.0048/min was also shown; the
   regular price is used so estimates err high). Deepgram bills the audio streamed, and Roger
-  streams silence as well, so an open stream costs about its open time there too.
+  streams silence as well, so an open stream costs about its open time there too. Keyterm
+  prompting, streaming, Pay As You Go: $0.0013/min = $0.078/hr.
 """
 
 from collections.abc import AsyncIterator, Mapping
@@ -59,14 +66,26 @@ class SttVendor:
     max_token_ttl_seconds: int
     # USD per hour of one open stream, by model (see the module docstring).
     price_per_hour_usd: Mapping[str, float]
+    # USD per hour added to a stream that carries keyterms, by model; 0.0 where the price includes
+    # them (see the module docstring). Required, so a new vendor states it: a missing surcharge
+    # makes the price of every stream with a jargon list unknown, and the base price alone would
+    # under-count it.
+    keyterm_surcharge_per_hour_usd: Mapping[str, float]
     # Mints the desktop's token. None: no vendor (the desktop's built-in fake).
     issuer: SttIssuerFactory | None
     # The price of a model missing from the table. None means unknown: a real vendor's price is
     # never guessed.
     other_models_price_per_hour_usd: float | None = field(default=None)
+    # The keyterm surcharge of a model missing from its table. None means unknown, as above.
+    other_models_keyterm_surcharge_per_hour_usd: float | None = field(default=None)
 
     def price_for(self, model: str) -> float | None:
         return self.price_per_hour_usd.get(model, self.other_models_price_per_hour_usd)
+
+    def keyterm_surcharge_for(self, model: str) -> float | None:
+        return self.keyterm_surcharge_per_hour_usd.get(
+            model, self.other_models_keyterm_surcharge_per_hour_usd
+        )
 
 
 STT_VENDORS: Mapping[SttProvider, SttVendor] = MappingProxyType(
@@ -75,13 +94,16 @@ STT_VENDORS: Mapping[SttProvider, SttVendor] = MappingProxyType(
             provider="fake",
             max_token_ttl_seconds=3600,
             price_per_hour_usd={},
+            keyterm_surcharge_per_hour_usd={},
             issuer=None,
             other_models_price_per_hour_usd=0.0,
+            other_models_keyterm_surcharge_per_hour_usd=0.0,
         ),
         "deepgram": SttVendor(
             provider="deepgram",
             max_token_ttl_seconds=3600,
             price_per_hour_usd={"nova-3": 0.462},
+            keyterm_surcharge_per_hour_usd={"nova-3": 0.078},
             issuer=DeepgramSttTokenIssuer,
         ),
         "assemblyai": SttVendor(
@@ -91,6 +113,11 @@ STT_VENDORS: Mapping[SttProvider, SttVendor] = MappingProxyType(
                 "universal-streaming-english": 0.15,
                 "universal-streaming-multilingual": 0.15,
                 "universal-3-6-pro": 0.45,
+            },
+            keyterm_surcharge_per_hour_usd={
+                "universal-streaming-english": 0.04,
+                "universal-streaming-multilingual": 0.0,
+                "universal-3-6-pro": 0.0,
             },
             issuer=AssemblyAiSttTokenIssuer,
         ),
