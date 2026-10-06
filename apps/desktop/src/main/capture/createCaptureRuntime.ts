@@ -10,7 +10,9 @@ import type { MicrophoneAccess } from '../permissions';
 import type { StoredSegment, TranscriptStore } from '../store/TranscriptStore';
 import type { SpeechToTextFactory } from '../stt/createSpeechToText';
 import type { TranscriptUploader } from '../upload/TranscriptUploader';
+import { electronNotifierPorts, Notifier } from '../notify/Notifier';
 import { CaptureService } from './CaptureService';
+import { SignalMonitor } from './SignalMonitor';
 import { SttOpenBudget } from './SttOpenBudget';
 
 export interface CaptureRuntimeDeps {
@@ -140,6 +142,28 @@ export function createCaptureRuntime(deps: CaptureRuntimeDeps): CaptureRuntime {
   // [slot M2-T10] call audio through the helper: HelperProcess, TapSystemAudio, selection
 
   // [slot M2-T11] signal health and loud warnings: SignalMonitor (a sink), Notifier
+
+  // M2-T17b posts "the call ended" and M2-T19 its test notification through `notifier`; M2-T17a
+  // tells `signalMonitor` when the default input is Bluetooth (setMicBluetooth, owner's D4).
+  const notifier = new Notifier({
+    ports: electronNotifierPorts(deps.getWindow),
+    logger: logger.child({ component: 'notifier' }),
+    clock,
+  });
+  const signalMonitor = new SignalMonitor({
+    store,
+    logger: logger.child({ component: 'signal' }),
+    clock,
+    onChange: () => {
+      capture.refreshStatus();
+    },
+  });
+  signalMonitor.attach(capture);
+  // Every feature's warnings, not only the monitor's: M2-T10's hung helper and M2-T15's paused
+  // backup reach the user the same way.
+  capture.on('status', (status) => {
+    notifier.updateWarnings(status.warnings ?? []);
+  });
 
   // [slot M2-T14b] the echo sink, T3b's beforeFirstTick, unhide and the echo report
 
