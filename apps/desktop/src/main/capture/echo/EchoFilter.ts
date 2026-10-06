@@ -182,27 +182,55 @@ function normalizeWord(text: string): string {
     .replace(/^'+|'+$/g, '');
 }
 
+/** A mic word, the call-audio words it may repeat (closest first), and the one it was given. */
+interface MicSlot {
+  twins: Token[];
+  twin: Token | null;
+}
+
 /**
  * For each mic word, the call-audio word it repeats, or null. Each call-audio word matches one
- * mic word at most, so "no no no" against a single "no" is one match, not three. Greedy in mic
- * order, taking the closest free twin in time.
+ * mic word at most, so "no no no" against a single "no" is one match, not three. Within that, as
+ * many mic words match as possible (a maximum bipartite matching, Kuhn's augmenting paths).
+ *
+ * Do not go back to "each mic word takes its closest free twin": with a repeated word and a
+ * timeline offset over half the gap between the repeats, an earlier mic word takes the later
+ * twin and the later mic word is left with none in the window. That splits an echo run, so a
+ * fragment like "to them today" survives a trim and is uploaded twice (the test pins this case).
+ * Each word still starts from its closest twin and moves only when a later word needs it, which
+ * keeps the overlap check of short lines measured against the nearest twin.
  */
 function matchWords(micTokens: readonly Token[], callTokens: readonly Token[]): (Token | null)[] {
-  const taken = new Set<Token>();
-  return micTokens.map((micToken) => {
-    let best: Token | null = null;
-    let bestDistance = Infinity;
-    for (const callToken of callTokens) {
-      if (taken.has(callToken) || callToken.normalized !== micToken.normalized) continue;
-      const distance = Math.abs(callToken.startMs - micToken.startMs);
-      if (distance <= ECHO_MATCH_WINDOW_MS && distance < bestDistance) {
-        best = callToken;
-        bestDistance = distance;
+  const slots = micTokens.map((micToken): MicSlot => ({
+    twins: callTokens
+      .filter(
+        (callToken) =>
+          callToken.normalized === micToken.normalized &&
+          Math.abs(callToken.startMs - micToken.startMs) <= ECHO_MATCH_WINDOW_MS,
+      )
+      .sort(
+        (a, b) => Math.abs(a.startMs - micToken.startMs) - Math.abs(b.startMs - micToken.startMs),
+      ),
+    twin: null,
+  }));
+  const holders = new Map<Token, MicSlot>();
+  // Give `slot` a twin, moving the holder of a taken twin to another of its own if it has one.
+  // `visited` stops a path from trying the same call-audio word twice.
+  const claim = (slot: MicSlot, visited: Set<Token>): boolean => {
+    for (const twin of slot.twins) {
+      if (visited.has(twin)) continue;
+      visited.add(twin);
+      const holder = holders.get(twin);
+      if (holder === undefined || claim(holder, visited)) {
+        holders.set(twin, slot);
+        slot.twin = twin;
+        return true;
       }
     }
-    if (best !== null) taken.add(best);
-    return best;
-  });
+    return false;
+  };
+  for (const slot of slots) claim(slot, new Set());
+  return slots.map((slot) => slot.twin);
 }
 
 /** Indexes of the mic words that sit in a run of TRIM_MIN_RUN or more matched words in a row. */

@@ -201,6 +201,25 @@ describe('filterEcho', () => {
     expect(filterEcho(me, [them], speakers)).toEqual({ action: 'keep' });
   });
 
+  it('moves a repeated word to its other twin when a later mic word needs the closer one', () => {
+    const them = line('them-1', spoken('we need to talk to them today', 10_000));
+    // The echo lands 350 ms late. The first mic "to" (10 950) is closest to the second call "to"
+    // (11 200), but the second mic "to" (11 550) has no other twin within 700 ms: taking the
+    // closest twin would leave it unmatched and keep "to them today" as the user's words.
+    const me = line(
+      'me-1',
+      spoken('yeah okay so honestly I agree we need to talk to them today', 8_550),
+    );
+
+    expect(filterEcho(me, [them], speakers)).toEqual({
+      action: 'trim',
+      echoOf: 'them-1',
+      text: 'yeah okay so honestly I agree',
+      originalText: me.text,
+      words: me.words?.slice(0, 6),
+    });
+  });
+
   it('names the call-audio line that supplied the most matched words', () => {
     const before = line('them-1', spoken('okay', 9_700));
     const main = line('them-2', spoken('the numbers look good this quarter', 10_000));
