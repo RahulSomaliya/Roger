@@ -29,8 +29,12 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
  */
 
 const HELPER = fileURLToPath(new URL('../../../native/bin/roger-audio', import.meta.url));
-/** What the monitor runs when Roger dies while recording; `appId` in electron-builder.yml. */
-const RELAUNCH = ['/usr/bin/open', '-g', '-b', 'ai.linkt.roger'];
+/**
+ * What the monitor runs when Roger dies while recording; `appId` in electron-builder.yml.
+ * `--relaunched` reaches the new Roger's argv: it is how CrashRecovery (M2-T23) tells this launch
+ * from the user opening Roger, and resumes a meeting no call app holds (M2 D7).
+ */
+const RELAUNCH = ['/usr/bin/open', '-g', '-b', 'ai.linkt.roger', '--args', '--relaunched'];
 const TRANSPORTS = [
   'bluetooth',
   'built_in_speaker',

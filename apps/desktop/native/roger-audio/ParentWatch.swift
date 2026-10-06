@@ -3,8 +3,9 @@ import os
 
 // What `roger-audio monitor` does when Roger goes away (M2 D7). While Roger records, the monitor
 // is the one process left that can notice Roger was killed, so it starts Roger again, once, with
-// `open -g -b ai.linkt.roger`, and Roger resumes the same meeting (CrashRecovery, M2-T23). When
-// Roger is not recording, Roger going away is just the end of the monitor.
+// `open -g -b ai.linkt.roger --args --relaunched` (RelaunchCommand), and Roger resumes the same
+// meeting (CrashRecovery, M2-T23). When Roger is not recording, Roger going away is just the end
+// of the monitor.
 //
 // After a kill -9, Roger "goes away" twice: its exit (ProcessExitWatch) and the end of the pipes
 // (stdin EOF, EPIPE on stdout or stderr). The kernel closes a dying process's files before it
@@ -33,7 +34,17 @@ private let relaunchLog = Logger(subsystem: "ai.linkt.roger.audio", category: "m
 enum RelaunchCommand {
   /// `ai.linkt.roger` is `appId` in apps/desktop/electron-builder.yml; change the two together.
   /// `-g` starts Roger without taking the focus from the call.
-  static let arguments = ["/usr/bin/open", "-g", "-b", "ai.linkt.roger"]
+  ///
+  /// `--args --relaunched` puts `--relaunched` in the new Roger's argv. It is the only sign Roger
+  /// has that this launch is the relaunch and not the user opening it: `open` starts Roger through
+  /// LaunchServices, so nothing of the monitor (environment, parent) passes over, and the monitor
+  /// writes no file. CrashRecovery (M2-T23) needs it to resume a meeting no call app holds the mic
+  /// for (M2 D7: a meeting started by hand, a browser call whose mic use paused); without it that
+  /// meeting is ended and one call becomes two meetings. Electron's `app.relaunch()` without
+  /// `args` passes the current argv on, flag included: a Roger that restarts itself must drop it.
+  static let arguments = [
+    "/usr/bin/open", "-g", "-b", "ai.linkt.roger", "--args", "--relaunched",
+  ]
 }
 
 /// Starts Roger again. Calls `done` once, on any thread, with whether that worked.
