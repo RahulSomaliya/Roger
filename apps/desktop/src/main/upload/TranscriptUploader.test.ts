@@ -2,6 +2,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
+import type { MeetingCalendarEvent } from '../../shared/calendar';
 import type { TranscriptSegment } from '../../shared/transcript';
 import { ApiError, type MeetingDto, type UploadApi } from '../api/ApiClient';
 import { createLogger } from '../logger';
@@ -36,6 +37,8 @@ function meetingDto(id: string): MeetingDto {
     started_at: '2026-10-05T10:00:00Z',
     ended_at: null,
     segment_count: 0,
+    start_source: 'manual',
+    calendar_event: null,
     created_at: '2026-10-05T10:00:00Z',
     updated_at: '2026-10-05T10:00:00Z',
   };
@@ -121,6 +124,8 @@ describe('TranscriptUploader', () => {
       id: 'm1',
       title: 'T',
       startedAt: '2026-10-05T10:00:00Z',
+      startSource: 'manual',
+      calendarEvent: null,
     });
     expect(api.appendSegments).toHaveBeenCalledTimes(3);
     expect(api.appendSegments.mock.calls.map((call) => call[1].map((s) => s.id))).toEqual([
@@ -132,6 +137,49 @@ describe('TranscriptUploader', () => {
     expect(store.getMeeting('m1')?.remoteState).toBe('ended');
     expect(store.countUnsyncedSegments()).toBe(0);
     expect(uploader.getStatus()).toMatchObject({ state: 'idle', pending: 0, lastError: null });
+  });
+
+  // The exit check counts meetings in Postgres whose start_source is `notification` and that carry
+  // their event: both come from the create, and a meeting is created once only.
+  it('creates a meeting with how it started and its calendar event, as roger.sqlite keeps them', async () => {
+    const store = new SqliteTranscriptStore(':memory:');
+    const api = fakeApi();
+    const event = {
+      provider: 'google',
+      eventId: 'standup_20261007T093000Z',
+      icalUid: null,
+      recurringEventId: 'standup',
+      scheduledStart: '2026-10-07T09:30:00.000Z',
+      scheduledEnd: '2026-10-07T09:45:00.000Z',
+      attendees: [
+        {
+          email: 'jane@linkt.ai',
+          displayName: null,
+          responseStatus: 'accepted',
+          isSelf: false,
+          isOrganizer: true,
+        },
+      ],
+    } as const satisfies MeetingCalendarEvent;
+    store.createMeeting({
+      id: 'm1',
+      title: 'Standup',
+      startedAt: '2026-10-07T09:31:00.000Z',
+      startSource: 'notification',
+      calendarEvent: event,
+    });
+    store.appendSegment(segment('m1', 0));
+
+    await new TranscriptUploader({ store, api, logger }).flush();
+
+    expect(api.createMeeting).toHaveBeenCalledWith({
+      id: 'm1',
+      title: 'Standup',
+      startedAt: '2026-10-07T09:31:00.000Z',
+      startSource: 'notification',
+      calendarEvent: event,
+    });
+    store.close();
   });
 
   it('keeps lines local and backs off when the API is down, then recovers', async () => {
@@ -817,6 +865,8 @@ describe('TranscriptUploader: meetings with notes (M4)', () => {
       id: 'm1',
       title: 'T',
       startedAt: '2026-10-05T10:00:00Z',
+      startSource: 'manual',
+      calendarEvent: null,
     });
     expect(api.endMeeting).toHaveBeenCalledExactlyOnceWith('m1', ENDED_AT);
     expect(store.getMeeting('m1')?.remoteState).toBe('ended');

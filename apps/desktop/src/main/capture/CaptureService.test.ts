@@ -36,6 +36,8 @@ function meetingDto(id: string): MeetingDto {
     started_at: '2026-10-05T10:00:00Z',
     ended_at: null,
     segment_count: 0,
+    start_source: 'manual',
+    calendar_event: null,
     created_at: '2026-10-05T10:00:00Z',
     updated_at: '2026-10-05T10:00:00Z',
   };
