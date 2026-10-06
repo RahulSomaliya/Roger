@@ -48,6 +48,9 @@ export function describeStream(state: SttStreamState, health: SourceHealth): str
     case 'paused':
       return 'paused, no audio';
     case 'retrying':
+      // A reopen starts only with the source's next chunk: with none arriving, none is attempted.
+      if (health === 'pending' || health === 'stalled')
+        return 'not connected, reconnects with audio';
       return 'reconnecting';
     case 'error':
       return 'error';

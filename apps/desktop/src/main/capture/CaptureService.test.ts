@@ -842,6 +842,29 @@ describe('CaptureService reopen budget', () => {
     await h.service.stop();
   });
 
+  it('counts the reconnect wait down on screen, and drops it once only audio is awaited', async () => {
+    const h = harness();
+    await h.service.start();
+    const micTalks = () => {
+      h.service.pushAudio('mic', chunk());
+    };
+    await h.elapse(1_000, bothTalk(h));
+
+    vendorCloses(h, 'system');
+    expect(h.service.getStatus().error).toContain('Reconnecting when its audio flows, in 2 s.');
+    await h.elapse(1_000, micTalks); // the system source has gone quiet
+    expect(h.service.getStatus().error).toContain('Reconnecting when its audio flows, in 1 s.');
+    await h.elapse(1_500, micTalks);
+
+    // The wait is over, but a source reopens only with its next chunk: no countdown to show.
+    const status = h.service.getStatus();
+    expect(status.streams.system).toBe('retrying');
+    expect(status.error).toMatch(/Reconnecting when its audio flows\.$/);
+    expect(h.statuses.at(-1)?.error).toBe(status.error);
+    expect(h.stt.opened).toHaveLength(2);
+    await h.service.stop();
+  });
+
   it('doubles the backoff for failures in a row, and starts over after a stream stayed up a minute', async () => {
     const h = harness({ guards: { sttOpensPerMinute: 100 } });
     await h.service.start();

@@ -82,6 +82,12 @@ const MONITOR_INTERVAL_MS = 500;
 
 const SPEAKER_TITLE: Record<AudioSource, string> = { mic: 'Me', system: 'Them' };
 
+interface StreamRetry {
+  reason: string;
+  /** Clock time the source may reopen, with its next chunk. */
+  retryAtMs: number;
+}
+
 /**
  * The capture state machine: idle → starting → recording → stopping → idle. One session at a time;
  * start and stop are single-flight. Owns everything the renderer must never own: tokens, sockets,
@@ -112,6 +118,8 @@ export class CaptureService {
   private streamMessages: Record<AudioSource, string | null> = { mic: null, system: null };
   /** The error text each source's last failure set, so its recovery can clear exactly that. */
   private streamErrors: Record<AudioSource, string | null> = { mic: null, system: null };
+  /** Each source's failure while it waits to reconnect, so the monitor can count the wait down. */
+  private streamRetries: Record<AudioSource, StreamRetry | null> = { mic: null, system: null };
   private error: string | null = null;
   private notice: string | null = null;
   private segmentsUnsaved = 0;
@@ -297,6 +305,7 @@ export class CaptureService {
           onStreamState: (source, state, message) => {
             this.streams[source] = state;
             this.streamMessages[source] = message;
+            if (state === 'open') this.streamRetries[source] = null;
             if (
               state === 'open' &&
               this.error !== null &&
@@ -308,11 +317,8 @@ export class CaptureService {
             this.emitStatus();
           },
           onStreamFailure: (source, reason, retryAtMs) => {
-            const next =
-              retryAtMs === null
-                ? 'Press Stop, then Start again.'
-                : `Reconnecting when its audio flows, in ${Math.max(0, Math.ceil((retryAtMs - this.clock()) / 1000))} s.`;
-            this.error = `Transcription of ${SPEAKER_TITLE[source]} (${SPEAKER_FOR_SOURCE[source]}) stopped: ${reason}. ${next}`;
+            this.streamRetries[source] = retryAtMs === null ? null : { reason, retryAtMs };
+            this.error = this.streamFailureText(source, reason, retryAtMs);
             this.streamErrors[source] = this.error;
             logger.error('speech-to-text stream failed mid-call', {
               meetingId,
@@ -461,6 +467,7 @@ export class CaptureService {
     this.streams = { mic: 'closed', system: 'closed' };
     this.streamMessages = { mic: null, system: null };
     this.streamErrors = { mic: null, system: null };
+    this.streamRetries = { mic: null, system: null };
     this.stt = null;
     this.sttProvider = null;
     this.startedAt = null;
@@ -479,6 +486,7 @@ export class CaptureService {
     this.monitorTimer = setInterval(() => {
       this.checkAudioFlow();
       this.checkForgottenStop();
+      this.refreshRetryCountdowns();
       this.emitStatus();
     }, MONITOR_INTERVAL_MS);
   }
@@ -522,6 +530,35 @@ export class CaptureService {
         meetingId: this.session?.meetingId ?? null,
         silentForMs,
       });
+    }
+  }
+
+  /** What the banner says about a source's failed stream; `retryAtMs` null: it will not reopen. */
+  private streamFailureText(source: AudioSource, reason: string, retryAtMs: number | null): string {
+    const waitMs = retryAtMs === null ? 0 : retryAtMs - this.clock();
+    const next =
+      retryAtMs === null
+        ? 'Press Stop, then Start again.'
+        : waitMs > 0
+          ? `Reconnecting when its audio flows, in ${Math.ceil(waitMs / 1000)} s.`
+          : 'Reconnecting when its audio flows.';
+    return `Transcription of ${SPEAKER_TITLE[source]} (${SPEAKER_FOR_SOURCE[source]}) stopped: ${reason}. ${next}`;
+  }
+
+  /**
+   * The reconnect wait, counted down while the banner shows it. Written once at the failure, "in
+   * 2 s" (up to "in 60 s" after failures in a row) stayed on screen for as long as the other source
+   * talked, while nothing was being attempted: a source reopens only with its next chunk, never on
+   * a timer (CaptureSession.pushAudio), so once the wait is over it waits for audio, not seconds.
+   */
+  private refreshRetryCountdowns(): void {
+    for (const source of AUDIO_SOURCES) {
+      const retry = this.streamRetries[source];
+      // Another error took the banner since: leave it alone.
+      if (retry === null || this.error !== this.streamErrors[source]) continue;
+      this.error = this.streamFailureText(source, retry.reason, retry.retryAtMs);
+      this.streamErrors[source] = this.error;
+      if (retry.retryAtMs <= this.clock()) this.streamRetries[source] = null; // nothing left to count
     }
   }
 

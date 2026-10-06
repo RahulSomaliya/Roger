@@ -52,6 +52,12 @@ describe('describeStream', () => {
     expect(describeStream('open', 'pending')).toBe('connected, no audio yet');
     expect(describeStream('open', 'stalled')).toBe('connected, no audio');
   });
+
+  it('says reconnecting only while the source sends the audio a reopen waits for', () => {
+    expect(describeStream('retrying', 'active')).toBe('reconnecting');
+    expect(describeStream('retrying', 'stalled')).toBe('not connected, reconnects with audio');
+    expect(describeStream('retrying', 'pending')).toBe('not connected, reconnects with audio');
+  });
 });
 
 describe('describeSaved', () => {
