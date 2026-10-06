@@ -135,8 +135,9 @@ interface Recording {
  *
  * Inputs it does not measure come from the status CaptureService emits (`observeStatus`): a
  * source's health (`ended`, `error`), an `offline` stream (M2-T6), `systemAudioVerified` (M2-T10),
- * `paused` (M2-T18), the phase (Stop) and the mic's `device`. A Bluetooth mic comes through `setMicBluetooth`
- * (M2-T17a's monitor knows the input's transport; the status names only the device).
+ * `paused` (M2-T18), the phase (Stop) and the mic's `device`. A Bluetooth mic comes through
+ * `setMicBluetooth` (M2-T17a's monitor knows the input's transport; the status names only the
+ * device).
  */
 export class SignalMonitor implements AudioSink {
   private readonly clock: () => number;
@@ -286,7 +287,12 @@ export class SignalMonitor implements AudioSink {
     if (this.recording !== null && source === 'mic') this.micLineAtMs = this.clock();
   }
 
-  /** The default input is a Bluetooth device, which may stay silent for longer (D4). */
+  /**
+   * The default input is a Bluetooth device, which may stay silent for longer (D4). Its caller is
+   * M2-T17a, from the monitor helper's `route.input.transport` (AudioRouteStatus carries no input
+   * transport). At the M2-T11 review nothing called it and no task's spec named it: until a caller
+   * lands, D4 is not live and an AirPods mic is called dead at 8 s. The caller drops this line.
+   */
   setMicBluetooth(bluetooth: boolean): void {
     this.micBluetooth = bluetooth;
   }
@@ -386,6 +392,11 @@ export class SignalMonitor implements AudioSink {
   /**
    * A new mic device (M2-T12's recovery follows the default input) is a notice, never a warning,
    * and its silence is timed afresh: the old device's silence says nothing about the new one.
+   *
+   * At the M2-T11 review nothing in main wrote `sources.mic.device`: M2-T12's "switched" report
+   * lives in the renderer, and the source-state IPC carries no device. Until a contributor sets
+   * it, no "Switched to" notice shows and a switch is not timed afresh. The writer drops this
+   * paragraph.
    */
   private followMicDevice(recording: Recording, device: string | null): void {
     const previous = this.micDevice;
@@ -498,7 +509,7 @@ class MicFloor {
   /** The quietest and loudest chunk of the current run under the floor; null outside one. */
   private run: { minDb: number; maxDb: number } | null = null;
 
-  /** Whether a chunk at `levelDb`, above digital silence, is part of a flat level under the floor. */
+  /** Whether a chunk at `levelDb`, above digital silence, is in a flat level under the floor. */
   flatUnderFloor(levelDb: number, durationMs: number): boolean {
     const floorDb = this.floorDb;
     const settled = this.judgedMs >= FLOOR_SETTLE_MS;
