@@ -31,10 +31,11 @@ import { ASSEMBLYAI_TERMINATE, parseAssemblyAiMessage } from './messages';
  *   WebSocket connection stays open, not on the amount of audio you send")
  *
  * This file only describes the protocol: the token in the query string, Begin as the ready signal,
- * binary PCM in 50 to 1000 ms frames, Terminate on stop answered by Termination (after the last
- * turn), and one saved line per turn. The socket lifecycle, its timeouts and the forced close are
- * SttConnection's (core/SttConnection.ts). A vendor close or error mid-call becomes a fatal error
- * event; CaptureSession decides whether to reopen, through its open budget.
+ * binary PCM in 50 to 1000 ms frames never sent faster than real time (the core paces them),
+ * Terminate on stop answered by Termination (after the last turn), and one saved line per turn.
+ * The socket lifecycle, its timeouts, its pacing and the forced close are SttConnection's
+ * (core/SttConnection.ts). A vendor close or error mid-call becomes a fatal error event;
+ * CaptureSession decides whether to reopen, through its open budget.
  */
 
 export const ASSEMBLYAI_DEFAULT_BASE_URL = 'wss://streaming.assemblyai.com';
@@ -139,6 +140,10 @@ export function assemblyAiProtocol(options: AssemblyAiProtocolOptions = {}): Stt
     // for it loses that turn. The core then closes the socket itself.
     finishedOn: 'finished-message',
     keepAlive: null,
+    // AssemblyAI closes a session sent audio faster than real time (3007, "Audio Transmission
+    // Rate Exceeded") and documents no tolerance, so the core paces every frame to real time:
+    // a reopen's held audio included, which then runs that session behind live by its length.
+    audioPacing: 'realtime',
     session: (context) => new AssemblyAiSession(context, formattedTurnWaitMs),
     describeClose: (code, reason) => describeCloseWith(ASSEMBLYAI_CLOSE_MEANINGS, code, reason),
     connectAdvice: (explanation) =>

@@ -35,7 +35,9 @@ interface LogLine {
 /** Toy wire format: {type: ready|final|hold|done|error, text?}; anything else is unreadable. */
 function toyProtocol(
   baseUrl: string,
-  overrides: Partial<Pick<SttProtocol, 'readyOn' | 'finishedOn' | 'keepAlive'>> = {},
+  overrides: Partial<
+    Pick<SttProtocol, 'readyOn' | 'finishedOn' | 'keepAlive' | 'audioPacing'>
+  > = {},
 ): SttProtocol {
   return {
     provider: 'toy',
@@ -43,6 +45,7 @@ function toyProtocol(
     readyOn: overrides.readyOn ?? 'ready-message',
     finishedOn: overrides.finishedOn ?? 'finished-message',
     keepAlive: overrides.keepAlive ?? null,
+    audioPacing: overrides.audioPacing ?? 'none',
     target: (options) => ({
       url: `${baseUrl}/listen?model=${options.settings.model}`,
       headers: { Authorization: `Bearer ${options.accessToken}` },
@@ -496,6 +499,152 @@ describe('SttConnection', () => {
     const { connection } = await open();
     await connection.close();
     expect(JSON.stringify(lines)).not.toContain('secret-token');
+  });
+
+  /**
+   * Pacing on a manual clock: the clock decides what may go, real timers only wake the queue. A
+   * vendor that declares 'realtime' (AssemblyAI) closes a session sent audio faster than real time.
+   */
+  describe('pacing', () => {
+    const settle = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 150));
+
+    function realtime(): SttProtocol {
+      return toyProtocol(vendor.baseUrl, { audioPacing: 'realtime' });
+    }
+
+    function sendBurst(connection: SttConnection, chunks: number): void {
+      for (let chunk = 0; chunk < chunks; chunk += 1) {
+        connection.send(new Uint8Array(CHUNK_100_MS));
+      }
+    }
+
+    it('sends a backlog at once for a protocol that declares no pacing', async () => {
+      const clock = manualClock(0);
+      const { connection } = await open({ clock: clock.now });
+
+      sendBurst(connection, 30);
+
+      expect(connection.usage().audioSentMs).toBe(3_000);
+      await waitFor(() => vendor.last().binaryFrames.length === 30);
+      await connection.close();
+    });
+
+    it('never holds live chunks', async () => {
+      const clock = manualClock(0);
+      const { connection } = await open({ clock: clock.now, protocol: realtime() });
+
+      for (let chunk = 0; chunk < 20; chunk += 1) {
+        clock.set(chunk * 100 + 10);
+        connection.send(new Uint8Array(CHUNK_100_MS));
+        expect(connection.usage().audioSentMs).toBe((chunk + 1) * 100);
+      }
+      await connection.close();
+      expect(vendor.last().binaryFrames).toHaveLength(20);
+    });
+
+    it('sends a 3 s backlog right after ready at 1x, never more than one frame ahead', async () => {
+      const clock = manualClock(0);
+      const { connection } = await open({ clock: clock.now, protocol: realtime() });
+
+      sendBurst(connection, 30);
+      expect(connection.usage().audioSentMs).toBe(100);
+      await settle();
+      expect(connection.usage().audioSentMs).toBe(100);
+
+      clock.set(1_000);
+      await waitFor(() => connection.usage().audioSentMs === 1_100);
+      await settle();
+      expect(connection.usage().audioSentMs).toBe(1_100);
+
+      clock.set(2_900);
+      await waitFor(() => vendor.last().binaryFrames.length === 30);
+      expect(connection.usage().audioSentMs).toBe(3_000);
+      await connection.close();
+    });
+
+    it('counts real time from the ready signal, not from the handshake', async () => {
+      const clock = manualClock(0);
+      let ready = (): void => undefined;
+      vendor.script.onConnect = (peer) => {
+        ready = () => {
+          peer.socket.send(JSON.stringify({ type: 'ready' }));
+        };
+      };
+      const connection = new SttConnection(options({ clock: clock.now, protocol: realtime() }));
+      await waitFor(() => vendor.connections.length === 1);
+      clock.set(5_000); // a slow session start: none of it may be spent on a burst
+      ready();
+      await connection.whenOpen();
+
+      sendBurst(connection, 30);
+
+      expect(connection.usage().audioSentMs).toBe(100);
+      clock.set(8_000);
+      await connection.close();
+    });
+
+    it('drains the queue before the finish sequence on close', async () => {
+      const clock = manualClock(0);
+      let framesAtFinish: number | null = null;
+      vendor.script.onText = (connection, text) => {
+        if (text !== FINISH) return;
+        framesAtFinish = connection.binaryFrames.length;
+        connection.socket.send(JSON.stringify({ type: 'done' }));
+      };
+      const { connection, events } = await open({ clock: clock.now, protocol: realtime() });
+      sendBurst(connection, 30);
+
+      const closing = connection.close();
+      clock.set(2_900);
+      await closing;
+
+      expect(framesAtFinish).toBe(30);
+      expect(vendor.last().texts).toEqual([FINISH]);
+      expect(connection.usage().audioSentMs).toBe(3_000);
+      expect(events.at(-1)).toEqual({ type: 'closed', code: 1000, reason: null });
+    });
+
+    it('still closes within the hard timeout when the queue cannot drain in time', async () => {
+      const clock = manualClock(0);
+      const { connection, events } = await open({
+        clock: clock.now,
+        protocol: realtime(),
+        closeTimeoutMs: 80,
+      });
+      sendBurst(connection, 30);
+
+      const started = Date.now();
+      await connection.close();
+
+      expect(Date.now() - started).toBeLessThan(1_000);
+      expect(vendor.last().texts).toEqual([]);
+      expect(events.filter((event) => event.type === 'closed')).toHaveLength(1);
+      const dropped = lines.find((line) => line.message === 'stt paced audio dropped');
+      expect(dropped).toMatchObject({ level: 'warn', fields: { queuedMs: 2_900 } });
+      // Nothing stays queued: no timer is left to send the rest once time moves on.
+      clock.set(60_000);
+      await settle();
+      expect(connection.usage().audioSentMs).toBe(100);
+    });
+
+    it('drops the queue after a vendor error instead of sending it to the dead session', async () => {
+      const clock = manualClock(0);
+      vendor.script.onBinary = (connection) => {
+        connection.socket.send(JSON.stringify({ type: 'error', text: 'quota exceeded' }));
+      };
+      const { connection, events } = await open({ clock: clock.now, protocol: realtime() });
+
+      sendBurst(connection, 30);
+      await waitFor(() => events.some((event) => event.type === 'closed'));
+      clock.set(60_000);
+      await settle();
+
+      expect(vendor.last().binaryFrames).toEqual([CHUNK_100_MS]);
+      expect(connection.usage().audioSentMs).toBe(100);
+      expect(lines.find((line) => line.message === 'stt paced audio dropped')).toMatchObject({
+        fields: { queuedMs: 2_900 },
+      });
+    });
   });
 
   describe('connect failures end with the socket closed', () => {

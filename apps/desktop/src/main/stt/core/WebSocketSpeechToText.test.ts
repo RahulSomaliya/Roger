@@ -22,6 +22,7 @@ function protocol(baseUrl: string): SttProtocol {
     readyOn: 'socket-open',
     finishedOn: 'vendor-close',
     keepAlive: null,
+    audioPacing: 'none',
     target: () => ({ url: `${baseUrl}/listen`, headers: {} }),
     session: () => ({
       encodeAudio: (pcm) => [pcm],

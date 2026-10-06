@@ -24,6 +24,11 @@ export interface ConformanceVendor {
   errorFrame: string | null;
   /** The keep-alive the adapter sends while open, or null. */
   keepAliveMessage: string | null;
+  /**
+   * The vendor closes a session sent audio faster than real time, so the adapter must declare
+   * `audioPacing: 'realtime'`. False: a burst must go at once, or it would lag for nothing.
+   */
+  rejectsAudioFasterThanRealTime: boolean;
 }
 
 export const CONFORMANCE_VENDORS: readonly ConformanceVendor[] = [
@@ -64,6 +69,9 @@ export const CONFORMANCE_VENDORS: readonly ConformanceVendor[] = [
       error: 'Session Expired: Maximum session duration exceeded',
     }),
     keepAliveMessage: null,
+    // Close code 3007, "Audio Transmission Rate Exceeded: Received <x> sec. audio in <y> sec";
+    // the API reference says to pace chunks at about real time and documents no tolerance.
+    rejectsAudioFasterThanRealTime: true,
   },
   {
     provider: 'deepgram',
@@ -91,5 +99,7 @@ export const CONFORMANCE_VENDORS: readonly ConformanceVendor[] = [
     midCallClose: { code: 1011, reason: 'NET-0001' },
     errorFrame: null,
     keepAliveMessage: JSON.stringify({ type: 'KeepAlive' }),
+    // No rate rule documented: a burst must go at once.
+    rejectsAudioFasterThanRealTime: false,
   },
 ];

@@ -83,8 +83,9 @@ export const COST_GUARD_SETTINGS: readonly CostGuardSetting[] = [
     max: 10,
     why:
       'Holds the audio that arrives while a session reopens (a connect takes about a second), so ' +
-      'the chunk that woke it is not lost. Kept short: it is sent at once, and AssemblyAI closes ' +
-      'a session sent audio faster than real time (3007).',
+      'the chunk that woke it is not lost. Kept short: it is paced at 1x (AssemblyAI closes a ' +
+      'session sent audio faster than real time, 3007), so it adds its own length of lag to that ' +
+      'session until it closes.',
   },
   {
     guard: 'sttOpensPerMinute',
