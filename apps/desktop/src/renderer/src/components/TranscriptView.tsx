@@ -27,6 +27,8 @@ export function TranscriptView({ segments, interim, recording }: Props) {
   return (
     <section className="transcript" aria-label="Transcript" aria-live="polite">
       {ordered.length === 0 ? (
+        // "No lines were saved" is true only once main's store has answered: the meeting page
+        // mounts no transcript before that (`unread` in meeting/MeetingPage.tsx).
         <p className="muted empty">
           {recording
             ? 'Lines appear here as people speak.'

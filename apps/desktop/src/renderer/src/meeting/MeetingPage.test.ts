@@ -280,4 +280,46 @@ describe('the meeting page', () => {
     const html = page();
     expect(html).toMatch(/<h1[^>]*>Loading…<\/h1>/);
   });
+
+  it('shows no transcript before the first read answers: it knows no lines to call missing', () => {
+    // Roger restarted, a past meeting opened from the sidebar: no live lines, main not answered.
+    fakes.shell = shell({ status: IDLE, segments: [line(B, 'b1', 500, 'Another meeting')] });
+    const html = page();
+    expect(text(html)).not.toContain('No lines were saved');
+    expect(html).not.toContain('class="transcript"');
+  });
+
+  it('says it could not read the meeting when the first read fails, never a made-up title', () => {
+    fakes.read = read(
+      undefined,
+      'Roger could not read this meeting on this Mac: database is locked',
+    );
+    const html = page();
+    expect(html).toMatch(/<h1[^>]*>Could not read this meeting<\/h1>/);
+    expect(text(html)).not.toContain('Untitled meeting');
+    expect(html).toMatch(/role="alert"[^>]*>.*database is locked/);
+    expect(text(html)).toContain('The transcript shows here once Roger can read this meeting.');
+    expect(text(html)).not.toContain('No lines were saved');
+    expect(html).not.toContain('class="transcript"');
+  });
+
+  it('keeps the lines this window heard live when the first read fails', () => {
+    fakes.shell = shell({
+      status: { ...IDLE, meter: METER },
+      captureMeeting: { id: A, startedAt: '2026-10-06T09:00:00.000Z' },
+      segments: [line(A, 'l1', 2100, 'Heard live before Stop')],
+    });
+    fakes.read = read(undefined, 'Roger could not read this meeting on this Mac: disk I/O error');
+    const html = page();
+    expect(text(html)).toContain('Heard live before Stop');
+    expect(text(html)).not.toContain('The transcript shows here once');
+  });
+
+  it('shows the transcript of a meeting recording now before the first read answers', () => {
+    fakes.shell = shell({
+      status: recording(A),
+      captureMeeting: { id: A, startedAt: '2026-10-06T09:00:00.000Z' },
+    });
+    expect(text(page())).toContain('Lines appear here as people speak.');
+  });
 });

@@ -14,6 +14,8 @@ const NO_INTERIM: Record<AudioSource, InterimTranscript | null> = { mic: null, s
  * M1's transcript on any meeting, until M3-T9 mounts LiveTranscript: the lines main's store holds
  * (the page's storedLines), plus this meeting's lines that arrived live since (useCapture keeps
  * the recording's lines; after a reload mid-call only the store has the earlier ones), each once.
+ * The page mounts this region only once it has lines to show or main has answered (`unread` in
+ * meeting/MeetingPage.tsx), so an empty transcript here means the store holds none.
  */
 function M1Transcript({ meetingId }: MeetingSlotProps) {
   const { capture, captureMeeting } = useShell();

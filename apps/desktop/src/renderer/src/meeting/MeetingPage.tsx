@@ -2,7 +2,6 @@ import { useCallback, useMemo, useState } from 'react';
 import { flushSync } from 'react-dom';
 import type { TranscriptSegment } from '../../../shared/transcript';
 import { meetingPhase } from '../app/captureMeeting';
-import { UNTITLED_MEETING } from '../app/labels';
 import { useShell } from '../app/ShellContext';
 import { isSlotEmpty, SlotOutlet } from '../app/SlotOutlet';
 import { CitationNavigatorProvider } from '../transcript/transcriptNavigator';
@@ -67,6 +66,19 @@ export function MeetingPage({ meetingId }: { meetingId: string }) {
   // Main keeps no meeting in which nobody spoke: after such a Stop the read answers null. A live
   // meeting main has not answered for yet keeps its regions, so its lines still show.
   const missing = read.value === null && phase === 'idle';
+  // Before main's first answer, or when the first read failed, the page knows none of the stored
+  // lines: the transcript would say "No lines were saved for this meeting", false beside the
+  // sidebar's title, so the regions wait unless this meeting records now or this window heard
+  // its lines live. Main answers within a frame or two: a loading text would flash on every open.
+  const unread =
+    read.value === undefined &&
+    phase === 'idle' &&
+    !capture.segments.some((segment) => segment.meetingId === meetingId);
+  // Never a made-up title after a failed read ("Untitled meeting" was one): main names every
+  // meeting it keeps, and the sidebar beside this page shows that name.
+  const title = missing
+    ? 'This meeting is not on this Mac'
+    : (meeting?.title ?? (read.error === null ? 'Loading…' : 'Could not read this meeting'));
   const startedAt =
     meeting?.startedAt ?? (captureMeeting?.id === meetingId ? captureMeeting.startedAt : null);
   const time =
@@ -83,11 +95,7 @@ export function MeetingPage({ meetingId }: { meetingId: string }) {
       <MeetingViewContext value={view}>
         <div className="meeting-page">
           <MeetingHeader
-            title={
-              missing
-                ? 'This meeting is not on this Mac'
-                : (meeting?.title ?? (read.error === null ? 'Loading…' : UNTITLED_MEETING))
-            }
+            title={title}
             pending={read.value === undefined && read.error === null}
             time={missing ? null : time}
             phase={phase}
@@ -113,6 +121,16 @@ export function MeetingPage({ meetingId }: { meetingId: string }) {
                 one. It may have stopped before anyone spoke.
               </p>
             </div>
+          ) : unread ? (
+            // Nothing while the first read runs (the header says Loading…); the alert above says
+            // why a failed one failed, with Try again.
+            read.error === null ? null : (
+              <div className="empty-state">
+                <p className="empty-state-text">
+                  The transcript shows here once Roger can read this meeting.
+                </p>
+              </div>
+            )
           ) : (
             <MeetingRegions
               meetingId={meetingId}
