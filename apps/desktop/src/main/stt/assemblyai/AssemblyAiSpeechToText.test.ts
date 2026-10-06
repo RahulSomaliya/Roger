@@ -200,6 +200,36 @@ describe('AssemblyAiSpeechToText', () => {
     return { stream, events };
   }
 
+  it('asks the vendor for what each model takes, with the jargon list', async () => {
+    const keyterms = ['Linkt', 'order number'];
+    const asked: Record<string, Record<string, string>> = {};
+    for (const model of ['universal-streaming-english', 'universal-3-6-pro']) {
+      const { stream } = await open({}, 'temp-token', { ...settings, model, keyterms });
+      asked[model] = Object.fromEntries(new URL(log.url, 'ws://x').searchParams);
+      await stream.close();
+    }
+
+    const common = {
+      sample_rate: '16000',
+      encoding: 'pcm_s16le',
+      keyterms_prompt: JSON.stringify(keyterms),
+      inactivity_timeout: '120',
+      token: 'temp-token',
+    };
+    expect(asked).toEqual({
+      'universal-streaming-english': {
+        ...common,
+        speech_model: 'universal-streaming-english',
+        format_turns: 'true',
+      },
+      'universal-3-6-pro': {
+        ...common,
+        speech_model: 'universal-3-6-pro',
+        language_codes: '["en"]',
+      },
+    });
+  });
+
   it('asks the vendor for the configured inactivity timeout', async () => {
     const { stream } = await open({ vendorIdleTimeoutMs: 300_000 });
     expect(new URL(log.url, 'ws://x').searchParams.get('inactivity_timeout')).toBe('300');
