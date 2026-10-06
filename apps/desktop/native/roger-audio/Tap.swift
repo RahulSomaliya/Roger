@@ -299,6 +299,11 @@ final class FramePipeline {
 /// stopped reading) or deadlocked then also stops the events, so main's 3 s watchdog
 /// (HelperProcess, M2-T10) sees a silent helper and restarts it. Stats from another thread would
 /// keep a helper with dead audio looking alive.
+///
+/// WHY stats are timed by `uptime` (monotonic) and never by `Date()`: the wall clock steps back
+/// when the user sets it back or NTP corrects it after a wake, and a schedule on it then sends no
+/// stats for as long as the step, breaking the 1 s `stats` contract main reads the helper's
+/// health from. Capture times are the opposite case: they must be wall clock (HostClock).
 final class FrameWriter: @unchecked Sendable {
   enum StopCause: Equatable {
     /// `stop(timeout:)` was called.
@@ -324,18 +329,21 @@ final class FrameWriter: @unchecked Sendable {
   private let events: EventSink
   private let statsInterval: TimeInterval
   private let pollInterval: TimeInterval
+  private let uptime: () -> TimeInterval
   private let stopRequested = Locked(false)
   private let running = DispatchGroup()
 
   init(
     ring: AudioRing, pipeline: FramePipeline, events: EventSink, statsInterval: TimeInterval = 1,
-    pollInterval: TimeInterval = 0.01
+    pollInterval: TimeInterval = 0.01,
+    uptime: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
   ) {
     self.ring = ring
     self.pipeline = pipeline
     self.events = events
     self.statsInterval = statsInterval
     self.pollInterval = pollInterval
+    self.uptime = uptime
   }
 
   /// Starts the thread. `onStopped` runs on it once, as its last act.
@@ -361,7 +369,7 @@ final class FrameWriter: @unchecked Sendable {
   private func loop() -> StopCause {
     let buffer = UnsafeMutableBufferPointer<Float>.allocate(capacity: ring.maxSpanFrames)
     defer { buffer.deallocate() }
-    var nextStats = Date().addingTimeInterval(statsInterval)
+    var nextStats = uptime() + statsInterval
     var cause = StopCause.requested
     do {
       while true {
@@ -369,9 +377,9 @@ final class FrameWriter: @unchecked Sendable {
         let more = try drainPass(buffer)
         // On stop, everything the ring holds is written first: the last 100 ms are not lost.
         if stopping && !more { break }
-        if Date() >= nextStats {
+        if uptime() >= nextStats {
           emitStats()
-          nextStats = Date().addingTimeInterval(statsInterval)
+          nextStats = uptime() + statsInterval
         }
         if !more { Thread.sleep(forTimeInterval: pollInterval) }
       }

@@ -370,6 +370,35 @@ private func writerCases(_ suite: inout SelfTestSuite) {
     t.expectEqual(events.stats.reduce(0) { $0 + $1.dropped }, 0, "nothing dropped")
   }
 
+  suite.run("writer: stats run on the uptime clock, so setting the wall clock back never stops them") {
+    t in
+    let pipe = try makePipe()
+    let ring = AudioRing()
+    let events = RecordingEventSink()
+    let pipeline = try FramePipeline(output: output16k) { try writeAll(fd: pipe.write, $0) }
+    // Moves only when the case moves it, while the wall clock runs on: stats must follow this one.
+    let uptime = Locked<TimeInterval>(1_000)
+    let writer = FrameWriter(
+      ring: ring, pipeline: pipeline, events: events, statsInterval: 0.2, pollInterval: 0.005,
+      uptime: { uptime.value })
+    let reader = PipeDrain(fd: pipe.read)
+    writer.start { _ in }
+    writeToRing(ring, tone(rate: 48_000, seconds: 0.3, hz: 440, amplitude: 0.25), rate: 48_000)
+
+    usleep(600_000)
+    t.expectEqual(events.stats.count, 0, "no stats in 0.6 s of wall time while uptime stands still")
+    uptime.withValue { $0 += 0.25 }
+    t.expect(waitUntil(seconds: 5) { events.stats.count == 1 }, "one stats line once uptime moves")
+    usleep(100_000)
+    t.expectEqual(events.stats.count, 1, "and only one per interval of uptime")
+    uptime.withValue { $0 += 0.25 }
+    t.expect(waitUntil(seconds: 5) { events.stats.count == 2 }, "the next after another interval")
+
+    t.expect(writer.stop(timeout: 2), "stops")
+    close(pipe.write)
+    _ = reader.finish()
+  }
+
   suite.run("writer: stop writes everything the ring holds first, the short last frame included") {
     t in
     let pipe = try makePipe()
