@@ -57,6 +57,12 @@ def bullets(*items: Json) -> Json:
     return {"type": "bulletList", "content": [{"type": "listItem", "content": [i]} for i in items]}
 
 
+def chip(start_ms: int) -> Json:
+    """A citation chip with the attrs the editor declares (`citationNode.ts`)."""
+    attrs: Json = {"segmentIds": [str(uuid4())], "startMs": start_ms, "label": "", "support": "ok"}
+    return {"type": "citation", "attrs": attrs}
+
+
 def doc_saying(words: str) -> Json:
     return {"type": "doc", "content": [paragraph(text(words))]}
 
@@ -258,6 +264,54 @@ async def test_get_notes_where_only_your_notes_back_the_ai_lines_says_none_came_
         "*Not said on the call*\n"
         "\n"
         "- Chase the invoice\n"
+        "\n"
+        "# My notes\n"
+        "\n"
+        "(No notes yet.)"
+    )
+
+
+async def test_get_notes_keeps_a_section_added_after_from_your_notes_in_the_ai_notes(
+    app: FastAPI, client: httpx.AsyncClient
+) -> None:
+    # The AI doc is editable, and its end is where a user adds things. A line copied there with its
+    # chip came from the call: under "From your notes" it would read "Not said on the call".
+    meeting_id = await create_ended_meeting(
+        client, "Added to", "2026-10-05T10:00:00Z", "2026-10-05T10:30:00Z"
+    )
+    ai_doc: Json = {
+        "type": "doc",
+        "content": [
+            {"type": "heading", "attrs": {"level": 2}, "content": [text("Decisions")]},
+            bullets(paragraph(text("Beta ships Friday "), chip(192_000))),
+            {"type": "heading", "attrs": {"level": 2}, "content": [text("From your notes")]},
+            paragraph(text("Not said on the call", "italic")),
+            bullets(paragraph(text("Ask about Q3"))),
+            {"type": "heading", "attrs": {"level": 2}, "content": [text("Follow-ups")]},
+            bullets(paragraph(text("Legal signed off "), chip(192_000))),
+        ],
+    }
+    await put_note(client, meeting_id, "ai", ai_doc)
+
+    notes, is_error = await call_get_notes(app, meeting_id=meeting_id)
+
+    assert not is_error
+    assert notes.endswith(
+        "# AI notes\n"
+        "\n"
+        "## Decisions\n"
+        "\n"
+        "- Beta ships Friday [00:03:12]\n"
+        "\n"
+        "## Follow-ups\n"
+        "\n"
+        "- Legal signed off [00:03:12]\n"
+        "\n"
+        "# From your notes\n"
+        "\n"
+        "*Not said on the call*\n"
+        "\n"
+        "- Ask about Q3\n"
         "\n"
         "# My notes\n"
         "\n"

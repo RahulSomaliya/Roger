@@ -665,13 +665,16 @@ Started: 2026-10-05T10:00:00Z   Ended: 2026-10-05T10:31:12Z
 ```
 
 - `Ended` reads `still recording` for a meeting that has not ended.
-- `# AI notes`: the AI doc without its closing "From your notes" list. Each citation chip is the
+- `# AI notes`: the AI doc without its "From your notes" list. A section the user added after
+  that list, under a heading at the list's level or higher, stays here. Each citation chip is the
   `hh:mm:ss` offset of the line it points at (its `startMs`), the same offsets `get_transcript`
   prints, so the line can be found there. A chip with no `startMs` shows its label instead.
   "(No AI notes yet.)" when there is no AI doc or it is empty; "(No lines from the transcript. See
-  From your notes.)" when every AI line is in the closing list.
+  From your notes.)" when every AI line is in that list.
 - `# From your notes`: the AI lines only the user's notes back (M4 D7), with their "Not said on
-  the call" line and no times. Only present when the AI doc ends with that list.
+  the call" line: what the AI doc holds under its "From your notes" heading, up to the next
+  heading at that level or higher. The notes run writes these lines with no chips, so they carry
+  no times unless the user pasted one in. Only present when the AI doc has that list.
 - `# My notes`: the user's doc; "(No notes yet.)" when there is none or it is empty.
 - Lines the app flags "check this" (citation `support: "weak"`) carry no mark here: their times
   read like any other. A cue for MCP is an open product call.

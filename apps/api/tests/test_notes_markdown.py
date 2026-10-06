@@ -244,6 +244,33 @@ def test_from_your_notes_heading_is_found_by_its_words_alone() -> None:
     )
 
 
+@pytest.mark.parametrize("level", [1, 2])
+def test_from_your_notes_ends_at_the_next_heading_at_its_level_or_higher(level: int) -> None:
+    # The AI doc is editable, and its end is where a user adds a section. A line copied there with
+    # its chip came from the call: read as part of the list, it would say "Not said on the call".
+    ai_doc = doc(
+        heading(2, "Decisions"),
+        bullets(item(paragraph("Beta ships Friday ", citation(192_000)))),
+        heading(2, "From your notes"),
+        paragraph(text("Not said on the call", "italic")),
+        bullets(item("Ask about Q3")),
+        heading(3, "Pricing"),
+        bullets(item("Ask about seats")),
+        heading(level, "Follow-ups"),
+        bullets(item(paragraph("Legal signed off ", citation(192_000)))),
+    )
+
+    assert render_ai_notes(ai_doc) == AiNotesMarkdown(
+        notes=(
+            "## Decisions\n\n- Beta ships Friday [00:03:12]\n\n"
+            f"{'#' * level} Follow-ups\n\n- Legal signed off [00:03:12]"
+        ),
+        from_your_notes=(
+            "*Not said on the call*\n\n- Ask about Q3\n\n### Pricing\n\n- Ask about seats"
+        ),
+    )
+
+
 def test_ai_notes_without_from_your_notes_have_an_empty_list() -> None:
     ai_doc = doc(heading(2, "Decisions"), bullets(item("Beta ships Friday")))
 

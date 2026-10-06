@@ -134,8 +134,9 @@ async def read_notes_text(
 
 
 def render_notes(meeting: Meeting, meeting_notes: MeetingNotes) -> str:
-    """A header, then "AI notes", "From your notes" (only when the AI notes end with that list)
-    and "My notes", as Markdown.
+    """A header, then "AI notes", "From your notes" (only when the AI notes have that list) and
+    "My notes", as Markdown. A section the user added after the list stays in "AI notes"
+    (`render_ai_notes`).
 
     Each citation chip renders as the `[hh:mm:ss]` offset `get_transcript` prints for its line
     (`notes_markdown.py`), so an AI can find the words behind a note. A `weak` chip, the app's
