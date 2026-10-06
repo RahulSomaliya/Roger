@@ -4,6 +4,7 @@ import {
   canSave,
   isChanged,
   listSize,
+  textAfterPaste,
   type VocabularyEditing,
   VocabularyEditor,
   type VocabularyEditorState,
@@ -141,12 +142,12 @@ function VocabularyForm({ state, editor }: VocabularyFormProps) {
             setProblem(null);
           }}
           onPaste={(event) => {
-            // A text box drops the line breaks of pasted text ("Linkt", "Roger" on two lines
-            // arrive as "LinktRoger"), so a pasted column of names is split here instead.
-            const pasted = event.clipboardData.getData('text');
-            if (!/[\n\r\t]/.test(pasted)) return;
+            // A pasted column of names is split here: the box would drop its line breaks. At the
+            // caret and over the selection, never appended to the whole text (textAfterPaste).
+            const after = textAfterPaste(event.currentTarget, event.clipboardData.getData('text'));
+            if (after === null) return;
             event.preventDefault();
-            add(`${text}\n${pasted}`);
+            add(after);
           }}
         />
         <button

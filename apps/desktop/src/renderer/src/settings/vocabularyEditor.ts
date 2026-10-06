@@ -42,6 +42,32 @@ export interface AddResult {
 /** Where typed or pasted text splits into terms. A term never holds one of these. */
 const SEPARATORS = /[,\n\r\t]/;
 
+/** The separators a one-line text box drops from pasted text. */
+const PASTED_BREAKS = /[\n\r\t]/;
+
+/** A text box's text and selection, as a paste event's target (an input) has them. */
+export interface TextBox {
+  readonly value: string;
+  readonly selectionStart: number | null;
+  readonly selectionEnd: number | null;
+}
+
+/**
+ * The box's text once `pasted` is in it, for `add` to split, or null when the paste holds no line
+ * break or tab and the box can take it itself. A one-line box drops pasted line breaks ("Linkt",
+ * "Roger" on two lines arrive as "LinktRoger"), so the page splits a pasted column itself.
+ *
+ * Trap: the paste goes where the box would put it, at the caret and over the selection. Appending
+ * it to the whole text instead adds what the person selected in order to replace it (a half-typed
+ * "Glo", a refused name) as a term, and Save sends it to speech-to-text with every recording.
+ */
+export function textAfterPaste(box: TextBox, pasted: string): string | null {
+  if (!PASTED_BREAKS.test(pasted)) return null;
+  const start = box.selectionStart ?? box.value.length;
+  const end = box.selectionEnd ?? start;
+  return box.value.slice(0, start) + pasted + box.value.slice(end);
+}
+
 /** How much of a term a message quotes before it cuts it short. */
 const QUOTED_CHARS = 28;
 

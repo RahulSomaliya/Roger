@@ -9,8 +9,8 @@ import type { VocabularyApi } from '../src/shared/ipc/vocabulary';
 
 /**
  * M3-T8's browser QA: the jargon list section in Settings, both themes, 1440 and 390 wide, with a
- * long list, an empty one, a full one, an edit, a save, a refused term, a failed save and the API
- * offline at load. `ROGER_QA_OUT=<dir> pnpm exec vitest run --config vitest.e2e.config.ts
+ * long list, an empty one, a full one, an edit, a save, a refused term, a column pasted over a
+ * selection, a failed save and the API offline at load. `ROGER_QA_OUT=<dir> pnpm exec vitest run --config vitest.e2e.config.ts
  * e2e/m3-t8.qa.e2e.ts`; qa/README.md says how the driver works.
  */
 
@@ -162,6 +162,25 @@ async function addTerms(page: Page, text: string): Promise<void> {
   await qa.settle(page);
 }
 
+/**
+ * Selects all of the box's text and pastes `pasted` over it, as Cmd+A then Cmd+V would. The paste
+ * is a page-made ClipboardEvent, not a keypress: a real Cmd+V would read, and a test would first
+ * have to write, the Mac's own clipboard.
+ */
+async function pasteOverAll(page: Page, pasted: string): Promise<void> {
+  await page.locator('.vocabulary-input').selectText();
+  await page.evaluate((text) => {
+    const box = document.querySelector('.vocabulary-input');
+    if (!(box instanceof HTMLInputElement)) throw new Error('no jargon list box');
+    const clipboardData = new DataTransfer();
+    clipboardData.setData('text/plain', text);
+    box.dispatchEvent(
+      new ClipboardEvent('paste', { clipboardData, bubbles: true, cancelable: true }),
+    );
+  }, pasted);
+  await qa.settle(page);
+}
+
 async function save(page: Page): Promise<void> {
   await visible(page, '.vocabulary-save');
   await page.click('.vocabulary-save');
@@ -291,6 +310,23 @@ it('edits, saves and refuses terms in every theme and width', async () => {
           'Empty list',
           `empty-${shot}`,
           'A workspace with no terms yet: the empty state and the box to add one.',
+        );
+
+        // A column pasted over a half-typed name replaces it: only the pasted names are added.
+        await page.fill('.vocabulary-input', 'Glo');
+        await pasteOverAll(page, 'Initech\nGlobex Corporation\n');
+        expect(await page.inputValue('.vocabulary-input')).toBe('');
+        expect(await page.locator('.vocabulary-term-text').allTextContents()).toEqual([
+          'Initech',
+          'Globex Corporation',
+        ]);
+        expect(await page.locator('.vocabulary-problem').count()).toBe(0);
+        await visible(page, '.vocabulary-term:last-child .vocabulary-remove');
+        await shoot(
+          preview,
+          'Pasted column',
+          `pasted-${shot}`,
+          'Two names pasted on two lines over a selected "Glo": both become terms, "Glo" is gone.',
         );
 
         // A full list refuses one more, and keeps it in the box.

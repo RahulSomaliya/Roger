@@ -5,6 +5,7 @@ import {
   canSave,
   isChanged,
   listSize,
+  textAfterPaste,
   VocabularyEditor,
   type VocabularyEditorState,
 } from './vocabularyEditor';
@@ -224,6 +225,47 @@ describe('adding terms', () => {
       problem: '"Roger" would bring the list to 801 characters. It can hold 800 in all.',
     });
     expect(listSize(editing(editor).draft)).toEqual({ terms: 16, characters: 796 });
+  });
+});
+
+describe('textAfterPaste', () => {
+  /** The box as a paste event's target has it: its text and the selected part of it. */
+  const box = (value: string, selectionStart: number, selectionEnd = selectionStart) => ({
+    value,
+    selectionStart,
+    selectionEnd,
+  });
+
+  it('leaves a paste with no line break or tab to the box itself', () => {
+    expect(textAfterPaste(box('Glo', 0, 3), 'Globex')).toBeNull();
+    expect(textAfterPaste(box('', 0), 'Linkt, Roger')).toBeNull();
+  });
+
+  it('puts a pasted column over the selection: text selected to replace is never added', async () => {
+    const { editor } = await loaded();
+    const text = textAfterPaste(box('Glo', 0, 3), 'Initech\nGlobex');
+    expect(text).toBe('Initech\nGlobex');
+    expect(editor.add(text ?? '')).toEqual({ rest: '', problem: null });
+    expect(editing(editor).draft).toEqual(['Linkt', 'Roger', 'Initech', 'Globex']);
+
+    // A refused name kept in the box, selected whole and pasted over, is gone with its reason.
+    const long = 'Linkt Holdings International Limited Liability Corp';
+    expect(textAfterPaste(box(long, 0, long.length), 'Hooli\r\nUmbrella')).toBe(
+      'Hooli\r\nUmbrella',
+    );
+  });
+
+  it('puts it at the caret, as the box would, splitting only where the paste breaks', () => {
+    expect(textAfterPaste(box('Linkt, ', 7), 'Initech\nGlobex')).toBe('Linkt, Initech\nGlobex');
+    expect(textAfterPaste(box('Linkt, Roger', 7, 12), 'Initech\tGlobex')).toBe(
+      'Linkt, Initech\tGlobex',
+    );
+    expect(textAfterPaste(box('Linkt', 0), 'Initech\n')).toBe('Initech\nLinkt');
+  });
+
+  it('adds at the end when the box reports no selection', () => {
+    const noSelection = { value: 'Linkt, ', selectionStart: null, selectionEnd: null };
+    expect(textAfterPaste(noSelection, 'Initech\nGlobex')).toBe('Linkt, Initech\nGlobex');
   });
 });
 
