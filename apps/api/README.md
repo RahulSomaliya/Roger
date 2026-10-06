@@ -171,10 +171,10 @@ three for both apps.
 ## Migrations
 
 Tables are only ever created by Alembic. The chain is fixed through `0005`: Phase 2's revisions
-`0002` to `0005` exist as empty stubs, each owned by one task (`docs/plans/phase-2-build-order.md`,
-section 2), and `tests/test_migrations.py` fails on a second head or a re-pointed `down_revision`.
-To fill a stub, run step 2 into a scratch revision, move its operations into the stub, and delete
-the scratch file.
+`0002` to `0005` began as empty stubs (P2-F2), each filled in place by the one task that owns it
+(`docs/plans/phase-2-build-order.md`, section 2), and `tests/test_migrations.py` fails on a second
+head or a re-pointed `down_revision`. To fill a stub, run step 2 into a scratch revision, move its
+operations into the stub, and delete the scratch file.
 
 A stub is filled in place, so a database migrated while it was empty already sits past it:
 `alembic upgrade head` does nothing (the new tables never arrive) and `alembic downgrade` fails on
