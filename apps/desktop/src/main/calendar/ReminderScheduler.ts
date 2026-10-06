@@ -12,6 +12,7 @@ import type { CalendarCatchUp, CalendarSync } from './CalendarSync';
 import type { PromptLog } from './PromptLog';
 import {
   dueWindow,
+  isDue,
   missedReason,
   PROMPT_OPEN_AFTER_START_MS,
   promptWorthiness,
@@ -253,7 +254,7 @@ export class ReminderScheduler {
     this.noteRules(events);
     this.sweepMissed(account, events, nowMs, lead);
     const pending = this.pendingEvents(account, events, nowMs, lead);
-    if (pending.some((event) => dueWindow(event, lead).fromMs <= nowMs)) this.showDue();
+    if (pending.some((event) => isDue(event, nowMs, lead))) this.showDue();
     this.holdBlocker(pending, nowMs, lead);
   }
 
@@ -398,7 +399,7 @@ export class ReminderScheduler {
     const events = this.options.cache.listEvents();
     const pending = this.pendingEvents(account, events, nowMs, lead);
     for (const event of pending) {
-      if (dueWindow(event, lead).fromMs > nowMs) continue;
+      if (!isDue(event, nowMs, lead)) continue;
       const key = promptKey(event);
       try {
         this.options.prompts.offer({ source: 'calendar', eventKey: key });
