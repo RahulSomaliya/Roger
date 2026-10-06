@@ -3,7 +3,9 @@ import { invoke, send, subscribe } from '../bridge';
 
 /** Capture's part of `window.roger`. */
 export const captureBridge: CaptureApi = {
-  startCapture: () => invoke(captureChannels.CaptureStart),
+  startCapture: (request) => invoke(captureChannels.CaptureStart, request),
+  onStartRequested: (listener) => subscribe(captureChannels.CaptureStartRequested, listener),
+  takePendingStart: () => invoke(captureChannels.CaptureTakePendingStart),
   stopCapture: () => invoke(captureChannels.CaptureStop),
   getCaptureStatus: () => invoke(captureChannels.CaptureGetStatus),
   getSystemAudioSourceId: () => invoke(captureChannels.AudioGetSystemSource),

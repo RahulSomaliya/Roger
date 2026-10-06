@@ -9,13 +9,14 @@ import {
   parseAudioChunk,
   parseMeetingRequest,
   parseSegmentRequest,
+  parseStartCaptureRequest,
 } from './ipc-validation';
 import { errorMessage, type Logger } from './logger';
 
 /** The parts of CaptureService the capture channels drive. */
 export type CaptureIpcTarget = Pick<
   CaptureService,
-  'start' | 'stop' | 'getStatus' | 'pushAudio' | 'reportSourceState' | 'on'
+  'start' | 'stop' | 'getStatus' | 'pushAudio' | 'reportSourceState' | 'on' | 'takePendingStart'
 >;
 
 /**
@@ -60,7 +61,12 @@ export function registerIpcHandlers({
 }: IpcDeps): void {
   const trust: IpcTrust = { ipcMain, getWindow, logger };
 
-  handleTrusted(trust, IpcChannel.CaptureStart, () => capture.start());
+  // Rebuilt from the fields it checked: whatever else the page sends, a `resume` included (only
+  // main resumes a meeting, M2-T23), never reaches start().
+  handleTrusted(trust, IpcChannel.CaptureStart, (payload) =>
+    capture.start(parseStartCaptureRequest(payload)),
+  );
+  handleTrusted(trust, IpcChannel.CaptureTakePendingStart, () => capture.takePendingStart());
   handleTrusted(trust, IpcChannel.CaptureStop, () => capture.stop());
   handleTrusted(trust, IpcChannel.CaptureGetStatus, () => capture.getStatus());
   handleTrusted(trust, IpcChannel.AudioGetSystemSource, async () => {
@@ -123,6 +129,10 @@ export function registerIpcHandlers({
   });
   capture.on('interim', (interim) => {
     send(IpcChannel.TranscriptInterim, interim);
+  });
+  // A nudge, not the request: the page takes it (CaptureTakePendingStart), so it runs once.
+  capture.on('start-requested', () => {
+    send(IpcChannel.CaptureStartRequested, undefined);
   });
 }
 

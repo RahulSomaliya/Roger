@@ -46,7 +46,7 @@ describe('parseAudioChunk', () => {
       source: 'mic',
       capturedAtMs: NOW - 40,
     });
-    // M1's renderer sends none until M2-T12: main then uses the arrival time.
+    // A chunk with none (the renderer sends one since M2-T12) is dated by its arrival.
     expect(parseAudioChunk({ source: 'mic', pcm }, NOW)?.capturedAtMs).toBeNull();
     // A day either way is still accepted: the bound catches junk. It does not absorb a renderer
     // clock that stops through sleeps (AudioChunkMessage.capturedAtMs says how to avoid one).

@@ -98,6 +98,8 @@ function rogerApi() {
     rerunGaps: vi.fn(),
     deleteMeetingAudio: vi.fn(),
     unhideSegment: vi.fn(),
+    onStartRequested: () => () => undefined,
+    takePendingStart: vi.fn(),
   };
   return api satisfies CaptureApi;
 }

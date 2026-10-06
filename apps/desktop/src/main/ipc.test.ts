@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { CaptureReport, CaptureStatus } from '../shared/capture';
+import type { CaptureReport, CaptureStatus, StartCaptureRequest } from '../shared/capture';
 import { IpcChannel } from '../shared/ipc';
 import { idleCaptureStatus } from '../shared/capture';
 import type { CaptureService } from './capture/CaptureService';
@@ -37,14 +37,23 @@ function registered() {
     lastError: null,
     nextAttemptAt: null,
   });
+  const startRequested: ((request: StartCaptureRequest) => void)[] = [];
+  const pending: { request: StartCaptureRequest | null } = { request: null };
   const capture = {
-    start: vi.fn(() => Promise.resolve(status)),
+    start: vi.fn<CaptureService['start']>(() => Promise.resolve(status)),
     stop: vi.fn(() => Promise.resolve(status)),
     getStatus: vi.fn(() => status),
     pushAudio: vi.fn<CaptureService['pushAudio']>(),
     reportSourceState: vi.fn<CaptureService['reportSourceState']>(),
-    on: () => () => undefined,
+    takePendingStart: vi.fn<CaptureService['takePendingStart']>(() => pending.request),
+    // Only the start-requested event is kept: the other events are not what these tests drive.
+    // Cast because CaptureService's `on` is generic over every event, and this double takes one.
+    on: ((event: string, listener: (request: StartCaptureRequest) => void) => {
+      if (event === 'start-requested') startRequested.push(listener);
+      return () => undefined;
+    }) as CaptureService['on'],
   } satisfies CaptureIpcTarget;
+  const send = vi.fn<(channel: string, payload: unknown) => void>();
   const requests = {
     getReport: vi.fn<CaptureRequests['getReport']>(report),
     rerunGaps: vi.fn<CaptureRequests['rerunGaps']>((meetingId) =>
@@ -66,13 +75,20 @@ function registered() {
     },
     capture,
     requests,
-    getWindow: () => ({ webContents: { id: WINDOW_ID, send: vi.fn() }, isDestroyed: () => false }),
+    getWindow: () => ({ webContents: { id: WINDOW_ID, send }, isDestroyed: () => false }),
     logger,
   });
   const fromPage = { sender: { id: WINDOW_ID } };
   return {
     capture,
     requests,
+    pending,
+    /** What main sent the page. */
+    sentToPage: send,
+    /** Main's requestStart, as CaptureService emits it. */
+    requestStart: (request: StartCaptureRequest) => {
+      for (const listener of startRequested) listener(request);
+    },
     /** Like the page's invoke: a handler that throws, or one that rejects, rejects it. */
     invoke: (channel: string, payload?: unknown): Promise<unknown> =>
       new Promise((resolve) => {
@@ -155,5 +171,61 @@ describe('the capture IPC', () => {
       ipc.invoke(IpcChannel.TranscriptUnhideSegment, { meetingId: MEETING, segmentId: LINE }),
     ).rejects.toThrow('is not hidden');
     expect(ipc.requests.unhideSegment).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('the capture IPC and start requests (M5)', () => {
+  const request: StartCaptureRequest = {
+    source: 'notification',
+    title: 'Standup',
+    calendarEvent: {
+      provider: 'fake',
+      eventId: 'fake-standup_20261007T093000Z',
+      icalUid: null,
+      recurringEventId: null,
+      scheduledStart: '2026-10-07T09:30:00.000Z',
+      scheduledEnd: '2026-10-07T09:45:00.000Z',
+      attendees: [],
+    },
+  };
+
+  it('starts with the request it has checked, or a plain start with none', async () => {
+    const ipc = registered();
+    await ipc.invoke(IpcChannel.CaptureStart, request);
+    await ipc.invoke(IpcChannel.CaptureStart);
+    expect(ipc.capture.start.mock.calls).toEqual([[request], [{}]]);
+  });
+
+  // Only main resumes a meeting (M2-T23): a page that could name one would record into any meeting.
+  it('passes on none of what else a page sends, a resume included', async () => {
+    const ipc = registered();
+    await ipc.invoke(IpcChannel.CaptureStart, {
+      source: 'home',
+      resume: { meetingId: MEETING },
+      extra: 'x',
+    });
+    expect(ipc.capture.start.mock.calls).toEqual([[{ source: 'home' }]]);
+  });
+
+  it('refuses a start request that does not check, naming the field, before anything runs', async () => {
+    const ipc = registered();
+    await expect(ipc.invoke(IpcChannel.CaptureStart, { source: 'calendar' })).rejects.toThrow(
+      'invalid start request: source is not a start source',
+    );
+    await expect(ipc.invoke(IpcChannel.CaptureStart, { title: 'x'.repeat(501) })).rejects.toThrow(
+      'invalid start request: title is over 500 characters',
+    );
+    expect(ipc.capture.start).not.toHaveBeenCalled();
+  });
+
+  it('tells the page a start request waits, and hands it over when the page takes it', async () => {
+    const ipc = registered();
+    ipc.pending.request = request;
+    ipc.requestStart(request);
+    // A nudge with no payload: the page takes the request, so it runs once however many ask.
+    expect(ipc.sentToPage).toHaveBeenCalledWith(IpcChannel.CaptureStartRequested, undefined);
+    await expect(ipc.invoke(IpcChannel.CaptureTakePendingStart)).resolves.toEqual(request);
+    ipc.pending.request = null;
+    await expect(ipc.invoke(IpcChannel.CaptureTakePendingStart)).resolves.toBeNull();
   });
 });

@@ -2,6 +2,7 @@ import {
   type CaptureReport,
   type CaptureStatus,
   idleCaptureStatus,
+  type StartCaptureRequest,
   type TranscriptSegmentChange,
 } from '../../src/shared/capture';
 import { captureChannels, type CaptureApi } from '../../src/shared/ipc/capture';
@@ -20,6 +21,10 @@ import type { FakeHub } from './hub';
  * no scenario described has an empty report. A line a scenario hides (a `hidden` event on
  * TranscriptSegmentChanged) can be unhidden, which sends the `unhidden` event main sends; a line
  * it only trims cannot, as in main.
+ *
+ * A scenario asks the page to start, as main's requestStart does, by emitting the request on
+ * CaptureStartRequested: the fake keeps it for takePendingStart, which answers it once, and the
+ * page's listeners hear the nudge. Main's own event carries no payload; only the fake reads one.
  */
 export function createCaptureFake(hub: FakeHub): CaptureApi {
   let status = idleCaptureStatus({
@@ -48,6 +53,11 @@ export function createCaptureFake(hub: FakeHub): CaptureApi {
     return report;
   };
 
+  let pendingStart: StartCaptureRequest | null = null;
+  hub.on(captureChannels.CaptureStartRequested, (request: StartCaptureRequest) => {
+    pendingStart = request;
+  });
+
   /**
    * Lines hidden and not unhidden since, by segment id, as they now read. Only `hidden` adds one:
    * main's store unhides a line only while `suppressed_reason` is set, and a trim never sets it
@@ -63,17 +73,28 @@ export function createCaptureFake(hub: FakeHub): CaptureApi {
   });
 
   return {
-    startCapture: () =>
-      hub.request(captureChannels.CaptureStart, () =>
-        publish({
+    startCapture: (request) =>
+      hub.request(captureChannels.CaptureStart, () => {
+        const title = request?.title?.trim() ?? '';
+        return publish({
           ...idleCaptureStatus(status.upload),
           phase: 'recording',
           meetingId: crypto.randomUUID(),
+          // Main names an untitled meeting after its start (defaultMeetingTitle); the preview's
+          // shots need no clock in it.
+          title: title === '' ? 'New meeting' : title,
           startedAt: new Date().toISOString(),
           sttProvider: 'fake',
           streams: { mic: 'open', system: 'open' },
-        }),
-      ),
+        });
+      }),
+    onStartRequested: (listener) => hub.on(captureChannels.CaptureStartRequested, listener),
+    takePendingStart: () =>
+      hub.request(captureChannels.CaptureTakePendingStart, () => {
+        const request = pendingStart;
+        pendingStart = null;
+        return request;
+      }),
     // Main keeps the last meeting's meter after Stop (CaptureService.getStatus).
     stopCapture: () =>
       hub.request(captureChannels.CaptureStop, () =>
