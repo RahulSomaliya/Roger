@@ -17,8 +17,9 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.types import TypeDecorator
 
+from roger_api.config_calendar import CalendarProviderName
 from roger_api.db.base import Base
-from roger_api.domain import AudioSource, MeetingStatus
+from roger_api.domain import AudioSource, MeetingStatus, StartSource
 
 
 class Real(TypeDecorator[float]):
@@ -45,7 +46,15 @@ class Workspace(Base):
 
 class Meeting(Base):
     __tablename__ = "meetings"
-    __table_args__ = (CheckConstraint("status IN ('recording', 'ended')", name="status"),)
+    __table_args__ = (
+        CheckConstraint("status IN ('recording', 'ended')", name="status"),
+        # domain.StartSource, all five from the start (revision 0004): M2's call offer stores
+        # `call_detected` without a migration of its own.
+        CheckConstraint(
+            "start_source IN ('manual', 'notification', 'home', 'tray', 'call_detected')",
+            name="start_source",
+        ),
+    )
 
     id: Mapped[UUID] = mapped_column(primary_key=True)
     workspace_id: Mapped[UUID] = mapped_column(ForeignKey("workspaces.id"))
@@ -53,6 +62,17 @@ class Meeting(Base):
     status: Mapped[MeetingStatus] = mapped_column(Text)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # How the recording was started. The server default is what every meeting made before revision
+    # 0004 reads, and what a create that does not say gets.
+    start_source: Mapped[StartSource] = mapped_column(Text, server_default="manual")
+    # The calendar event the meeting was started for (M5); all NULL without one. Its attendees are
+    # rows of meeting_attendees (db/models_calendar.py). No index: nothing filters by event yet.
+    calendar_provider: Mapped[CalendarProviderName | None] = mapped_column(Text)
+    calendar_event_id: Mapped[str | None] = mapped_column(Text)  # the instance id when recurring
+    calendar_ical_uid: Mapped[str | None] = mapped_column(Text)  # the same for every invitee
+    calendar_recurring_event_id: Mapped[str | None] = mapped_column(Text)
+    scheduled_start_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    scheduled_end_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = _created_at()
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
