@@ -231,10 +231,10 @@ export function listSize(terms: readonly string[]): { terms: number; characters:
 }
 
 /**
- * A typed or pasted piece as a term: trimmed as the API trims it (trimTerm), and first of a byte
- * order mark, which the API would keep inside the term and send to speech-to-text. Trap: trimTerm
- * alone keeps a pasted mark; trim() alone keeps U+0085, so a piece of only that would join the
- * draft as a term the API calls blank, and main would refuse the whole list at Save.
+ * A typed or pasted piece as a term: trim() first, which also drops a pasted byte order mark (the
+ * API would keep it in the term and send it to speech-to-text), then trimTerm, the API's own trim.
+ * Trap: never one of the two alone. trimTerm alone keeps the mark; trim() alone keeps U+0085, so a
+ * piece of only that joins the draft as a term the API calls blank, and main refuses the list.
  */
 function cleanTerm(piece: string): string {
   return trimTerm(piece.trim());
