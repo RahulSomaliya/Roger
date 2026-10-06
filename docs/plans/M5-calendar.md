@@ -127,7 +127,7 @@ the milestone closes when the streak is logged. It runs alongside Gate 2.
 | Where events are kept | Not on the API. The API normalises and returns them; the desktop keeps the last good answer in its own `calendar.sqlite` | An events table on the API synced from Google | Prompts must fire with the API down or the Mac offline (house rule 1 in spirit). Nothing in M5 queries events on the server; M7 adds a table when MCP needs one. |
 | Time zones and the window | The API returns timed events as UTC instants (Google's offsets resolved) and all-day events as plain dates (`start_date`, `end_date`, end exclusive). Prompts run on instants. "Today" is grouped by local date in the renderer. Main fetches now − 36 h to now + 36 h. | Main computes "today"; now − 12 h to now + 36 h | Instants make prompt timing safe across DST and travel. The renderer follows a macOS time zone change; main may keep the zone it started in, so main never decides what "today" is, and fetches wide enough that today in any zone is inside the window (at 23:30 IST the 10:00 standup is 13.5 h back). openwhispr pads its window by 48 h for this reason (`googleCalendarManager.js` `ALL_DAY_TIMEZONE_PADDING_MS`). anarlog `crates/calendar/src/convert.rs` turns all-day dates into midnight UTC, which moves them a day back west of UTC: not copied. |
 | Which events get a prompt | Timed, not cancelled (never returned), self response not `declined`, and evidence of a call: another attendee, `attendees_omitted`, or a video link someone typed into the location or description. A conference-data link alone (`hangoutLink`, entry points) is not evidence. Tentative and unanswered still prompt. `eventTypes=default` already drops focus time, out of office, working location, birthdays and Gmail items. | Another attendee or any video link | A solo block is not a call: openwhispr `calendarReminderScheduler.js` `isReminderEligible`. Many Workspace orgs add a Meet link to every new event, so "any video link" prompts for solo Focus and Lunch blocks; auto-add only writes conference data, never the location or description, so a typed Zoom link on a solo block still prompts. A declined call is not attended. |
-| Video link | The API's `normalize.py` takes `video_link` from `hangoutLink`, then video entry points, then the first allowlisted URL in the location, then the description, and records where it came from (`video_link_source`). The host allowlist exists twice, `services/calendar/video_links.py` and the desktop's `src/shared/meetingLinks.ts`, each pointing at the other, and the desktop re-checks before opening. | Conference data only | Zoom and Teams invites often carry the link only in the location or description; openwhispr does `extractMeetingUrl([location, description])` (`googleCalendarManager.js`, `meetingJoinUrl.js`). |
+| Video link | The API's `normalize.py` takes `video_link` from the first allowlisted URL in the location, then the description, then `hangoutLink`, then video entry points, and records where it came from (`video_link_source`; `conference` means nothing was typed). Typed links come first because Workspace auto-adds a Meet link: conference-first would hide a Zoom link pasted into a solo block (no prompt, since only a typed source is evidence) and make Join open the empty Meet room (M5-T2). The host allowlist exists twice, `services/calendar/video_links.py` and the desktop's `src/shared/meetingLinks.ts`, each pointing at the other, and the desktop re-checks before opening. | Conference data only | Zoom and Teams invites often carry the link only in the location or description; openwhispr does `extractMeetingUrl([location, description])` (`googleCalendarManager.js`, `meetingJoinUrl.js`). |
 | Recurring events | Expanded by Google (`singleEvents=true`); each instance has its own id. Prompt key is `<event id>@<start instant>`. | One prompt per series | A moved instance prompts at its new time and a deleted one never does. Key shape from anarlog `apps/desktop/src/services/event-notification/index.ts`. |
 | The prompt | Roger's own small panel: a BrowserWindow with `type: 'panel'`, `focusable: false`, `acceptFirstMouse: true`, shown with `showInactive()`, always on top at level `screen-saver`, on all spaces including full-screen ones, top right of the display under the cursor | Electron `Notification` (Notification Center) | Electron's macOS notifications use UNNotification, which needs a signed app, can be silenced by Focus, and in the default banner style shows its buttons only on hover; there is no room for attendees or the notice. anarlog (`crates/notification-macos`, an NSPanel) and openwhispr (`windowConfig.js` `NOTIFICATION_WINDOW_CONFIG`) both use their own panel. `acceptFirstMouse` makes the first click press the button: one click, not two. The panel never takes focus from the call. |
 | When the prompt shows | From 1 minute before start (setting: 0, 1, 2, 5 or 10) until start + 10 min, Dismiss, or an action. A 10 s tick reads the local copy; waking from sleep ticks at once. From 2 min before the next due prompt until it shows, the scheduler holds `powerSaveBlocker.start('prevent-app-suspension')`. Every prompt-worthy event gets a `prompts` row: shown, its outcome, or `missed` with a reason. | One `setTimeout` per meeting (openwhispr) | A tick over a small local list survives sleep, clock changes and zone changes with no timer bookkeeping (anarlog ticks every 30 s). With the window hidden, App Nap may coalesce a background app's timers, so a 1-minute lead could become "Started 2 min ago"; the blocker covers only the minutes that matter. A restart never shows a prompt twice. Waking 4 minutes into a call still offers "Started 4 min ago". |
@@ -225,7 +225,7 @@ sentence is gone, because M4 adds `409`s of its own):
 
 | HTTP | code | When |
 | --- | --- | --- |
-| 424 | `calendar_reconnect_required` | Google refused the stored refresh token (`invalid_grant`), or the user did not grant calendar access. The message says what to do. |
+| 424 | `calendar_reconnect_required` | Google refused the stored refresh token or a used or expired sign-in code (`invalid_grant`), or the user did not grant calendar access. The message says what to do. |
 | 502 | `calendar_provider_error` | Google is unreachable or answered with an error we cannot use |
 
 New entities:
@@ -480,23 +480,24 @@ Waves (from `phase-2-build-order.md`): T8 in wave 0; T1, T2 and T7 in wave 1; T3
 wave 2; T5 in wave 4 (after M2-T3b, M2-T4, M2-T12 and M4-T22); T6 and T9b in wave 5; T9c, T10 and
 T11 in wave 6; T12 in wave 7; T13 in wave 8.
 
-- [ ] **M5-T1** Owns `apps/api/src/roger_api/migrations/versions/0004_calendar.py` (revision
+- [x] **M5-T1** Owns `apps/api/src/roger_api/migrations/versions/0004_calendar.py` (revision
   `0004`, `down_revision = "0003"`, fixed; P2-F2's stub), the calendar models in
   `db/models_calendar.py` and the new `Meeting` columns in `db/models.py`, the calendar settings
   (including `GOOGLE_OAUTH_AUDIENCE`) and their validator in `config_calendar.py` (P2-F2's
   `CalendarSettings` mixin), the Calendar section of `.env.example`, `tests/test_calendar_schema.py`
   and `tests/test_calendar_config.py`, and `restart: unless-stopped` on `db` in
   `docker-compose.yml` (D1). The `start_source` check carries all five values.
-- [ ] **M5-T2** Owns `apps/api/src/roger_api/services/calendar/{provider,google,fake,normalize,video_links}.py`,
+- [x] **M5-T2** Owns `apps/api/src/roger_api/services/calendar/{provider,google,fake,normalize,video_links}.py`,
   (`CalendarProviderError` and `CalendarReconnectRequiredError` are already in `errors.py`, from
   P2-F2), fixtures under
   `tests/fixtures/calendar/`, and the `[tool.ruff.lint.flake8-tidy-imports.banned-api]` block in
   `apps/api/pyproject.toml` (`jwt` and `cryptography`, with the reason). `CalendarProvider`
   protocol: `authorization_url`, `exchange_code`, `refresh`, `revoke`, `list_events`. Auth URL adds
   `access_type=offline`, `prompt=consent`, `include_granted_scopes=true`. The ID token payload is
-  decoded with stdlib `base64` and `json` only. Video link order: `hangoutLink`, video entry
-  points, location, description, through `video_links.py` (comment points at the desktop's
-  `meetingLinks.ts`). Uses the `httpx` already declared; no new dependency.
+  decoded with stdlib `base64` and `json` only. Video link order: location, description,
+  `hangoutLink`, video entry points (typed links first; see Design, "Video link"), through
+  `video_links.py` (comment points at the desktop's `meetingLinks.ts`). Uses the `httpx` already
+  declared; no new dependency.
 - [ ] **M5-T3** Owns `services/calendar/{connections,events}.py`, `routers/calendar.py`,
   `schemas/calendar.py`, `services/calendar/runtime.py` (`open_calendar_runtime(settings)`, which
   P2-F2's lifespan already enters, plus the FastAPI getters; `app.py` and `dependencies.py` are not
@@ -529,14 +530,17 @@ T11 in wave 6; T12 in wave 7; T13 in wave 8.
   state including stale and `expires_hint`) with its bridge and preview fake,
   `src/main/calendar/calendarIpc.ts`.
   Opens only `https://accounts.google.com/` URLs, or its own redirect in fake mode. A second
-  Connect cancels the first. Times out after 3 minutes. Connect and disconnect write
-  `connections_log` through T7's cache.
-- [ ] **M5-T7** Owns `src/main/calendar/CalendarSync.ts` and `src/main/calendar/SqliteCalendarCache.ts`
+  Connect cancels the first. Times out after 3 minutes. Connect and disconnect go through T7's `CalendarSync.connected(accountEmail)`
+  and `disconnected()`, which write `connections_log`; never the cache's `recordConnected` or
+  `recordDisconnected` directly, or an answer in flight writes a disconnected account's events back.
+- [x] **M5-T7** Owns `src/main/calendar/CalendarSync.ts` and `src/main/calendar/SqliteCalendarCache.ts`
   (`calendar.sqlite`: the schema of every table above; methods for `events`, `fetch_state` and
-  `connections_log`). Window: now − 36 h to now + 36 h. Catch-up fetch at launch. Single-flight
-  refresh, backoff x2 to 30 min, stops on `424` until the next connect. Disconnect clears `events`
-  and `fetch_state` only. Sync state turns `stale` once the last success is over 1 h old.
-- [ ] **M5-T8** Owns `src/shared/calendar.ts` (event, attendee, connection, state, prompt card,
+  `connections_log`). Window: now − 36 h to now + 36 h. Catch-up fetch at launch (from 10 min
+  before the last tick: Google lists events that end after `timeMin`). Single-flight refresh,
+  backoff from 1 min x2 to 30 min, stops on `424` until the next connect (a launch still asks once:
+  the dev build and the installed app share one API). Disconnect clears `events` and `fetch_state`
+  only. Sync state turns `stale` once the last success is over 1 h old (checked on wake too).
+- [x] **M5-T8** Owns `src/shared/calendar.ts` (event, attendee, connection, state, prompt card,
   offer, meeting link types), `src/shared/calendarPrefs.ts` (preference keys, defaults,
   validators), `src/main/calendar/ports.ts` (`CalendarApiPort`), `src/main/calendar/reminderPolicy.ts`
   (prompt-worthiness, due window, one clear match, `missedReason`), `src/shared/meetingLinks.ts`
@@ -546,7 +550,8 @@ T11 in wave 6; T12 in wave 7; T13 in wave 8.
   before the next due prompt until it shows), `src/main/calendar/PromptLog.ts` (`prompts` and
   `runs`: shown, actions, `missed` rows each tick and at launch, the `app_exit` clean-up at
   launch, run heartbeat), `apps/desktop/scripts/calendar-streak.sql`, and
-  `registerCalendarPreferences(store)` for M4-S2's `PreferencesStore` (called from T9c's slot).
+  `registerCalendarPreferences(store)` for M4-S2's `PreferencesStore` (called from T9c's slot; the
+  `PreferenceValues` types and the preview fake's calendar keys are already done by M4-S2).
 - [ ] **M5-T9b** Owns `src/main/prompt/PromptService.ts` (cards; `offer` with the D5 rules; actions
   start, join and start, copy notice, dismiss, expire; `app:navigate` plus a `revealWindow` port
   that calls `showInactive()` only when the window is hidden and never `show()` or `focus()`; the
@@ -619,7 +624,7 @@ Google with `httpx.MockTransport`, as `test_stt_token.py` does for AssemblyAI an
 | Refresh `invalid_grant` is reconnect-required; `5xx` and timeouts are provider errors | `test_calendar_google.py::test_refresh_*` |
 | Event listing asks for primary, single events, default type, offsets on both bounds; follows page tokens; refuses a repeated page token (anarlog `crates/calendar/src/fetch.rs`) | `test_calendar_google.py::test_list_events_*` |
 | Normalising: offsets to UTC; all-day keeps its dates and is never midnight UTC; cancelled dropped; declined kept as declined; organizer self is `organizer`; rooms dropped; `attendeesOmitted` kept; empty title; recurring id kept | `tests/test_calendar_normalize.py` |
-| Video link: `hangoutLink` wins, then entry points, then a Zoom link in the location, then a Teams link in the description, each with its `video_link_source`; a lookalike host in the description is ignored | `tests/test_calendar_normalize.py::test_video_link_*`, `tests/test_calendar_video_links.py` |
+| Video link: a Zoom link in the location wins, then a Teams link in the description, then `hangoutLink`, then entry points, each with its `video_link_source`; a typed link beats an auto-added Meet link; a lookalike host in the description is ignored | `tests/test_calendar_normalize.py::test_video_link_*`, `tests/test_calendar_video_links.py` |
 | Fake: auth URL is the redirect with `code=fake` and the same state; events stable between calls; file override | `tests/test_calendar_fake.py` |
 | Every calendar route is `401` without the token | `tests/test_calendar_api.py::test_calendar_routes_require_auth` |
 | Non-loopback `redirect_uri` is `422`; `127.0.0.1` with any port is accepted | `test_calendar_api.py::test_authorization_*` |

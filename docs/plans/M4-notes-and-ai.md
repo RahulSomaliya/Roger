@@ -114,9 +114,9 @@ Supporting checks, run before the real calls:
 | Generate inputs | Before a run starts, main uploads the meeting's waiting lines (M2-T3's unsynced query, which skips echo-suppressed lines and lines still held) and flushes its dirty user and AI notes through `NotesSync`. If either cannot finish, no run starts: the intent waits and the panel says why. The request carries `user_notes_version` and `ai_base_version`; both go on the run, and a stale one is a `409`. | Generate from whatever Postgres holds | Notes typed in the last seconds of a call, or offline, would be missing from the prompt, and they drive the 2-minute target. |
 | Saving at quit | The editor saves on `pagehide` and `beforeunload` as well as blur and unmount. On quit, main asks each window to flush its editors, waits for each ack or 1 s, then closes `notes.sqlite`. It runs as a quit hook in the landed `RecordingLifecycle` (`main/lifecycle.ts`, which owns `before-quit` since the cost guards landed): P2-F1 turns its quit cleanup into an ordered list of bounded hooks, and this one runs after the recording stops and before the transcript store closes. | Flush on unmount only | React does not unmount on Cmd-Q: up to 400 ms of typing would be lost while the UI says "saved on this Mac". |
 | App shell | M4 owns it as M4-S1 to M4-S4b, in waves 1 to 3 of `phase-2-build-order.md` (the "SHELL" of M2, M3 and M5; M5's SHELL-0 is S1's `app:navigate` plus S2's `PreferencesStore`). Scope is the union of every Phase 2 plan's needs (table below). | Each milestone grows its own screens; SHELL inside M2 | C7: exactly one owner. The meeting page is most of the shell and M4 fills most of it. D6. |
-| Routing | A small hash router (`#/`, `#/meetings/:id`, `#/settings`, `#/setup`) in the shell, with tests | `react-router` | Four routes; no new dependency. A hash survives `file://` in the packaged app and a renderer reload. |
-| Theme | `renderer/src/theme/tokens.css` holds every colour as a CSS variable, light and dark. Dark follows the system unless the `theme` preference forces one (`data-theme` on `<html>`). A test fails on any literal colour outside `tokens.css`. | Keep the literal colours in `styles.css` | C7 and the global rule: colours only from tokens, both themes. A forced theme also lets QA shoot light on a dark-mode Mac. |
-| Preferences | `PreferencesStore` in main, with M5's SHELL-0 spec: a registry (`register(specs)`; each spec is a key, a default and a `parse`), so each milestone registers its keys from its own file (M5: `shared/calendarPrefs.ts`) and typed access comes from augmenting `PreferenceValues`; `get`, and `set` that refuses unknown keys and bad values naming the key; one change event per set; stored in `userData/preferences.json` (temp file then rename; a torn file keeps the last good copy), validated on read (a bad value falls back to its default with a log line); IPC `prefs:get-all`, `prefs:set` and `prefs:changed`, main window only. | `localStorage` in the renderer | Main needs them too (auto-generate after Stop, M5's reminder lead time). `config.json` (M1, M2) stays for capture switches read at start. |
+| Routing | A small router in the shell (`app/router.ts`, with tests) over four routes written as hashes (`#/`, `#/meetings/:id`, `#/settings`, `#/setup`). Built (M4-S1): the route lives in a `RouteStore` and `sessionStorage`, which a reload keeps; the URL hash is read at start (QA loads `index.html#/settings`) and followed when changed from outside, but the shell never writes `location.hash` or calls `history.pushState`, and nav items are buttons, not `<a href="#/...">`. Chromium starts a load on a same-document navigation, and `lifecycle.ts` stops the recording on any `did-start-loading`; once M2-T12 removes that stop, writing the hash is safe. | `react-router` | Four routes; no new dependency. A route kept in `sessionStorage` survives `file://` in the packaged app and a renderer reload. |
+| Theme | `renderer/src/theme/tokens.css` holds every colour as a CSS variable, light and dark. Fills (`--accent`, `--danger`) carry `--on-accent` text; text in those hues uses `--accent-ink` and `--danger-ink`, because in dark one value cannot be both (`tokens.test.ts` checks the contrasts and fails a `color:` read from a fill). Dark follows the system unless the `theme` preference forces one (`data-theme` on `<html>`). A test fails on any literal colour outside `tokens.css`. | Keep the literal colours in `styles.css` | C7 and the global rule: colours only from tokens, both themes. A forced theme also lets QA shoot light on a dark-mode Mac. |
+| Preferences | `PreferencesStore` in main, with M5's SHELL-0 spec: a registry (`register(specs)`; each spec is a key, a default and a `parse`), so each milestone registers its keys from its own file (M5: `shared/calendarPrefs.ts`); typed access comes from `PreferenceValues` in `shared/preferences.ts` extending each milestone's values type (M5's `CalendarPreferenceValues`, done by M4-S2), not from an augmentation, which `tsconfig.web.json` cannot see from main; the preview fake registers every milestone's specs; `get`, and `set` that refuses unknown keys and bad values naming the key; one change event per set; stored in `userData/preferences.json` (temp file then rename; a torn file keeps the last good copy), validated on read (a bad value falls back to its default with a log line); IPC `prefs:get-all`, `prefs:set` and `prefs:changed`, main window only. | `localStorage` in the renderer | Main needs them too (auto-generate after Stop, M5's reminder lead time). `config.json` (M1, M2) stays for capture switches read at start. |
 | Transcript navigator | One implementation of `reveal(segmentIds)` in `renderer/src/transcript/transcriptNavigator.ts` (M4-T21). M3-T7's `LiveTranscript` renders `data-segment-id` on every final line and registers its scroll container and follow control; it does not implement reveal itself. | Each panel scrolls itself; M3-T7 implements reveal | Chips in notes and chat need one thing to call, and reveal must pause live follow or follow-live scrolls straight back. |
 
 The default model id is product configuration, like `STT_PROVIDER=assemblyai` (a speech-to-text
@@ -221,7 +221,7 @@ not changed, so M5 can add columns to it without touching this migration.
 | --- | --- |
 | `GET /v1/note-templates` | `{ items: NoteTemplate[] }`: id, name, description, sections (heading, guidance) |
 | `GET /v1/meetings/{id}/notes` | `{ user: Note \| null, ai: Note \| null }`. `Note`: kind, doc, version, template_id, last_run_id, generated_version, updated_at. |
-| `PUT /v1/meetings/{id}/notes/{kind}` | Body `{ doc, base_version, revision_id }` (`base_version` 0 creates). `200 Note`. Stale base: `409 conflict`. `kind=ai` while a notes run is running: `409 conflict`. A doc that is not a TipTap `doc`, over 512 KiB, deeper than 32, or holding a `__proto__`, `constructor` or `prototype` key: `422`. |
+| `PUT /v1/meetings/{id}/notes/{kind}` | Body `{ doc, base_version, revision_id }` (`base_version` 0 creates). `200 Note`. Stale base: `409 conflict`. `kind=ai` while a notes run is running: `409 conflict`. A doc that is not a TipTap `doc`, over 512 KiB (UTF-8 bytes of the compact JSON), deeper than 32 levels, or holding a `__proto__`, `constructor` or `prototype` key anywhere: `422`. Levels as the desktop's `noteDocProblem` counts them (`shared/notes.ts`, M4-T13): the doc is level 1, every object or array is one level below its parent, except an array under a `content` key, which stays on the level of the object holding it. The API measures the same way or more leniently, never more strictly, or a doc the desktop saved stays dirty and is re-sent forever. |
 | `POST /v1/meetings/{id}/notes/generate` | Body `{ run_id, template_id, user_notes_version, ai_base_version }` (0 when that doc does not exist). `text/event-stream`. Another notes run running: `409`. A version that is not the stored one: `409` (the desktop flushes and retries once). A `run_id` stored under another meeting or workspace: `409`, nothing replayed. A re-sent `run_id`: while running, the events so far then live; once finished, the stored result. No lines and no notes: `422 empty_meeting`. Vendor refused before the stream: `502 llm_provider_error`. |
 | `GET /v1/meetings/{id}/runs?kind=notes&limit=10` | Run history: status, template, model, error, dropped, flagged and from-notes counts, tokens, cost |
 | `GET /v1/meetings/{id}/runs/{run_id}` | One run with the history fields plus `output_doc` and `replaced_doc`. A run of another meeting or workspace: `404`. |
@@ -329,7 +329,8 @@ Stop or Generate ─IPC─▶ NotesGenerator: pending_generate row
   `NotesSync` status change, at launch, and every 30 s.
 - Each attempt re-sends the row's run id, so a retry after a crash attaches to or replays the same
   run, never a second one. The row is deleted on `done`, on `cancelled`, and on an error that is not
-  retryable; `llm_provider_error` keeps it for the Retry button.
+  retryable; `llm_provider_error` keeps it for the Retry button, which gives it a new run id (the
+  API would replay the stored failure to the old one).
 - The panel shows the state: "Notes will generate when 12 lines finish uploading", "Waiting for
   your notes to upload (offline)", "Resolve the conflict in My notes first", "Which kind of call
   was this?" with the four templates, the live stream, or the error with Retry.
@@ -395,7 +396,8 @@ Stop or Generate ─IPC─▶ NotesGenerator: pending_generate row
 - Only `TranscriptUploader` creates meetings in Postgres. `NotesSync.ts`, `TranscriptUploader.ts`
   and `CaptureService.ts` each say so where the mistake would be made.
 - `pending_generate` holds the run id made before the first attempt; a retry with a new id would
-  start a second paid run.
+  start a second paid run. Retry after a failed run takes a new id: the API replays a finished
+  run's stored result to a re-sent id (`shared/ipc/notes.ts`, `generateNotes`).
 - A `running` row with a dead heartbeat would hold the one-running-run index forever. Sweep before
   inserting.
 - The characters / 4 token estimate is only a budget guard; never report it as usage.
@@ -435,7 +437,7 @@ M2-T3's unsynced query and M2-T4's session listener.
 
 App shell (desktop):
 
-- [ ] **M4-S1. App frame, routes and slots.** M. Depends on: none.
+- [x] **M4-S1. App frame, routes and slots.** M. Depends on: none.
   Owns `renderer/src/main.tsx`, `renderer/src/App.tsx` (becomes the shell), `renderer/src/app/`
   (`router.ts`, `AppLayout.tsx`, `Sidebar.tsx`, `HomePage.tsx`, `SettingsPage.tsx`,
   `SetupRoute.tsx`, `BannerSlot.tsx`, `slots.ts`, `app.css`), `main/navigation.ts`,
@@ -452,17 +454,18 @@ App shell (desktop):
   The frame keeps what `App.tsx` shows since the cost guards landed: the stop notice
   (`CaptureStatus.notice`, "Stopped at 14:32 because the Mac went to sleep.") above every page,
   and `useCapture`'s status re-read on window focus; `StatusPanel` keeps the meter line.
-- [ ] **M4-S2. Theme tokens and preferences.** M. Depends on: none.
+- [x] **M4-S2. Theme tokens and preferences.** M. Depends on: none.
   Owns `renderer/src/theme/tokens.css`, `renderer/src/theme/useTheme.ts`,
   `renderer/src/theme/noLiteralColours.test.ts`, `renderer/src/styles.css` (literal colours become
   tokens; the landed `.notice` rule for the stop notice stays, on tokens), `shared/preferences.ts`
   (the registry types plus keys `theme`, `notes.autoGenerate`, `notes.whenUnsure`; other
-  milestones register theirs from their own files),
+  milestones register theirs in main from their own slots; `PreferenceValues` already extends M5's
+  `CalendarPreferenceValues` and the preview fake already serves `CALENDAR_PREFERENCES`),
   `main/preferences/PreferencesStore.ts`, `main/preferences/preferences-ipc.ts`,
   `shared/ipc/prefs.ts` with its bridge and preview fake (`prefs:get-all`, `prefs:set`,
   `prefs:changed`), `[slot M4-S2]` in `main/index.ts`. The token set covers every plan's needs
   (listed in `phase-2-build-order.md`, section 3.1).
-- [ ] **M4-S3. Renderer preview harness.** S. Depends on: none.
+- [x] **M4-S3. Renderer preview harness.** S. Depends on: none.
   Owns `apps/desktop/preview/` (`index.html`, `main.tsx`, `control.ts`, `fixtures/*.json`,
   `scenarios.ts`), `apps/desktop/vite.preview.config.ts`, `apps/desktop/qa/README.md` and
   `qa/driver.ts` (playwright-core, added by P2-F3, driving system Chrome; port 0; forced theme;
@@ -487,11 +490,11 @@ App shell (desktop):
 
 API:
 
-- [ ] **M4-T1. Notes, runs and chat tables.** S. Depends on: none.
+- [x] **M4-T1. Notes, runs and chat tables.** S. Depends on: none.
   Owns `db/models_notes.py` (P2-F2's stub) and `migrations/versions/0003_notes.py` (revision
   `0003`, down `0002`, fixed; P2-F2's stub). `NoteKind`, `RunKind` and `RunStatus` are already in
   `domain.py` (P2-F2).
-- [ ] **M4-T2. `NotesModel` with OpenRouter and fake adapters.** M. Depends on: none.
+- [x] **M4-T2. `NotesModel` with OpenRouter and fake adapters.** M. Depends on: none.
   Owns `services/notes_model.py` (protocol, events, `open_notes_model`),
   `services/notes_model_openrouter.py`, `services/notes_model_fake.py`, `config_notes.py` (the
   `NotesSettings` mixin from P2-F2: `NOTES_PROVIDER`, `OPENROUTER_API_KEY`, `NOTES_MODEL`,
@@ -499,15 +502,15 @@ API:
   `NOTES_MAX_OUTPUT_TOKENS`, `NOTES_TIMEOUT_SECONDS`; key required when the provider is
   `openrouter`), the Notes section of `.env.example`, `CLAUDE.md` rule 4 wording ("later
   `NotesModel`" becomes current). `LlmProviderError` (502) is already in `errors.py` (P2-F2).
-- [ ] **M4-T3. Templates as data.** S. Depends on: none.
+- [x] **M4-T3. Templates as data.** S. Depends on: none.
   Owns `note_templates/` (four JSON files, loader through `importlib.resources`),
   `schemas/note_templates.py`, `routers/note_templates.py` (P2-F2 already includes it),
   contract section for templates.
-- [ ] **M4-T4. Doc to Markdown renderer.** S. Depends on: none.
+- [x] **M4-T4. Doc to Markdown renderer.** S. Depends on: none.
   Owns `services/notes_markdown.py` (TipTap JSON to Markdown, citation nodes as `[hh:mm:ss]`,
   "From your notes" as its own list, user notes split into numbered `N` blocks),
   `apps/api/tests/fixtures/ai_notes_doc.json` (hand-written in the shape above; T8 takes it over).
-- [ ] **M4-T5. Prompt, line protocol and citation checks.** M. Depends on: none.
+- [x] **M4-T5. Prompt, line protocol and citation checks.** M. Depends on: none.
   Owns `services/notes_prompt.py`, `services/notes_protocol.py` (incremental parser),
   `services/citations.py` (ref map, removal, drop, "From your notes", number normalisation, number
   and word support checks). Pure modules.
@@ -540,7 +543,7 @@ API:
 
 Desktop:
 
-- [ ] **M4-T13. Shared notes types and the notes and chat IPC contract.** S. Depends on: P2-F1.
+- [x] **M4-T13. Shared notes types and the notes and chat IPC contract.** S. Depends on: P2-F1.
   Owns `shared/notes.ts` (doc types, `Note`, `NoteSyncState`, `CitationAttrs`,
   `NotesStreamEvent`, `ChatStreamEvent`, `NoteTemplate`, `PendingGenerateState`, guards),
   `shared/ipc/notes.ts` and `shared/ipc/chat.ts` with their bridges and preview fakes (channels
