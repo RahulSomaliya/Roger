@@ -61,7 +61,8 @@ export interface NotesSyncOptions {
  *   the above (a `401`, a `422`, a `409` the server's copy did not explain).
  * - `backing_off`: the API was away at the note's last attempt and the backoff has not ended; no
  *   request was made.
- * - `stopped`: the sync stopped (quit) while the request was out; the store may be closed.
+ * - `stopped`: the sync stopped (quit), before the attempt or while its request was out; the store
+ *   may be closed.
  */
 type SyncOutcome =
   | 'clean'
@@ -145,8 +146,9 @@ export class NotesSync {
   }
 
   /**
-   * Stop every timer. An answer still on its way is dropped, so it never writes to notes.sqlite
-   * after the quit hook closed it; its note stays dirty and uploads at the next launch.
+   * Stop every timer. An answer still on its way is dropped, and an attempt still queued (a pass's
+   * next note, a flushMeeting behind a `PUT`) does not run, so nothing touches notes.sqlite after
+   * the quit hook closed it; those notes stay dirty and upload at the next launch.
    */
   stop(): void {
     this.running = false;
@@ -210,7 +212,7 @@ export class NotesSync {
    * `saved_locally`), and each write emits `NotesStore.onNoteChanged`. A caller that flushes on
    * that event (NotesGenerator's re-check, M4-T23) is fed by its own flush: a failed attempt
    * emits twice, so two more flushes, each emitting twice in turn. What ends that loop is the
-   * backoff check in `syncNote` (`backing_off`): the next flush asks nothing and writes nothing.
+   * backoff check in `sendNote` (`backing_off`): the next flush asks nothing and writes nothing.
    * Without it the caller sends `PUT`s back to back while the API is away, its queue doubling
    * every round. Keep the check, and still never re-run a flush for the events it caused.
    */
@@ -362,6 +364,15 @@ export class NotesSync {
 
   /** One attempt at one note. Only call it through `serialised`. */
   private async syncNote(meetingId: string, kind: NoteKind): Promise<SyncOutcome> {
+    // Queued behind a request that was out at stop(): the quit hook may have closed the store.
+    // A function of its own: in one body, TypeScript would hold `this.stopped` false across the
+    // awaits in sendNote, and the lint would call the checks after them unnecessary. They are
+    // not: stop() runs while a request is out.
+    if (this.stopped) return 'stopped';
+    return this.sendNote(meetingId, kind);
+  }
+
+  private async sendNote(meetingId: string, kind: NoteKind): Promise<SyncOutcome> {
     const { store, api } = this.options;
     const note = store.getNote(meetingId, kind);
     if (note === null) return 'clean';

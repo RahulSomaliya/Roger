@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Note, NoteDoc, NoteKind } from '../../shared/notes';
 import { ApiError } from '../api/http';
 import type { NotesSyncApi, PutNoteRequest, ServerNotes } from '../api/notesClient';
-import { createLogger } from '../logger';
+import { createLogger, type Logger } from '../logger';
 import type { RemoteState } from '../store/TranscriptStore';
 import { NotesSync, type MeetingUploadState } from './NotesSync';
 import { SqliteNotesStore } from './SqliteNotesStore';
@@ -143,7 +143,11 @@ interface Harness {
 }
 
 function harness(
-  options: { store?: SqliteNotesStore; onMeetingMissing?: (meetingId: string) => void } = {},
+  options: {
+    store?: SqliteNotesStore;
+    onMeetingMissing?: (meetingId: string) => void;
+    logger?: Logger;
+  } = {},
 ): Harness {
   let revision = 0;
   const store =
@@ -169,7 +173,7 @@ function harness(
     api,
     meetings: uploadState,
     onMeetingMissing,
-    logger: silentLogger,
+    logger: options.logger ?? silentLogger,
   });
   return {
     store,
@@ -392,6 +396,34 @@ describe('NotesSync: uploads', () => {
     sync.stop();
     store.close();
   });
+
+  it('after stop, nothing touches the closed store, though more notes were dirty', async () => {
+    const lines: string[] = [];
+    const logger = createLogger({
+      level: 'warn',
+      format: 'json',
+      sink: (line) => lines.push(line),
+    });
+    const { api, store, sync } = harness({ logger });
+    sync.start();
+    sync.save(MEETING, 'user', paragraphs('First'));
+    sync.save(OTHER_MEETING, 'user', paragraphs('Second'));
+    const hold = api.holdNextPut();
+    await vi.advanceTimersByTimeAsync(1_500);
+    expect(api.puts()).toHaveLength(1);
+    // Queued behind the PUT that is out, on the same note.
+    const flushed = sync.flushMeeting(MEETING);
+
+    // The quit hook: stop the sync, then close notes.sqlite (M4-T16).
+    sync.stop();
+    store.close();
+    hold.resolve();
+
+    await expect(flushed).resolves.toEqual({ ok: false, cause: 'offline' });
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(api.puts()).toHaveLength(1);
+    expect(lines).toEqual([]);
+  });
 });
 
 describe('NotesSync: meetings not in Postgres', () => {
@@ -498,6 +530,7 @@ describe('NotesSync: meetings not in Postgres', () => {
     expect(store.getNote(MEETING, 'user')).toMatchObject({ dirty: false, sync: 'synced' });
     sync.stop();
   });
+
   it('deletes the empty notes of a meeting discarded as empty, after one 404', async () => {
     const { api, store, sync, meetings, uploaderStatus, onMeetingMissing } = harness();
     meetings.set(MEETING, 'pending');
@@ -616,6 +649,7 @@ describe('NotesSync: flushMeeting', () => {
     expect(store.getNote(MEETING, 'user')?.dirty).toBe(false);
     await expect(sync.flushMeeting(MEETING)).resolves.toEqual({ ok: false, cause: 'conflict' });
   });
+
   it('flushing on every note change while the API is down sends one PUT per backoff window', async () => {
     const { api, store, sync } = harness();
     sync.start();
