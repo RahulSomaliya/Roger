@@ -5,6 +5,9 @@ import { errorMessage, type Logger } from '../logger';
 import type { LocalMeeting, TranscriptStore } from '../store/TranscriptStore';
 import { Emitter } from '../util/emitter';
 
+/** What runs before the uploader's first tick (`TranscriptUploaderOptions.beforeFirstTick`). */
+export type BeforeFirstTick = () => void | Promise<void>;
+
 export interface TranscriptUploaderOptions {
   store: TranscriptStore;
   api: UploadApi;
@@ -16,6 +19,13 @@ export interface TranscriptUploaderOptions {
   baseBackoffMs?: number;
   maxBackoffMs?: number;
   clock?: () => Date;
+  /**
+   * Runs once, awaited, before the first tick (a scheduled one or a flush): the echo sink's
+   * startup settle (M2-T14b), so the holds a crash left are decided before any line goes up. A
+   * failure is a failed tick (logged, backed off, shown in the status) and the hook runs again on
+   * the next one: no line goes up before it succeeds, or one it would have hidden could.
+   */
+  beforeFirstTick?: BeforeFirstTick;
 }
 
 interface UploaderEvents extends Record<string, unknown> {
@@ -43,6 +53,8 @@ export class TranscriptUploader {
   private inflight: Promise<Error | null> | null = null;
   private failures = 0;
   private status: UploadStatus;
+  /** Null once it has run. */
+  private beforeFirstTick: BeforeFirstTick | null;
 
   constructor(private readonly options: TranscriptUploaderOptions) {
     this.intervalMs = options.intervalMs ?? 2_000;
@@ -50,6 +62,7 @@ export class TranscriptUploader {
     this.baseBackoffMs = options.baseBackoffMs ?? 2_000;
     this.maxBackoffMs = options.maxBackoffMs ?? 30_000;
     this.clock = options.clock ?? (() => new Date());
+    this.beforeFirstTick = options.beforeFirstTick ?? null;
     this.status = {
       state: 'idle',
       pending: options.store.countUnsyncedSegments(),
@@ -119,6 +132,9 @@ export class TranscriptUploader {
    */
   private async tick(): Promise<Error | null> {
     try {
+      // Awaited only while it is due: an await yields, and every later tick keeps M1's timing, in
+      // which a tick reaches the store and the API in the turn that started it.
+      if (this.beforeFirstTick !== null) await this.runBeforeFirstTick(this.beforeFirstTick);
       const meetings = this.options.store.listMeetingsNeedingSync();
       if (meetings.length > 0)
         this.setStatus({ state: 'uploading', lastError: null, nextAttemptAt: null });
@@ -164,6 +180,17 @@ export class TranscriptUploader {
       }
       return error instanceof Error ? error : new Error(message);
     }
+  }
+
+  private async runBeforeFirstTick(hook: BeforeFirstTick): Promise<void> {
+    try {
+      await hook();
+    } catch (error) {
+      throw new Error(`could not run the step before the first upload: ${errorMessage(error)}`, {
+        cause: error,
+      });
+    }
+    this.beforeFirstTick = null;
   }
 
   private async syncMeeting(meeting: LocalMeeting): Promise<void> {

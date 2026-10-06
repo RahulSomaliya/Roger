@@ -1,8 +1,12 @@
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 import type { TranscriptSegment } from '../../shared/transcript';
 import { ApiError, type MeetingDto, type UploadApi } from '../api/ApiClient';
 import { createLogger } from '../logger';
 import { InMemoryTranscriptStore } from '../store/InMemoryTranscriptStore';
+import { SqliteTranscriptStore } from '../store/SqliteTranscriptStore';
 import { TranscriptUploader } from './TranscriptUploader';
 
 const logger = createLogger({ level: 'error', format: 'json', sink: () => undefined });
@@ -398,6 +402,13 @@ function sentBatches(api: FakeApi): string[][] {
 }
 
 describe('TranscriptUploader: no stranded lines (M2)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it('uploads re-run lines added after the meeting ended remotely, then re-sends its end', async () => {
     const store = new InMemoryTranscriptStore();
     const api = fakeApi();
@@ -523,5 +534,114 @@ describe('TranscriptUploader: no stranded lines (M2)', () => {
 
     expect(calls()).toEqual([1, 1, 1]);
     expect(store.listMeetingsNeedingSync()).toEqual([]);
+  });
+
+  it('settles the holds a kill -9 left before its first tick, so a relaunch 6 s later uploads them', async () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'roger-uploader-')), 'roger.sqlite');
+    const crashed = new SqliteTranscriptStore(path, () => new Date('2026-10-05T10:05:00.000Z'));
+    crashed.createMeeting({ id: 'm1', title: 'T', startedAt: '2026-10-05T10:00:00Z' });
+    crashed.appendSegment(segment('m1', 1));
+    for (const n of [2, 4]) {
+      crashed.appendSegment(segment('m1', n));
+      crashed.holdSegment(`m1-seg-${n}`, '2026-10-05T10:07:00.000Z'); // created plus 120 s
+    }
+    // No close(): kill -9 never runs it. Committed writes are in the WAL file.
+
+    const relaunched = (): Date => new Date('2026-10-05T10:05:06.000Z');
+    const store = new SqliteTranscriptStore(path, relaunched);
+    store.endMeetingsLeftOpen(relaunched().toISOString()); // as main does at launch
+    // The holds outlived the crash: without a settle the lines would wait out their cap.
+    expect(store.countUnsyncedSegments()).toBe(1);
+    const api = fakeApi();
+    const order: string[] = [];
+    api.createMeeting.mockImplementation((input) => {
+      order.push('create');
+      return Promise.resolve(meetingDto(input.id));
+    });
+    const uploader = new TranscriptUploader({
+      store,
+      api,
+      logger,
+      clock: relaunched,
+      // Stands in for the echo sink's settleAll (M2-T14b): each hold is checked once against the
+      // stored call-audio lines, then released. Async, so a hook that is not awaited shows here.
+      beforeFirstTick: async () => {
+        await Promise.resolve();
+        order.push('settle');
+        store.releaseSegments(store.listHeldSegments().map((s) => s.id));
+      },
+    });
+    uploader.start();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(order).toEqual(['settle', 'create']);
+    expect(sentBatches(api)).toEqual([['m1-seg-1', 'm1-seg-2', 'm1-seg-4']]);
+    expect(api.endMeeting).toHaveBeenCalledTimes(1);
+    expect(store.getMeeting('m1')?.remoteState).toBe('ended');
+    uploader.stop();
+    store.close();
+    crashed.close();
+  });
+
+  it('retries a failed beforeFirstTick on the next tick before any line goes up, then never runs it again', async () => {
+    const store = new InMemoryTranscriptStore();
+    const api = fakeApi();
+    const lines: string[] = [];
+    const warnLogger = createLogger({ level: 'warn', format: 'json', sink: (l) => lines.push(l) });
+    store.createMeeting({ id: 'm1', title: 'T', startedAt: '2026-10-05T10:00:00Z' });
+    store.appendSegment(segment('m1', 0));
+    let settles = 0;
+    const uploader = new TranscriptUploader({
+      store,
+      api,
+      logger: warnLogger,
+      intervalMs: 1000,
+      baseBackoffMs: 500,
+      beforeFirstTick: () => {
+        settles += 1;
+        if (settles === 1) throw new Error('database is locked');
+      },
+    });
+    uploader.start();
+
+    await vi.advanceTimersByTimeAsync(0);
+    // A line the settle would have hidden must not go up first.
+    expect(api.createMeeting).not.toHaveBeenCalled();
+    const failure = 'could not run the step before the first upload: database is locked';
+    expect(uploader.getStatus()).toMatchObject({ state: 'backoff', lastError: failure });
+    expect(lines.some((l) => l.includes('upload failed') && l.includes(failure))).toBe(true);
+
+    await vi.advanceTimersByTimeAsync(500);
+    expect(settles).toBe(2);
+    expect(sentBatches(api)).toEqual([['m1-seg-0']]);
+    await vi.advanceTimersByTimeAsync(1000);
+    await uploader.flush();
+    expect(settles).toBe(2);
+    uploader.stop();
+  });
+
+  it('runs beforeFirstTick before a flush that comes first, and only once', async () => {
+    const store = new InMemoryTranscriptStore();
+    const api = fakeApi();
+    const order: string[] = [];
+    api.appendSegments.mockImplementation((_meetingId, segments) => {
+      order.push('append');
+      return Promise.resolve({ accepted: segments.length, duplicates: 0 });
+    });
+    store.createMeeting({ id: 'm1', title: 'T', startedAt: '2026-10-05T10:00:00Z' });
+    store.appendSegment(segment('m1', 0));
+    const uploader = new TranscriptUploader({
+      store,
+      api,
+      logger,
+      beforeFirstTick: () => {
+        order.push('settle');
+      },
+    });
+
+    await uploader.flush();
+    store.appendSegment(segment('m1', 1));
+    await uploader.flush();
+    expect(order).toEqual(['settle', 'append', 'append']);
   });
 });
