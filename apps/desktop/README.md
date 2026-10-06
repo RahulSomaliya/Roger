@@ -19,7 +19,8 @@ To test a real call, install the packaged app:
 make install-desktop         # or `pnpm install:mac` in apps/desktop
 ```
 
-It builds Roger.app for this Mac's architecture, signs it ad hoc, quits a running Roger and
+It builds Roger.app for this Mac's architecture, signs it with a per-Mac local identity, quits a
+running Roger and
 replaces `/Applications/Roger.app`, then prints how to launch it with a log file.
 
 In dev mode settings come from environment variables, with the `ROGER_*` keys of the repo-root
@@ -88,12 +89,20 @@ response names the provider; `createSpeechToText` picks the adapter. Shipping ad
   "no audio for over 5 s" warning fires only when no audio arrives at all (the renderer, its
   worklet or IPC stopped), not for a live stream of silence, which is M2's silence warning.
   Test call audio with `make install-desktop`: the packaged app carries the key.
-- Verified on 2026-10-05: the packaged, ad hoc signed Roger.app on macOS 26.6.2 (Apple Silicon)
+- Verified on 2026-10-05: the packaged Roger.app on macOS 26.6.2 (Apple Silicon)
   captured both streams, with the API on `STT_PROVIDER=fake`.
-- The local install is signed ad hoc without the hardened runtime: an ad hoc signature with it
-  dies at launch (`Electron Framework ... not valid for use in process`), because library
-  validation needs a team id. Each build has a new code hash, so macOS asks for Microphone and
-  System Audio Recording again after every install. Signing proper is M11.
+- The local install is signed without the hardened runtime: a signature with no Apple team id
+  dies at launch with it (`Electron Framework ... not valid for use in process`), because library
+  validation needs a team id. Signing proper is M11.
+- It is signed with a self-signed identity that `install:mac` creates once per Mac in
+  `~/Library/Application Support/Roger Dev Signing/`, never ad hoc. macOS pins every privacy grant
+  to the app's code identity. An ad-hoc identity is the code hash, which changes on each build:
+  after a rebuild macOS silently denied call audio ("No screen source is available for system
+  audio") while System Settings still showed Roger switched on (2026-10-06). When the identity
+  changes, `install:mac` clears Roger's old grants with `tccutil reset` so macOS asks again once.
+- Call audio uses Chromium's desktop capture, so macOS needs both **Screen & System Audio
+  Recording** and **Microphone** for Roger. macOS applies a new Screen Recording grant only after
+  Roger restarts.
 - Which prompts macOS shows (Microphone, System Audio Recording, Screen Recording) is recorded in
   `docs/plans/M1-walking-skeleton.md` once the exit check runs. A Swift helper is the fallback if
   the built-in path proves unreliable; it would replace `openSystemAudioStream` only.
@@ -107,5 +116,5 @@ pnpm format:check
 pnpm test        # vitest
 pnpm build       # electron-vite build into out/
 pnpm package:mac # unsigned .dmg/.zip in dist/ (signing is M11)
-pnpm install:mac # build, sign ad hoc and replace /Applications/Roger.app
+pnpm install:mac # build, sign with the local identity, replace /Applications/Roger.app
 ```

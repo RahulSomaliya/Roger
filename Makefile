@@ -80,7 +80,7 @@ dev-desktop: ## Run the desktop app in dev mode
 
 # Test real call audio from the installed app, not from dev mode: in dev mode macOS asks the
 # terminal for capture permission and the system ("Them") stream is silently dead.
-install-desktop: ## Build Roger.app for this Mac's CPU, sign it ad hoc, install to /Applications
+install-desktop: ## Build Roger.app for this Mac's CPU, sign it with a local identity, install to /Applications
 	pnpm --filter $(DESKTOP_PKG) install:mac
 
 clean: ## Remove build output and caches
