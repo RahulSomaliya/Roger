@@ -1348,6 +1348,84 @@ private func routeSwitchCases(_ suite: inout SelfTestSuite) {
       try [UInt8](repeating: 0, count: 20).withUnsafeBytes { try levels.record($0) }
     }
   }
+
+  suite.run("route test leftover: the output moved off it first; kept when the move stalls") { t in
+    let speakers = FakeOutputs.speakers
+    let leftover = FakeOutputs.leftover
+    let none = FakeOutputs(current: speakers, hasLeftover: false)
+    t.expectEqual(try RouteSwitchTest.removeLeftover(none), false, "no leftover: nothing done")
+    t.expectEqual(none.log, [], "nothing changed")
+
+    let aside = FakeOutputs(current: speakers, hasLeftover: true)
+    t.expectEqual(try RouteSwitchTest.removeLeftover(aside), true, "a leftover aside")
+    t.expectEqual(aside.log, ["destroy \(leftover)"], "removed, the output untouched")
+
+    let inUse = FakeOutputs(current: leftover, hasLeftover: true)
+    t.expectEqual(try RouteSwitchTest.removeLeftover(inUse), true, "a leftover in use")
+    t.expectEqual(
+      inUse.log, ["set \(speakers)", "destroy \(leftover)"],
+      "the output handed back to the device it wraps before it goes")
+    t.expectEqual(inUse.current, speakers, "the user's own output is the default again")
+
+    // Removing the default output leaves macOS to pick any output; setup would take that one for
+    // the user's own, and the final cleanup would "restore" it.
+    let stalled = FakeOutputs(current: leftover, hasLeftover: true, moves: false)
+    t.expectThrows("a move that does not land stops the run") {
+      _ = try RouteSwitchTest.removeLeftover(stalled)
+    }
+    t.expectEqual(
+      stalled.log, ["set \(speakers)"], "kept: it still plays to the output it wraps")
+
+    let orphan = FakeOutputs(current: leftover, hasLeftover: true, wrapsUID: "unplugged")
+    t.expectEqual(try RouteSwitchTest.removeLeftover(orphan), true, "a leftover over a gone output")
+    t.expectEqual(orphan.log, ["destroy \(leftover)"], "removed: there is no output to hand back")
+  }
+}
+
+/// Output devices in memory for `RouteSwitchTest.removeLeftover`: the speakers and, when asked, the
+/// route test's leftover over them. Setting the default moves it, unless `moves` is false.
+private final class FakeOutputs: OutputControl {
+  static let speakers: AudioDeviceID = 10
+  static let leftover: AudioDeviceID = 90
+  private(set) var log: [String] = []
+  private(set) var current: AudioDeviceID
+  private let hasLeftover: Bool
+  private let moves: Bool
+  private let wrapsUID: String
+
+  init(
+    current: AudioDeviceID, hasLeftover: Bool, moves: Bool = true, wrapsUID: String = "speakers"
+  ) {
+    self.current = current
+    self.hasLeftover = hasLeftover
+    self.moves = moves
+    self.wrapsUID = wrapsUID
+  }
+
+  func device(withUID uid: String) -> AudioDeviceID? {
+    switch uid {
+    case "speakers": return Self.speakers
+    case RouteSwitchTest.deviceUID: return hasLeftover ? Self.leftover : nil
+    default: return nil
+    }
+  }
+
+  func defaultOutput() -> AudioDeviceID { current }
+
+  func setDefaultOutput(_ device: AudioDeviceID) {
+    log.append("set \(device)")
+    if moves { current = device }
+  }
+
+  func defaultOutput(becoming device: AudioDeviceID, within seconds: Double) -> AudioDeviceID {
+    current
+  }
+
+  func mainSubDeviceUID(of aggregate: AudioDeviceID) -> String { wrapsUID }
+
+  func name(of device: AudioDeviceID) -> String { "device \(device)" }
+
+  func destroy(_ device: AudioDeviceID) { log.append("destroy \(device)") }
 }
 
 /// `selftest --route-switch`: the tap follows a switch of the default output (the "Tap rebuild on
@@ -1430,7 +1508,7 @@ private final class RouteSwitchTest: @unchecked Sendable {
     var originalUID = ""
     let setUp = passes(&suite, "setup: the current output read, the tone playing") { _ in
       try change { made in
-        if try removeLeftover() {
+        if try Self.removeLeftover(CoreAudioOutputs()) {
           print("      removed the \(Self.deviceName) device a killed run left behind")
         }
         original = try OutputDevices.defaultOutput()
@@ -1620,15 +1698,28 @@ private final class RouteSwitchTest: @unchecked Sendable {
 
   /// A run killed outright (kill -9) leaves its published device behind, maybe as the default
   /// output. Moves the output to the device it wraps, then removes it. True when there was one.
-  private func removeLeftover() throws -> Bool {
-    guard let leftover = try OutputDevices.device(withUID: Self.deviceUID) else { return false }
-    if try OutputDevices.defaultOutput() == leftover,
-      let wrapped = try OutputDevices.device(withUID: OutputDevices.mainSubDeviceUID(of: leftover))
+  ///
+  /// Throws, and keeps the device, when the output has not moved within 2 s: removing the default
+  /// output leaves macOS to pick any output, which setup would then read as the user's own and the
+  /// final cleanup would "restore". Kept, it still plays to the output it wraps. With that output
+  /// gone there is nothing to hand back to, so it goes.
+  static func removeLeftover(_ outputs: OutputControl) throws -> Bool {
+    guard let leftover = try outputs.device(withUID: deviceUID) else { return false }
+    if try outputs.defaultOutput() == leftover,
+      let wrapped = try outputs.device(withUID: outputs.mainSubDeviceUID(of: leftover))
     {
-      try OutputDevices.setDefaultOutput(wrapped)
-      _ = try OutputDevices.defaultOutput(becoming: wrapped, within: 2)
+      try outputs.setDefaultOutput(wrapped)
+      let current = try outputs.defaultOutput(becoming: wrapped, within: 2)
+      guard current == wrapped else {
+        let wrappedName = outputs.name(of: wrapped)
+        throw SelfTestError(
+          description: "\(deviceName), left by a killed run, is the default output, and moving "
+            + "the output back to \(wrappedName), the device it plays to, did not land within 2 s "
+            + "(the default is \(outputs.name(of: current))). It is kept, so macOS does not pick "
+            + "an output: make \(wrappedName) the output in System Settings > Sound and run again")
+      }
     }
-    try OutputDevices.destroy(leftover)
+    try outputs.destroy(leftover)
     return true
   }
 
@@ -1743,6 +1834,46 @@ private final class FrameLevels: @unchecked Sendable {
   func heard(since wallMs: Double) -> Bool {
     frames.value.contains { $0.captureWallMs >= wallMs && $0.peak > 0 }
   }
+}
+
+/// The output device calls `RouteSwitchTest.removeLeftover` makes: Core Audio on a Mac, a fake in
+/// `make check`, which runs its decisions on every pass.
+private protocol OutputControl {
+  func device(withUID uid: String) throws -> AudioDeviceID?
+  func defaultOutput() throws -> AudioDeviceID
+  func setDefaultOutput(_ device: AudioDeviceID) throws
+  func defaultOutput(becoming device: AudioDeviceID, within seconds: Double) throws
+    -> AudioDeviceID
+  func mainSubDeviceUID(of aggregate: AudioDeviceID) throws -> String
+  func name(of device: AudioDeviceID) -> String
+  func destroy(_ device: AudioDeviceID) throws
+}
+
+/// OutputControl on Core Audio: each call is OutputDevices' own.
+private struct CoreAudioOutputs: OutputControl {
+  func device(withUID uid: String) throws -> AudioDeviceID? {
+    try OutputDevices.device(withUID: uid)
+  }
+
+  func defaultOutput() throws -> AudioDeviceID { try OutputDevices.defaultOutput() }
+
+  func setDefaultOutput(_ device: AudioDeviceID) throws {
+    try OutputDevices.setDefaultOutput(device)
+  }
+
+  func defaultOutput(becoming device: AudioDeviceID, within seconds: Double) throws
+    -> AudioDeviceID
+  {
+    try OutputDevices.defaultOutput(becoming: device, within: seconds)
+  }
+
+  func mainSubDeviceUID(of aggregate: AudioDeviceID) throws -> String {
+    try OutputDevices.mainSubDeviceUID(of: aggregate)
+  }
+
+  func name(of device: AudioDeviceID) -> String { OutputDevices.name(of: device) }
+
+  func destroy(_ device: AudioDeviceID) throws { try OutputDevices.destroy(device) }
 }
 
 /// The Core Audio calls of the route test. A failure is a HelperFailure that names what was
