@@ -278,6 +278,39 @@ describe('AssemblyAiSpeechToText', () => {
     await stream.close();
   });
 
+  it('says what a close code means when the vendor gives no reason', async () => {
+    script.onAudio = (socket) => {
+      socket.close(3008);
+    };
+    const { stream, events } = await open();
+
+    stream.send(new Uint8Array(CHUNK_100_MS));
+    await waitFor(() => events.some((e) => e.type === 'closed'));
+    expect(events).toEqual([
+      {
+        type: 'error',
+        message:
+          'AssemblyAI closed the stream (code 3008: the session reached its maximum duration)',
+        fatal: true,
+      },
+      { type: 'closed', code: 3008, reason: null },
+    ]);
+  });
+
+  it('says to wait a minute on a session-limit close that carries no reason', async () => {
+    script.onConnect = (socket) => {
+      socket.close(3009);
+    };
+    const error = await open().catch((e: unknown) => e);
+
+    expect((error as SttConnectError).message).toBe(
+      'AssemblyAI ended the connection before the session began ' +
+        '(code 3009: too many concurrent sessions). ' +
+        'AssemblyAI limits how many sessions start per minute (5 on a free account) and each ' +
+        'Start opens two, one per audio source: wait a minute, then press Start again.',
+    );
+  });
+
   it('turns a message it cannot read into a non-fatal error and keeps the stream open', async () => {
     script.onAudio = (socket) => {
       socket.send(JSON.stringify({ type: 'Turn', turn_order: 'zero' }));

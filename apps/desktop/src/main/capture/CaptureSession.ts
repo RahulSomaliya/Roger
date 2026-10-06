@@ -81,7 +81,8 @@ export class CaptureSession {
     if (!this.firstChunkOffsetMs.has(source)) {
       // The vendor's clock starts at its first audio byte. That byte was captured one chunk
       // before it reached us, so the offset is "now" minus the chunk's own duration. Adapters
-      // must hand the vendor every byte, in order (AssemblyAI regroups them; see its sendFrame).
+      // must hand the vendor every byte, in order (AssemblyAI regroups them; see
+      // SttConnection.sendFrame).
       const captured =
         this.clock() -
         pcmBytesToMs(pcm.byteLength, this.options.settings.sampleRate || PCM_SAMPLE_RATE);
