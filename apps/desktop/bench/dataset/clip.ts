@@ -96,7 +96,14 @@ export async function clip(
         'folder to clip it again (its reference.txt goes with it)',
     );
   }
-  const createdDir = !existsSync(paths.dir);
+  // Never written into: a stream file left there from another window would sit beside this
+  // clip's item.json, which might not list it.
+  if (existsSync(paths.dir)) {
+    throw new Error(
+      `${paths.dir} holds a clip that did not finish (no item.json); delete the folder and clip ` +
+        'again',
+    );
+  }
   // Decoded chunks go inside the item folder, under the 0700 bench folder on the FileVault disk,
   // never to the system temp folder. A clip killed mid-way leaves them where `check` reports the
   // folder (no item.json) and deleting the folder removes them.
@@ -146,7 +153,7 @@ export async function clip(
     await writeItem(benchDir, item);
     return item;
   } catch (error) {
-    if (createdDir) await rm(paths.dir, { recursive: true, force: true });
+    await rm(paths.dir, { recursive: true, force: true });
     throw error;
   }
 }

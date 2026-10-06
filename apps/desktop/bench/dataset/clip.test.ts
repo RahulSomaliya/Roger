@@ -243,6 +243,17 @@ describe('clip', () => {
     expect(await readFile(join(itemDir, 'item.json'), 'utf8')).toBe('hand-fixed');
   });
 
+  it('refuses a folder a killed clip left, so no stale stream sits beside the new one', async () => {
+    const itemDir = join(benchDir, 'items', 'tone-1');
+    await mkdir(itemDir, { recursive: true, mode: 0o700 });
+    await writeFile(join(itemDir, 'mic.wav'), 'from another window');
+
+    await expect(clip(options(), { assertFileVault: fileVaultOn, decode })).rejects.toThrow(
+      `${itemDir} holds a clip that did not finish (no item.json); delete the folder and clip again`,
+    );
+    expect(await readFile(join(itemDir, 'mic.wav'), 'utf8')).toBe('from another window');
+  });
+
   it('removes the item folder it created when a decode fails', async () => {
     const failing: DecodeChunk = (chunk: BackupChunk) =>
       Promise.reject(new Error(`afconvert failed on ${chunk.path}`));
