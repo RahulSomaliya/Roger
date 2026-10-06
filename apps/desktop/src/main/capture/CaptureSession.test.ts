@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import type { AudioSource, TranscriptSegment } from '../../shared/transcript';
-import { createLogger } from '../logger';
+import type { AudioSource, InterimTranscript, TranscriptSegment } from '../../shared/transcript';
+import { createLogger, type Logger } from '../logger';
 import { InMemoryTranscriptStore } from '../store/InMemoryTranscriptStore';
 import {
   type OpenStreamOptions,
@@ -94,24 +94,33 @@ function listeners(): CaptureSessionListeners & {
   failures: [AudioSource, string, number | null][];
   saveFailures: [AudioSource, string][];
   shown: string[];
+  segments: TranscriptSegment[];
+  interims: InterimTranscript[];
   states: string[];
 } {
   const failures: [AudioSource, string, number | null][] = [];
   const saveFailures: [AudioSource, string][] = [];
   const shown: string[] = [];
+  const segments: TranscriptSegment[] = [];
+  const interims: InterimTranscript[] = [];
   const states: string[] = [];
   return {
     failures,
     saveFailures,
     shown,
+    segments,
+    interims,
     states,
     onSegment: (segment) => {
       shown.push(segment.text);
+      segments.push(segment);
     },
     onSaveFailure: (source, reason) => {
       saveFailures.push([source, reason]);
     },
-    onInterim: () => undefined,
+    onInterim: (interim) => {
+      interims.push(interim);
+    },
     onStreamClosed: () => undefined,
     onStreamState: (source, state) => {
       states.push(`${source}:${state}`);
@@ -168,6 +177,74 @@ function gate<T>(): { promise: Promise<T>; resolve(value: T): void } {
   return { promise, resolve };
 }
 
+/** One final from the vendor, its times on the stream's own clock; one word per pair in `words`. */
+function final(
+  stream: ScriptedStream,
+  text: string,
+  startMs: number,
+  endMs: number,
+  words: [number, number][] = [],
+): void {
+  stream.emitter.emit({
+    type: 'final',
+    text,
+    startMs,
+    endMs,
+    confidence: 1,
+    words: words.map(([wordStart, wordEnd], i) => ({
+      text: `w${i}`,
+      startMs: wordStart,
+      endMs: wordEnd,
+      confidence: 1,
+    })),
+  });
+}
+
+/** A logger whose lines the test reads back. */
+function recordingLogger(): { logger: Logger; messages: Record<string, unknown>[] } {
+  const messages: Record<string, unknown>[] = [];
+  const recorder = createLogger({
+    level: 'info',
+    format: 'json',
+    sink: (line) => messages.push(JSON.parse(line) as Record<string, unknown>),
+  });
+  return { logger: recorder, messages };
+}
+
+/** Starts a session on a test clock with both streams open. */
+async function recording(overrides: Partial<CaptureSessionOptions> = {}) {
+  const stt = new ControlledSpeechToText();
+  const l = listeners();
+  let now = 10_000;
+  const store = new InMemoryTranscriptStore();
+  const s = session(stt, l, () => now, store, overrides);
+  const opening = s.open();
+  const mic = stt.succeed('mic');
+  const system = stt.succeed('system');
+  await opening;
+  return {
+    stt,
+    l,
+    s,
+    store,
+    mic,
+    system,
+    at: (ms: number) => {
+      now = ms;
+    },
+  };
+}
+
+/** Pushes `count` contiguous 100 ms chunks of `source`, the first captured at `fromMs`. */
+function pushContiguous(
+  s: CaptureSession,
+  source: AudioSource,
+  fromMs: number,
+  count: number,
+): void {
+  for (let i = 0; i < count; i += 1) s.pushAudio(source, new Uint8Array(3200), fromMs + i * 100);
+}
+
 describe('CaptureSession', () => {
   it('closes a stream that opens after another one failed, so no socket leaks', async () => {
     const stt = new ControlledSpeechToText();
@@ -194,8 +271,8 @@ describe('CaptureSession', () => {
     expect(l.states.at(-1)).toBe('system:retrying');
     expect(system.closed).toBe(true); // the dead stream is closed, not only forgotten
 
-    s.pushAudio('mic', new Uint8Array(3200));
-    s.pushAudio('system', new Uint8Array(3200));
+    s.pushAudio('mic', new Uint8Array(3200), 10_000);
+    s.pushAudio('system', new Uint8Array(3200), 10_000);
     expect(mic.sent).toHaveLength(1);
     expect(system.sent).toHaveLength(0);
 
@@ -219,8 +296,8 @@ describe('CaptureSession', () => {
     system.emitter.emit({ type: 'closed', code: 1000, reason: null });
     expect(l.failures).toEqual([]);
 
-    s.pushAudio('system', new Uint8Array(3200));
-    s.pushAudio('mic', new Uint8Array(3200));
+    s.pushAudio('system', new Uint8Array(3200), 10_000);
+    s.pushAudio('mic', new Uint8Array(3200), 10_000);
     expect(system.sent).toHaveLength(0);
     expect(mic.sent).toHaveLength(1);
     await s.close();
@@ -265,7 +342,7 @@ describe('CaptureSession', () => {
       // 50 chunks of 100 ms arrive while the token is fetched; 3 s may wait.
       for (let i = 0; i < 50; i += 1) {
         at(50_000 + i * 100);
-        s.pushAudio('system', new Uint8Array(3200).fill(i));
+        s.pushAudio('system', new Uint8Array(3200).fill(i), 50_000 + i * 100);
       }
       credentials.resolve({ accessToken: 'fresh', settings });
       await flush();
@@ -277,24 +354,32 @@ describe('CaptureSession', () => {
       await s.close();
     });
 
-    it('never carries audio from before a gap into a reopened stream', async () => {
+    it('sends held audio from both sides of a gap, each side dated where it was captured', async () => {
       const credentials = gate<{ accessToken: string; settings: typeof settings }>();
-      const { stt, s, at } = await paused({ refreshCredentials: () => credentials.promise });
+      const { stt, l, s, at } = await paused({ refreshCredentials: () => credentials.promise });
       at(50_000);
-      s.pushAudio('system', new Uint8Array(3200).fill(1));
-      at(55_000); // the source went quiet again for 5 s: that gap is not in the vendor's audio
-      s.pushAudio('system', new Uint8Array(3200).fill(2));
+      s.pushAudio('system', new Uint8Array(3200).fill(1), 49_900);
+      at(55_000); // the source went quiet again for 5 s while the token was fetched
+      s.pushAudio('system', new Uint8Array(3200).fill(2), 54_900);
       credentials.resolve({ accessToken: 'fresh', settings });
       await flush();
       const reopened = stt.succeed('system');
       await flush();
-      expect(reopened.sent.map((pcm) => pcm[0])).toEqual([2]);
+      // Both are sent (M1 dropped the audio before the gap); the vendor hears 200 ms with no hole.
+      expect(reopened.sent.map((pcm) => pcm[0])).toEqual([1, 2]);
+      final(reopened, 'before the gap', 20, 80);
+      final(reopened, 'after the gap', 120, 180);
+      // The meeting started at 10 s: the second line was said 5 s after the first, not 100 ms.
+      expect(l.segments.map(({ startMs, endMs }) => [startMs, endMs])).toEqual([
+        [39_920, 39_980],
+        [44_920, 44_980],
+      ]);
       await s.close();
     });
 
     it('closes a reopen that lands after the source closed, and Stop waits for it', async () => {
       const { stt, l, s } = await paused();
-      s.pushAudio('system', new Uint8Array(3200));
+      s.pushAudio('system', new Uint8Array(3200), 40_000);
       await flush(); // the fresh token is in; the vendor is still connecting
       expect(stt.opens).toEqual(['mic', 'system', 'system']);
       expect(l.states.at(-1)).toBe('system:connecting');
@@ -310,7 +395,7 @@ describe('CaptureSession', () => {
     it('opens nothing when the source closes before its fresh token arrives', async () => {
       const credentials = gate<{ accessToken: string; settings: typeof settings }>();
       const { stt, s } = await paused({ refreshCredentials: () => credentials.promise });
-      s.pushAudio('system', new Uint8Array(3200));
+      s.pushAudio('system', new Uint8Array(3200), 40_000);
       s.closeSource('system', 'The audio device stopped delivering audio');
       credentials.resolve({ accessToken: 'fresh', settings });
       await flush();
@@ -326,16 +411,16 @@ describe('CaptureSession', () => {
           return Promise.reject(new Error('API unreachable'));
         },
       });
-      s.pushAudio('system', new Uint8Array(3200));
+      s.pushAudio('system', new Uint8Array(3200), 40_000);
       await flush();
       expect(l.states.at(-1)).toBe('system:retrying');
       expect(l.failures.at(-1)).toEqual(['system', 'could not reconnect: API unreachable', 42_000]);
       at(41_900);
-      s.pushAudio('system', new Uint8Array(3200));
+      s.pushAudio('system', new Uint8Array(3200), 41_900);
       await flush();
       expect(tokenRequests).toBe(1); // ten chunks a second must not mean ten token requests
       at(42_000);
-      s.pushAudio('system', new Uint8Array(3200));
+      s.pushAudio('system', new Uint8Array(3200), 42_000);
       await flush();
       expect(tokenRequests).toBe(2);
       await s.close();
@@ -382,48 +467,232 @@ describe('CaptureSession', () => {
     await s.close();
   });
 
-  it('dates the first chunk from when its audio was captured, not when it arrived', async () => {
-    const stt = new ControlledSpeechToText();
-    const l = listeners();
-    let now = 10_000;
-    const s = session(stt, l, () => now);
-    const opening = s.open();
-    const mic = stt.succeed('mic');
-    stt.succeed('system');
-    await opening;
-    const store = new InMemoryTranscriptStore();
-    const segments: number[] = [];
-    const withStore = new CaptureSession({
-      meetingId: 'm2',
-      meetingStartedAtMs: 10_000,
-      stt,
-      accessToken: 't',
-      settings,
-      refreshCredentials: () => Promise.resolve({ accessToken: 'fresh', settings }),
-      reopenBufferMs: 3_000,
-      budget: openBudget(() => now),
-      reopenBackoffMs: 2_000,
-      reopenBackoffMaxMs: 60_000,
-      store,
-      logger,
-      listeners: { ...l, onSegment: (segment) => segments.push(segment.startMs) },
-      clock: () => now,
+  describe('dating lines through the audio timeline', () => {
+    it('dates lines from when their audio was captured, however late each chunk reached main', async () => {
+      const { l, s, mic, at } = await recording();
+      for (let i = 0; i < 100; i += 1) {
+        const capturedAtMs = 12_000 + i * 100;
+        // Each chunk lands 0 to 400 ms after its last sample, the delays in no particular order.
+        at(capturedAtMs + 100 + (((i + 1) * 137) % 401));
+        s.pushAudio('mic', new Uint8Array(3200), capturedAtMs);
+      }
+      final(mic, 'hello there', 9_500, 9_900, [
+        [9_500, 9_700],
+        [9_700, 9_900],
+      ]);
+      // The meeting started at 10 s and the audio at 12 s: arrival times would have put this up to
+      // 400 ms late.
+      expect(l.segments[0]).toMatchObject({ startMs: 11_500, endMs: 11_900 });
+      expect(l.segments[0]?.words).toEqual([
+        { text: 'w0', startMs: 11_500, endMs: 11_700, confidence: 1 },
+        { text: 'w1', startMs: 11_700, endMs: 11_900, confidence: 1 },
+      ]);
+      await s.close();
     });
-    const opening2 = withStore.open();
-    const mic2 = stt.succeed('mic');
-    stt.succeed('system');
-    await opening2;
-    now = 12_100; // a 100 ms chunk arrives 2.1 s into the meeting: it was captured at 2.0 s
-    withStore.pushAudio('mic', new Uint8Array(3200));
-    mic2.emitter.emit({
-      type: 'final',
-      text: 'hi',
-      startMs: 500,
-      endMs: 900,
-      confidence: 1,
-      words: [],
+
+    it('keeps a line after a stall at the time it was said, not right after the audio before it', async () => {
+      const log = recordingLogger();
+      const { l, s, mic } = await recording({ logger: log.logger });
+      pushContiguous(s, 'mic', 10_000, 100); // 10 s of audio
+      // The renderer stalls for 20 s, under the 30 s that would pause the session: the vendor's
+      // stream stays open and hears no hole.
+      pushContiguous(s, 'mic', 40_000, 100);
+      final(mic, 'before', 5_000, 6_000, [[5_000, 6_000]]);
+      final(mic, 'after', 15_000, 16_000, [[15_000, 16_000]]);
+      mic.emitter.emit({ type: 'interim', text: 'still after', startMs: 16_000, endMs: 17_000 });
+
+      expect(l.segments.map(({ startMs, endMs }) => [startMs, endMs])).toEqual([
+        [5_000, 6_000],
+        [35_000, 36_000],
+      ]);
+      expect(l.segments[1]?.words?.[0]).toMatchObject({ startMs: 35_000, endMs: 36_000 });
+      expect(l.interims).toEqual([
+        { meetingId: 'm1', source: 'mic', text: 'still after', startMs: 36_000, endMs: 37_000 },
+      ]);
+      expect(log.messages).toContainEqual(
+        expect.objectContaining({
+          message: 'audio timeline: new run',
+          source: 'mic',
+          jumpMs: 20_000,
+          runs: 2,
+        }),
+      );
+      await s.close();
     });
-    expect(segments).toEqual([2500]);
-    expect(mic.sent).toHaveLength(0);
+
+    it('lets a word that ends at a gap end before it', async () => {
+      const { l, s, mic } = await recording();
+      pushContiguous(s, 'mic', 10_000, 10); // stream 0-1 s
+      pushContiguous(s, 'mic', 15_000, 10); // stream 1-2 s, captured 4 s later
+      final(mic, 'across', 600, 1_400, [
+        [600, 1_000],
+        [1_000, 1_400],
+      ]);
+      expect(l.segments[0]).toMatchObject({ startMs: 600, endMs: 5_400 });
+      expect(l.segments[0]?.words?.map(({ startMs, endMs }) => [startMs, endMs])).toEqual([
+        [600, 1_000],
+        [5_000, 5_400],
+      ]);
+      await s.close();
+    });
+
+    it('never stretches a line across a stall for a word edge the vendor put just past it', async () => {
+      const { l, s, mic } = await recording();
+      pushContiguous(s, 'mic', 10_000, 10); // stream 0-1 s, captured 10-11 s
+      // The mic stalls 20 s, under the 30 s that would pause the session: the stream stays open.
+      pushContiguous(s, 'mic', 31_000, 10); // stream 1-2 s, captured 31-32 s
+      // The vendor heard no hole: it ends the cut word 10 ms past the splice and starts the next
+      // line 1 ms before it. Dated as stamped, the first line would end 20 s after it started (an
+      // echo of it could no longer be hidden) and the second would start 20 s early.
+      final(mic, 'yes exactly', 400, 1_010, [
+        [400, 700],
+        [700, 1_010],
+      ]);
+      final(mic, 'go on', 999, 1_600, [
+        [999, 1_300],
+        [1_300, 1_600],
+      ]);
+      expect(l.segments.map(({ startMs, endMs }) => [startMs, endMs])).toEqual([
+        [400, 1_000],
+        [21_000, 21_600],
+      ]);
+      expect(l.segments.map((segment) => segment.words?.map((w) => [w.startMs, w.endMs]))).toEqual([
+        [
+          [400, 700],
+          [700, 1_000],
+        ],
+        [
+          [21_000, 21_300],
+          [21_300, 21_600],
+        ],
+      ]);
+      await s.close();
+    });
+
+    it('keeps every word inside its line when a word at its edge falls the other side of a stall', async () => {
+      const { l, s, mic } = await recording();
+      pushContiguous(s, 'mic', 10_000, 10); // stream 0-1 s, captured 10-11 s
+      pushContiguous(s, 'mic', 31_000, 10); // stream 1-2 s, captured 31-32 s
+      // The line's first 100 ms sit before the splice, short enough to read as spill on their own,
+      // but they hold a whole word: the word is real audio from before the stall. The echo filter
+      // reaches call-audio lines by their spans, trusting their words to lie inside them.
+      final(mic, 'so the rest', 900, 2_000, [
+        [900, 980],
+        [1_000, 2_000],
+      ]);
+      expect(l.segments[0]).toMatchObject({ startMs: 900, endMs: 22_000 });
+      expect(l.segments[0]?.words?.map(({ startMs, endMs }) => [startMs, endMs])).toEqual([
+        [900, 980],
+        [21_000, 22_000],
+      ]);
+      await s.close();
+    });
+
+    it('starts a reopened stream at its own first chunk, and keeps the old stream on its own clock', async () => {
+      const { stt, l, s, system, at } = await recording();
+      pushContiguous(s, 'system', 10_000, 50); // 5 s
+      at(15_000);
+      system.emitter.emit({ type: 'closed', code: 1011, reason: 'timeout' });
+      // Retrying: the backoff is over at 17 s, and the chunk that wakes it was captured at 20 s
+      // and reached main 350 ms later.
+      at(20_350);
+      s.pushAudio('system', new Uint8Array(3200), 20_000);
+      await flush();
+      const reopened = stt.succeed('system');
+      await flush();
+      expect(reopened.sent).toHaveLength(1);
+
+      final(reopened, 'new stream', 50, 90);
+      // The dead stream's last line lands late: it still counts on the first stream's clock.
+      final(system, 'old stream', 4_000, 4_500);
+      expect(l.segments.map(({ text, startMs }) => [text, startMs])).toEqual([
+        ['new stream', 10_050],
+        ['old stream', 4_000],
+      ]);
+      await s.close();
+    });
+
+    it('stores whole milliseconds when capture times are fractional', async () => {
+      const { l, s, mic } = await recording();
+      // The renderer's capture times come from performance.now() and are fractional; the API's
+      // offsets are integers (OffsetMs) and refuse 2500.4 with a 422.
+      s.pushAudio('mic', new Uint8Array(3200), 12_000.4);
+      final(mic, 'hi', 500, 900, [[500, 900]]);
+      expect(l.segments[0]).toMatchObject({ startMs: 2_500, endMs: 2_900 });
+      expect(l.segments[0]?.words?.[0]).toMatchObject({ startMs: 2_500, endMs: 2_900 });
+      await s.close();
+    });
+
+    it('never stores an end before its start when the clock steps back inside a line', async () => {
+      const { l, s, mic } = await recording();
+      pushContiguous(s, 'mic', 12_000, 10); // stream 0-1 s, captured 12-13 s
+      pushContiguous(s, 'mic', 11_000, 10); // the wall clock was set back 2 s
+      // 500 ms each side of the step: more than spill (RUN_EDGE_SNAP_MS), so the span keeps both.
+      final(mic, 'stepped', 500, 1_500, [[500, 1_500]]);
+      // The API refuses end_ms < start_ms, so the end is held at the start.
+      expect(l.segments[0]).toMatchObject({ startMs: 2_500, endMs: 2_500 });
+      expect(l.segments[0]?.words?.[0]).toMatchObject({ startMs: 2_500, endMs: 2_500 });
+      await s.close();
+    });
+
+    it('never stores a negative offset for audio captured before the meeting start', async () => {
+      const { l, s, mic } = await recording();
+      s.pushAudio('mic', new Uint8Array(3200), 9_800);
+      final(mic, 'early', 100, 300);
+      expect(l.segments[0]).toMatchObject({ startMs: 0, endMs: 100 });
+      await s.close();
+    });
+
+    it('refuses a sample rate it cannot count in before any stream opens', () => {
+      // Each stream's timeline is built once its socket is open: a throw there would leak it.
+      const stt = new ControlledSpeechToText();
+      expect(() =>
+        session(stt, listeners(), () => 10_000, new InMemoryTranscriptStore(), {
+          settings: { ...settings, sampleRate: 16_000.5 },
+        }),
+      ).toThrow(RangeError);
+      expect(stt.opens).toEqual([]);
+    });
+
+    it('refuses a chunk it cannot place, and sends the vendor nothing of it', async () => {
+      const { s, mic } = await recording();
+      // The fan-out logs what a sink throws ("audio sink failed") and goes on with the next chunk.
+      expect(() => {
+        s.pushAudio('mic', new Uint8Array(3200), Number.NaN);
+      }).toThrow(RangeError);
+      expect(() => {
+        s.pushAudio('mic', new Uint8Array(3201), 12_000);
+      }).toThrow(RangeError);
+      expect(mic.sent).toHaveLength(0);
+      await s.close();
+    });
+
+    it('keeps every line and its offset over 2 hours of chunks on both streams', async () => {
+      const log = recordingLogger();
+      const { l, s, store, mic, system, at } = await recording({ logger: log.logger });
+      const chunks = 72_000; // 2 hours of 100 ms chunks per stream
+      const pcm = new Uint8Array(3200);
+      for (let i = 0; i < chunks; i += 1) {
+        const micAt = 10_000 + i * 100;
+        const systemAt = micAt + 40; // the two sources are captured out of phase
+        at(systemAt + 100 + ((i * 137) % 401));
+        s.pushAudio('mic', pcm, micAt);
+        s.pushAudio('system', pcm, systemAt);
+        if (i % 600 === 599) {
+          const minute = (i + 1) / 600 - 1;
+          final(mic, `me ${minute}`, minute * 60_000 + 1_000, minute * 60_000 + 3_000);
+          final(system, `them ${minute}`, minute * 60_000 + 2_000, minute * 60_000 + 4_000);
+        }
+      }
+      expect(mic.sent).toHaveLength(chunks);
+      expect(system.sent).toHaveLength(chunks);
+      expect(store.countSegments('m1')).toBe(240);
+      expect(s.storedSegmentCount).toBe(240);
+      expect(l.segments.at(-2)).toMatchObject({ text: 'me 119', startMs: 7_141_000 });
+      expect(l.segments.at(-1)).toMatchObject({ text: 'them 119', startMs: 7_142_040 });
+      // Arrival jitter never split a stream's audio: one run each, the whole call.
+      expect(log.messages.filter((m) => m.message === 'audio timeline: new run')).toEqual([]);
+      await s.close();
+    });
   });
 });

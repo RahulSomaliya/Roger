@@ -12,6 +12,7 @@ import {
 import { errorMessage, type Logger } from '../logger';
 import type { TranscriptStore } from '../store/TranscriptStore';
 import type { SpeechToText, SttEvent, SttStream, SttStreamSettings } from '../stt/SpeechToText';
+import { AudioTimeline } from './AudioTimeline';
 import type { SttOpenBudget, SttOpenDecision } from './SttOpenBudget';
 
 export interface CaptureSessionListeners {
@@ -64,11 +65,8 @@ export interface StreamCredentials {
   settings: SttStreamSettings;
 }
 
-/**
- * Buffered audio is dropped when chunks stop for longer than this: the vendor hears its audio as
- * one continuous stream, so a gap kept in the buffer would date every later line too early.
- */
-const BUFFER_GAP_MS = 1_000;
+/** Bytes per sample of PCM_ENCODING (Int16 mono). */
+const SAMPLE_BYTES = 2;
 
 /**
  * A stream that stayed open this long before failing counts as healthy: its failure starts the
@@ -78,8 +76,8 @@ const HEALTHY_STREAM_MS = 60_000;
 
 interface HeldChunk {
   pcm: Uint8Array;
-  /** Clock time it arrived, which dates it once it is sent. */
-  atMs: number;
+  /** Wall clock of its first sample, where it was captured: its stream's timeline dates it. */
+  capturedAtMs: number;
 }
 
 /** One vendor stream, from its open until its close settles. */
@@ -87,10 +85,12 @@ interface StreamHandle {
   readonly stream: SttStream;
   readonly source: AudioSource;
   /**
-   * Meeting offset of the stream's first audio byte, the vendor's time zero. Per stream, not per
-   * source: a reopened stream starts its own clock. Null until its first chunk is sent.
+   * When each stretch of the audio this stream was sent was captured: the vendor's times map to
+   * the meeting through it. Per stream, not per source: a reopened stream's time zero is its own
+   * first chunk (the first one held while it connected), and a late line from a stream already
+   * replaced still counts on its own clock.
    */
-  offsetMs: number | null;
+  readonly timeline: AudioTimeline;
   /** Set once the stream was asked to close; settles when it has. */
   closing: Promise<void> | null;
   readonly openedAtMs: number;
@@ -106,7 +106,7 @@ interface SourceLink {
   /** Audio that arrived while the source reconnects, oldest first, sent once it is open. */
   held: HeldChunk[];
   heldMs: number;
-  /** Chunks dropped from `held` (over the bound, or before a gap) since the last flush. */
+  /** Chunks dropped from `held` (over the bound) since the last flush. */
   heldDropped: number;
   /** No reopen starts before this clock time (backoff, or the budget's minute). */
   notBeforeMs: number;
@@ -123,7 +123,14 @@ interface SourceLink {
  * sends nothing for the stall window closes it until its audio returns (pauseSource), and the other
  * source keeps going either way. A paused source reopens on its next chunk with a fresh token; the
  * chunks that arrive meanwhile are held (bounded) and sent in order once it is open, so the chunk
- * that woke it is not lost and each stream's clock starts at its own first byte.
+ * that woke it is not lost.
+ *
+ * Every chunk comes with the wall clock of its first sample, and each stream places the audio it
+ * was sent on its own AudioTimeline: a vendor time maps to the meeting through the run of audio
+ * that holds it. A stall, a held reconnect or a sleep leaves no hole in what the vendor hears, so
+ * dating lines from a stream's first chunk alone (M1) made every line after a gap early by the
+ * gap; and a word edge the vendor puts just across a gap is cut back to it (meetingSpan), or the
+ * line would stretch over the whole gap.
  *
  * A stream the vendor ends mid-call (an error, a close, AssemblyAI's 3-hour cap) reopens the same
  * way after a backoff that doubles per failure in a row. Every open, Start's two included, passes
@@ -141,12 +148,22 @@ export class CaptureSession {
   /** Reopens in flight: close() waits for them, so a late stream cannot outlive Stop. */
   private readonly reopening = new Set<Promise<void>>();
   private readonly clock: () => number;
+  /** Samples per second of the audio both sources send; every stream's timeline counts in it. */
+  private readonly sampleRate: number;
   private segmentsStored = 0;
   private closing = false;
 
   constructor(private readonly options: CaptureSessionOptions) {
     this.meetingId = options.meetingId;
     this.clock = options.clock ?? (() => Date.now());
+    this.sampleRate = options.settings.sampleRate || PCM_SAMPLE_RATE;
+    // Checked here, before any socket: track() builds each stream's AudioTimeline only once its
+    // socket is open, and the timeline's own refusal there would leave that socket open.
+    if (!Number.isInteger(this.sampleRate) || this.sampleRate <= 0) {
+      throw new RangeError(
+        `Speech-to-text needs a positive whole sample rate, not ${options.settings.sampleRate}.`,
+      );
+    }
   }
 
   get storedSegmentCount(): number {
@@ -172,21 +189,41 @@ export class CaptureSession {
     }
   }
 
-  pushAudio(source: AudioSource, pcm: Uint8Array): void {
+  /**
+   * One chunk of `source`. `capturedAtMs` is the wall clock (epoch ms) of its first sample, taken
+   * where it was captured (renderer or helper), or CaptureService's arrival estimate when the
+   * source sent none; the lines from this audio are dated by it, never by when it reached main.
+   *
+   * CaptureService binds this method straight into its AudioFanout (`onChunk`), so the parameters
+   * keep AudioSink.onChunk's order: a wrapper that passed two would drop every capture time. A
+   * chunk with no usable time or half a sample throws a RangeError; the fan-out logs it as a
+   * failing sink and the vendor gets none of that chunk.
+   */
+  pushAudio(source: AudioSource, pcm: Uint8Array, capturedAtMs: number): void {
+    if (!Number.isFinite(capturedAtMs)) {
+      throw new RangeError(
+        `A ${source} audio chunk has no usable capture time (${capturedAtMs}): it cannot be dated.`,
+      );
+    }
+    if (pcm.byteLength % SAMPLE_BYTES !== 0) {
+      // Half a sample would shift every later sample the vendor hears, and the timeline with it.
+      throw new RangeError(
+        `A ${source} audio chunk of ${pcm.byteLength} bytes is not whole Int16 samples.`,
+      );
+    }
     if (this.closing) return;
     const link = this.links[source];
-    const now = this.clock();
     switch (link.state) {
       case 'open':
-        if (link.current !== null) this.send(link.current, pcm, now);
+        if (link.current !== null) this.send(link.current, pcm, capturedAtMs);
         return;
       case 'connecting':
-        this.hold(link, pcm, now);
+        this.hold(link, pcm, capturedAtMs);
         return;
       case 'paused':
       case 'retrying':
-        this.hold(link, pcm, now);
-        if (now >= link.notBeforeMs) this.startReopen(source);
+        this.hold(link, pcm, capturedAtMs);
+        if (this.clock() >= link.notBeforeMs) this.startReopen(source);
         return;
       case 'closed':
       case 'error':
@@ -383,7 +420,7 @@ export class CaptureSession {
     // the core paces held audio (SttConnection.pump), and it adds its own length of lag to this
     // session until it closes. Past the held audio nothing is replayed inline: that window is a
     // gap, for M2-T6 to record and M2-T16 to re-run from the backup.
-    for (const chunk of held) this.send(handle, chunk.pcm, chunk.atMs);
+    for (const chunk of held) this.send(handle, chunk.pcm, chunk.capturedAtMs);
   }
 
   /**
@@ -391,15 +428,14 @@ export class CaptureSession {
    * (AssemblyAI closes a session sent audio faster than real time, 3007), so every held second is
    * lag on that session until it closes: the bound stays a few seconds
    * (costGuards.sttReopenBufferMs); a connect takes about one.
+   *
+   * Audio from both sides of a gap is kept: each chunk keeps its capture time, so the stream's
+   * timeline starts a new run at the gap and the lines on either side keep their own times. (M1
+   * dropped the held audio before any gap over 1 s, because it dated lines from the first chunk
+   * alone and a gap would have made every later line early.)
    */
-  private hold(link: SourceLink, pcm: Uint8Array, now: number): void {
-    const last = link.held.at(-1);
-    if (last !== undefined && now - last.atMs > BUFFER_GAP_MS) {
-      link.heldDropped += link.held.length;
-      link.held = [];
-      link.heldMs = 0;
-    }
-    link.held.push({ pcm, atMs: now });
+  private hold(link: SourceLink, pcm: Uint8Array, capturedAtMs: number): void {
+    link.held.push({ pcm, capturedAtMs });
     link.heldMs += this.chunkMs(pcm);
     while (link.heldMs > this.options.reopenBufferMs && link.held.length > 1) {
       const oldest = link.held.shift();
@@ -416,7 +452,7 @@ export class CaptureSession {
   }
 
   private chunkMs(pcm: Uint8Array): number {
-    return pcmBytesToMs(pcm.byteLength, this.options.settings.sampleRate || PCM_SAMPLE_RATE);
+    return pcmBytesToMs(pcm.byteLength, this.sampleRate);
   }
 
   /** Every stream is tracked from the moment it exists, so close() can never miss one. */
@@ -424,7 +460,7 @@ export class CaptureSession {
     const handle: StreamHandle = {
       stream,
       source,
-      offsetMs: null,
+      timeline: new AudioTimeline(this.sampleRate),
       closing: null,
       openedAtMs: this.clock(),
     };
@@ -450,16 +486,72 @@ export class CaptureSession {
     return handle.closing;
   }
 
-  private send(handle: StreamHandle, pcm: Uint8Array, arrivedAtMs: number): void {
-    if (handle.offsetMs === null) {
-      // The vendor's clock starts at its first audio byte. That byte was captured one chunk
-      // before it reached us, so the offset is its arrival minus the chunk's own duration.
-      // Adapters must hand the vendor every byte, in order (AssemblyAI regroups them; see
-      // SttConnection.sendFrame).
-      const captured = arrivedAtMs - this.chunkMs(pcm);
-      handle.offsetMs = Math.max(0, captured - this.options.meetingStartedAtMs);
+  private send(handle: StreamHandle, pcm: Uint8Array, capturedAtMs: number): void {
+    // The timeline counts the vendor's clock in the samples sent here, so adapters must hand the
+    // vendor every byte, in order (AssemblyAI regroups them; see SttConnection.sendFrame).
+    const run = handle.timeline.append(capturedAtMs, pcm.byteLength / SAMPLE_BYTES);
+    if (run !== null && run.jumpMs !== null) {
+      this.options.logger.info('audio timeline: new run', {
+        source: handle.source,
+        jumpMs: Math.round(run.jumpMs),
+        runs: handle.timeline.runs.length,
+      });
     }
     handle.stream.send(pcm);
+  }
+
+  /**
+   * A span on one stream's own clock (the vendor's: ms from the first byte it was sent) as meeting
+   * offsets, through the runs of audio that hold it. Always the span, never its two edges one at a
+   * time: only AudioTimeline.toCapturedSpan cuts a vendor's spill across a run boundary, and an edge
+   * mapped alone lands on the far side of the gap. See meetingOffset for the units.
+   */
+  private meetingSpan(
+    handle: StreamHandle,
+    span: { startMs: number; endMs: number },
+  ): { startMs: number; endMs: number } {
+    const { meetingStartedAtMs } = this.options;
+    // No audio sent yet, so no run to map through: a vendor sends no line before it heard any, and
+    // the landed rule (the stream's offset 0) stands in if one ever does.
+    const captured = handle.timeline.toCapturedSpan(span.startMs, span.endMs) ?? {
+      startMs: meetingStartedAtMs + span.startMs,
+      endMs: meetingStartedAtMs + span.endMs,
+    };
+    const startMs = this.meetingOffset(captured.startMs);
+    // A run that starts earlier than its predecessor predicted (the wall clock was set back) would
+    // date the end of a span across it before its start, which the API refuses (end_ms >= start_ms).
+    return { startMs, endMs: Math.max(startMs, this.meetingOffset(captured.endMs)) };
+  }
+
+  /**
+   * A final's span as meeting offsets, widened to hold its words (already meeting offsets). The
+   * line and each word are cut at a run boundary on their own evidence, so they can disagree: a
+   * line whose first 100 ms sit before a stall reads them as spill and starts after it, while a
+   * whole word in those 100 ms is real audio from before it. The word wins, and the line keeps it:
+   * EchoFilter reaches call-audio lines by their spans, trusting every word to lie inside its line
+   * ("Words lie inside their own line's span"), so a word outside it would go unmatched and its
+   * echo on the mic would be kept.
+   */
+  private lineSpan(
+    handle: StreamHandle,
+    line: { startMs: number; endMs: number },
+    words: readonly { startMs: number; endMs: number }[],
+  ): { startMs: number; endMs: number } {
+    const span = this.meetingSpan(handle, line);
+    return {
+      startMs: Math.min(span.startMs, ...words.map((word) => word.startMs)),
+      endMs: Math.max(span.endMs, ...words.map((word) => word.endMs)),
+    };
+  }
+
+  /**
+   * A capture time (wall clock) as ms from the meeting start. Whole ms: the renderer's capture
+   * times are fractional (performance.now) and the API's offsets are integers (OffsetMs), so it
+   * would refuse a fraction with a 422 and the uploader would set the line aside for good. Never
+   * negative (OffsetMs again): audio captured just before the start counts from 0.
+   */
+  private meetingOffset(capturedAtMs: number): number {
+    return Math.max(0, Math.round(capturedAtMs - this.options.meetingStartedAtMs));
   }
 
   private setState(source: AudioSource, state: SttStreamState, message: string | null): void {
@@ -468,24 +560,19 @@ export class CaptureSession {
   }
 
   private handleEvent(source: AudioSource, handle: StreamHandle, event: SttEvent): void {
-    const offset = handle.offsetMs ?? 0;
     const { listeners, logger } = this.options;
     switch (event.type) {
       case 'final': {
+        const words = event.words.map((word) => ({ ...word, ...this.meetingSpan(handle, word) }));
         const segment: TranscriptSegment = {
           id: randomUUID(),
           meetingId: this.meetingId,
           source,
           speaker: SPEAKER_FOR_SOURCE[source],
-          startMs: offset + event.startMs,
-          endMs: offset + event.endMs,
+          ...this.lineSpan(handle, event, words),
           text: event.text,
           confidence: event.confidence,
-          words: event.words.map((word) => ({
-            ...word,
-            startMs: offset + word.startMs,
-            endMs: offset + word.endMs,
-          })),
+          words,
           createdAt: new Date(this.clock()).toISOString(),
         };
         try {
@@ -512,8 +599,7 @@ export class CaptureSession {
           meetingId: this.meetingId,
           source,
           text: event.text,
-          startMs: offset + event.startMs,
-          endMs: offset + event.endMs,
+          ...this.meetingSpan(handle, event),
         });
         return;
       case 'error':
