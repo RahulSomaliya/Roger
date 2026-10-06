@@ -1,3 +1,4 @@
+import AVFoundation
 import CoreAudio
 import Foundation
 
@@ -5,13 +6,13 @@ import Foundation
 //
 // They cover everything that needs no audio permission: the frame header and capture times, the
 // ring and its overflow count, the converter, the writer thread, the IO block's mixdown, stdin
-// commands, the parent watch, signals, the rebuild debounce, and the tap session driven through a
-// fake TapDevice. The IO block's shut-off on a tap format change is checked through TapInput and
-// the format listener's block, called by hand. Nothing here creates a process tap, registers a
-// Core Audio listener or opens an audio device, so it never raises a macOS privacy prompt and
-// runs unattended; keep it that way, since `make check` runs it on every pass. The real tap is
-// exercised by `selftest --route-switch` (`make test-native-route`: opt-in, audible, M2-T7b) and
-// by the probe.
+// commands, the parent watch, signals, the rebuild debounce, and the tap session and the probe
+// driven through a fake TapDevice. The IO block's shut-off on a tap format change is checked
+// through TapInput and the format listener's block, called by hand. Nothing here creates a process
+// tap, registers a Core Audio listener or opens an audio device, so it never raises a macOS
+// privacy prompt and runs unattended; keep it that way, since `make check` runs it on every pass.
+// The real tap and the real probe are exercised by `selftest --route-switch` (`make
+// test-native-route`: opt-in and audible; "Route switch" below).
 
 func runSelfTest(arguments: [String]) -> Int32 {
   switch arguments {
@@ -36,20 +37,12 @@ func runSelfTest(arguments: [String]) -> Int32 {
   tapInputCases(&suite)
   lifecycleCases(&suite)
   sessionCases(&suite)
+  probeCases(&suite)
+  routeSwitchCases(&suite)
   suite.skip(
-    "Core Audio tap",
-    because: "it needs the System Audio Recording permission; `make test-native-route` runs it")
+    "Core Audio tap and probe",
+    because: "they need the System Audio Recording permission; `make test-native-route` runs both")
   return suite.finish()
-}
-
-/// The audible route-switch test: a temporary multi-output device, a tone through `afplay`, a
-/// switch of the default output, and non-zero audio plus a `restarted` event within 2 s.
-///
-/// Stub from M2-T7; owned by M2-T7b, which replaces this body (`runSelfTest` and the
-/// `make test-native-route` target already call it). Until then it checks nothing and says so.
-func runRouteSwitchSelfTest() -> Int32 {
-  print("roger-audio selftest --route-switch: not built yet (M2-T7b); nothing was checked")
-  return ExitCode.unavailable.rawValue
 }
 
 // MARK: - Protocol
@@ -894,11 +887,12 @@ private func sessionCases(_ suite: inout SelfTestSuite) {
   }
 }
 
-/// A tap that records what the session asks of it and fails builds on demand.
+/// A tap that records what the session asks of it and fails builds, or the route watch, on demand.
 private final class FakeTapDevice: TapDevice, @unchecked Sendable {
   static let format = TapFormat(sampleRate: 48_000, channels: 1, interleaved: true)
   let log = Locked<[String]>([])
   let failNextBuilds = Locked(0)
+  let failWatch = Locked(false)
   private let onChange = Locked<((RestartReason) -> Void)?>(nil)
   private let queue: DispatchQueue
 
@@ -921,6 +915,11 @@ private final class FakeTapDevice: TapDevice, @unchecked Sendable {
   func teardown() { log.withValue { $0.append("teardown") } }
 
   func watchRoute(onChange: @escaping (RestartReason) -> Void) throws {
+    if failWatch.value {
+      log.withValue { $0.append("watch failed") }
+      throw HelperFailure(
+        code: "route_watch_failed", message: "fake route watch refused", status: -50)
+    }
     log.withValue { $0.append("watch") }
     self.onChange.withValue { $0 = onChange }
   }
@@ -930,7 +929,10 @@ private final class FakeTapDevice: TapDevice, @unchecked Sendable {
     onChange.withValue { $0 = nil }
   }
 
-  /// What a Core Audio property listener does: call back on the control queue.
+  /// What a Core Audio property listener does: call back on the control queue. The real tap's
+  /// format listener also closes the tap's input first (SystemAudioTap.formatListener), so after a
+  /// `.tapFormatChanged` nothing more arrives until a rebuild; the cases here write no audio after
+  /// one.
   func routeChanged(_ reason: RestartReason) {
     queue.async { [onChange] in onChange.value?(reason) }
   }
@@ -1013,6 +1015,1052 @@ private final class SessionHarness {
     queue.sync {}
     return written
   }
+}
+
+// MARK: - Probe (with a fake device: no Core Audio)
+
+private func probeCases(_ suite: inout SelfTestSuite) {
+  /// What a probe that got as far as listening asks of its tap, in order.
+  let probeLog = ["build", "watch", "stop watching", "teardown"]
+
+  suite.run("probe options: 2 s by default, 1 to 10 whole seconds, anything else refused") { t in
+    t.expectEqual(try ProbeOptions(arguments: []), ProbeOptions(seconds: 2), "default")
+    t.expectEqual(try ProbeOptions(arguments: ["--seconds", "10"]).seconds, 10, "explicit")
+    for bad in [
+      ["--seconds"], ["--seconds", "0"], ["--seconds", "11"], ["--seconds", "1.5"],
+      ["--seconds", "2", "--seconds", "2"], ["--sample-rate", "16000"],
+    ] {
+      t.expectThrows("refuses \(bad)") { _ = try ProbeOptions(arguments: bad) }
+    }
+  }
+
+  suite.run("probe lines: one JSON line each, \"event\" first") { t in
+    t.expectEqual(
+      ProbeOutput.listening(seconds: 2).jsonLine, #"{"event":"listening","seconds":2}"# + "\n",
+      "listening")
+    t.expectEqual(
+      ProbeOutput.result(ProbeResult(peak: 8_192, audioMs: 2_000)).jsonLine,
+      #"{"event":"result","peak":8192,"audioMs":2000}"# + "\n", "result")
+  }
+
+  suite.run("probe meter: the loudest sample on the stats scale, and how much audio came") { t in
+    var meter = PeakMeter()
+    t.expectEqual(meter.result, ProbeResult(peak: 0, audioMs: 0), "nothing heard yet")
+    var click = [Float](repeating: 0, count: 480)
+    click[100] = -0.5
+    click.withUnsafeBufferPointer { meter.add($0, sampleRate: 48_000) }
+    t.expectEqual(
+      meter.result, ProbeResult(peak: 16_384, audioMs: 10), "|-0.5| is half of full scale")
+    [Float](repeating: 0.25, count: 160).withUnsafeBufferPointer {
+      meter.add($0, sampleRate: 16_000)
+    }
+    t.expectEqual(
+      meter.result, ProbeResult(peak: 16_384, audioMs: 20), "quieter audio adds only time")
+    [Float.nan, 1.5, -Float.infinity].withUnsafeBufferPointer { meter.add($0, sampleRate: 48_000) }
+    t.expectEqual(meter.result.peak, 32_768, "past full scale is full scale; NaN is never loudest")
+
+    var faint = PeakMeter()
+    [Float(0.4 / 32_768)].withUnsafeBufferPointer { faint.add($0, sampleRate: 48_000) }
+    t.expectEqual(faint.result.peak, 0, "under half a 16-bit step is silence, as in tap's output")
+    [Float(0.6 / 32_768)].withUnsafeBufferPointer { faint.add($0, sampleRate: 48_000) }
+    t.expectEqual(faint.result.peak, 1, "over half a step is heard")
+  }
+
+  suite.run("probe: builds the tap, says it listens, hears for all its seconds, then tears down") {
+    t in
+    let probe = ProbeHarness(seconds: 2)
+    probe.start()
+    t.expect(probe.waitForListening(), "says it listens once the tap runs")
+    t.expectEqual(
+      probe.lines.value, [ProbeOutput.listening(seconds: 2).jsonLine], "the listening line, once")
+    writeToRing(probe.ring, [Float](repeating: 0.25, count: 12_000), rate: 48_000)
+    usleep(100_000)
+    t.expect(!probe.finished, "still listening: 2 s have not passed on the uptime clock")
+    probe.uptime.withValue { $0 += 2 }
+    guard case .success(let heard)? = probe.finish() else {
+      t.fail("did not finish with a result: \(String(describing: probe.finish()))")
+      return
+    }
+    t.expectEqual(heard, ProbeResult(peak: 8_192, audioMs: 250), "peak and length of what it heard")
+    t.expectEqual(
+      probe.device.log.value, probeLog, "watches the route, and is torn down before it answers")
+    t.expect(probe.events.all.isEmpty, "no warning")
+  }
+
+  suite.run("probe: digital silence is peak 0; a tap that delivers nothing also warns no_audio") {
+    t in
+    let silent = ProbeHarness(seconds: 1)
+    silent.start()
+    t.expect(silent.waitForListening(), "listening")
+    writeToRing(silent.ring, [Float](repeating: 0, count: 4_800), rate: 48_000)
+    silent.uptime.withValue { $0 += 1 }
+    guard case .success(let quiet)? = silent.finish() else {
+      t.fail("silence: no result: \(String(describing: silent.finish()))")
+      return
+    }
+    t.expectEqual(quiet, ProbeResult(peak: 0, audioMs: 100), "100 ms of zeros")
+    t.expect(silent.events.all.isEmpty, "silence is an answer, not a warning")
+
+    let dead = ProbeHarness(seconds: 1)
+    dead.start()
+    t.expect(dead.waitForListening(), "listening")
+    dead.uptime.withValue { $0 += 1 }
+    guard case .success(let nothing)? = dead.finish() else {
+      t.fail("no audio: no result: \(String(describing: dead.finish()))")
+      return
+    }
+    t.expectEqual(nothing, ProbeResult(peak: 0, audioMs: 0), "no audio at all")
+    t.expect(
+      dead.events.all.contains {
+        guard case .warning(let code, _) = $0 else { return false }
+        return code == "no_audio"
+      }, "a tap that never ran is warned about: it is a helper failure, not a permission answer")
+  }
+
+  suite.run("probe: a tap that cannot be built is the error; no listening line, nothing left") {
+    t in
+    let probe = ProbeHarness()
+    probe.device.failNextBuilds.withValue { $0 = 1 }
+    probe.start()
+    guard case .failure(let error)? = probe.finish() else {
+      t.fail("did not fail: \(String(describing: probe.finish()))")
+      return
+    }
+    t.expectEqual((error as? HelperFailure)?.code, "tap_create_failed", "the tap's own failure")
+    t.expectEqual((error as? HelperFailure)?.status, -50, "with its OSStatus")
+    t.expect(probe.lines.value.isEmpty, "never said it listens")
+    t.expectEqual(probe.device.log.value.last, "teardown", "nothing left built")
+  }
+
+  suite.run("probe: cancel (a termination signal) ends it early, torn down, with no result") { t in
+    let probe = ProbeHarness(seconds: 10)
+    probe.start()
+    t.expect(probe.waitForListening(), "listening")
+    probe.probe.cancel()
+    t.expect(waitUntil(seconds: 1) { probe.finished }, "ends within a poll, not after 10 s")
+    guard case .success(let heard)? = probe.finish() else {
+      t.fail("cancel is not a failure: \(String(describing: probe.finish()))")
+      return
+    }
+    t.expectEqual(heard, nil, "no result")
+    t.expectEqual(probe.device.log.value, probeLog, "torn down")
+  }
+
+  suite.run("probe: a closed stdout ends it at once, torn down") { t in
+    let probe = ProbeHarness(stdoutClosed: true)
+    probe.start()
+    guard case .failure(let error)? = probe.finish() else {
+      t.fail("did not stop: \(String(describing: probe.finish()))")
+      return
+    }
+    t.expectEqual(error as? OutputError, .closed, "the write's own error")
+    t.expectEqual(probe.device.log.value, probeLog, "torn down")
+  }
+
+  // AirPods connecting or a sample-rate switch mid-listen: the real tap's format listener closes
+  // its input (TapInput), so the probe would sit out its seconds on a deaf tap and answer peak 0,
+  // which main reads as "pending" or "not allowed" although the permission is granted.
+  suite.run("probe: a route change with nothing heard yet is no answer: route_changed, at once") {
+    t in
+    for reason in [RestartReason.tapFormatChanged, .outputDeviceChanged] {
+      let probe = ProbeHarness(seconds: 10)
+      probe.start()
+      t.expect(probe.waitForListening(), "\(reason): listening")
+      writeToRing(probe.ring, [Float](repeating: 0, count: 4_800), rate: 48_000)
+      probe.device.routeChanged(reason)
+      t.expect(
+        waitUntil(seconds: 1) { probe.finished }, "\(reason): ends within a poll, not after 10 s")
+      guard case .failure(let error)? = probe.finish() else {
+        t.fail("\(reason): answered anyway: \(String(describing: probe.finish()))")
+        continue
+      }
+      let failure = error as? HelperFailure
+      t.expectEqual(failure?.code, "route_changed", "\(reason): the error code main reads")
+      t.expect(
+        failure?.message.contains(reason.rawValue) == true,
+        "\(reason): names the change: \(failure?.message ?? "\(error)")")
+      t.expectEqual(
+        probe.lines.value, [ProbeOutput.listening(seconds: 10).jsonLine],
+        "\(reason): no result line")
+      t.expectEqual(probe.device.log.value, probeLog, "\(reason): torn down")
+    }
+  }
+
+  suite.run("probe: a route change after the sound was heard keeps the answer, at once") { t in
+    let probe = ProbeHarness(seconds: 10)
+    probe.start()
+    t.expect(probe.waitForListening(), "listening")
+    writeToRing(probe.ring, [Float](repeating: 0.25, count: 4_800), rate: 48_000)
+    probe.device.routeChanged(.tapFormatChanged)
+    t.expect(waitUntil(seconds: 1) { probe.finished }, "ends within a poll, not after 10 s")
+    guard case .success(let heard)? = probe.finish() else {
+      t.fail("no result: \(String(describing: probe.finish()))")
+      return
+    }
+    t.expectEqual(
+      heard, ProbeResult(peak: 8_192, audioMs: 100),
+      "heard is granted, whatever the route did after")
+    t.expectEqual(probe.device.log.value, probeLog, "torn down")
+    t.expect(probe.events.all.isEmpty, "no warning: the answer stands")
+  }
+
+  suite.run("probe: a route it cannot watch is the error; no listening line, nothing left") { t in
+    let probe = ProbeHarness()
+    probe.device.failWatch.withValue { $0 = true }
+    probe.start()
+    guard case .failure(let error)? = probe.finish() else {
+      t.fail("did not fail: \(String(describing: probe.finish()))")
+      return
+    }
+    t.expectEqual((error as? HelperFailure)?.code, "route_watch_failed", "the watch's own failure")
+    t.expect(probe.lines.value.isEmpty, "never said it listens")
+    t.expectEqual(
+      probe.device.log.value, ["build", "watch failed", "stop watching", "teardown"],
+      "nothing left built")
+  }
+}
+
+/// A PeakProbe on a fake tap, run on its own thread, with an uptime clock that moves only when a
+/// case moves it and a stdout that records its lines (or is closed).
+private final class ProbeHarness: @unchecked Sendable {
+  let queue = DispatchQueue(label: "selftest.probe")
+  let ring = AudioRing()
+  let device: FakeTapDevice
+  let events = RecordingEventSink()
+  let uptime = Locked<TimeInterval>(1_000)
+  let lines = Locked<[String]>([])
+  let probe: PeakProbe
+  private let stdoutClosed: Bool
+  private let outcome = Locked<Result<ProbeResult?, Error>?>(nil)
+
+  init(seconds: Int = 2, stdoutClosed: Bool = false) {
+    device = FakeTapDevice(queue: queue)
+    self.stdoutClosed = stdoutClosed
+    probe = PeakProbe(
+      device: device, ring: ring, queue: queue, events: events, seconds: seconds,
+      pollInterval: 0.005, uptime: { [uptime] in uptime.value })
+  }
+
+  func start() {
+    Thread { [self] in
+      let result = Result {
+        try probe.run { line in
+          if stdoutClosed { throw OutputError.closed }
+          lines.withValue { $0.append(line) }
+        }
+      }
+      outcome.withValue { $0 = result }
+    }.start()
+  }
+
+  func waitForListening() -> Bool { waitUntil(seconds: 5) { !self.lines.value.isEmpty } }
+
+  var finished: Bool { outcome.value != nil }
+
+  /// Waits up to 5 s for `run` to return; nil when it has not.
+  func finish() -> Result<ProbeResult?, Error>? {
+    _ = waitUntil(seconds: 5) { self.finished }
+    return outcome.value
+  }
+}
+
+// MARK: - Route switch (opt-in and audible: `make test-native-route`)
+
+/// The route test's pieces that need no device, checked on every `make check`: the test itself
+/// cannot run there, so a mistake in what it judges by would otherwise show only on a Mac run.
+private func routeSwitchCases(_ suite: inout SelfTestSuite) {
+  suite.run("route test device: published multi-output over the current output, fixed UID") { t in
+    let composition = RouteSwitchTest.multiOutputComposition(wrapping: "BuiltInSpeakerDevice")
+    t.expectEqual(RouteSwitchTest.deviceUID, "ai.linkt.roger.audio.route-test", "the fixed UID")
+    t.expectEqual(
+      composition[kAudioAggregateDeviceUIDKey] as? String, RouteSwitchTest.deviceUID,
+      "under the fixed UID, so a later run finds one a killed run left behind")
+    t.expectEqual(composition[kAudioAggregateDeviceNameKey] as? String, "Roger route test", "name")
+    t.expectEqual(
+      composition[kAudioAggregateDeviceIsPrivateKey] as? Int, 0,
+      "published: afplay can play only to an output it can see")
+    t.expectEqual(composition[kAudioAggregateDeviceIsStackedKey] as? Int, 1, "multi-output")
+    t.expectEqual(
+      composition[kAudioAggregateDeviceMainSubDeviceKey] as? String, "BuiltInSpeakerDevice",
+      "clocked by the output it wraps")
+    let subDevices = composition[kAudioAggregateDeviceSubDeviceListKey] as? [[String: Any]]
+    t.expectEqual(
+      subDevices?.compactMap { $0[kAudioSubDeviceUIDKey] as? String }, ["BuiltInSpeakerDevice"],
+      "the current output is its one sub-device")
+  }
+
+  suite.run("route test tone: a quiet 48 kHz sine for afplay, fading in and out, no click") { t in
+    let file = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "roger-selftest-tone-\(getpid()).caf")
+    defer {
+      if FileManager.default.fileExists(atPath: file.path) {
+        do {
+          try FileManager.default.removeItem(at: file)
+        } catch {
+          t.fail("deleting \(file.path): \(error)")
+        }
+      }
+    }
+    try writeTone(to: file, seconds: 0.5, hz: 440, amplitude: 0.1)
+    let written = try AVAudioFile(forReading: file)
+    t.expectEqual(written.fileFormat.sampleRate, 48_000, "48 kHz")
+    t.expectEqual(written.fileFormat.channelCount, 1, "mono")
+    t.expectEqual(written.length, 24_000, "0.5 s")
+    guard
+      let buffer = AVAudioPCMBuffer(pcmFormat: written.processingFormat, frameCapacity: 4_800),
+      let channel = buffer.floatChannelData?[0]
+    else {
+      t.fail("no float buffer to read the tone into")
+      return
+    }
+    // A read may return fewer frames than the buffer holds, so read to the end of the file.
+    var samples: [Float] = []
+    while written.framePosition < written.length {
+      try written.read(into: buffer)
+      guard buffer.frameLength > 0 else { break }
+      samples += UnsafeBufferPointer(start: channel, count: Int(buffer.frameLength))
+    }
+    t.expectEqual(samples.count, 24_000, "all of it reads back")
+    t.expectNear(
+      Double(samples.map { abs($0) }.max() ?? 0), 0.1, within: 0.001, "amplitude 0.1: quiet")
+    t.expectEqual(samples.first, 0, "starts from silence")
+    t.expectEqual(samples.last, 0, "ends in silence")
+    t.expect(
+      (samples.prefix(240).map { abs($0) }.max() ?? 1) <= 0.025,
+      "the first 5 ms are at most a quarter of the way up the 20 ms fade")
+    t.expect(
+      (samples.suffix(240).map { abs($0) }.max() ?? 1) <= 0.025,
+      "and the last 5 ms a quarter of the way down")
+  }
+
+  suite.run("route test levels: a frame counts from its capture time; zeros never count") { t in
+    let levels = FrameLevels()
+    let pipeline = try FramePipeline(output: output16k, sink: levels.record)
+    try feed(pipeline, tone(rate: 48_000, seconds: 0.1, hz: 440, amplitude: 0.5), rate: 48_000)
+    // A second run a second later, as after a rebuild, and silent.
+    try feed(pipeline, [Float](repeating: 0, count: 9_600), rate: 48_000, wallMs: startMs + 1_000)
+    try pipeline.finish()
+    t.expect(levels.heard(since: startMs), "the tone, from its capture time on")
+    t.expect(
+      !levels.heard(since: startMs + 500),
+      "after it only silence: the tone's frames are older, though written in the same pass")
+    t.expectThrows("a malformed frame is an error, not a silent frame") {
+      try [UInt8](repeating: 0, count: 20).withUnsafeBytes { try levels.record($0) }
+    }
+  }
+
+  suite.run("route test leftover: the output moved off it first; kept when the move stalls") { t in
+    let speakers = FakeOutputs.speakers
+    let leftover = FakeOutputs.leftover
+    let none = FakeOutputs(current: speakers, hasLeftover: false)
+    t.expectEqual(try RouteSwitchTest.removeLeftover(none), false, "no leftover: nothing done")
+    t.expectEqual(none.log, [], "nothing changed")
+
+    let aside = FakeOutputs(current: speakers, hasLeftover: true)
+    t.expectEqual(try RouteSwitchTest.removeLeftover(aside), true, "a leftover aside")
+    t.expectEqual(aside.log, ["destroy \(leftover)"], "removed, the output untouched")
+
+    let inUse = FakeOutputs(current: leftover, hasLeftover: true)
+    t.expectEqual(try RouteSwitchTest.removeLeftover(inUse), true, "a leftover in use")
+    t.expectEqual(
+      inUse.log, ["set \(speakers)", "destroy \(leftover)"],
+      "the output handed back to the device it wraps before it goes")
+    t.expectEqual(inUse.current, speakers, "the user's own output is the default again")
+
+    // Removing the default output leaves macOS to pick any output; setup would take that one for
+    // the user's own, and the final cleanup would "restore" it.
+    let stalled = FakeOutputs(current: leftover, hasLeftover: true, moves: false)
+    t.expectThrows("a move that does not land stops the run") {
+      _ = try RouteSwitchTest.removeLeftover(stalled)
+    }
+    t.expectEqual(
+      stalled.log, ["set \(speakers)"], "kept: it still plays to the output it wraps")
+
+    let orphan = FakeOutputs(current: leftover, hasLeftover: true, wrapsUID: "unplugged")
+    t.expectEqual(try RouteSwitchTest.removeLeftover(orphan), true, "a leftover over a gone output")
+    t.expectEqual(orphan.log, ["destroy \(leftover)"], "removed: there is no output to hand back")
+  }
+}
+
+/// Output devices in memory for `RouteSwitchTest.removeLeftover`: the speakers and, when asked, the
+/// route test's leftover over them. Setting the default moves it, unless `moves` is false.
+private final class FakeOutputs: OutputControl {
+  static let speakers: AudioDeviceID = 10
+  static let leftover: AudioDeviceID = 90
+  private(set) var log: [String] = []
+  private(set) var current: AudioDeviceID
+  private let hasLeftover: Bool
+  private let moves: Bool
+  private let wrapsUID: String
+
+  init(
+    current: AudioDeviceID, hasLeftover: Bool, moves: Bool = true, wrapsUID: String = "speakers"
+  ) {
+    self.current = current
+    self.hasLeftover = hasLeftover
+    self.moves = moves
+    self.wrapsUID = wrapsUID
+  }
+
+  func device(withUID uid: String) -> AudioDeviceID? {
+    switch uid {
+    case "speakers": return Self.speakers
+    case RouteSwitchTest.deviceUID: return hasLeftover ? Self.leftover : nil
+    default: return nil
+    }
+  }
+
+  func defaultOutput() -> AudioDeviceID { current }
+
+  func setDefaultOutput(_ device: AudioDeviceID) {
+    log.append("set \(device)")
+    if moves { current = device }
+  }
+
+  func defaultOutput(becoming device: AudioDeviceID, within seconds: Double) -> AudioDeviceID {
+    current
+  }
+
+  func mainSubDeviceUID(of aggregate: AudioDeviceID) -> String { wrapsUID }
+
+  func name(of device: AudioDeviceID) -> String { "device \(device)" }
+
+  func destroy(_ device: AudioDeviceID) { log.append("destroy \(device)") }
+}
+
+/// `selftest --route-switch`: the tap follows a switch of the default output (the "Tap rebuild on
+/// device change" row of docs/plans/M2-capture-you-can-trust.md). While afplay plays a quiet tone,
+/// it checks that the probe and a live tap session hear it, then makes a temporary multi-output
+/// device over the current output the default (the same speakers, so the tone keeps sounding, but
+/// another device) and expects a `restarted` event and non-zero audio from the rebuilt tap within
+/// 2 s; then it moves the output back and expects the same again.
+///
+/// Opt-in, never in `make check`: it is audible, it moves the Mac's output for a few seconds, and
+/// its taps need System Audio Recording, which the first run asks for on behalf of whatever runs
+/// it (the terminal). The output is moved back and the temporary device removed on every way out
+/// it can catch, Ctrl-C included; a run killed outright leaves the device for the next run to
+/// remove.
+func runRouteSwitchSelfTest() -> Int32 {
+  // Line-buffered, so the cases before a hang stay on screen.
+  setvbuf(stdout, nil, _IOLBF, 0)
+  signal(SIGPIPE, SIG_IGN)
+  print(
+    "roger-audio selftest --route-switch: plays a quiet 440 Hz tone and moves the default output "
+      + "to a temporary device and back, about 10 s")
+  let test = RouteSwitchTest()
+  let signalQueue = DispatchQueue(label: "selftest.route.signals")
+  let signals = TerminationSignals(queue: signalQueue) { number in
+    test.cleanUp()
+    print("roger-audio selftest --route-switch: stopped by signal \(number), after its cleanup")
+    exit(ExitCode.failure.rawValue)
+  }
+  var suite = SelfTestSuite()
+  test.run(&suite)
+  // The last case cleans up; this covers a run that stopped before it, and does nothing otherwise.
+  test.cleanUp()
+  signals.cancel()
+  return suite.finish()
+}
+
+/// The route test's steps, and everything it changes on the Mac, so `cleanUp` can undo it from the
+/// signal handler as well as at the end.
+private final class RouteSwitchTest: @unchecked Sendable {
+  /// Fixed, so a run killed before its cleanup leaves a device the next run can find.
+  static let deviceUID = "ai.linkt.roger.audio.route-test"
+  static let deviceName = "Roger route test"
+  /// The design row's bound: a `restarted` event and the rebuilt tap's audio within 2 s.
+  static let followSeconds = 2.0
+  /// Longer than all the steps together; the cleanup stops it.
+  static let toneSeconds = 20.0
+
+  /// What the test changed. Every change and the cleanup hold the lock, so a cleanup from the
+  /// signal handler never runs between a change and its note here, and nothing changes after it.
+  private struct Changes {
+    var cleanedUp = false
+    var original: AudioDeviceID?
+    var testDevice: AudioDeviceID?
+    var player: Process?
+    var toneFile: URL?
+  }
+
+  private let changes = Locked(Changes())
+
+  /// The temporary device: multi-output (stacked), with the current output as its one sub-device,
+  /// so it plays what that output plays.
+  ///
+  /// Published (`private` 0), although the plan says private: a private aggregate exists only for
+  /// the process that made it (AudioHardware.h), and afplay, like any call app, can play only to an
+  /// output it can see, so it could not follow the switch onto a private one. A published device
+  /// outlives a run killed with SIGKILL, hence the fixed UID and `removeLeftover`.
+  static func multiOutputComposition(wrapping outputUID: String) -> [String: Any] {
+    [
+      kAudioAggregateDeviceNameKey: deviceName,
+      kAudioAggregateDeviceUIDKey: deviceUID,
+      kAudioAggregateDeviceIsPrivateKey: 0,
+      kAudioAggregateDeviceIsStackedKey: 1,
+      kAudioAggregateDeviceMainSubDeviceKey: outputUID,
+      kAudioAggregateDeviceSubDeviceListKey: [[kAudioSubDeviceUIDKey: outputUID]],
+    ]
+  }
+
+  func run(_ suite: inout SelfTestSuite) {
+    var original = AudioDeviceID(kAudioObjectUnknown)
+    var originalUID = ""
+    let setUp = passes(&suite, "setup: the current output read, the tone playing") { _ in
+      try change { made in
+        if try Self.removeLeftover(CoreAudioOutputs()) {
+          print("      removed the \(Self.deviceName) device a killed run left behind")
+        }
+        original = try OutputDevices.defaultOutput()
+        originalUID = try OutputDevices.uid(of: original)
+        made.original = original
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent(
+          "roger-route-test-\(getpid()).caf")
+        made.toneFile = file
+        try writeTone(to: file, seconds: Self.toneSeconds, hz: 440, amplitude: 0.1)
+        let player = Process()
+        player.executableURL = URL(fileURLWithPath: "/usr/bin/afplay")
+        player.arguments = [file.path]
+        try player.run()
+        made.player = player
+      }
+      print("      output: \(OutputDevices.name(of: original))")
+    }
+    guard setUp else { return skipRest(&suite, because: "the setup failed") }
+
+    let probed = passes(&suite, "probe: a real tap hears the tone") { t in
+      let queue = DispatchQueue(label: "selftest.route.probe")
+      let ring = AudioRing()
+      let events = RecordingEventSink()
+      let probe = PeakProbe(
+        device: SystemAudioTap(ring: ring, queue: queue, events: events), ring: ring, queue: queue,
+        events: events, seconds: 2)
+      let heard = try probe.run { _ in }
+      t.expect(
+        (heard?.audioMs ?? 0) > 0, "the tap delivered audio; events: \(describe(events.all))")
+      t.expect(
+        (heard?.peak ?? 0) > 0,
+        "the tap heard nothing (peak 0). Allow System Audio Recording for the app running this "
+          + "(System Settings > Privacy & Security > Screen & System Audio Recording > System "
+          + "Audio Recording Only; a first run has just asked), check the Mac is not muted, and "
+          + "run again")
+    }
+    guard probed else {
+      return skipRest(&suite, because: "the tap hears nothing, so a switch would prove nothing")
+    }
+
+    var session: LiveTapSession?
+    let listening = passes(&suite, "tap: ready, and the tone heard within 2 s") { t in
+      let tap = try LiveTapSession()
+      session = tap
+      tap.start()
+      t.expect(tap.waitForReady(), "ready within 5 s; events: \(describe(tap.events.all))")
+      t.expect(
+        waitUntil(seconds: Self.followSeconds) { tap.levels.heard(since: 0) },
+        "non-zero audio within 2 s of ready")
+    }
+    guard listening, let tap = session else {
+      if let tap = session { print("      tap session stopped: \(String(describing: tap.stop()))") }
+      return skipRest(&suite, because: "the tap session did not hear the tone")
+    }
+
+    var moved = false
+    passes(&suite, "switch to a temporary multi-output device: the tap follows within 2 s") { t in
+      let device = try change { made -> AudioDeviceID in
+        let device = try OutputDevices.createAggregate(
+          Self.multiOutputComposition(wrapping: originalUID),
+          "creating \(Self.deviceName) over \(OutputDevices.name(of: original)) (if that output is "
+            + "itself an aggregate or multi-output device, pick a plain one and run again)")
+        made.testDevice = device
+        return device
+      }
+      t.expect(
+        waitUntil(seconds: 2) { OutputDevices.hasOutputStreams(device) },
+        "\(Self.deviceName) came up with output streams within 2 s")
+      moved = try follow(t, tap, to: device)
+    }
+    if moved {
+      passes(&suite, "back to the original output: the tap follows within 2 s") { t in
+        _ = try follow(t, tap, to: original)
+      }
+    } else {
+      suite.skip("back to the original output", because: "the output never moved")
+    }
+
+    passes(&suite, "tap: ends at the end of stdin with code 0 and no error event") { t in
+      t.expectEqual(tap.stop(), .ok, "exit code")
+      let errors = tap.events.all.filter {
+        if case .error = $0 { return true } else { return false }
+      }
+      t.expect(errors.isEmpty, "error events: \(describe(errors))")
+    }
+
+    passes(&suite, "cleanup: the original output is the default again, the test device gone") { t in
+      let problems = cleanUp()
+      t.expect(problems.isEmpty, "could not undo: \(problems.joined(separator: "; "))")
+      t.expectEqual(try OutputDevices.defaultOutput(), original, "the default output")
+      t.expectEqual(
+        try OutputDevices.device(withUID: Self.deviceUID), nil, "\(Self.deviceName) removed")
+    }
+  }
+
+  /// Undoes what the test changed: stops the tone, moves the output back, removes the test device
+  /// and the tone file. Runs once; later calls do nothing. Returns, and prints, what it could not
+  /// undo.
+  @discardableResult
+  func cleanUp() -> [String] {
+    changes.withValue { made in
+      guard !made.cleanedUp else { return [] }
+      made.cleanedUp = true
+      var problems: [String] = []
+      if let player = made.player, player.isRunning {
+        // SIGKILL, not terminate(): while TerminationSignals runs, this process ignores SIGTERM,
+        // and a child can inherit an ignored signal across exec.
+        kill(player.processIdentifier, SIGKILL)
+        player.waitUntilExit()
+      }
+      if let device = made.testDevice, let original = made.original {
+        // Set even when the default already reads as the original: a switch to the test device
+        // may still be on its way (setDefaultOutput), and that stale read would skip the restore.
+        // The device goes only once the original is back: removing the default output leaves
+        // macOS to pick any output.
+        do {
+          try OutputDevices.setDefaultOutput(original)
+          let current = try OutputDevices.defaultOutput(becoming: original, within: 2)
+          if current != original {
+            problems.append(
+              "the default output is \(OutputDevices.name(of: current)), not "
+                + OutputDevices.name(of: original))
+          }
+        } catch {
+          problems.append("moving the output back to \(OutputDevices.name(of: original)): \(error)")
+        }
+        do {
+          try OutputDevices.destroy(device)
+        } catch {
+          problems.append("removing \(Self.deviceName): \(error)")
+        }
+      }
+      if let file = made.toneFile, FileManager.default.fileExists(atPath: file.path) {
+        do {
+          try FileManager.default.removeItem(at: file)
+        } catch {
+          problems.append("deleting \(file.path): \(error)")
+        }
+      }
+      for problem in problems { print("      cleanup failed: \(problem)") }
+      return problems
+    }
+  }
+
+  /// Makes `device` the default output and checks that the live tap follows: a `restarted` event
+  /// for the output change, then non-zero audio captured by the rebuilt tap, both within 2 s of the
+  /// switch. Returns whether the default output moved.
+  private func follow(_ t: SelfTestCase, _ tap: LiveTapSession, to device: AudioDeviceID) throws
+    -> Bool
+  {
+    let name = OutputDevices.name(of: device)
+    let eventsBefore = tap.events.all.count
+    let deadline = ProcessInfo.processInfo.systemUptime + Self.followSeconds
+    func remaining() -> Double { max(0, deadline - ProcessInfo.processInfo.systemUptime) }
+
+    try change { _ in try OutputDevices.setDefaultOutput(device) }
+    let current = try OutputDevices.defaultOutput(becoming: device, within: remaining())
+    t.expectEqual(current, device, "macOS made \(name) the default output within 2 s")
+    guard current == device else { return false }
+
+    let restarted = waitUntil(seconds: remaining()) {
+      tap.restartReasons(after: eventsBefore).contains(.outputDeviceChanged)
+    }
+    t.expect(
+      restarted,
+      "restarted (output_device_changed) within 2 s; events since the switch: "
+        + describe(Array(tap.events.all.dropFirst(eventsBefore))))
+    // The build behind that event is the last one begun. The old tap was torn down before it, so
+    // audio captured from its start on is the rebuilt tap's.
+    guard restarted, let rebuiltAt = tap.device.buildStarts.value.last else { return true }
+    t.expect(
+      waitUntil(seconds: remaining()) { tap.levels.heard(since: rebuiltAt) },
+      "non-zero audio from the rebuilt tap within 2 s of the switch (afplay has to follow the "
+        + "default output for the tap to hear it)")
+    return true
+  }
+
+  /// A change to the Mac, made under the lock `cleanUp` takes; refused once the cleanup has run.
+  private func change<Value>(_ body: (inout Changes) throws -> Value) throws -> Value {
+    try changes.withValue { made in
+      guard !made.cleanedUp else {
+        throw SelfTestError(description: "stopped: the test has cleaned up")
+      }
+      return try body(&made)
+    }
+  }
+
+  /// A run killed outright (kill -9) leaves its published device behind, maybe as the default
+  /// output. Moves the output to the device it wraps, then removes it. True when there was one.
+  ///
+  /// Throws, and keeps the device, when the output has not moved within 2 s: removing the default
+  /// output leaves macOS to pick any output, which setup would then read as the user's own and the
+  /// final cleanup would "restore". Kept, it still plays to the output it wraps. With that output
+  /// gone there is nothing to hand back to, so it goes.
+  static func removeLeftover(_ outputs: OutputControl) throws -> Bool {
+    guard let leftover = try outputs.device(withUID: deviceUID) else { return false }
+    if try outputs.defaultOutput() == leftover,
+      let wrapped = try outputs.device(withUID: outputs.mainSubDeviceUID(of: leftover))
+    {
+      try outputs.setDefaultOutput(wrapped)
+      let current = try outputs.defaultOutput(becoming: wrapped, within: 2)
+      guard current == wrapped else {
+        let wrappedName = outputs.name(of: wrapped)
+        throw SelfTestError(
+          description: "\(deviceName), left by a killed run, is the default output, and moving "
+            + "the output back to \(wrappedName), the device it plays to, did not land within 2 s "
+            + "(the default is \(outputs.name(of: current))). It is kept, so macOS does not pick "
+            + "an output: make \(wrappedName) the output in System Settings > Sound and run again")
+      }
+    }
+    try outputs.destroy(leftover)
+    return true
+  }
+
+  private func skipRest(_ suite: inout SelfTestSuite, because reason: String) {
+    suite.skip("the rest of the route test", because: reason)
+  }
+}
+
+/// Runs one case and says whether it passed, for a step the rest depend on.
+@discardableResult
+private func passes(
+  _ suite: inout SelfTestSuite, _ name: String, _ body: (SelfTestCase) throws -> Void
+) -> Bool {
+  var passed = false
+  suite.run(name) { t in
+    try body(t)
+    passed = t.failures.isEmpty
+  }
+  return passed
+}
+
+/// A real tap session in this process, wired as `roger-audio tap` wires one, except that its frames
+/// go to `levels`, its events to `events`, and its stdin is a pipe this side holds.
+private final class LiveTapSession {
+  let events = RecordingEventSink()
+  let levels = FrameLevels()
+  let device: TimedTapDevice
+  private let queue = DispatchQueue(label: "selftest.route.tap")
+  private let session: TapSession
+  private let stdin: (read: Int32, write: Int32)
+  private let exitCode = Locked<ExitCode?>(nil)
+  private var stdinOpen = true
+
+  init() throws {
+    let ring = AudioRing()
+    device = TimedTapDevice(SystemAudioTap(ring: ring, queue: queue, events: events))
+    stdin = try makePipe()
+    let pipeline = try FramePipeline(output: output16k, sink: levels.record)
+    session = TapSession(
+      output: output16k, device: device, ring: ring,
+      writer: FrameWriter(ring: ring, pipeline: pipeline, events: events), events: events,
+      queue: queue, stdin: stdin.read, parent: getpid()
+    ) { [exitCode] code in exitCode.withValue { $0 = code } }
+  }
+
+  func start() { queue.async { [session] in session.start() } }
+
+  func waitForReady() -> Bool {
+    waitUntil(seconds: 5) {
+      self.events.all.contains { if case .ready = $0 { return true } else { return false } }
+    }
+  }
+
+  /// The reasons of the `restarted` events after the first `count` events.
+  func restartReasons(after count: Int) -> [RestartReason] {
+    events.all.dropFirst(count).compactMap {
+      guard case .restarted(let reason, _) = $0 else { return nil }
+      return reason
+    }
+  }
+
+  /// Ends stdin, as main does on Stop, and waits up to 5 s for the session's exit code.
+  func stop() -> ExitCode? {
+    if stdinOpen {
+      stdinOpen = false
+      close(stdin.write)
+    }
+    _ = waitUntil(seconds: 5) { self.exitCode.value != nil }
+    return exitCode.value
+  }
+}
+
+/// Passes every call to the real tap and notes when each build begins, on the wall clock frame
+/// capture times use: audio captured after a build began is that build's, which tells the rebuilt
+/// tap's audio from the old tap's last frames.
+private final class TimedTapDevice: TapDevice {
+  let buildStarts = Locked<[Double]>([])
+  private let tap: TapDevice
+  private let clock = HostClock()
+
+  init(_ tap: TapDevice) { self.tap = tap }
+
+  func build() throws -> TapFormat {
+    buildStarts.withValue { $0.append(clock.nowWallMs()) }
+    return try tap.build()
+  }
+
+  func teardown() { tap.teardown() }
+
+  func watchRoute(onChange: @escaping (RestartReason) -> Void) throws {
+    try tap.watchRoute(onChange: onChange)
+  }
+
+  func stopWatching() { tap.stopWatching() }
+}
+
+/// The capture time and peak of each frame a tap session wrote, decoded from its bytes as main
+/// decodes them.
+private final class FrameLevels: @unchecked Sendable {
+  private let frames = Locked<[(captureWallMs: Double, peak: Int)]>([])
+
+  /// A FramePipeline sink. A frame that does not decode throws, which stops the writer with an
+  /// error event: a test that judged by frames it cannot read would judge nothing.
+  func record(_ frame: UnsafeRawBufferPointer) throws {
+    for decoded in try decodeFrames(Array(frame)) {
+      let peak = decoded.samples.map { abs(Int($0)) }.max() ?? 0
+      frames.withValue { $0.append((decoded.header.captureWallMs, peak)) }
+    }
+  }
+
+  /// True when a frame captured at `wallMs` or later holds a non-zero sample.
+  func heard(since wallMs: Double) -> Bool {
+    frames.value.contains { $0.captureWallMs >= wallMs && $0.peak > 0 }
+  }
+}
+
+/// The output device calls `RouteSwitchTest.removeLeftover` makes: Core Audio on a Mac, a fake in
+/// `make check`, which runs its decisions on every pass.
+private protocol OutputControl {
+  func device(withUID uid: String) throws -> AudioDeviceID?
+  func defaultOutput() throws -> AudioDeviceID
+  func setDefaultOutput(_ device: AudioDeviceID) throws
+  func defaultOutput(becoming device: AudioDeviceID, within seconds: Double) throws
+    -> AudioDeviceID
+  func mainSubDeviceUID(of aggregate: AudioDeviceID) throws -> String
+  func name(of device: AudioDeviceID) -> String
+  func destroy(_ device: AudioDeviceID) throws
+}
+
+/// OutputControl on Core Audio: each call is OutputDevices' own.
+private struct CoreAudioOutputs: OutputControl {
+  func device(withUID uid: String) throws -> AudioDeviceID? {
+    try OutputDevices.device(withUID: uid)
+  }
+
+  func defaultOutput() throws -> AudioDeviceID { try OutputDevices.defaultOutput() }
+
+  func setDefaultOutput(_ device: AudioDeviceID) throws {
+    try OutputDevices.setDefaultOutput(device)
+  }
+
+  func defaultOutput(becoming device: AudioDeviceID, within seconds: Double) throws
+    -> AudioDeviceID
+  {
+    try OutputDevices.defaultOutput(becoming: device, within: seconds)
+  }
+
+  func mainSubDeviceUID(of aggregate: AudioDeviceID) throws -> String {
+    try OutputDevices.mainSubDeviceUID(of: aggregate)
+  }
+
+  func name(of device: AudioDeviceID) -> String { OutputDevices.name(of: device) }
+
+  func destroy(_ device: AudioDeviceID) throws { try OutputDevices.destroy(device) }
+}
+
+/// The Core Audio calls of the route test. A failure is a HelperFailure that names what was
+/// attempted and carries the OSStatus.
+private enum OutputDevices {
+  private static let system = AudioObjectID(kAudioObjectSystemObject)
+  private static let unknown = AudioDeviceID(kAudioObjectUnknown)
+
+  static func defaultOutput() throws -> AudioDeviceID {
+    var device = unknown
+    try getProperty(
+      system, kAudioHardwarePropertyDefaultOutputDevice, into: &device,
+      "reading the default output device")
+    return device
+  }
+
+  /// Asks for `device` as the default output. The switch may land after this returns: read it
+  /// back with `defaultOutput(becoming:within:)`, never with a single `defaultOutput()`.
+  static func setDefaultOutput(_ device: AudioDeviceID) throws {
+    var address = Self.address(kAudioHardwarePropertyDefaultOutputDevice)
+    var value = device
+    try check(
+      AudioObjectSetPropertyData(
+        system, &address, 0, nil, UInt32(MemoryLayout<AudioDeviceID>.size), &value),
+      "making \(name(of: device)) the default output")
+  }
+
+  /// The default output, read again until it is `device` or `seconds` pass. AudioHardware.h:
+  /// a property "should not be considered changed until the HAL has called the listeners as many
+  /// properties values are changed asynchronously", so a read right after the set can be stale.
+  static func defaultOutput(becoming device: AudioDeviceID, within seconds: Double) throws
+    -> AudioDeviceID
+  {
+    var current = try defaultOutput()
+    var failure: Error?
+    _ = waitUntil(seconds: seconds) {
+      if current == device { return true }
+      do {
+        current = try defaultOutput()
+      } catch {
+        failure = error
+        return true
+      }
+      return current == device
+    }
+    if let failure { throw failure }
+    return current
+  }
+
+  static func uid(of device: AudioDeviceID) throws -> String {
+    try string(device, kAudioDevicePropertyDeviceUID, "reading the UID of device \(device)")
+  }
+
+  /// For messages: the device's name, or its id and why the name could not be read.
+  static func name(of device: AudioDeviceID) -> String {
+    do {
+      return try string(device, kAudioObjectPropertyName, "reading the name of device \(device)")
+    } catch {
+      return "device \(device) (\(error))"
+    }
+  }
+
+  /// The device with this UID, or nil when there is none.
+  static func device(withUID uid: String) throws -> AudioDeviceID? {
+    var address = Self.address(kAudioHardwarePropertyTranslateUIDToDevice)
+    var device = unknown
+    var size = UInt32(MemoryLayout<AudioDeviceID>.size)
+    let status = withUnsafePointer(to: uid as CFString) { qualifier in
+      AudioObjectGetPropertyData(
+        system, &address, UInt32(MemoryLayout<CFString>.size), qualifier, &size, &device)
+    }
+    try check(status, "looking up the device with UID \(uid)")
+    return device == unknown ? nil : device
+  }
+
+  static func mainSubDeviceUID(of aggregate: AudioDeviceID) throws -> String {
+    try string(
+      aggregate, kAudioAggregateDevicePropertyMainSubDevice,
+      "reading which output device \(aggregate) wraps")
+  }
+
+  static func createAggregate(_ composition: [String: Any], _ what: String) throws -> AudioDeviceID
+  {
+    var device = unknown
+    try check(AudioHardwareCreateAggregateDevice(composition as CFDictionary, &device), what)
+    return device
+  }
+
+  static func destroy(_ device: AudioDeviceID) throws {
+    try check(AudioHardwareDestroyAggregateDevice(device), "removing device \(device)")
+  }
+
+  /// False until the device answers with output streams. One still coming up answers with an
+  /// error, so this is polled, and the caller reports a device that never comes up.
+  static func hasOutputStreams(_ device: AudioDeviceID) -> Bool {
+    var address = AudioObjectPropertyAddress(
+      mSelector: kAudioDevicePropertyStreams, mScope: kAudioObjectPropertyScopeOutput,
+      mElement: kAudioObjectPropertyElementMain)
+    var size: UInt32 = 0
+    return AudioObjectGetPropertyDataSize(device, &address, 0, nil, &size) == noErr && size > 0
+  }
+
+  private static func getProperty<Value>(
+    _ object: AudioObjectID, _ selector: AudioObjectPropertySelector, into value: inout Value,
+    _ what: String
+  ) throws {
+    var address = Self.address(selector)
+    var size = UInt32(MemoryLayout<Value>.size)
+    try check(AudioObjectGetPropertyData(object, &address, 0, nil, &size, &value), what)
+  }
+
+  /// A CFString property. The HAL hands it over retained, so it is taken retained.
+  private static func string(
+    _ object: AudioObjectID, _ selector: AudioObjectPropertySelector, _ what: String
+  ) throws -> String {
+    var value: Unmanaged<CFString>?
+    try getProperty(object, selector, into: &value, what)
+    guard let value else {
+      throw HelperFailure(code: "core_audio_failed", message: "\(what): no value")
+    }
+    return value.takeRetainedValue() as String
+  }
+
+  private static func address(_ selector: AudioObjectPropertySelector)
+    -> AudioObjectPropertyAddress
+  {
+    AudioObjectPropertyAddress(
+      mSelector: selector, mScope: kAudioObjectPropertyScopeGlobal,
+      mElement: kAudioObjectPropertyElementMain)
+  }
+
+  private static func check(_ status: OSStatus, _ what: String) throws {
+    guard status != noErr else { return }
+    throw HelperFailure(
+      code: "core_audio_failed",
+      message: "\(what) failed (OSStatus \(status) \(fourCharCode(UInt32(bitPattern: status))))",
+      status: status)
+  }
+}
+
+/// Writes a mono 48 kHz Float32 sine for afplay to `url` (its extension picks the file type), with
+/// 20 ms fades so it starts and stops without a click.
+private func writeTone(to url: URL, seconds: Double, hz: Double, amplitude: Float) throws {
+  let rate = 48_000.0
+  let samples = tone(rate: rate, seconds: seconds, hz: hz, amplitude: amplitude)
+  guard
+    let format = AVAudioFormat(standardFormatWithSampleRate: rate, channels: 1),
+    let buffer = AVAudioPCMBuffer(
+      pcmFormat: format, frameCapacity: AVAudioFrameCount(samples.count)),
+    let channel = buffer.floatChannelData?[0]
+  else {
+    throw SelfTestError(description: "could not set up a buffer for a \(seconds) s tone")
+  }
+  let fade = Int(rate * 0.02)
+  for (index, sample) in samples.enumerated() {
+    let edge = min(index, samples.count - 1 - index)
+    channel[index] = edge < fade ? sample * Float(edge) / Float(fade) : sample
+  }
+  buffer.frameLength = AVAudioFrameCount(samples.count)
+  // The file format: one Float32 channel. No "non-interleaved" key, which describes buffers, not
+  // a file.
+  let settings: [String: Any] = [
+    AVFormatIDKey: kAudioFormatLinearPCM,
+    AVSampleRateKey: rate,
+    AVNumberOfChannelsKey: 1,
+    AVLinearPCMBitDepthKey: 32,
+    AVLinearPCMIsFloatKey: true,
+    AVLinearPCMIsBigEndianKey: false,
+  ]
+  // AVAudioFile finishes the file only when it is released (it has no close() before macOS 15).
+  // The pool makes that happen here: an autoreleased reference would otherwise keep the file open
+  // and unfinished past this function, since this tool never drains a pool of its own, and afplay
+  // or the selftest would read it half written.
+  try autoreleasepool {
+    let file = try AVAudioFile(
+      forWriting: url, settings: settings, commonFormat: .pcmFormatFloat32, interleaved: false)
+    try file.write(from: buffer)
+  }
+}
+
+/// Events for a failure message, one JSON line each, without the `stats` lines.
+private func describe(_ events: [HelperEvent]) -> String {
+  let lines = events.compactMap { event -> String? in
+    if case .stats = event { return nil }
+    return event.jsonLine.trimmingCharacters(in: .newlines)
+  }
+  return lines.isEmpty ? "none" : lines.joined(separator: " ")
 }
 
 // MARK: - Helpers
