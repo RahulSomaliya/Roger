@@ -24,10 +24,10 @@ TEST_DB_ENV := $(if $(TEST_DB),TEST_DATABASE_URL=$(TEST_DB_SERVER)/$(TEST_DB))
 # Extra arguments for the tool targets: make bench ARGS="run --parallel 3".
 ARGS ?=
 
-.PHONY: help setup setup-api setup-desktop check lint lint-api lint-desktop typecheck typecheck-api \
-        typecheck-desktop test test-api test-desktop format dev-db migrate dev-api dev-desktop \
-        install-desktop native test-native-route e2e-desktop bench stt-canary eval-notes \
-        eval-notes-fixes clean
+.PHONY: help setup setup-api setup-desktop check check-mac lint lint-api lint-desktop typecheck \
+        typecheck-api typecheck-desktop test test-api test-desktop format dev-db migrate dev-api \
+        dev-desktop install-desktop native test-native-route e2e-desktop bench stt-canary \
+        eval-notes eval-notes-fixes clean
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}'
@@ -46,7 +46,18 @@ setup-desktop: ## Install desktop dependencies (pnpm)
 # ---------------------------------------------------------------------------
 # Quality gate (M0 exit check: one command runs tests and lint for both apps)
 # ---------------------------------------------------------------------------
-check: lint typecheck test ## Lint, typecheck and test both apps
+# On a Mac, `make check` also builds the Swift audio helper and runs its selftest (no audio
+# permission needed, no privacy prompt) and the `*.mac.test.ts` suite. Elsewhere (Linux CI) both are
+# skipped: Swift, Core Audio and afconvert need macOS. The audible route test stays opt-in:
+# `make test-native-route`. Defined above `check` on purpose: make expands a prerequisite list when
+# it reads the rule, so a later definition would leave `check` without it on every machine.
+CHECK_MAC := $(if $(filter Darwin,$(shell uname -s)),check-mac)
+
+check: lint typecheck test $(CHECK_MAC) ## Lint, typecheck and test both apps (and, on a Mac, the helper)
+
+check-mac: native ## macOS only: the helper's selftest and the *.mac.test.ts suite
+	apps/desktop/native/bin/roger-audio selftest
+	pnpm --filter $(DESKTOP_PKG) test:mac
 
 lint: lint-api lint-desktop ## Lint both apps
 
