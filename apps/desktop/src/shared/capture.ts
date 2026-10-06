@@ -1,3 +1,4 @@
+import type { CallApp } from './calendar';
 import type { AudioSource } from './transcript';
 
 /** The capture state machine owned by the main process. */
@@ -9,18 +10,94 @@ export type AudioSourceState = 'active' | 'ended' | 'error';
 /**
  * `stalled`: recording, but no PCM chunk at all from this source for NO_AUDIO_WARNING_MS (the
  * renderer, its worklet or the IPC path stopped). A live track of silence still sends chunks and
- * stays `active` until M2's silence warning. Main sets it and clears it on the next chunk.
+ * stays `active`; whether those chunks carry sound is `SourceStatus.signal` (M2-T11). Main sets it
+ * and clears it on the next chunk.
  */
 export type SourceHealth = 'pending' | 'active' | 'stalled' | 'ended' | 'error';
 
+// Warning thresholds (M2 design, "Silence and no-audio warnings"). They live here once, so main's
+// SignalMonitor and Notifier (M2-T11), the helper's watchdog (M2-T10) and the words the renderer
+// shows can never disagree. capture.test.ts holds the done-when line: every cut that stops audio
+// warns within 10 s; only the owner's D3 and D4 rules take longer.
+
 /** How long a recording source may go without a single chunk before it is shown as stalled. */
 export const NO_AUDIO_WARNING_MS = 5_000;
+
+/**
+ * A chunk whose peak is at most this many Int16 steps (LSB) is digital silence. Real mics never
+ * produce it (anarlog's `DropoutMonitor`); call audio from the global tap is exact zeros whenever
+ * nothing plays, which is why call audio has rules of its own below.
+ */
+export const DIGITAL_SILENCE_PEAK = 1;
+
+/** Mic digital silence this long is a dead mic: a loud warning. */
+export const MIC_DEAD_WARNING_MS = 8_000;
+
+/**
+ * The same on a Bluetooth input (owner decision D4): AirPods gate the mic between words and can
+ * give a minute or more of silence at the start of a call, so 8 s would warn on most AirPods calls.
+ */
+export const BLUETOOTH_MIC_DEAD_WARNING_MS = 30_000;
+
+/**
+ * The flat-level rule, applied only if M2-T11's Mac check finds that input volume 0 is not digital
+ * zero: a mic level this far under its running floor for MIC_DEAD_WARNING_MS is dead too.
+ */
+export const FLAT_LEVEL_UNDER_FLOOR_DB = 40;
+
+/**
+ * Call audio never above digital silence this long after Start: loud while system audio is not
+ * verified for this signing identity (a refused or still-pending tap is silent, with no error), on
+ * screen only once it is (an early join or a waiting room is silent too).
+ */
+export const CALL_AUDIO_NEVER_HEARD_WARNING_MS = 20_000;
+
+/** Call audio digital silence mid-call: shown on screen at this (D3; a quiet call looks the same). */
+export const CALL_AUDIO_SILENT_WARNING_MS = 8_000;
+
+/** The same silence turns loud at this while the mic hears speech (D3)... */
+export const CALL_AUDIO_SILENT_LOUD_WITH_SPEECH_MS = 60_000;
+
+/** ...and at this whatever the mic hears (D3). */
+export const CALL_AUDIO_SILENT_LOUD_MS = 180_000;
+
+/**
+ * Notifier: one macOS notification per warning kind and source in this window. A different kind
+ * or source always notifies: one global limit would hide a second, different cut.
+ */
+export const WARNING_NOTIFY_INTERVAL_MS = 120_000;
+
+/** The helper gave no stdout byte and no event this long: hung, so killed and restarted. */
+export const HELPER_HANG_KILL_MS = 3_000;
+
+/** Helper restarts (after a crash or a hang) before call audio is reported failed, loudly. */
+export const HELPER_MAX_RESTARTS = 5;
+
+/** The audio backup pauses below this much free disk; the text goes on (M2 D5). */
+export const BACKUP_MIN_FREE_BYTES = 2 * 1024 ** 3;
+
+/**
+ * Audio of a meeting whose gap is not re-run yet outlives its retention, at most this many days
+ * after the meeting (M2 D5): deleting it while a re-run is pending defeats the backup.
+ */
+export const BACKUP_KEEP_FOR_RERUN_MAX_DAYS = 30;
 
 /** How the UI and user-facing errors name each stream. */
 export const AUDIO_SOURCE_LABEL: Readonly<Record<AudioSource, string>> = {
   mic: 'Mic (me)',
   system: 'Call audio (them)',
 };
+
+/**
+ * Whether a source's chunks carry sound (M2-T11's SignalMonitor):
+ * - unknown: no chunk measured yet
+ * - signal: its last chunks carried sound
+ * - quiet: digital silence (DIGITAL_SILENCE_PEAK) shorter than the source's dead window, an
+ *   ordinary pause
+ * - dead: digital silence for the source's dead window or longer (MIC_DEAD_WARNING_MS,
+ *   BLUETOOTH_MIC_DEAD_WARNING_MS, CALL_AUDIO_SILENT_WARNING_MS), or the flat-level rule
+ */
+export type SignalState = 'unknown' | 'signal' | 'quiet' | 'dead';
 
 export interface SourceStatus {
   health: SourceHealth;
@@ -29,6 +106,16 @@ export interface SourceStatus {
   /** Epoch ms of the last chunk, or null. */
   lastChunkAt: number | null;
   message: string | null;
+  // M2's fields are optional for the same reason as CaptureStatus's (see there): missing reads as
+  // `unknown` and null.
+  signal?: SignalState;
+  /**
+   * Peak of the last second in dBFS (0 is full scale), or null before any chunk. Digital silence
+   * has no finite level and reads as null too; `signal` tells the two apart.
+   */
+  levelDb?: number | null;
+  /** The device it captures: the input for the mic, the output for call audio; null if unknown. */
+  device?: string | null;
 }
 
 /**
@@ -74,6 +161,199 @@ export interface SttMeterStatus {
   sources: Record<AudioSource, SttMeter>;
 }
 
+/**
+ * What a warning is about (M2 design, "Silence and no-audio warnings"):
+ * - no-audio: no chunk at all for NO_AUDIO_WARNING_MS (renderer, helper, device or IPC stopped)
+ * - source-ended: the track or the helper ended or failed, out of restarts included
+ * - helper-hung: the helper's watchdog killed it (HELPER_HANG_KILL_MS)
+ * - mic-dead: the mic sends digital silence (MIC_DEAD_WARNING_MS, Bluetooth longer)
+ * - call-audio-never-heard: no call audio since Start (CALL_AUDIO_NEVER_HEARD_WARNING_MS)
+ * - call-audio-silent: call audio went silent mid-call (CALL_AUDIO_SILENT_WARNING_MS and on)
+ * - offline: the Mac lost the network, so transcription stopped
+ * - backup-paused: the audio backup stopped, below BACKUP_MIN_FREE_BYTES of free disk
+ */
+export type CaptureWarningKind =
+  | 'no-audio'
+  | 'source-ended'
+  | 'helper-hung'
+  | 'mic-dead'
+  | 'call-audio-never-heard'
+  | 'call-audio-silent'
+  | 'offline'
+  | 'backup-paused';
+
+/** Something wrong now. It stays in `CaptureStatus.warnings` until the condition clears. */
+export interface CaptureWarning {
+  kind: CaptureWarningKind;
+  /** The stream it is about; null when it concerns both or neither (offline, backup). */
+  source: AudioSource | null;
+  /** ISO 8601 instant, UTC: when this spell began. */
+  since: string;
+  /** For people: what is wrong and what to do about it. Never transcript text. */
+  message: string;
+  /**
+   * Loud: the banner's loud style, plus a macOS notification while Roger is not focused (rate
+   * limited by WARNING_NOTIFY_INTERVAL_MS). Quiet: on screen only.
+   */
+  loud: boolean;
+}
+
+/**
+ * Something Roger recovered from on its own: shown on screen, never as a warning.
+ * - device-switched: the mic followed a new default input ("Switched to <device>")
+ * - helper-restarted: the call audio helper was restarted, or rebuilt its tap
+ * - resumed-after-crash: Roger was relaunched and kept taking notes in the same meeting (D7)
+ */
+export type CaptureNoticeKind = 'device-switched' | 'helper-restarted' | 'resumed-after-crash';
+
+export interface CaptureNotice {
+  kind: CaptureNoticeKind;
+  /** The stream it is about; null for the whole recording (a resume). */
+  source: AudioSource | null;
+  /** ISO 8601 instant, UTC. */
+  at: string;
+  /** For people, e.g. "Switched to AirPods Pro". */
+  message: string;
+}
+
+/** How call audio reaches main: the `roger-audio` helper's Core Audio tap, or Electron's fallback. */
+export type SystemCaptureMode = 'tap' | 'electron';
+
+/**
+ * Where call audio plays. Only known headphones turn the echo filter off: an unknown output may be
+ * the laptop speakers, which leak call audio into the mic. The same values as `EchoOutputRoute` in
+ * main/capture/echo/EchoFilter.ts.
+ */
+export type OutputRoute = 'speakers' | 'headphones' | 'unknown';
+
+/** The Mac's default audio devices, as the helper's monitor reports them (M2-T17a). */
+export interface AudioRouteStatus {
+  output: OutputRoute;
+  /** Device names for people; null when unknown. */
+  outputDevice: string | null;
+  inputDevice: string | null;
+}
+
+/**
+ * Why the whole recording is paused, not one stream: `asleep` while the Mac sleeps (M2-T18), when
+ * both sessions are closed and nothing reopens until wake. Not the per-stream `paused` state.
+ */
+export type CapturePauseReason = 'asleep';
+
+/**
+ * The local audio backup of one meeting (M2 D5), never uploaded:
+ * - off: turned off in config.json (`audioBackup` false or `audioRetentionDays` 0); nothing kept
+ * - writing: recording, and its audio is kept as it comes
+ * - paused: less than BACKUP_MIN_FREE_BYTES free; the text goes on, the audio is not kept
+ * - error: a write failed; `message` says why
+ * - kept: the recording is over; its audio is on disk until `keepUntil`
+ * - deleted: deleted by the user or by retention
+ */
+export type BackupState = 'off' | 'writing' | 'paused' | 'error' | 'kept' | 'deleted';
+
+export interface BackupStatus {
+  state: BackupState;
+  /** Bytes of this meeting's audio on disk. */
+  bytes: number;
+  /** ISO 8601 instant, UTC, when the audio is deleted; null while recording or when none is kept. */
+  keepUntil: string | null;
+  /**
+   * True while a gap of this meeting waits for its re-run: the audio stays past retention until the
+   * gap is recovered, the user deletes it, or BACKUP_KEEP_FOR_RERUN_MAX_DAYS pass.
+   */
+  keptForRerun: boolean;
+  message: string | null;
+}
+
+/** One meeting's echo filter counts (M2 D2). */
+export interface EchoStatus {
+  /** Mic lines hidden as a repeat of call audio: kept locally, never uploaded until unhidden. */
+  hidden: number;
+  /** Mic lines with repeated words cut out; the vendor's text is kept locally. */
+  trimmed: number;
+  /** Mic lines waiting for the call-audio stream to catch up before they may upload. */
+  held: number;
+}
+
+/**
+ * A gap re-run in progress (M2-T16): after Stop, at startup or on demand, never while recording.
+ * Null in the status when none runs; the results are in the meeting's `CaptureReport`.
+ */
+export interface RerunStatus {
+  meetingId: string;
+  /** Waiting for a slot in the open budget's per-minute window, or streaming a gap's audio. */
+  state: 'waiting' | 'running';
+  /** Gaps this run takes on, and how many of them are done (recovered, or given up with a reason). */
+  gaps: number;
+  finished: number;
+}
+
+/**
+ * What the echo filter did to a stored line, sent as `transcript:segment-changed` (M2-T14b emits
+ * it, M3-T7's live transcript applies it; one event for all three changes):
+ * - hidden: the line repeats call audio and is hidden (never uploaded)
+ * - trimmed: its repeated words were cut out; `text` is what is left
+ * - unhidden: the user showed it again; it uploads
+ * A change can arrive before the line it names (a held line): the receiver keeps it until then.
+ */
+export interface TranscriptSegmentChange {
+  meetingId: string;
+  segmentId: string;
+  source: AudioSource;
+  change: 'hidden' | 'trimmed' | 'unhidden';
+  reason: 'echo';
+  /** The call-audio line it repeated; null once unhidden. */
+  echoOf: string | null;
+  /** The line's text as it now reads. */
+  text: string;
+}
+
+/**
+ * Why audio reached main but not the vendor, or was lost in a crash: a gap the re-run fills from
+ * the backup. The same values as `GapReason` in main/store/TranscriptStore.ts.
+ */
+export type CaptureGapReason = 'stt_failed' | 'offline' | 'budget' | 'crash';
+
+export interface CaptureReportGap {
+  id: string;
+  source: AudioSource;
+  /** Offsets from the meeting start. */
+  startMs: number;
+  endMs: number;
+  reason: CaptureGapReason;
+  /** ISO 8601 instant, UTC, when a re-run filled it; null until then. */
+  recoveredAt: string | null;
+  /** Why the last re-run did not fill it; null otherwise. */
+  recoverError: string | null;
+}
+
+/** A JSON value, as a capture event's details hold it (the store's `JsonValue`). */
+export type CaptureEventValue =
+  string | number | boolean | null | CaptureEventValue[] | { [key: string]: CaptureEventValue };
+
+/** Something capture did or saw (a pause, a reopen, a device switch, a warning), in time order. */
+export interface CaptureReportEvent {
+  /** ISO 8601 instant, UTC. */
+  at: string;
+  offsetMs: number;
+  source: AudioSource | null;
+  /** Free text, so the tasks that add kinds need not edit this file. */
+  kind: string;
+  /** Codes, counts and timings; never transcript text. */
+  detail: Readonly<Record<string, CaptureEventValue>>;
+}
+
+/** What happened to one meeting's capture (M2-T20b's report; the exit check reads it per call). */
+export interface CaptureReport {
+  meetingId: string;
+  /** The stop that ended the recording (capture/stopReasons.ts), `crash`, or null while it runs. */
+  stopReason: string | null;
+  gaps: CaptureReportGap[];
+  events: CaptureReportEvent[];
+  echo: EchoStatus;
+  backup: BackupStatus;
+}
+
 export interface CaptureStatus {
   phase: CapturePhase;
   meetingId: string | null;
@@ -98,6 +378,37 @@ export interface CaptureStatus {
    * window closing or crashing), or null. Cleared by the next Start.
    */
   notice: string | null;
+
+  // M2's fields (M2-T2). Every one is optional on purpose: main fills each through M2-T4's status
+  // contributors as its feature lands (T10, T11, T14b, T15, T16, T17a, T18, T23), and a status
+  // built without them stays valid meanwhile: CaptureService's recording status (an object
+  // literal), every test's, and the preview fixtures that M4-S3 writes in the same wave. Made
+  // required, each would fail the type check in files their owners do not own. A missing field
+  // reads as its empty value: no warnings, no notices, nothing known.
+
+  /** What is wrong now, loud or quiet (M2-T11). */
+  warnings?: CaptureWarning[];
+  /** What Roger recovered from on its own this recording (device switch, helper restart, resume). */
+  notices?: CaptureNotice[];
+  /** How call audio is captured this recording (M2-T10); null when idle. */
+  systemCapture?: SystemCaptureMode | null;
+  /**
+   * True once call audio was heard (a probe, or tap audio above silence) for this signing identity
+   * (M2-T1, M2-T10). While false, CALL_AUDIO_NEVER_HEARD_WARNING_MS is a loud warning.
+   */
+  systemAudioVerified?: boolean;
+  /** The Mac's default devices (M2-T17a); null until the monitor reports. */
+  route?: AudioRouteStatus | null;
+  /** The call app seen using the mic during this recording, which auto-stop follows (M2-T17b). */
+  trigger?: CallApp | null;
+  /** The whole recording is paused (M2-T18); null otherwise. */
+  paused?: CapturePauseReason | null;
+  /** This meeting's audio backup while recording; the last meeting's after Stop (M2-T15). */
+  backup?: BackupStatus | null;
+  /** This meeting's echo filter counts (M2-T14b). */
+  echo?: EchoStatus | null;
+  /** The gap re-run in progress, of any meeting (M2-T16); null when none runs. */
+  rerun?: RerunStatus | null;
 }
 
 export function emptySourceStatus(): SourceStatus {
