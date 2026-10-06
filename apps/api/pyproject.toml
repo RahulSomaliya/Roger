@@ -64,6 +64,15 @@ select = [
 [tool.ruff.lint.flake8-tidy-imports]
 ban-relative-imports = "all"
 
+# `pyjwt` and `cryptography` are installed only because `mcp` pulls in `pyjwt[crypto]` (uv.lock).
+# Importing either adds a dependency this file does not declare, and adding one means a re-lock
+# that fails under the machine's uv `exclude-newer` pin. The calendar reads the Google ID token
+# with stdlib base64 and json (services/calendar/google.py) and encrypts the refresh token with
+# Postgres pgcrypto (M5 plan, Design). tests/test_calendar_google.py proves this ban is live.
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+"jwt".msg = "undeclared (only mcp pulls it in); decode with base64 and json (M5 plan, ID token)"
+"cryptography".msg = "undeclared (only mcp pulls it in); encrypt with Postgres pgcrypto (M5 plan)"
+
 [tool.mypy]
 python_version = "3.12"
 strict = true
