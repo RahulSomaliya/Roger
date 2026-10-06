@@ -201,7 +201,7 @@ const ListDepthCap = Extension.create({
 
 export interface NoteExtensionOptions {
   /** Shown in an empty editor. */
-  placeholder?: string;
+  placeholder?: string | undefined;
   /** How the editor draws a chip (CitationChip.tsx); left out, the schema's own HTML. */
   citationView?: NodeViewRenderer;
 }

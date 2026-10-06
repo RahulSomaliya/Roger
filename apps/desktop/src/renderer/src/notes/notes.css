@@ -1,0 +1,301 @@
+/*
+ * The notes editor (NoteEditor.tsx): its status line, the conflict banner, the doc and its
+ * citation chips. Colours only from theme/tokens.css (noLiteralColours.test.ts fails on a literal
+ * one). Text reads ink tokens: --ink, --muted, --accent-ink, --danger-ink. --accent-ink on the
+ * --chip-bg tint is 4.5:1 on --panel and 4.2:1 on --bg in light, under AA for a 12px label, so a
+ * chip's time reads --ink on its tint.
+ */
+
+.note-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.note-editor-message {
+  margin: 0;
+  padding: 12px 14px;
+  color: var(--muted);
+}
+
+/* The save state, right-aligned above the doc; it keeps its height so the doc never jumps. */
+.note-editor-bar {
+  display: flex;
+  justify-content: flex-end;
+  min-height: 18px;
+}
+
+.note-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--muted);
+}
+
+.note-status::before {
+  content: '';
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--line);
+}
+
+.note-status-good::before {
+  background: var(--ok);
+}
+
+.note-status-warn::before {
+  background: var(--warn);
+}
+
+.note-status-bad {
+  color: var(--danger-ink);
+  font-weight: 600;
+}
+
+.note-status-bad::before {
+  background: var(--danger);
+}
+
+.note-editor-error {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+/* Buttons in the notes: "Use mine", "Keep this version", "Try again". */
+.note-button {
+  padding: 5px 12px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--panel);
+  color: var(--ink);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.note-button-primary {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+.note-button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.note-button:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+/* Two versions of the note: main kept the local one as a copy until the user picks. */
+.note-conflict {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--conflict-bg);
+  color: var(--ink);
+}
+
+.note-conflict-text {
+  flex: 1 1 260px;
+  margin: 0;
+}
+
+.note-conflict-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.note-conflict-error {
+  flex-basis: 100%;
+  margin: 0;
+  color: var(--danger-ink);
+}
+
+/* The doc. EditorContent's own element wraps the ProseMirror one, which carries the class. */
+.note-editor-body {
+  min-width: 0;
+}
+
+.note-editor-content {
+  min-height: 180px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  color: var(--ink);
+  line-height: 1.55;
+  /* A long link or word wraps instead of pushing the page sideways at 390 px. */
+  overflow-wrap: anywhere;
+  outline: none;
+}
+
+.note-editor-content:focus {
+  border-color: var(--focus-ring);
+  box-shadow: 0 0 0 2px var(--focus-ring);
+}
+
+.note-editor-content > * + * {
+  margin-top: 0.55em;
+}
+
+.note-editor-content p {
+  margin: 0;
+}
+
+.note-editor-content h1,
+.note-editor-content h2,
+.note-editor-content h3,
+.note-editor-content h4,
+.note-editor-content h5,
+.note-editor-content h6 {
+  margin: 0;
+  line-height: 1.3;
+  font-weight: 650;
+}
+
+.note-editor-content > :is(h1, h2, h3, h4, h5, h6):not(:first-child) {
+  margin-top: 1.1em;
+}
+
+.note-editor-content h1 {
+  font-size: 20px;
+}
+
+.note-editor-content h2 {
+  font-size: 17px;
+}
+
+.note-editor-content h3 {
+  font-size: 15px;
+}
+
+.note-editor-content :is(h4, h5, h6) {
+  font-size: 14px;
+}
+
+.note-editor-content ul,
+.note-editor-content ol {
+  margin: 0;
+  padding-left: 1.4em;
+}
+
+.note-editor-content li + li,
+.note-editor-content li > :is(ul, ol) {
+  margin-top: 2px;
+}
+
+.note-editor-content blockquote {
+  margin: 0;
+  padding-left: 12px;
+  border-left: 3px solid var(--line);
+  color: var(--muted);
+}
+
+.note-editor-content code {
+  padding: 0 4px;
+  border-radius: 4px;
+  background: var(--chip-bg);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.92em;
+}
+
+.note-editor-content pre {
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg);
+  /* A long line scrolls inside the block, never the page. */
+  overflow-x: auto;
+}
+
+.note-editor-content pre code {
+  padding: 0;
+  background: none;
+}
+
+.note-editor-content a {
+  color: var(--accent-ink);
+  text-decoration: underline;
+}
+
+.note-editor-content hr {
+  border: none;
+  border-top: 1px solid var(--line);
+}
+
+/* Placeholder (TipTap's Placeholder marks the empty first paragraph). */
+.note-editor-content p.is-editor-empty:first-child::before {
+  content: attr(data-placeholder);
+  float: left;
+  height: 0;
+  color: var(--muted);
+  pointer-events: none;
+}
+
+/* Citation chips (CitationChip.tsx). */
+.citation-chip-node {
+  white-space: nowrap;
+}
+
+.citation-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin: 0 1px;
+  padding: 0 7px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: var(--chip-bg);
+  color: var(--ink);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 18px;
+  font-variant-numeric: tabular-nums;
+  vertical-align: 1px;
+  cursor: pointer;
+}
+
+.citation-chip:hover {
+  border-color: var(--accent);
+}
+
+.citation-chip:focus-visible,
+.ProseMirror-selectednode > .citation-chip {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+
+.citation-chip-flag {
+  font-weight: 500;
+}
+
+/* Its cited lines may not say what the line says. */
+.citation-chip-weak {
+  background: var(--warn-bg);
+}
+
+/* None of its lines is in the transcript any more. */
+.citation-chip-removed {
+  border: 1px dashed var(--line);
+  background: none;
+  color: var(--muted);
+}
+
+.citation-chip-removed .citation-chip-time {
+  text-decoration: line-through;
+}
