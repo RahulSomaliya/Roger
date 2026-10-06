@@ -828,6 +828,27 @@ def test_run_command_writes_the_report_and_says_where(
     assert "| synthetic_standup |" in printed
 
 
+def test_run_on_the_local_folder_leaves_the_committed_cases_out_of_the_targets(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The command the module docstring gives for the exit check: the recorded calls alone, without
+    # the synthetic case a default run pools into the targets.
+    cases = tmp_path / "cases"
+    write_json(cases / "local" / "client-call.json", case_json(title="Client"))
+    shutil.copy(CASES_ROOT / "synthetic_standup.json", cases / "synthetic_standup.json")
+    out = tmp_path / "report"
+
+    code = main(
+        ["run", "--cases", str(cases / "local"), "--out", str(out)],
+        settings=make_settings(UNUSED_DATABASE_URL),
+    )
+
+    assert code == 0
+    report = EvalReport.model_validate_json((out / "report.json").read_text(encoding="utf-8"))
+    assert [case.case_id for case in report.cases] == ["client-call"]
+    assert "synthetic_standup" not in capsys.readouterr().out
+
+
 @pytest.mark.parametrize(
     "option",
     [["--model", "anthropic/claude-sonnet-5.5"], ["--reasoning", "on"], ["--judge-model", "x"]],

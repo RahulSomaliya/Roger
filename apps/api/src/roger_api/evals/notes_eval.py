@@ -14,6 +14,10 @@ Run from apps/api, as `make eval-notes` and `make eval-notes-fixes` do:
   second model's verdicts too, notes_judge.py). It writes `report.json` and `report.md` to
   `evals/notes/reports/<UTC time>/` (git-ignored) and prints the summary. `--model` and
   `--reasoning` compare models and M4 D2's two reasoning settings on the same cases.
+  It reads every case in `--cases` and in its `local/` folder and pools their counts in the
+  targets, so by default the committed synthetic case is in them too. For the exit check, which
+  is about the recorded calls alone, name the local folder:
+  `make eval-notes ARGS="--cases evals/notes/cases/local"`.
 - `export` copies a meeting from Postgres into `evals/notes/cases/local/<meeting id>.json`
   (git-ignored: client calls) with no labels; write its action items and facts by hand.
 - `fixes` measures how much each meeting's AI notes changed since the run that wrote them
@@ -394,7 +398,15 @@ def _parser() -> argparse.ArgumentParser:
 
     run = commands.add_parser("run", help="write and score notes for every case")
     run.set_defaults(command=_run)
-    run.add_argument("--cases", type=Path, default=CASES_ROOT, help="folder of case files")
+    run.add_argument(
+        "--cases",
+        type=Path,
+        default=CASES_ROOT,
+        help=(
+            "folder of case files, pooled with its local/ folder; default the committed cases, "
+            "the synthetic one included (evals/notes/cases/local: the recorded calls alone)"
+        ),
+    )
     run.add_argument(
         "--case", action="append", default=[], help="a case id to run (repeatable); default all"
     )
