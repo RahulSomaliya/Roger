@@ -205,7 +205,8 @@ export class TranscriptUploader {
           // Ended without a line, for example a crash right after Start: nothing to keep.
           logger.info('empty meeting discarded', { meetingId: meeting.id });
         }
-        // Still recording, or every line was set aside as rejected: nothing to create it for.
+        // Still recording, or no line can upload yet (rejected, hidden or held): nothing to create
+        // it for. One with a held line is kept, and created once the line is released.
         return;
       }
       await api.createMeeting({
@@ -224,11 +225,12 @@ export class TranscriptUploader {
         await this.uploadBatch(meeting.id, batch);
         this.setStatus({});
       }
-      // Never while the meeting holds lines: Postgres reads an ended meeting as finished, and a mic
-      // line held for its echo check can land up to its cap (120 s) after Stop. A meeting not yet
-      // ended remotely stays listed, so the end goes out on the tick after the last release or
-      // cap; one ended remotely comes back with the released line (listMeetingsNeedingSync), and
-      // its end is re-sent after it (the API's end is idempotent).
+      // Never while the meeting holds lines: Postgres reads an ended meeting as finished, and a held
+      // mic line has not gone up yet (the echo sink releases it at its twin's watermark, at Stop or
+      // at its 120 s cap; a crash leaves it to the startup settle). A meeting not yet ended
+      // remotely stays listed, so the end goes out on the tick after the last release or cap; one
+      // ended remotely comes back with the released line (listMeetingsNeedingSync), and its end is
+      // re-sent after it (the API's end is idempotent).
       if (meeting.endedAt !== null && store.countHeldSegments(meeting.id) === 0) {
         await api.endMeeting(meeting.id, meeting.endedAt);
         store.setMeetingRemoteState(meeting.id, 'ended');
