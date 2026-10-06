@@ -17,7 +17,8 @@ from uuid import UUID, uuid4
 import httpx
 import pytest
 from fastapi import FastAPI
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from roger_api.auth import default_principal
 from roger_api.config import Settings
@@ -199,27 +200,48 @@ async def count_runs(app: FastAPI) -> int:
     return count or 0
 
 
+def run_row(run_id: UUID, *, workspace_id: UUID, meeting_id: UUID, status: str) -> LlmRun:
+    return LlmRun(
+        id=run_id,
+        workspace_id=workspace_id,
+        meeting_id=meeting_id,
+        kind="notes",
+        status=status,
+        model="vendor/model",
+        prompt_version="notes-test",
+        template_id="general",
+        line_count=1,
+        ref_map={},
+    )
+
+
 async def add_run_row(
     app: FastAPI, *, workspace_id: UUID, meeting_id: UUID, status: str = "succeeded"
 ) -> UUID:
     run_id = uuid4()
     async with database_of(app).session() as session:
         session.add(
-            LlmRun(
-                id=run_id,
-                workspace_id=workspace_id,
-                meeting_id=meeting_id,
-                kind="notes",
-                status=status,
-                model="vendor/model",
-                prompt_version="notes-test",
-                template_id="general",
-                line_count=1,
-                ref_map={},
-            )
+            run_row(run_id, workspace_id=workspace_id, meeting_id=meeting_id, status=status)
         )
         await session.commit()
     return run_id
+
+
+async def until_blocked_by(session: AsyncSession) -> None:
+    """Polls until another session waits on a lock `session` holds, for at most WAIT_S.
+
+    pg_locks, not pg_stat_activity: a transaction reads pg_stat_activity once and keeps that
+    snapshot, so polling it from one session never sees the wait begin.
+    """
+    waiting = text(
+        "SELECT count(*) FROM pg_locks"
+        " WHERE NOT granted AND pg_backend_pid() = ANY(pg_blocking_pids(pid))"
+    )
+    async with asyncio.timeout(WAIT_S):
+        while True:
+            if await session.scalar(waiting):
+                return
+            await asyncio.sleep(POLL_S)
 
 
 async def workspace_of(app: FastAPI, meeting_id: UUID) -> UUID:
@@ -489,6 +511,36 @@ async def test_run_id_of_another_workspace_is_a_conflict_and_replays_nothing(
     message = assert_error(response, 409, "conflict")
     assert str(foreign_meeting_id) not in message
     assert await get_ai_note(client, meeting["id"]) is None
+
+
+async def test_run_id_claimed_for_another_meeting_at_the_same_moment_is_a_conflict(
+    app: FastAPI, client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Each claim reads the id under its own meeting's lock, so claims of one new id for two
+    # meetings never take turns there: neither read sees the other's uncommitted row, and the
+    # second insert fails on the primary key once the first commits. That is a 409, not a 500.
+    first = await meeting_with_lines(client)
+    second = await meeting_with_lines(client)
+    model = use_model(app, monkeypatch, ModelScript(steps=(ANSWER,)))
+    body = generate_body()
+    async with database_of(app).session() as first_claim:
+        first_claim.add(
+            run_row(
+                UUID(body["run_id"]),
+                workspace_id=await workspace_of(app, UUID(first["id"])),
+                meeting_id=UUID(first["id"]),
+                status="running",
+            )
+        )
+        await first_claim.flush()
+        second_claim = asyncio.create_task(post_generate(client, second["id"], body))
+        await until_blocked_by(first_claim)
+        await first_claim.commit()
+
+    message = assert_error(await second_claim, 409, "conflict")
+    assert first["id"] not in message
+    assert model.requests == []
+    assert await get_ai_note(client, second["id"]) is None
 
 
 async def test_unknown_template_is_a_validation_error(client: httpx.AsyncClient) -> None:

@@ -39,6 +39,7 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from sqlalchemy import select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import defer
 
@@ -514,8 +515,9 @@ async def _resent(
 ) -> NotesRunStream | None:
     """The stream for a run id already stored, or None for a new one."""
     # By id alone: run ids are global primary keys, so a re-send must be told apart from an id
-    # another meeting or workspace holds. Only the owner columns are read, and the answer says
-    # nothing about that run beyond the conflict (as `segments._any_stored_elsewhere`).
+    # another meeting or workspace holds. Only the owner columns are read. This read misses a claim
+    # of the same id for another meeting that has not committed yet (only this meeting is locked):
+    # `_claim` answers that one at its insert.
     owner = (
         await session.execute(
             select(LlmRun.workspace_id, LlmRun.meeting_id, LlmRun.kind).where(LlmRun.id == run_id)
@@ -524,7 +526,7 @@ async def _resent(
     if owner is None:
         return None
     if tuple(owner) != (principal.workspace_id, meeting_id, "notes"):
-        raise ConflictError(f"Run {run_id} is stored under another meeting; nothing was replayed")
+        raise _stored_elsewhere(run_id)
     live = runtime.find(principal.workspace_id, run_id)
     if live is not None:
         logger.info("notes_run_resent", run_id=str(run_id), attached=True)
@@ -574,6 +576,12 @@ async def _replay(session: AsyncSession, principal: Principal, run: LlmRun) -> t
     return (started, *dropped, done_event(run.id, note))
 
 
+# llm_runs' primary key, as db/base.py's naming convention names it. Keep it in step with that
+# convention: a wrong name turns `_claim`'s 409 back into a 500, which
+# test_run_id_claimed_for_another_meeting_at_the_same_moment_is_a_conflict catches.
+_RUN_ID_KEY = "pk_llm_runs"
+
+
 async def _claim(
     session: AsyncSession,
     runtime: LlmRuntime,
@@ -612,9 +620,22 @@ async def _claim(
         ai_base_version=ai_base_version,
         ref_map=sources.refs().to_json(),
     )
-    # Fails the meeting's dead runs first; a live notes run of the meeting is a ConflictError.
-    await claim_run(session, run)
+    try:
+        # Fails the meeting's dead runs first; a live notes run of the meeting is a ConflictError.
+        await claim_run(session, run)
+    except IntegrityError as error:
+        # The id was claimed for another meeting (or by a chat run) after `_resent` read it: that
+        # read holds only this meeting's lock, so this insert waited on the other row and failed
+        # once it committed. `claim_run` re-raises it, and unanswered it is a 500 (contract: 409).
+        if _RUN_ID_KEY not in str(error.orig):
+            raise
+        raise _stored_elsewhere(run_id) from error
     return sources, run
+
+
+def _stored_elsewhere(run_id: UUID) -> ConflictError:
+    # Says nothing about that run beyond the conflict (as `segments._any_stored_elsewhere`).
+    return ConflictError(f"Run {run_id} is stored under another meeting; nothing was replayed")
 
 
 def _require_version(kind: str, note: MeetingNote | None, version: int, meeting_id: UUID) -> None:
