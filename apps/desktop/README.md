@@ -42,9 +42,12 @@ error when it leaves Roger without an API token. The keys:
 | `ROGER_STT_PROVIDER`      | `sttProvider`   | Set to `fake` to run without the API choosing a vendor (development). |
 | `ROGER_LOG_LEVEL`         | `logLevel`      | `debug`, `info`, `warn` or `error`.                                   |
 
+The cost guards below take their keys and variables the same way.
+
 The local safety copy lives at `roger.sqlite` in the same app data folder. On launch, any meeting a
 crash or force-quit left open is ended at its last line, and the uploader resumes where it stopped.
-A meeting reaches Postgres with its first line; one stopped before anyone spoke leaves no trace.
+A meeting reaches Postgres with its first line; one stopped before anyone spoke leaves no trace
+there. Each meeting's speech-to-text use is kept in its `stt_usage` table (see Cost guards).
 
 A packaged app logs JSON lines to stderr only, so start it with its log in a file:
 
@@ -53,6 +56,45 @@ mkdir -p ~/Library/Logs/Roger
 open --stdout ~/Library/Logs/Roger/stdout.log --stderr ~/Library/Logs/Roger/roger.log /Applications/Roger.app
 tail -f ~/Library/Logs/Roger/roger.log
 ```
+
+## Cost guards
+
+AssemblyAI bills every second a speech-to-text session is open, silent or not: $0.15 an hour per
+stream, and every meeting runs two (mic and call audio). A recording forgotten overnight costs
+about $4.20; one socket nobody closed runs to the vendor's 3-hour cap, $0.45. So Roger never keeps
+a session open that nobody needs. Every number lives in `src/main/costGuards.ts`; each can be set
+in `config.json` (the key, a whole number) or with its `ROGER_*` variable, which wins. A value out
+of range blocks Start with an error naming it: a typo never loosens a guard.
+
+| Guard               | config.json key / variable                                              | Default                                   | Why                                                                                                                                                                                                                                   |
+| ------------------- | ----------------------------------------------------------------------- | ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Stall close         | `sttStallCloseSeconds` / `ROGER_STT_STALL_CLOSE_SECONDS`                | 30 s (10 to 300)                          | A source that sends no chunk at all has a dead capture path but its session bills like a live one. Its session closes ("paused, no audio") and reopens with its next chunk. After the 5 s "no audio" warning.                         |
+| Reopen buffer       | `sttReopenBufferSeconds` / `ROGER_STT_REOPEN_BUFFER_SECONDS`            | 3 s (1 to 10)                             | Audio that arrives while a session reopens is held and sent in order, so the chunk that woke it is not lost. Kept short: it is sent at once, and AssemblyAI closes a session sent audio faster than real time (3007).                 |
+| Opens per minute    | `sttOpensPerMinute` / `ROGER_STT_OPENS_PER_MINUTE`                      | 4 (2 to 100)                              | Every session open (Start's two, every reopen, both sources) passes one limiter. AssemblyAI starts 5 a minute on a free account and refuses the next after the handshake. Counted across meetings, as the vendor does.                |
+| Opens per meeting   | `sttOpensPerMeeting` / `ROGER_STT_OPENS_PER_MEETING`                    | 30 (2 to 1000)                            | Bounds a reopen loop against a vendor that keeps failing. Past it the source stays closed with an error saying why.                                                                                                                   |
+| Reopen backoff      | `sttReopenBackoffSeconds` / `ROGER_STT_REOPEN_BACKOFF_SECONDS`          | 2 s (1 to 60)                             | After the vendor ends a session mid-call (an error, a dropped socket, the 3-hour cap), wait before reopening, doubling per failure in a row. A stream that stayed up a minute starts over.                                            |
+| Reopen backoff cap  | `sttReopenBackoffMaxSeconds` / `ROGER_STT_REOPEN_BACKOFF_MAX_SECONDS`   | 60 s (1 to 600, at least the backoff)     | The longest wait between reopens: about one try a minute until the per-meeting cap.                                                                                                                                                   |
+| No-speech stop      | `noSpeechStopSeconds` / `ROGER_NO_SPEECH_STOP_SECONDS`                  | 900 s, 15 min (60 to 14400)               | A forgotten Stop with silence still flowing (a muted mic, call audio without its permission) never trips the stall close. No final line from either source for 15 minutes stops the recording, with a notice.                         |
+| Recording cap       | `maxRecordingSeconds` / `ROGER_MAX_RECORDING_SECONDS`                   | 14400 s, 4 h (60 to 86400)                | Hard cap per recording, even with speech (a TV left on): past any real meeting, $1.20 for both streams.                                                                                                                               |
+| Quit wait           | `quitStopTimeoutSeconds` / `ROGER_QUIT_STOP_TIMEOUT_SECONDS`            | 5 s (1 to 30)                             | Quitting while recording runs the normal stop, but never hangs the quit: after 5 s the app exits and process exit closes the sockets.                                                                                                 |
+| Vendor idle timeout | `sttVendorIdleTimeoutSeconds` / `ROGER_STT_VENDOR_IDLE_TIMEOUT_SECONDS` | 120 s (10 to 3600, above the stall close) | Sent as AssemblyAI's `inactivity_timeout` on every stream: the vendor closes a session that received nothing for this long. Only fires when Roger cannot act (the Mac slept with the socket half-open). Deepgram has no such setting. |
+
+Fixed behaviour, not settings:
+
+| Guard                     | What happens                                                                                                                                                                           |
+| ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Failed or ended source    | Its session closes at once ("not connected"); the other source keeps going. It does not reopen: a dead track never comes back.                                                         |
+| Keep-alive                | Deepgram's KeepAlive is sent only while the stream is open and its source sent audio within the stall window, so a stalled stream is never kept alive.                                 |
+| Vendor session cap        | The API asks AssemblyAI for `max_session_duration_seconds=10800` on every token (the vendor's maximum, explicit). At it the vendor closes with 3008 and Roger reopens a fresh session. |
+| Quit, sleep, close, crash | Quit (Cmd+Q included), the Mac going to sleep, the window closing, the renderer crashing or reloading all stop the recording through the normal stop, logged, with a notice.           |
+| Connect and close         | A connect times out after 10 s; Stop terminates any socket the vendor has not closed 5 s after the finish sequence (`SttConnection`).                                                  |
+
+What it cost shows in the status panel ("AssemblyAI · 12m 30s connected · about $0.06", sessions,
+audio and each source in its tooltip; "Last recording" after Stop), in the log (`stt meter` after
+every session that closes mid-meeting, `stt meter at stop` with the reason) and in `roger.sqlite`'s
+`stt_usage` table, one row per meeting, kept even when the meeting itself is discarded. The cost is
+an estimate from the price the API returns (`stream.price_per_hour_usd`). Nothing is uploaded yet
+(M3).
 
 ## Layout
 
@@ -81,7 +123,9 @@ read a message, the finish sequence and its completion signal, what close codes 
 connecting → open → finishing → closed, one connect timeout over the handshake and the ready signal,
 audio dropped and counted outside open, Stop sends the finish sequence and terminates any socket
 still open after a hard timeout (5 s) whatever the vendor does, close is idempotent, a vendor close
-mid-call is one error then one "closed", keep-alive only while open. It meters each stream
+mid-call is one error then one "closed", keep-alive only while open and audio flowed within the stall
+window. Whether a session opens or reopens at all is `CaptureSession`'s call, through the open budget
+(see Cost guards); an adapter never opens one itself. It meters each stream
 (connected ms from the handshake, audio ms sent) and logs both with an estimated cost at the price
 the API names (`stream.price_per_hour_usd`) when the stream closes.
 `src/main/stt/conformance.test.ts` runs the same contract against every registered network vendor
@@ -92,13 +136,14 @@ and a local fake vendor, and fails if any test leaves a socket open. Shipping ad
   binary PCM in 50 to 1000 ms messages (AssemblyAI closes the session otherwise; the short tail
   on Stop is padded with silence). With `format_turns` a finished turn arrives twice, raw then
   formatted: the adapter saves one line per `turn_order`, formatted when that copy comes within
-  2 s. On stop: Terminate, then wait for Termination (5 s cap). Sessions end after 3 hours.
-  AssemblyAI bills the time a session is open, so a silent system stream costs as much as a live
-  one. A free account may start only 5 sessions a minute and every Start opens two, so a third
-  Start within a minute fails with "Too many concurrent sessions" although nothing leaked; the
-  error says to wait a minute.
+  2 s. On stop: Terminate, then wait for Termination (5 s cap). Every stream sets
+  `inactivity_timeout` (120 s), and the API's token caps each session at 3 hours, after which
+  Roger reopens a fresh one. AssemblyAI bills the time a session is open, so a silent system
+  stream costs as much as a live one: the cost guards close it. A free account may start only 5
+  sessions a minute and every Start opens two; Roger's own limit (4 a minute) refuses a third
+  quick Start before the vendor would, and says when to try.
 - `deepgram`: the second adapter (M3 bake-off). Streaming websocket, bearer token minted by the
-  API, KeepAlive every 5 s, Finalize + CloseStream on stop.
+  API, KeepAlive every 5 s only while its source sends audio, Finalize + CloseStream on stop.
 - `fake`: no network. Emits one line per two seconds of non-silent audio. Used by tests and by
   `ROGER_STT_PROVIDER=fake`.
 
@@ -130,8 +175,9 @@ API:
    with the pricing URL and the date read. Say whether the vendor bills open time or audio sent.
 8. `.env.example`, `apps/api/README.md` and the provider table in `docs/api-contract.md`.
 
-Before relying on it: know the vendor's sessions-per-minute limit (every Start opens two) and
-what it bills for a silent stream.
+Before relying on it: know the vendor's sessions-per-minute limit (every Start opens two), what it
+bills for a silent stream, and whether it can be asked to close an idle session itself (pass
+`vendorIdleTimeoutMs` through to its URL, as AssemblyAI's `inactivity_timeout` does).
 
 ## macOS notes
 
@@ -142,8 +188,9 @@ what it bills for a silent stream.
 - In dev mode (`make dev-desktop`) the process macOS checks is the terminal, not Roger. cmux,
   iTerm2 and Terminal.app have no `NSAudioCaptureUsageDescription`, so the system audio ("Them")
   stream is dead with no error from macOS. Its row may well keep counting "s captured": the
-  "no audio for over 5 s" warning fires only when no audio arrives at all (the renderer, its
-  worklet or IPC stopped), not for a live stream of silence, which is M2's silence warning.
+  "no audio for over 5 s" warning (and, after 30 s, closing its session) fires only when no audio
+  arrives at all (the renderer, its worklet or IPC stopped), not for a live stream of silence,
+  which is M2's silence warning; the 15-minute no-speech stop bounds that one.
   Test call audio with `make install-desktop`: the packaged app carries the key.
 - Verified on 2026-10-05: the packaged Roger.app on macOS 26.6.2 (Apple Silicon)
   captured both streams, with the API on `STT_PROVIDER=fake`.

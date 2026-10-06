@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { NO_AUDIO_WARNING_MS } from '../shared/capture';
 import {
@@ -10,6 +11,11 @@ import {
 describe('loadCostGuards', () => {
   it('uses the defaults when nothing is set', () => {
     expect(loadCostGuards({}, {})).toEqual({ guards: DEFAULT_COST_GUARDS, errors: [] });
+    // .env.example ships every guard variable empty, and the dev loader copies them as "".
+    expect(loadCostGuards({ ROGER_STT_STALL_CLOSE_SECONDS: ' ' }, {})).toEqual({
+      guards: DEFAULT_COST_GUARDS,
+      errors: [],
+    });
     expect(DEFAULT_COST_GUARDS).toEqual({
       sttStallCloseMs: 30_000,
       sttReopenBufferMs: 3_000,
@@ -92,5 +98,20 @@ describe('settingDefault', () => {
     }
     const stall = COST_GUARD_SETTINGS.find((setting) => setting.guard === 'sttStallCloseMs');
     expect(stall === undefined ? null : settingDefault(stall)).toBe(30);
+  });
+});
+
+describe('the cost guard docs', () => {
+  const read = (relative: string): string =>
+    readFileSync(new URL(relative, import.meta.url), 'utf8');
+
+  it('name every guard in the README table and in .env.example', () => {
+    const readme = read('../../README.md');
+    const envExample = read('../../../../.env.example');
+    for (const setting of COST_GUARD_SETTINGS) {
+      expect(readme).toContain(`\`${setting.file}\``);
+      expect(readme).toContain(`\`${setting.env}\``);
+      expect(envExample).toContain(`${setting.env}=`);
+    }
   });
 });

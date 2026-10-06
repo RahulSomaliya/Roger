@@ -79,11 +79,13 @@ Two vendor rules to know before testing (read 2026-10-06):
 - AssemblyAI bills the time each websocket is open, not the audio sent
   ([docs](https://www.assemblyai.com/docs/universal-streaming)). A call opens two, mic and system
   audio, so a call hour costs about $0.30, and a silent or dead system stream costs as much as a
-  live one until Stop.
+  live one while it is open. The desktop's cost guards close such a session and stop a forgotten
+  recording (apps/desktop/README.md, "Cost guards").
 - A free account may start 5 streaming sessions a minute, paid accounts 100 or more
   ([docs](https://www.assemblyai.com/docs/streaming/rate-limits)). Every Start opens two, so a
-  third Start within a minute fails with "Too many concurrent sessions" although nothing leaked.
-  The desktop error says to wait a minute.
+  third Start within a minute would fail at the vendor with "Too many concurrent sessions"
+  although nothing leaked. The desktop's own limiter (4 opens a minute) refuses it first and says
+  when to try.
 
 ## Errors
 
