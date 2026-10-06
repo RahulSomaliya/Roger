@@ -279,6 +279,9 @@ class Fields {
 
 function parseItem(file: Fields): ItemRecord {
   const version = file.get('schema_version');
+  if (version === undefined) {
+    file.fail(`is missing; this bench reads ${ITEM_SCHEMA_VERSION}`, 'schema_version');
+  }
   if (version !== ITEM_SCHEMA_VERSION) {
     file.fail(
       `${JSON.stringify(version)} is not supported; this bench reads ${ITEM_SCHEMA_VERSION}`,
