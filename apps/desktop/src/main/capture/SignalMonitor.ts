@@ -204,12 +204,17 @@ export class SignalMonitor implements AudioSink {
     }, CHECK_INTERVAL_MS);
   }
 
-  /** Every spell ends with the recording; the status drops the monitor's fields. */
+  /**
+   * Every spell ends with the recording, in the capture report too (a `warning` with no
+   * `warning-cleared` reads as a cut that never ended); the status drops the monitor's fields.
+   */
   recordingEnded(): void {
-    if (this.recording === null) return;
+    const recording = this.recording;
+    if (recording === null) return;
     this.stopChecks();
+    const now = this.clock();
+    for (const warning of this.spells.clear()) this.cleared(recording, warning, now);
     this.recording = null;
-    this.spells.clear();
     this.warnings = [];
     this.notices = [];
     this.options.onChange();

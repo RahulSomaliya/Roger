@@ -467,6 +467,45 @@ describe('SignalMonitor: what it tells', () => {
     ]);
   });
 
+  it('ends every spell still open at Stop in the capture report, once', () => {
+    const h = harness();
+    h.feed({ mic: 0, system: VOICE }, 9_000);
+    h.monitor.recordingEnded();
+    expect(
+      h.store.listCaptureEvents(MEETING).map(({ kind, source, offsetMs, detail }) => ({
+        kind,
+        source,
+        offsetMs,
+        detail,
+      })),
+    ).toEqual([
+      {
+        kind: 'warning',
+        source: 'mic',
+        offsetMs: 8_000,
+        detail: { warning: 'mic-dead', loud: true },
+      },
+      {
+        kind: 'warning-cleared',
+        source: 'mic',
+        offsetMs: 9_000,
+        detail: { warning: 'mic-dead', lastedMs: 9_000 },
+      },
+    ]);
+
+    // A Stop that took a while ended the spell when it began: `ended` adds no second end.
+    vi.useRealTimers();
+    const slow = harness();
+    slow.feed({ mic: 0, system: VOICE }, 9_000);
+    slow.monitor.observeStatus(recordingStatus({ phase: 'stopping' }));
+    slow.wait(3_000);
+    slow.monitor.recordingEnded();
+    expect(slow.store.listCaptureEvents(MEETING).map(({ kind }) => kind)).toEqual([
+      'warning',
+      'warning-cleared',
+    ]);
+  });
+
   it('tells the status when its warnings or notices change, not on every check', () => {
     const h = harness();
     h.feed({ mic: VOICE, system: VOICE }, 5_000);
