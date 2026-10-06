@@ -214,12 +214,14 @@ def _script(anchor: datetime, today: date) -> list[_Json]:
             **meet("foc-usti-mes"),
         },
         {
-            # A link someone typed is evidence of a call, guests or not.
+            # A link someone typed is evidence of a call, guests or not, and it is the call to join
+            # even though Workspace added a Meet link here as well.
             "id": "fake-solo-zoom",
             "summary": "Client call (Zoom link in the location)",
             "start": at(240),
             "end": at(270),
             **organizer_me,
+            **meet("cli-entc-all"),
             "location": "https://us02web.zoom.us/j/81234567890?pwd=fake",
         },
         {

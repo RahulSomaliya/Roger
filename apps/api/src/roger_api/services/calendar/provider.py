@@ -25,7 +25,8 @@ type SelfResponse = ResponseStatus | Literal["organizer", "unknown"]
 # Cancelled events are never returned.
 type EventStatus = Literal["confirmed", "tentative"]
 # Where `video_link` came from. `conference` is the link Google adds by itself; it alone is not
-# evidence of a call (the desktop's reminder policy), a link someone typed is.
+# evidence of a call (the desktop's reminder policy), a link someone typed is. A typed link wins
+# over conference data (normalize.py `_video_link`), so `conference` means nothing was typed.
 type VideoLinkSource = Literal["conference", "location", "description"]
 
 

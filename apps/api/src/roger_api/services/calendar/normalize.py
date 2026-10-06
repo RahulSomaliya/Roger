@@ -9,8 +9,9 @@ Google's event resource: https://developers.google.com/workspace/calendar/api/v3
 - Cancelled events are dropped. Declined ones are kept and say so in `self_response`: the desktop
   decides what a declined event means.
 - Rooms and other resources are not attendees.
-- `video_link`: `hangoutLink`, then the video entry points of the conference data, then the first
-  allowlisted link in the location, then in the description (video_links.py).
+- `video_link`: the first allowlisted link someone typed into the location, then the description
+  (video_links.py); only without one, `hangoutLink`, then the video entry points of the conference
+  data. See `_video_link` for why typed links come first.
 """
 
 import datetime as dt
@@ -224,6 +225,18 @@ def _attendees(event: GoogleEvent) -> tuple[tuple[CalendarAttendee, ...], bool]:
 
 
 def _video_link(event: GoogleEvent) -> tuple[str | None, VideoLinkSource | None]:
+    # Typed links first. Many Workspace orgs add a Meet link to every new event, so conference data
+    # first would turn a Zoom link pasted into a solo block's location into `conference`: the
+    # desktop's reminder policy (`main/calendar/reminderPolicy.ts`) counts only a typed source as
+    # evidence of a call, so that block would never prompt, and Join on an invite with guests would
+    # open the empty auto-added Meet room instead of the call. `conference` means nothing was typed.
+    texts: tuple[tuple[str | None, VideoLinkSource], ...] = (
+        (event.location, "location"),
+        (event.description, "description"),
+    )
+    for text, source in texts:
+        if text and (link := find_join_link(text)):
+            return link.url, source
     conference = [event.hangout_link] + [
         entry_point.uri
         for entry_point in (event.conference_data.entry_points if event.conference_data else [])
@@ -232,11 +245,4 @@ def _video_link(event: GoogleEvent) -> tuple[str | None, VideoLinkSource | None]
     for candidate in conference:
         if candidate and (link := parse_join_link(candidate)):
             return link.url, "conference"
-    texts: tuple[tuple[str | None, VideoLinkSource], ...] = (
-        (event.location, "location"),
-        (event.description, "description"),
-    )
-    for text, source in texts:
-        if text and (link := find_join_link(text)):
-            return link.url, source
     return None, None

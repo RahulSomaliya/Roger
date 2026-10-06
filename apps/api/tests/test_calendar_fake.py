@@ -146,6 +146,7 @@ async def test_a_solo_block_with_an_auto_added_meet_link() -> None:
 
 
 async def test_a_solo_block_with_a_zoom_link_in_the_location() -> None:
+    # The script gives it an auto-added Meet link too: the typed Zoom link must still win.
     solo = (await built_in_events())["fake-solo-zoom"]
 
     assert solo.attendees == ()

@@ -264,7 +264,8 @@ def test_provider_name_is_the_callers() -> None:
     assert event.provider == "fake"
 
 
-# Video links: `hangoutLink`, then video entry points, then the location, then the description.
+# Video links: a link someone typed (the location, then the description) before the conference
+# data Google adds (`hangoutLink`, then video entry points).
 
 MEET = "https://meet.google.com/abc-defg-hij"
 OTHER_MEET = "https://meet.google.com/xyz-wxyz-xyz"
@@ -276,13 +277,37 @@ def conference(*entry_points: Json) -> Json:
     return {"entryPoints": list(entry_points)}
 
 
-def test_video_link_hangout_link_wins() -> None:
+def test_video_link_typed_in_the_location_wins_over_an_auto_added_meet() -> None:
+    # A Workspace org adds Meet to every new event; the user pasted the real call into the
+    # location of a solo block. Conference first would hide the Zoom link: no prompt (a conference
+    # link alone is not evidence of a call) and Join would open an empty Meet room.
+    event = read(
+        google_event(
+            attendees=[],
+            organizer={"email": "me@linkt.ai", "self": True},
+            hangoutLink=MEET,
+            conferenceData=conference({"entryPointType": "video", "uri": MEET}),
+            location="https://us02web.zoom.us/j/81234567890?pwd=x",
+        )
+    )
+
+    assert event.video_link == "https://us02web.zoom.us/j/81234567890?pwd=x"
+    assert event.video_link_source == "location"
+
+
+def test_video_link_typed_in_the_description_wins_over_conference_data() -> None:
+    event = read(google_event(hangoutLink=MEET, description=f"Teams: {TEAMS}"))
+
+    assert (event.video_link, event.video_link_source) == (TEAMS, "description")
+
+
+def test_video_link_hangout_link_when_nothing_was_typed() -> None:
     event = read(
         google_event(
             hangoutLink=MEET,
             conferenceData=conference({"entryPointType": "video", "uri": OTHER_MEET}),
-            location=ZOOM,
-            description=TEAMS,
+            location="Room 4B",
+            description="Agenda in the doc",
         )
     )
 
@@ -296,7 +321,6 @@ def test_video_link_entry_point_when_no_hangout_link() -> None:
                 {"entryPointType": "phone", "uri": "tel:+1-555-0100"},
                 {"entryPointType": "video", "uri": ZOOM},
             ),
-            location="https://zoom.us/j/999",
         )
     )
 
