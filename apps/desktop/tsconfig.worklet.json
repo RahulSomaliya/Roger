@@ -1,0 +1,14 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ES2023", "DOM"],
+    "types": []
+  },
+  "include": [
+    "src/renderer/src/audio/pcm-worklet.ts",
+    "src/renderer/src/audio/pcm-worklet-contract.ts",
+    "src/renderer/src/audio/PcmChunker.ts",
+    "src/renderer/src/audio/audioworklet.d.ts",
+    "src/shared/pcm.ts"
+  ]
+}

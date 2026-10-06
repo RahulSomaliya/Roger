@@ -1,0 +1,12 @@
+packages:
+  - apps/desktop
+
+onlyBuiltDependencies:
+  - electron
+  - esbuild
+
+# Pinned here so the repo never depends on a machine's global pnpm rc. pnpm-lock.yaml records
+# `autoInstallPeers: true`; a global `auto-install-peers=false` made every
+# `pnpm install --frozen-lockfile` (make setup-desktop, CI) fail with
+# ERR_PNPM_LOCKFILE_CONFIG_MISMATCH. Change it only together with a fresh lockfile.
+autoInstallPeers: true
