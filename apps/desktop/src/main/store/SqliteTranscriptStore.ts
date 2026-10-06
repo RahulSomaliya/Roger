@@ -179,6 +179,8 @@ type Row = Record<string, SQLOutputValue>;
 
 export class SqliteTranscriptStore implements TranscriptStore {
   private readonly db: DatabaseSync;
+  /** Lines the uploader is sending (markSegmentsSent); in memory on purpose, see there. */
+  private readonly sent = new Set<string>();
   private readonly statements: {
     insertMeeting: StatementSync;
     getMeeting: StatementSync;
@@ -315,7 +317,8 @@ export class SqliteTranscriptStore implements TranscriptStore {
          ORDER BY start_ms ASC, id ASC`,
       ),
       // Echo writes touch only lines not marked uploaded: Postgres keeps what it was sent.
-      // `synced_at IS NULL` cannot see an upload in flight: see TranscriptStore.suppressSegment.
+      // `synced_at IS NULL` cannot see a request still out: the methods refuse a sent line first
+      // (TranscriptStore.markSegmentsSent).
       suppress: this.db.prepare(
         `UPDATE segments SET suppressed_reason = ?, echo_of = ?, upload_after = NULL
          WHERE id = ? AND synced_at IS NULL`,
@@ -499,15 +502,22 @@ export class SqliteTranscriptStore implements TranscriptStore {
       .map(rowToSegment);
   }
 
+  markSegmentsSent(ids: readonly string[]): void {
+    for (const id of ids) this.sent.add(id);
+  }
+
   markSegmentsSynced(ids: string[], syncedAt: string): void {
     if (ids.length === 0) return;
     this.transaction(() => {
       for (const id of ids) this.statements.markSynced.run(syncedAt, id);
     });
+    // After the commit: a failed write keeps the lines refused, as a failed request does.
+    for (const id of ids) this.sent.delete(id);
   }
 
   markSegmentRejected(id: string, reason: string, rejectedAt: string): void {
     this.statements.markRejected.run(rejectedAt, reason, id);
+    this.sent.delete(id);
   }
 
   countUnsyncedSegments(): number {
@@ -539,11 +549,13 @@ export class SqliteTranscriptStore implements TranscriptStore {
   }
 
   suppressSegment(id: string, reason: SuppressedReason, echoOf: string): boolean {
+    if (this.sent.has(id)) return false;
     return this.statements.suppress.run(reason, echoOf, id).changes > 0;
   }
 
   trimSegment(id: string, trim: SegmentTrim): boolean {
     checkTrim(id, trim);
+    if (this.sent.has(id)) return false;
     const words = trim.words === null ? null : JSON.stringify(trim.words);
     return this.statements.trim.run(trim.text, words, trim.echoOf, id).changes > 0;
   }
@@ -554,6 +566,7 @@ export class SqliteTranscriptStore implements TranscriptStore {
 
   holdSegment(id: string, uploadAfter: string): boolean {
     const until = canonicalInstant(uploadAfter, `hold of segment ${id}`);
+    if (this.sent.has(id)) return false;
     return this.statements.hold.run(until, id).changes > 0;
   }
 

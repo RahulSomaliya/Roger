@@ -217,6 +217,8 @@ export class TranscriptUploader {
     }
     try {
       for (;;) {
+        // Nothing async between this list and uploadBatch, which marks the batch sent before its
+        // first await: an echo hide or trim landing in between would change a line already listed.
         const batch = store.listUnsyncedSegments(meeting.id, this.batchSize);
         if (batch.length === 0) break;
         await this.uploadBatch(meeting.id, batch);
@@ -248,12 +250,14 @@ export class TranscriptUploader {
    */
   private async uploadBatch(meetingId: string, batch: TranscriptSegment[]): Promise<void> {
     const { store, api, logger } = this.options;
+    const ids = batch.map((segment) => segment.id);
+    // Before the request and in the turn that listed the batch (no await may come between): from
+    // here the store refuses an echo hide, trim or hold of these lines, which would otherwise land
+    // while the request is out and leave the local copy disagreeing with what Postgres got.
+    store.markSegmentsSent(ids);
     try {
       const result = await api.appendSegments(meetingId, batch);
-      store.markSegmentsSynced(
-        batch.map((segment) => segment.id),
-        this.clock().toISOString(),
-      );
+      store.markSegmentsSynced(ids, this.clock().toISOString());
       logger.debug('segments uploaded', { meetingId, ...result });
     } catch (error) {
       if (!(error instanceof ApiError && error.status === 422)) throw error;

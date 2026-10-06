@@ -644,4 +644,56 @@ describe('TranscriptUploader: no stranded lines (M2)', () => {
     await uploader.flush();
     expect(order).toEqual(['settle', 'append', 'append']);
   });
+
+  it('marks a batch sent before the request, so an echo decision landing mid-upload is refused', async () => {
+    const store = new InMemoryTranscriptStore();
+    const api = fakeApi();
+    store.createMeeting({ id: 'm1', title: 'T', startedAt: '2026-10-05T10:00:00Z' });
+    store.appendSegment(segment('m1', 0));
+    store.appendSegment(segment('m1', 2));
+    let respond: () => void = () => undefined;
+    api.appendSegments.mockImplementationOnce(
+      (_meetingId, segments) =>
+        new Promise((resolve) => {
+          respond = () => {
+            resolve({ accepted: segments.length, duplicates: 0 });
+          };
+        }),
+    );
+    const uploader = new TranscriptUploader({ store, api, logger });
+    const flushing = uploader.flush();
+    await vi.waitFor(() => {
+      expect(api.appendSegments).toHaveBeenCalledTimes(1);
+    });
+
+    // The call-audio twins land while the request is out (a cap passed while call audio
+    // reconnected): too late, Postgres may already hold the text as sent.
+    expect(store.suppressSegment('m1-seg-0', 'echo', 'm1-seg-1')).toBe(false);
+    expect(store.trimSegment('m1-seg-2', { text: 'line', words: null, echoOf: 'm1-seg-1' })).toBe(
+      false,
+    );
+    respond();
+    await flushing;
+
+    expect(store.getSegment('m1-seg-0')).toMatchObject({ suppressedReason: null });
+    expect(store.getSegment('m1-seg-2')).toMatchObject({ text: 'line 2', originalText: null });
+    expect(store.countUnsyncedSegments()).toBe(0);
+  });
+
+  it('keeps a line it sent refused after a failed request, which may have reached the API', async () => {
+    const store = new InMemoryTranscriptStore();
+    const api = fakeApi();
+    store.createMeeting({ id: 'm1', title: 'T', startedAt: '2026-10-05T10:00:00Z' });
+    store.appendSegment(segment('m1', 0));
+    api.appendSegments.mockRejectedValueOnce(new ApiError(0, 'network_error', 'connection reset'));
+    const uploader = new TranscriptUploader({ store, api, logger });
+
+    await expect(uploader.flush()).rejects.toThrow('connection reset');
+    expect(store.suppressSegment('m1-seg-0', 'echo', 'm1-seg-1')).toBe(false);
+    await uploader.flush();
+
+    expect(sentBatches(api)).toEqual([['m1-seg-0'], ['m1-seg-0']]);
+    expect(store.getSegment('m1-seg-0')).toMatchObject({ suppressedReason: null });
+    expect(store.countUnsyncedSegments()).toBe(0);
+  });
 });

@@ -33,6 +33,8 @@ export class InMemoryTranscriptStore implements TranscriptStore {
   readonly audioFiles = new Map<string, AudioFile>();
   readonly captureEvents: CaptureEvent[] = [];
   readonly appState = new Map<string, AppStateEntry>();
+  /** Lines the uploader is sending (TranscriptStore.markSegmentsSent). */
+  private readonly sent = new Set<string>();
 
   /** The clock decides whether a held line's cap has passed, as SQLite's does. */
   constructor(private readonly clock: () => Date = () => new Date()) {}
@@ -145,16 +147,22 @@ export class InMemoryTranscriptStore implements TranscriptStore {
       .map(toTranscriptSegment);
   }
 
+  markSegmentsSent(ids: readonly string[]): void {
+    for (const id of ids) this.sent.add(id);
+  }
+
   markSegmentsSynced(ids: string[], syncedAt: string): void {
     for (const id of ids) {
       const segment = this.segments.get(id);
       if (segment) segment.syncedAt ??= syncedAt;
+      this.sent.delete(id);
     }
   }
 
   markSegmentRejected(id: string, _reason: string, rejectedAt: string): void {
     const segment = this.segments.get(id);
     if (segment?.syncedAt === null) segment.rejectedAt = rejectedAt;
+    this.sent.delete(id);
   }
 
   countUnsyncedSegments(): number {
@@ -417,8 +425,9 @@ export class InMemoryTranscriptStore implements TranscriptStore {
     // nothing to release
   }
 
-  /** Not marked uploaded; an upload in flight still counts: see TranscriptStore.suppressSegment. */
+  /** Not marked uploaded and not being sent: what an echo write may change (markSegmentsSent). */
   private unsynced(id: string): MemorySegment | null {
+    if (this.sent.has(id)) return null;
     const segment = this.segments.get(id);
     return segment?.syncedAt === null ? segment : null;
   }

@@ -469,24 +469,31 @@ describe.each([
     store.close();
   });
 
-  it('cannot see an upload in flight: a line hidden or trimmed after the uploader listed it is still stamped synced', () => {
+  it('refuses to hide, trim or hold a line the uploader has sent, until it is uploaded or rejected', () => {
     const { store } = openWithMeeting();
-    store.appendSegment(segment(1));
-    store.appendSegment(segment(2));
+    for (const n of [1, 2, 3]) store.appendSegment(segment(n));
     const sending = store.listUnsyncedSegments('m1', 10).map((s) => s.id); // the uploader's batch
-    // The call-audio twins land while appendSegments is still open: the store says yes to both.
-    expect(store.suppressSegment('seg-1', 'echo', 'sys-1')).toBe(true);
+    store.markSegmentsSent(sending); // the request goes out
+    // The call-audio twins land while it is out: Postgres may already hold the text as sent, so a
+    // hide or trim here would make the local copy disagree with it.
+    expect(store.suppressSegment('seg-1', 'echo', 'sys-1')).toBe(false);
+    expect(store.trimSegment('seg-2', { text: 'line', words: null, echoOf: 'sys-2' })).toBe(false);
+    expect(store.holdSegment('seg-3', '2026-10-06T10:02:00.000Z')).toBe(false);
+    expect(store.getSegment('seg-1')).toMatchObject({ suppressedReason: null, echoOf: null });
+    expect(store.getSegment('seg-2')).toMatchObject({ text: 'line 2', originalText: null });
+    expect(store.getSegment('seg-3')?.uploadAfter).toBeNull();
+    // A failed request is retried: sent lines still wait and still upload.
+    expect(store.listUnsyncedSegments('m1', 10).map((s) => s.id)).toEqual(sending);
+    expect(store.countUnsyncedSegments()).toBe(3);
+
+    store.markSegmentsSynced(['seg-1', 'seg-2'], T0);
+    store.markSegmentRejected('seg-3', 'text too short', T0);
+    expect(store.suppressSegment('seg-1', 'echo', 'sys-1')).toBe(false); // uploaded, as before
+    // A rejected line never reaches Postgres, so the mark ends with the rejection.
+    expect(store.suppressSegment('seg-3', 'echo', 'sys-3')).toBe(true);
+    // Postgres lost the meeting: its lines may change again until the uploader re-sends them.
+    store.resetSyncForMeeting('m1');
     expect(store.trimSegment('seg-2', { text: 'line', words: null, echoOf: 'sys-2' })).toBe(true);
-    store.markSegmentsSynced(sending, T0); // the request returns
-    // Postgres holds both lines as they were sent, while the local rows say hidden and trimmed.
-    // Closing this window is M2-T3b's or M2-T14b's (TranscriptStore.suppressSegment): change this
-    // test with that fix.
-    expect(store.getSegment('seg-1')).toMatchObject({ suppressedReason: 'echo', syncedAt: T0 });
-    expect(store.getSegment('seg-2')).toMatchObject({
-      text: 'line',
-      originalText: 'line 2',
-      syncedAt: T0,
-    });
     store.close();
   });
 
