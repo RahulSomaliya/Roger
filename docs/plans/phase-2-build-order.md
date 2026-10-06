@@ -594,3 +594,40 @@ Made in this change, so each agent reads one consistent story in its own plan:
   - T12 has no mount in M1's window. T13 uses `slots/m5-calendar.ts` and playwright-core.
   - "The only 409 stays the segment one" is replaced.
   - The controller edits to M2 are marked applied.
+
+## 10. Notes from built tasks (read this if your task id appears below)
+
+Wave 0's pure modules landed on `phase-2` on 2026-10-06. Their builders left these hand-offs for
+later tasks. Each bullet names the task that must act on it.
+
+- **M4-T8** (joins M4-T4 and M4-T5): pass `NoteBlock.text` (M4-T4, `notes_markdown.py`) to the
+  support check in `citations.py`, never `.markdown`, or an ordered item's "3." counts as a number
+  the user wrote. The prompt shows `NoteBlock.markdown`. T5's `RefMap.note_blocks` is a plain
+  `tuple[str, ...]` today; adapt at the join. Import `FROM_YOUR_NOTES_HEADING` from
+  `notes_markdown.py`. A line that is bold from end to end with no refs (e.g. "**Here are your
+  notes:**") now parses as a heading; decide what a heading outside the template does. If the
+  fixture `tests/fixtures/ai_notes_doc.json` is regenerated, keep the citation attrs
+  `{segmentIds, startMs, label, support}` and the italic "Not said on the call" line before the
+  closing list (`test_fixture_doc_renders` asserts that prefix).
+- **M4-T8, M4-T13, M4-T18:** the drop reason codes from `notes_protocol.py` are `no_refs` and
+  `unknown_refs`. The `dropped` event and the desktop text use these exact codes.
+- **M4-T11:** weak (flagged) citation chips render like `ok` chips in Markdown; a "check this" cue
+  for MCP is a product call, not built.
+- **M4 plan, number check:** `citations.py` also accepts a `b` suffix (billion) besides k, m and
+  bn; "one", "first" and "second" on their own never flag a line.
+- **M5-T2:** `video_links.py` and its tests must mirror `shared/meetingLinks.ts` (M5-T8) exactly:
+  Meet code paths only (never `/new`), Zoom `/j/<digits>`, `/my/<name>` and `/w/<digits>`, Teams
+  `/l/meetup-join/` and `/meet/`. Copy the four Zoom URL rows from `meetingLinks.test.ts`: two
+  accepted `/w/` rows, and refused `https://zoom.us/w/` and `https://zoom.us/s/1234567890`.
+- **M5-T9a:** `runs` (local `calendar.sqlite`) is one row per stretch Roger was awake, not one per
+  app run: open a new `runs` row on `powerMonitor` resume before that tick writes anything. A
+  `missed` row logged as `policy` or `api_stale` while the lid was shut is expected; the runs split
+  at each wake. `app.openAtLogin` defaults to `off` in `calendarPrefs.ts` until real-Mac check 1
+  passes (M5-T11); switch it to `auto` in the change that logs that check.
+- **M5-T10:** `CalendarPromptCard.events` is a non-empty list; two calls starting less than 60 s
+  apart share one card. Card types carry `phase` and `error` so T9b and T10 never edit
+  `shared/calendar.ts`. `notice.text` refuses blank text and caps at 1000 characters.
+- **M2-T14b:** when re-deciding an already trimmed line (a late call-audio line, or a re-run
+  through `filterStored`), pass the line as the vendor first wrote it (`original_text` and its
+  words), as the doc comment on `filterEcho` says. `ECHO_FILTER_VERSION` is 1.
+- **M3-T6b:** the per-stream `stt latency` log line at Stop is yours (M3-T6a built only the meter).

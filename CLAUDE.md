@@ -117,3 +117,13 @@ Each line is a trap someone already hit. Add one when you hit a new one.
   with a stable per-Mac identity, without hardened runtime; see `apps/desktop/scripts/install-mac.sh`.
 - A packaged app logs to stderr only. Launch it with
   `open --stderr <file> --stdout <file> /Applications/Roger.app` to read its log.
+- Ruff `RUF001` rejects lookalike Unicode (en dash, curly quotes, `‹`) in Python string literals:
+  write `\u2013`, `\u2019`, `\u2039`. An agent's file-writing tool turned the escapes back into
+  literal characters twice (M4-T5, 2026-10-06), so grep after writing.
+- `eslint-plugin-react-hooks` v7 (`react-hooks/refs`) rejects a ref read inside a closure built in a
+  `useState` initializer. Keep the latest callback in a plain variable on the once-made object and
+  update it from a layout effect. `renderToString` runs no effects: test effect-based registration
+  through the registry, not through server rendering (M4-T21a).
+- A vitest test can switch time zones with `process.env.TZ`, but assert
+  `new Date(...).getTimezoneOffset()` inside the switch, or a TZ test passes when the switch did
+  nothing (M5-T8).
