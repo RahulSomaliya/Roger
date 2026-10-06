@@ -294,7 +294,8 @@ export class SqliteTranscriptStore implements TranscriptStore {
          WHERE meeting_id = :meetingId AND source = :source AND start_ms <= :toMs AND end_ms >= :fromMs
          ORDER BY start_ms ASC, id ASC`,
       ),
-      // Echo writes touch only lines not uploaded yet: Postgres keeps what it was sent.
+      // Echo writes touch only lines not marked uploaded: Postgres keeps what it was sent.
+      // `synced_at IS NULL` cannot see an upload in flight: see TranscriptStore.suppressSegment.
       suppress: this.db.prepare(
         `UPDATE segments SET suppressed_reason = ?, echo_of = ?, upload_after = NULL
          WHERE id = ? AND synced_at IS NULL`,

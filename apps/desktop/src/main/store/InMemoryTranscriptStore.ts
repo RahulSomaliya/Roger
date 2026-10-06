@@ -409,6 +409,7 @@ export class InMemoryTranscriptStore implements TranscriptStore {
     // nothing to release
   }
 
+  /** Not marked uploaded; an upload in flight still counts: see TranscriptStore.suppressSegment. */
   private unsynced(id: string): MemorySegment | null {
     const segment = this.segments.get(id);
     return segment?.syncedAt === null ? segment : null;

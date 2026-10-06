@@ -392,6 +392,27 @@ describe.each([
     store.close();
   });
 
+  it('cannot see an upload in flight: a line hidden or trimmed after the uploader listed it is still stamped synced', () => {
+    const { store } = openWithMeeting();
+    store.appendSegment(segment(1));
+    store.appendSegment(segment(2));
+    const sending = store.listUnsyncedSegments('m1', 10).map((s) => s.id); // the uploader's batch
+    // The call-audio twins land while appendSegments is still open: the store says yes to both.
+    expect(store.suppressSegment('seg-1', 'echo', 'sys-1')).toBe(true);
+    expect(store.trimSegment('seg-2', { text: 'line', words: null, echoOf: 'sys-2' })).toBe(true);
+    store.markSegmentsSynced(sending, T0); // the request returns
+    // Postgres holds both lines as they were sent, while the local rows say hidden and trimmed.
+    // Closing this window is M2-T3b's or M2-T14b's (TranscriptStore.suppressSegment): change this
+    // test with that fix.
+    expect(store.getSegment('seg-1')).toMatchObject({ suppressedReason: 'echo', syncedAt: T0 });
+    expect(store.getSegment('seg-2')).toMatchObject({
+      text: 'line',
+      originalText: 'line 2',
+      syncedAt: T0,
+    });
+    store.close();
+  });
+
   it('hides a line with its reason and twin, ends its hold, and unhides it for upload', () => {
     const { store } = openWithMeeting();
     store.appendSegment(segment(1));

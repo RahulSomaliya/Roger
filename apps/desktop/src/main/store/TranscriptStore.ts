@@ -211,6 +211,10 @@ export interface TranscriptStore {
    * or it would never reach zero while the echo filter hides a line.
    */
   listUnsyncedSegments(meetingId: string, limit: number): TranscriptSegment[];
+  /**
+   * Stamps every listed line not yet marked, whatever a hide or trim did to it after it was
+   * listed: see the in-flight trap on `suppressSegment`.
+   */
   markSegmentsSynced(ids: string[], syncedAt: string): void;
   /** Set a line aside after the API rejected it as invalid, so it never blocks the queue. */
   markSegmentRejected(id: string, reason: string, rejectedAt: string): void;
@@ -231,22 +235,33 @@ export interface TranscriptStore {
     toMs: number,
   ): StoredSegment[];
   /**
-   * Hide a line that is not uploaded yet and end its hold. False when it is unknown or already
-   * uploaded: Postgres keeps what it was sent, so hiding it here would make the two disagree.
+   * Hide a line not yet marked uploaded and end its hold. False when it is unknown or already
+   * marked uploaded: Postgres keeps what it was sent, so hiding it here would make the two
+   * disagree.
+   *
+   * Trap for M2-T3b and M2-T14b: true does not prove Postgres never got the line. The store sees
+   * only `synced_at`, not an upload in flight: the uploader lists a line, awaits `appendSegments`,
+   * then marks it synced, so a hide (or a trim) that lands while that request is open returns
+   * true and the mark then stamps the row. The local copy says hidden while Postgres holds the
+   * text as sent. The plan's case: a mic line's 120 s cap passes while call audio reconnects, and
+   * its twin arrives mid-upload. Close it in the uploader (re-check hidden or trimmed lines before
+   * marking them synced) or in the sink (treat a decision made after the line's release as
+   * possibly too late). Pinned by the "cannot see an upload in flight" store test.
    */
   suppressSegment(id: string, reason: SuppressedReason, echoOf: string): boolean;
   /**
    * Replace a line's text and words with what is left after the echo words are cut out, keeping
    * the vendor's version in `original_text` (the first trim's, on a second trim). The hold is
-   * kept: the echo sink releases the line. False when unknown or already uploaded. Throws on an
-   * empty text: a line trimmed to nothing is hidden instead.
+   * kept: the echo sink releases the line. False when unknown or already marked uploaded; true
+   * can still come during an upload in flight (see `suppressSegment`). Throws on an empty text: a
+   * line trimmed to nothing is hidden instead.
    */
   trimSegment(id: string, trim: SegmentTrim): boolean;
   /** Show a hidden line again, which lets it upload. False when it was not hidden. */
   unhideSegment(id: string): boolean;
   /**
    * Hold a line that is not uploaded yet until the echo sink releases it, or `uploadAfter` (an ISO
-   * 8601 instant, the cap) passes. False when unknown or already uploaded. Throws on a cap without
+   * 8601 instant, the cap) passes. False when unknown or already marked uploaded. Throws on a cap without
    * a `Z` or `±hh:mm` offset (storeChecks.canonicalInstant).
    */
   holdSegment(id: string, uploadAfter: string): boolean;
