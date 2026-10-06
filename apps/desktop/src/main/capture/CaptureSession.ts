@@ -58,7 +58,12 @@ export class CaptureSession {
     return this.segmentsStored;
   }
 
-  /** Open every stream. If any fails, the ones that opened are closed and the first error is rethrown. */
+  /**
+   * Open every stream. If any fails, the ones that opened are closed and the first error is
+   * rethrown. Each open starts one vendor session per source, and vendors meter sessions started
+   * (AssemblyAI: 5 a minute on a free account), so a retry or reconnect loop around this spends
+   * that budget fast.
+   */
   async open(): Promise<void> {
     const results = await Promise.allSettled(
       AUDIO_SOURCES.map((source) => this.openStream(source)),

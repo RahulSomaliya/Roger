@@ -78,6 +78,10 @@ response names the provider; `createSpeechToText` picks the adapter. Shipping ad
   on Stop is padded with silence). With `format_turns` a finished turn arrives twice, raw then
   formatted: the adapter saves one line per `turn_order`, formatted when that copy comes within
   2 s. On stop: Terminate, then wait for Termination (5 s cap). Sessions end after 3 hours.
+  AssemblyAI bills the time a session is open, so a silent system stream costs as much as a live
+  one. A free account may start only 5 sessions a minute and every Start opens two, so a third
+  Start within a minute fails with "Too many concurrent sessions" although nothing leaked; the
+  error says to wait a minute.
 - `deepgram`: the second adapter (M3 bake-off). Streaming websocket, bearer token minted by the
   API, KeepAlive every 5 s, Finalize + CloseStream on stop.
 - `fake`: no network. Emits one line per two seconds of non-silent audio. Used by tests and by

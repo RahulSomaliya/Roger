@@ -26,6 +26,11 @@ import { ASSEMBLYAI_TERMINATE, parseAssemblyAiMessage } from './messages';
  * - https://www.assemblyai.com/docs/streaming/common-session-errors-and-closures (an Error frame,
  *   then the close: 1008 unauthorized, 3005 server error, 3006 bad message or inactivity, 3007
  *   audio chunk duration or rate, 3008 session expired, 3009 too many concurrent sessions)
+ * - https://www.assemblyai.com/docs/streaming/rate-limits (read 2026-10-06: free accounts may
+ *   START 5 sessions a minute, paid 100+. Over the limit the close is 1008 there, 3009 on the page
+ *   above, both with the reason "Too many concurrent sessions"; see SESSION_LIMIT_REASON)
+ * - https://www.assemblyai.com/docs/universal-streaming ("billed on the total duration that your
+ *   WebSocket connection stays open, not on the amount of audio you send")
  *
  * Same lifecycle as the Deepgram adapter: open, stream binary PCM as it arrives, and on stop send
  * Terminate and wait (bounded) for Termination, which comes after the last turn. A vendor close or
@@ -33,6 +38,16 @@ import { ASSEMBLYAI_TERMINATE, parseAssemblyAiMessage } from './messages';
  */
 
 export const ASSEMBLYAI_DEFAULT_BASE_URL = 'wss://streaming.assemblyai.com';
+/**
+ * The vendor's reason when an account starts too many sessions in a minute. It says "concurrent",
+ * but the limit counts sessions STARTED per minute, and every Start opens two (one per audio
+ * source), so Start, Stop, Start, Stop, Start within a minute fails on a free account with nothing
+ * leaked. Matched on the text, not the code: the vendor's two pages give 1008 and 3009.
+ */
+const SESSION_LIMIT_REASON = /too many concurrent sessions/i;
+const SESSION_LIMIT_ADVICE =
+  'AssemblyAI limits how many sessions start per minute (5 on a free account) and each ' +
+  'Start opens two, one per audio source: wait a minute, then press Start again.';
 /** AssemblyAI closes the session (3007) on a binary message outside this range. */
 const MIN_FRAME_MS = 50;
 const MAX_FRAME_MS = 1000;
@@ -75,7 +90,10 @@ export function buildStreamingUrl(
   // M9: streaming speaker labels plug in here as `speaker_labels=true` (then see messages.ts).
   // Not sent: `settings.language` (the English model takes only English; `language_codes` is for
   // the multilingual one), and `inactivity_timeout`, whose absence means the vendor never closes
-  // a quiet session, as Deepgram's KeepAlive keeps one open.
+  // a quiet session, as Deepgram's KeepAlive keeps one open. AssemblyAI bills the time a session
+  // is open, not the audio in it, so a silent or dead system stream costs as much as a live one
+  // until Stop. An inactivity timeout would not change that: it counts messages, and the renderer
+  // sends silent chunks too.
   // A temporary token goes in the query string. The master key would go in an Authorization
   // header, but it never reaches the desktop (house rule 3).
   url.searchParams.set('token', token);
@@ -171,14 +189,18 @@ class AssemblyAiStream implements SttStream {
       socket.on('close', (code, reasonBuffer) => {
         const reason = reasonBuffer.length > 0 ? reasonBuffer.toString() : null;
         this.closed = true;
-        // Before Begin this is a failed connect (a bad or expired token closes with 1008).
+        // Before Begin this is a failed connect (a bad or expired token closes with 1008, and so
+        // does the per-minute session limit).
         if (this.beginState.kind === 'waiting') {
           const why =
             this.vendorError === null
               ? ` (${describeClose(code, reason)})`
               : `: ${this.vendorError}`;
+          const advice = SESSION_LIMIT_REASON.test(why) ? `. ${SESSION_LIMIT_ADVICE}` : '';
           this.failBegin(
-            new SttConnectError(`AssemblyAI ended the connection before the session began${why}`),
+            new SttConnectError(
+              `AssemblyAI ended the connection before the session began${why}${advice}`,
+            ),
           );
         }
         // The last turn is saved before "closed": CaptureSession stores finals that arrive

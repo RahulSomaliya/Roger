@@ -325,6 +325,43 @@ describe('AssemblyAiSpeechToText', () => {
     );
   });
 
+  it('says to wait a minute when the per-minute session limit refuses the stream', async () => {
+    script.onConnect = (socket) => {
+      socket.close(1008, 'Unauthorized connection: Too many concurrent sessions');
+    };
+    const error = await open().catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(SttConnectError);
+    expect((error as SttConnectError).message).toBe(
+      'AssemblyAI ended the connection before the session began ' +
+        '(code 1008: Unauthorized connection: Too many concurrent sessions). ' +
+        'AssemblyAI limits how many sessions start per minute (5 on a free account) and each ' +
+        'Start opens two, one per audio source: wait a minute, then press Start again.',
+    );
+  });
+
+  it('says to wait a minute when an Error frame names the session limit', async () => {
+    script.onConnect = (socket) => {
+      socket.send(
+        JSON.stringify({
+          type: 'Error',
+          error_code: 3009,
+          error: 'Unauthorized Connection: Too many concurrent sessions',
+        }),
+      );
+      socket.close(3009, 'Unauthorized Connection: Too many concurrent sessions');
+    };
+    const error = await open().catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(SttConnectError);
+    expect((error as SttConnectError).message).toBe(
+      'AssemblyAI ended the connection before the session began: ' +
+        'Unauthorized Connection: Too many concurrent sessions (AssemblyAI error 3009). ' +
+        'AssemblyAI limits how many sessions start per minute (5 on a free account) and each ' +
+        'Start opens two, one per audio source: wait a minute, then press Start again.',
+    );
+  });
+
   it('reports a rejected handshake as a connect error with the status code', async () => {
     rejectWith = 401;
     const error = await open().catch((e: unknown) => e);
