@@ -1,12 +1,8 @@
 import type { Logger } from '../../logger';
 import type { OpenStreamOptions, SpeechToText, SttStream } from '../SpeechToText';
-import { SttConnection, type SttStreamUsage } from './SttConnection';
+import { sumUsage, type SttUsage } from '../usage';
+import { SttConnection } from './SttConnection';
 import type { SttProtocol } from './SttProtocol';
-
-export interface SttUsage extends SttStreamUsage {
-  /** Sockets that completed the handshake, failed connects included: each may be billed. */
-  sessionsOpened: number;
-}
 
 export interface WebSocketSttOptions {
   logger: Logger;
@@ -26,16 +22,21 @@ export interface WebSocketSttOptions {
  */
 export class WebSocketSpeechToText implements SpeechToText {
   readonly provider: string;
+  readonly vendorName: string;
   private readonly protocol: SttProtocol;
   private readonly logger: Logger;
   private readonly connectTimeoutMs: number;
   private readonly closeTimeoutMs: number;
   private readonly clock: () => number;
-  /** Every connection this adapter made, failed ones too, for usage(). Two per meeting. */
+  /**
+   * Every connection this adapter made, failed ones too, for usage(). CaptureService makes one
+   * adapter per meeting, so this is one meeting's sessions: two at Start, plus any reopens.
+   */
   private readonly connections: SttConnection[] = [];
 
   constructor(protocol: SttProtocol, options: WebSocketSttOptions) {
     this.provider = protocol.provider;
+    this.vendorName = protocol.vendorName;
     const keepAlive = protocol.keepAlive;
     this.protocol =
       keepAlive !== null && options.keepAliveMs !== undefined
@@ -62,15 +63,15 @@ export class WebSocketSpeechToText implements SpeechToText {
   }
 
   /** What this adapter has opened so far: the vendor's billing view, live streams to now. */
-  usage(): SttUsage {
-    const usage: SttUsage = { sessionsOpened: 0, connectedMs: 0, audioSentMs: 0, droppedChunks: 0 };
-    for (const connection of this.connections) {
-      if (connection.opened) usage.sessionsOpened += 1;
-      const stream = connection.usage();
-      usage.connectedMs += stream.connectedMs;
-      usage.audioSentMs += stream.audioSentMs;
-      usage.droppedChunks += stream.droppedChunks;
-    }
-    return usage;
+  usage(label?: string): SttUsage {
+    return sumUsage(
+      this.connections
+        .filter((connection) => label === undefined || connection.label === label)
+        .map((connection) => ({
+          opened: connection.opened,
+          pricePerHourUsd: connection.pricePerHourUsd,
+          ...connection.usage(),
+        })),
+    );
   }
 }

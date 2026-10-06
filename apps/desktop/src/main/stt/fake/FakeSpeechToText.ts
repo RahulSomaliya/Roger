@@ -1,4 +1,4 @@
-import { rmsInt16 } from '../../../shared/pcm';
+import { pcmBytesToMs, rmsInt16 } from '../../../shared/pcm';
 import {
   type OpenStreamOptions,
   type SpeechToText,
@@ -6,12 +6,14 @@ import {
   type SttEventListener,
   type SttStream,
 } from '../SpeechToText';
+import { type SessionUsage, sumUsage, type SttUsage } from '../usage';
 
 export interface FakeSttOptions {
   /** Audio per emitted line. Timing comes from the audio itself, so tests are deterministic. */
   windowMs?: number;
   /** Below this RMS (0..1) a window counts as silence and produces no line. */
   silenceRms?: number;
+  clock?: () => number;
 }
 
 /**
@@ -21,38 +23,75 @@ export interface FakeSttOptions {
  */
 export class FakeSpeechToText implements SpeechToText {
   readonly provider = 'fake';
+  readonly vendorName = 'Fake';
+  private readonly streams: FakeStream[] = [];
+  private readonly clock: () => number;
 
-  constructor(private readonly options: FakeSttOptions = {}) {}
+  constructor(private readonly options: FakeSttOptions = {}) {
+    this.clock = options.clock ?? (() => Date.now());
+  }
 
   openStream(options: OpenStreamOptions): Promise<SttStream> {
-    return Promise.resolve(
-      new FakeStream(
-        options.settings.sampleRate,
-        this.options.windowMs ?? 2_000,
-        this.options.silenceRms ?? 0.01,
-      ),
+    const stream = new FakeStream(
+      options,
+      this.options.windowMs ?? 2_000,
+      this.options.silenceRms ?? 0.01,
+      this.clock,
+    );
+    this.streams.push(stream);
+    return Promise.resolve(stream);
+  }
+
+  /** Metered like a vendor, so the status line and cost guards behave the same in development. */
+  usage(label?: string): SttUsage {
+    return sumUsage(
+      this.streams
+        .filter((stream) => label === undefined || stream.label === label)
+        .map((stream) => stream.usage()),
     );
   }
 }
 
 class FakeStream implements SttStream {
+  readonly label: string;
   private readonly emitter = new SttEventEmitter();
+  private readonly sampleRate: number;
+  private readonly pricePerHourUsd: number | null;
   private readonly windowSamples: number;
+  private readonly openedAtMs: number;
+  private closedAtMs: number | null = null;
+  private sentBytes = 0;
   private pending: Int16Array[] = [];
   private pendingSamples = 0;
   private consumedSamples = 0;
   private closed = false;
 
   constructor(
-    private readonly sampleRate: number,
+    options: OpenStreamOptions,
     windowMs: number,
     private readonly silenceRms: number,
+    private readonly clock: () => number,
   ) {
-    this.windowSamples = Math.round((sampleRate * windowMs) / 1000);
+    this.label = options.label;
+    this.sampleRate = options.settings.sampleRate;
+    this.pricePerHourUsd = options.settings.pricePerHourUsd;
+    this.windowSamples = Math.round((this.sampleRate * windowMs) / 1000);
+    this.openedAtMs = clock();
+  }
+
+  usage(): SessionUsage {
+    return {
+      opened: true,
+      connectedMs: (this.closedAtMs ?? this.clock()) - this.openedAtMs,
+      audioSentMs: pcmBytesToMs(this.sentBytes, this.sampleRate),
+      droppedChunks: 0,
+      pricePerHourUsd: this.pricePerHourUsd,
+    };
   }
 
   send(pcm: Uint8Array): void {
     if (this.closed) return;
+    this.sentBytes += pcm.byteLength;
     const samples = new Int16Array(pcm.buffer, pcm.byteOffset, Math.floor(pcm.byteLength / 2));
     this.pending.push(samples);
     this.pendingSamples += samples.length;
@@ -63,6 +102,7 @@ class FakeStream implements SttStream {
     if (!this.closed) {
       if (this.pendingSamples > 0) this.flushWindow(this.pendingSamples);
       this.closed = true;
+      this.closedAtMs = this.clock();
       this.emitter.emit({ type: 'closed', code: null, reason: null });
     }
     return Promise.resolve();

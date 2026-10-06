@@ -1,4 +1,5 @@
 import type { TranscriptWord } from '../../shared/transcript';
+import type { SttUsage } from './usage';
 
 /**
  * The one small interface every speech-to-text vendor sits behind (house rule 4).
@@ -50,7 +51,14 @@ export interface SttStream {
 
 export interface SpeechToText {
   readonly provider: string;
+  /** For people: the status line and error text, e.g. "AssemblyAI". */
+  readonly vendorName: string;
   openStream(options: OpenStreamOptions): Promise<SttStream>;
+  /**
+   * What every session this adapter opened has used so far (live ones up to now), or only those
+   * opened with this `label` (one audio source). The cost guards and the status line read it.
+   */
+  usage(label?: string): SttUsage;
 }
 
 export class SttConnectError extends Error {

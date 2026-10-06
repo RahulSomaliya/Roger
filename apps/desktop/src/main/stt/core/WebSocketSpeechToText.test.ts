@@ -54,8 +54,10 @@ describe('WebSocketSpeechToText', () => {
     }
   });
 
-  it('names its provider after the protocol', () => {
-    expect(new WebSocketSpeechToText(protocol(vendor.baseUrl), { logger }).provider).toBe('toy');
+  it('names its provider and vendor after the protocol', () => {
+    const stt = new WebSocketSpeechToText(protocol(vendor.baseUrl), { logger });
+    expect(stt.provider).toBe('toy');
+    expect(stt.vendorName).toBe('Toy');
   });
 
   it('meters every session it opened, live and closed, on its clock', async () => {
@@ -76,8 +78,42 @@ describe('WebSocketSpeechToText', () => {
       connectedMs: 10_000 + 19_000,
       audioSentMs: 300,
       droppedChunks: 0,
+      // 29 s of open streams at $0.15 an hour each.
+      estimatedCostUsd: 0.0012,
+    });
+    expect(stt.usage('system')).toEqual({
+      sessionsOpened: 1,
+      connectedMs: 19_000,
+      audioSentMs: 200,
+      droppedChunks: 0,
+      estimatedCostUsd: 0.0008,
     });
     await system.close();
+  });
+
+  it('prices each session at the price it was opened with, and says unknown when one has none', async () => {
+    const clock = manualClock(0);
+    const stt = new WebSocketSpeechToText(protocol(vendor.baseUrl), { logger, clock: clock.now });
+
+    const first = await stt.openStream({ accessToken: 't', settings, label: 'mic' });
+    const pricier = { ...settings, pricePerHourUsd: 0.45 };
+    const second = await stt.openStream({ accessToken: 't', settings: pricier, label: 'mic' });
+    clock.set(3_600_000);
+    await first.close();
+    await second.close();
+    expect(stt.usage('mic').estimatedCostUsd).toBe(0.6);
+
+    const unpriced = { ...settings, pricePerHourUsd: null };
+    const third = await stt.openStream({ accessToken: 't', settings: unpriced, label: 'mic' });
+    await third.close();
+    expect(stt.usage('mic').estimatedCostUsd).toBeNull();
+    expect(stt.usage('system')).toEqual({
+      sessionsOpened: 0,
+      connectedMs: 0,
+      audioSentMs: 0,
+      droppedChunks: 0,
+      estimatedCostUsd: 0,
+    });
   });
 
   it('counts a refused handshake as no session', async () => {

@@ -272,12 +272,17 @@ describe.each(CONFORMANCE_VENDORS)('$provider conforms', (vendor) => {
     await system.stream.close();
     clock.set(600_000); // both closed: the meter stopped
 
-    expect(adapter.usage()).toEqual({
+    const usage = adapter.usage();
+    expect(usage).toMatchObject({
       sessionsOpened: 2,
       connectedMs: 60_000 + 90_000,
       audioSentMs: 300,
       droppedChunks: 0,
     });
+    // Open time at the API's price per stream-hour, which is what AssemblyAI bills.
+    const price = vendor.settings.pricePerHourUsd ?? Number.NaN;
+    // Rounded to 1/10000 USD, so within half of that of the exact figure.
+    expect(usage.estimatedCostUsd).toBeCloseTo((150_000 / 3_600_000) * price, 3);
   });
 
   describe('a failed connect leaves no socket open', () => {

@@ -12,6 +12,7 @@ import {
   type SttEventListener,
   type SttStream,
 } from '../stt/SpeechToText';
+import type { SttUsage } from '../stt/usage';
 import { TranscriptUploader } from '../upload/TranscriptUploader';
 import { CaptureService, defaultMeetingTitle } from './CaptureService';
 
@@ -62,6 +63,16 @@ class ScriptedStream implements SttStream {
 
 class ScriptedSpeechToText implements SpeechToText {
   readonly provider = 'scripted';
+  readonly vendorName = 'Scripted';
+  usage(): SttUsage {
+    return {
+      sessionsOpened: 0,
+      connectedMs: 0,
+      audioSentMs: 0,
+      droppedChunks: 0,
+      estimatedCostUsd: 0,
+    };
+  }
   readonly streams = new Map<string, ScriptedStream>();
   readonly opened: OpenStreamOptions[] = [];
   failWith: Error | null = null;

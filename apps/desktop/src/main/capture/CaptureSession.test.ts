@@ -9,6 +9,7 @@ import {
   type SttEventListener,
   type SttStream,
 } from '../stt/SpeechToText';
+import type { SttUsage } from '../stt/usage';
 import { CaptureSession, type CaptureSessionListeners } from './CaptureSession';
 
 const logger = createLogger({ level: 'error', format: 'json', sink: () => undefined });
@@ -39,6 +40,16 @@ class ScriptedStream implements SttStream {
 /** Streams open when the test says so, in any order. */
 class ControlledSpeechToText implements SpeechToText {
   readonly provider = 'scripted';
+  readonly vendorName = 'Scripted';
+  usage(): SttUsage {
+    return {
+      sessionsOpened: 0,
+      connectedMs: 0,
+      audioSentMs: 0,
+      droppedChunks: 0,
+      estimatedCostUsd: 0,
+    };
+  }
   readonly streams = new Map<string, ScriptedStream>();
   private readonly pending = new Map<
     string,

@@ -10,6 +10,7 @@ import {
   type SttEventListener,
   type SttStream,
 } from '../SpeechToText';
+import { estimateCostUsd } from '../usage';
 import { rawDataToString } from '../websocket';
 import type {
   SttProtocol,
@@ -72,7 +73,10 @@ export class SttConnection implements SttStream {
   private readonly closing = deferred();
   private readonly clock: () => number;
   private readonly sampleRate: number;
-  private readonly pricePerHourUsd: number | null;
+  /** USD per hour this session is open, from the API; null when unknown. */
+  readonly pricePerHourUsd: number | null;
+  /** The OpenStreamOptions label (the audio source), so usage can be read per source. */
+  readonly label: string;
   private readonly closeTimeoutMs: number;
   private connectTimer: NodeJS.Timeout | null;
   private finishTimer: NodeJS.Timeout | null = null;
@@ -97,6 +101,7 @@ export class SttConnection implements SttStream {
     this.clock = options.clock;
     this.sampleRate = options.stream.settings.sampleRate;
     this.pricePerHourUsd = options.stream.settings.pricePerHourUsd;
+    this.label = options.stream.label;
     this.closeTimeoutMs = options.closeTimeoutMs;
     // Throws SttConnectError on settings the vendor cannot take, before any socket exists.
     const target = this.protocol.target(options.stream);
@@ -425,12 +430,6 @@ export class SttConnection implements SttStream {
     if (this.keepAliveTimer !== null) clearInterval(this.keepAliveTimer);
     this.keepAliveTimer = null;
   }
-}
-
-/** Open time at the API's price per stream-hour, to 1/10000 USD; null when the price is unknown. */
-function estimateCostUsd(connectedMs: number, pricePerHourUsd: number | null): number | null {
-  if (pricePerHourUsd === null) return null;
-  return Math.round((connectedMs / 3_600_000) * pricePerHourUsd * 10_000) / 10_000;
 }
 
 interface Deferred {
