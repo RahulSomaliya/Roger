@@ -87,12 +87,16 @@ with_signing_keychain() {
   return "$status"
 }
 
-# Empty when the path has no app or no signature. codesign prints an ad-hoc app's implicit
-# requirement as "# designated => cdhash ..."; without the "#" in the pattern an ad-hoc install
-# reads as unsigned and its stale grants are never cleared.
+# Empty when the path (an app or the helper) is missing or unsigned. codesign prints an ad-hoc
+# signature's implicit requirement as "# designated => cdhash ..."; without the "#" in the pattern
+# an ad-hoc install reads as unsigned and its stale grants are never cleared.
+# src/main/signing.ts (DESIGNATED_LINE) parses the same line the same way: keep the two in step.
+# codesign exits 1 for unsigned code; under `set -e` and `pipefail` that failed pipeline would end
+# the whole install, silently, at the caller's assignment. Hence the `|| true`: unsigned reads as
+# empty, and each caller decides what empty means.
 designated_requirement() {
-  [[ -d "$1" ]] || return 0
-  codesign -d -r- "$1" 2>/dev/null | sed -n 's/^#* *designated => //p'
+  [[ -e "$1" ]] || return 0
+  { codesign -d -r- "$1" 2>/dev/null || true; } | sed -n 's/^#* *designated => //p'
 }
 
 cd "$(dirname "$0")/.."
