@@ -60,6 +60,34 @@ describe('buildStreamingUrl', () => {
     expect(timeout(7_200_000)).toBe('3600');
   });
 
+  it('asks the Universal-3 Pro models for the stream language, and no other model', () => {
+    const query = (model: string, language = 'en') =>
+      Object.fromEntries(
+        new URL(
+          buildStreamingUrl(
+            'wss://streaming.assemblyai.com',
+            { ...settings, model, language },
+            't',
+            120_000,
+          ),
+        ).searchParams,
+      );
+
+    for (const model of ['universal-3-6-pro', 'universal-3-5-pro']) {
+      expect(query(model), model).toEqual({
+        speech_model: model,
+        sample_rate: '16000',
+        encoding: 'pcm_s16le',
+        language_codes: '["en"]',
+        inactivity_timeout: '120',
+        token: 't',
+      });
+    }
+    expect(query('universal-3-6-pro', 'de').language_codes).toBe('["de"]');
+    expect(query('universal-streaming-english')).not.toHaveProperty('language_codes');
+    expect(query('universal-streaming-multilingual')).not.toHaveProperty('language_codes');
+  });
+
   it('leaves format_turns off for models that always format (Universal-3 Pro)', () => {
     const url = new URL(
       buildStreamingUrl(

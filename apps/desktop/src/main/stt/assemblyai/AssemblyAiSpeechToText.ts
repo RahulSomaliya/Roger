@@ -79,6 +79,21 @@ export type AssemblyAiOptions = WebSocketSttOptions & AssemblyAiProtocolOptions;
 const MIN_INACTIVITY_TIMEOUT_S = 5;
 const MAX_INACTIVITY_TIMEOUT_S = 3600;
 
+/**
+ * Universal-Streaming (`universal-streaming-*`) finishes a turn raw and, with `format_turns`, sends
+ * it again punctuated and cased. The Universal-3 Pro models (`universal-3-*-pro`) send one end of
+ * turn, always formatted, and take no `format_turns` (AssemblyAI's migration guide to Universal-3
+ * Pro).
+ */
+function sendsEachTurnTwice(model: string): boolean {
+  return model.startsWith('universal-streaming');
+}
+
+/** The Universal-3 Pro models, the only ones that take `language_codes`. */
+function isUniversal3Pro(model: string): boolean {
+  return /^universal-3-.+-pro$/.test(model);
+}
+
 /** The websocket URL for one stream. It carries the token: never log it. */
 export function buildStreamingUrl(
   baseUrl: string,
@@ -96,18 +111,20 @@ export function buildStreamingUrl(
   url.searchParams.set('sample_rate', String(settings.sampleRate));
   // Our `linear16` (16-bit signed little-endian mono PCM) under AssemblyAI's name.
   url.searchParams.set('encoding', 'pcm_s16le');
-  // Universal-Streaming finishes a turn raw, then sends it again punctuated and cased when asked.
-  // The Universal-3 Pro models always format and do not take the parameter.
-  if (settings.model.startsWith('universal-streaming'))
-    url.searchParams.set('format_turns', 'true');
+  // The Pro models switch between languages by themselves: without the hint, accented English can
+  // come back partly in another language or script, and the migration guide says to pass it (a
+  // JSON list, one code for one language). The English model takes only English, and nothing
+  // Roger runs uses the multilingual one, so neither is sent it.
+  if (isUniversal3Pro(settings.model)) {
+    url.searchParams.set('language_codes', JSON.stringify([settings.language]));
+  }
+  if (sendsEachTurnTwice(settings.model)) url.searchParams.set('format_turns', 'true');
   // The jargon list, so names like Linkt come out spelled right: one parameter holding a JSON
   // array (up to 100 terms of 50 characters; the core has already cut the list to the shared
   // limits, keyterms.ts). Never sent empty: no list, no parameter.
   const keyterms = settings.keyterms ?? [];
   if (keyterms.length > 0) url.searchParams.set('keyterms_prompt', JSON.stringify(keyterms));
   // M9: streaming speaker labels plug in here as `speaker_labels=true` (then see messages.ts).
-  // Not sent: `settings.language` (the English model takes only English; `language_codes` is for
-  // the multilingual one).
   // The vendor-side safety net. AssemblyAI bills the time a session is open, not the audio in it,
   // and with no `inactivity_timeout` it never closes a quiet session: one Roger cannot close (the
   // Mac slept with the socket half-open, main hung) bills to the 3-hour cap, $0.45 a stream. The
