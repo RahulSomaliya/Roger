@@ -120,6 +120,12 @@ def test_headings_keep_their_text() -> None:
         "Beta ships Friday [L12]",
         "- Beta ships Friday [l12]",
         "- Beta ships Friday. [L12]",
+        "\u2013 Beta ships Friday [L12]",
+        "\u2014 Beta ships Friday [L12]",
+        "> - Beta ships Friday [L12]",
+        ">> Beta ships Friday [L12]",
+        "- Beta ships Friday [[L12]]",
+        "- Beta ships Friday ([L12])",
         "- Beta ships Friday **[L12]**",
         "- **Beta ships Friday** [L12]",
         "- *Beta* ships _Friday_ [L12]",
@@ -177,6 +183,17 @@ def test_marks_that_are_not_emphasis_stay_in_the_text() -> None:
         "Fix the `__init__` and `*args` handling"
     )
     assert bullet("- Size is 2 * 3 * 5, or 2*3*5 [L3]").text == "Size is 2 * 3 * 5, or 2*3*5"
+
+
+def test_brackets_around_ref_groups_go_with_them() -> None:
+    assert split_refs("Ships ([L12], [L13]) on Friday") == (
+        "Ships on Friday",
+        (Ref("L", 12), Ref("L", 13)),
+    )
+    assert split_refs("Ships [[L12]; [N2]].") == ("Ships.", (Ref("L", 12), Ref("N", 2)))
+    # Brackets around anything else are the model's text.
+    assert split_refs("Call init() first [L3]") == ("Call init() first", (Ref("L", 3),))
+    assert split_refs("Ships (see [L3])") == ("Ships (see)", (Ref("L", 3),))
 
 
 def test_a_bullet_with_no_refs_parses_with_none() -> None:

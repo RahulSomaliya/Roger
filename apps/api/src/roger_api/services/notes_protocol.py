@@ -6,11 +6,12 @@ transcript lines and `N` refs are the user's note blocks (`notes_prompt.py` numb
 object cannot (M4 plan, "What the model writes"). If the eval's dropped rate goes over 5%, the
 plan switches to strict JSON output: only this module changes.
 
-The parser is lenient about form (other bullet markers, a missing dash, refs mid-line, ranges
-written `L12-15`, bold and italic marks) and strict about content: a ref group is taken only when
-every entry in the brackets is a ref, so `[TBD]` or `[sic]` stay in the text. It never decides
-whether a line is kept; a bullet with no refs comes out with `refs == ()` for `citations.py` to
-drop. Text comes out plain: the AI doc is built from plain text nodes, with no Markdown step.
+The parser is lenient about form (other bullet markers, blockquote marks, a missing dash, refs
+mid-line, ranges written `L12-15`, ref groups wrapped in more brackets, bold and italic marks) and
+strict about content: a ref group is taken only when every entry in the brackets is a ref, so
+`[TBD]` or `[sic]` stay in the text. It never decides whether a line is kept; a bullet with no refs
+comes out with `refs == ()` for `citations.py` to drop. Text comes out plain: the AI doc is built
+from plain text nodes, with no Markdown step.
 """
 
 import re
@@ -56,12 +57,25 @@ type ProtocolLine = Heading | Bullet
 # A range dash: hyphen, en dash or em dash.
 _DASH = r"[-\u2013\u2014]"
 _REF = rf"[LN]\d{{1,6}}(?: ?{_DASH} ?[LN]?\d{{1,6}})?"
-_REF_GROUP = re.compile(rf" ?\[ ?({_REF}(?: ?[,;] ?{_REF})*) ?\]", re.IGNORECASE)
+_BRACKETED_REFS = rf"\[ ?{_REF}(?: ?[,;] ?{_REF})* ?\]"
+# The separator is `(?: ?[,;])? ?`, never ` ?[,;]? ?`: two ways to match one space would make a
+# failed match retry every split of every space, which is exponential in the number of groups.
+_BRACKETED_GROUPS = rf"{_BRACKETED_REFS}(?:(?: ?[,;])? ?{_BRACKETED_REFS})*"
+# One `[L12, L15]` group, or groups the model wrapped in one more pair of brackets (`[[L12]]`,
+# `([L12], [L13])`): the wrapper goes with them, or it would stay in the text as `[]` or `(,)`.
+_REF_GROUP = re.compile(
+    rf" ?(?:\[ ?{_BRACKETED_GROUPS} ?\]|\( ?{_BRACKETED_GROUPS} ?\)|{_BRACKETED_REFS})",
+    re.IGNORECASE,
+)
+_REFS_IN_BRACKETS = re.compile(rf"\[ ?({_REF}(?: ?[,;] ?{_REF})*) ?\]", re.IGNORECASE)
 _REF_TOKEN = re.compile(rf"([LN])(\d+)(?: ?{_DASH} ?([LN])?(\d+))?", re.IGNORECASE)
 _REF_SEPARATOR = re.compile(r" ?[,;] ?")
 _HEADING = re.compile(r"#{1,6} (.*)")
-# `-`, `*`, `+`, `•` or `1.` / `1)`, then an optional task box (`[ ]`, `[x]`) models add to actions.
-_BULLET = re.compile(r"(?:[-*+•]|\d{1,3}[.)]) (?:\[[ xX]\] )?(.*)")
+# A dash (`_DASH`: hyphen, en dash or em dash), `*`, `+`, `•` or `1.` / `1)`, then an optional
+# task box (`[ ]`, `[x]`) models add to actions.
+_BULLET = re.compile(rf"(?:{_DASH}|[*+•]|\d{{1,3}}[.)]) (?:\[[ xX]\] )?(.*)")
+# Blockquote marks before a line (`> - Beta ships Friday [L12]`) are form, not text.
+_QUOTE_MARKS = "> "
 _FENCES = ("```", "~~~")
 # Bold and italic marks, which the model copies from the Markdown notes it is shown
 # (`- **Them:** send the deck by **Monday**`). Left in, they show as literal asterisks in the AI
@@ -113,7 +127,7 @@ def parse_line(raw: str) -> ProtocolLine | None:
     remark) is not a note line and is skipped. Text with refs but no marker is a bullet whose dash
     the model forgot.
     """
-    line = _squash(raw)
+    line = _squash(raw).lstrip(_QUOTE_MARKS)
     if not line or line.startswith(_FENCES):
         return None
     if heading := _HEADING.fullmatch(line):
@@ -137,7 +151,7 @@ def split_refs(text: str) -> tuple[str, tuple[Ref, ...]]:
     groups: list[str] = []
 
     def take(match: re.Match[str]) -> str:
-        groups.append(match.group(1))
+        groups.extend(_REFS_IN_BRACKETS.findall(match.group(0)))
         return ""
 
     remaining = _REF_GROUP.sub(take, _squash(text))
