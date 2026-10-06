@@ -89,6 +89,8 @@ export async function clip(
 
   await ensurePrivateBenchDir(benchDir);
   const paths = itemPaths(benchDir, itemId);
+  // Deleting the folder leaves the item's outputs in runs/, which no item.json then ties to a
+  // person: forget.ts lists such run folders as unchecked rather than missing them.
   if (existsSync(paths.itemJson)) {
     throw new Error(
       `item ${itemId} already exists at ${paths.dir}; pick another --name, or delete that ` +
