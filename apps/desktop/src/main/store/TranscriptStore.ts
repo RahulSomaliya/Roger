@@ -1,4 +1,5 @@
-import type { TranscriptSegment } from '../../shared/transcript';
+import type { AudioSource, TranscriptSegment } from '../../shared/transcript';
+import type { SttUsage } from '../stt/usage';
 
 /** Where a local meeting stands against Postgres. */
 export type RemoteState = 'pending' | 'created' | 'ended';
@@ -16,6 +17,21 @@ export interface NewLocalMeeting {
   id: string;
   title: string;
   startedAt: string;
+}
+
+/**
+ * What one meeting's speech-to-text sessions used, as the vendor bills it (cost guard G7). Local
+ * only until M3 uploads it.
+ */
+export interface MeetingSttUsage {
+  meetingId: string;
+  provider: string;
+  total: SttUsage;
+  bySource: Record<AudioSource, SttUsage>;
+  /** Why the recording stopped (stopReasons.ts, or `start-failed`); null while it still runs. */
+  stopReason: string | null;
+  /** ISO 8601 instant, UTC. */
+  updatedAt: string;
 }
 
 /**
@@ -49,5 +65,11 @@ export interface TranscriptStore {
   countUnsyncedSegments(): number;
   countRejectedSegments(): number;
   countSegments(meetingId: string): number;
+  /**
+   * Upsert one meeting's usage. Not tied to the meetings table: a meeting deleted for having no
+   * lines still had billed sessions, and the row keeps them.
+   */
+  saveSttUsage(usage: MeetingSttUsage): void;
+  getSttUsage(meetingId: string): MeetingSttUsage | null;
   close(): void;
 }

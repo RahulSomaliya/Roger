@@ -21,7 +21,20 @@ export interface SttTokenResponse {
   provider: string;
   access_token: string;
   expires_in: number;
-  stream: { model: string; language: string; sample_rate: number; encoding: string };
+  stream: {
+    model: string;
+    language: string;
+    sample_rate: number;
+    encoding: string;
+    /**
+     * USD per hour of one open stream; null when the API knows no price for the model. Optional
+     * here although the contract requires it: an API older than the field omits it, and this
+     * response is cast, not validated (request<T>), so it arrives as undefined. Map it with
+     * `?? null` (CaptureService.resolveStt): undefined passes every `=== null` check in the meter
+     * and the status line read "about $NaN".
+     */
+    price_per_hour_usd?: number | null;
+  };
 }
 
 export interface SegmentsAppendResult {

@@ -1,6 +1,17 @@
 import { describe, expect, it } from 'vitest';
-import type { UploadStatus } from '../../shared/capture';
-import { describeHealth, describeSaved, describeUpload, formatOffset } from './format';
+import type { SttMeter, SttMeterStatus, UploadStatus } from '../../shared/capture';
+import {
+  describeCost,
+  describeHealth,
+  describeMeter,
+  formatDuration,
+  meterDetails,
+  describeSaved,
+  describeSourceConnected,
+  describeStream,
+  describeUpload,
+  formatOffset,
+} from './format';
 
 const upload = (overrides: Partial<UploadStatus>): UploadStatus => ({
   state: 'idle',
@@ -31,6 +42,25 @@ describe('describeHealth', () => {
   });
 });
 
+describe('describeStream', () => {
+  it('says transcribing only for an open session, and not connected for a closed one', () => {
+    expect(describeStream('open', 'active')).toBe('transcribing');
+    expect(describeStream('closed', 'error')).toBe('not connected');
+    expect(describeStream('connecting', 'active')).toBe('connecting');
+  });
+
+  it('never says transcribing while its source sends no audio', () => {
+    expect(describeStream('open', 'pending')).toBe('connected, no audio yet');
+    expect(describeStream('open', 'stalled')).toBe('connected, no audio');
+  });
+
+  it('says reconnecting only while the source sends the audio a reopen waits for', () => {
+    expect(describeStream('retrying', 'active')).toBe('reconnecting');
+    expect(describeStream('retrying', 'stalled')).toBe('not connected, reconnects with audio');
+    expect(describeStream('retrying', 'pending')).toBe('not connected, reconnects with audio');
+  });
+});
+
 describe('describeSaved', () => {
   it('counts lines that could not be saved next to the saved ones', () => {
     expect(describeSaved(3, 0)).toBe('3 lines');
@@ -49,6 +79,65 @@ describe('describeUpload', () => {
   it('mentions lines the API rejected so nobody thinks they were uploaded', () => {
     expect(describeUpload(upload({ rejected: 2 }))).toBe(
       'all lines uploaded · 2 rejected by the API',
+    );
+  });
+});
+
+describe('formatDuration', () => {
+  it('reads like a stopwatch, coarser past an hour', () => {
+    expect(formatDuration(0)).toBe('0s');
+    expect(formatDuration(45_400)).toBe('45s');
+    expect(formatDuration(750_000)).toBe('12m 30s');
+    expect(formatDuration(3_720_000)).toBe('1h 02m');
+  });
+});
+
+describe('describeSourceConnected', () => {
+  it("says a source's connected time without contradicting its state", () => {
+    expect(describeSourceConnected('open', 12_000)).toBe('12s connected');
+    expect(describeSourceConnected('connecting', 12_000)).toBe('12s connected');
+    // Its session closed: the time is what it was connected, not "not connected · 12s connected".
+    expect(describeSourceConnected('closed', 12_000)).toBe('was connected 12s');
+    expect(describeSourceConnected('paused', 75_000)).toBe('was connected 1m 15s');
+    expect(describeSourceConnected('retrying', 12_000)).toBe('was connected 12s');
+  });
+
+  it('shows nothing before any session opened, and never "0s"', () => {
+    expect(describeSourceConnected('connecting', 0)).toBeNull();
+    expect(describeSourceConnected('open', 400)).toBe('under 1s connected');
+  });
+});
+
+describe('describeCost', () => {
+  it('rounds to cents and never shows a guess as exact', () => {
+    expect(describeCost(0.0625)).toBe('about $0.06');
+    expect(describeCost(0.004)).toBe('under $0.01');
+    expect(describeCost(0)).toBe('no cost');
+    expect(describeCost(null)).toBe('cost unknown');
+  });
+});
+
+describe('describeMeter', () => {
+  const meter = (connectedMs: number, estimatedCostUsd: number | null): SttMeter => ({
+    sessionsOpened: 1,
+    connectedMs,
+    audioSentMs: connectedMs - 5_000,
+    estimatedCostUsd,
+  });
+  const status: SttMeterStatus = {
+    vendorName: 'AssemblyAI',
+    total: { ...meter(750_000, 0.0313), sessionsOpened: 3 },
+    sources: { mic: meter(375_000, 0.0156), system: meter(375_000, 0.0156) },
+  };
+
+  it('says vendor, connected time and cost in one line', () => {
+    expect(describeMeter(status)).toBe('AssemblyAI · 12m 30s connected · about $0.03');
+  });
+
+  it('gives sessions, audio and each source in the details', () => {
+    expect(meterDetails(status)).toBe(
+      '3 sessions opened · 12m 25s of audio sent. Mic (me): 6m 15s connected, about $0.02. ' +
+        'Call audio (them): 6m 15s connected, about $0.02.',
     );
   });
 });

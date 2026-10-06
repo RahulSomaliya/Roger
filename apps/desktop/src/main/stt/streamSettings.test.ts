@@ -8,6 +8,7 @@ const settings = (overrides: Partial<SttStreamSettings>): SttStreamSettings => (
   language: 'en',
   sampleRate: PCM_SAMPLE_RATE,
   encoding: PCM_ENCODING,
+  pricePerHourUsd: null,
   ...overrides,
 });
 
@@ -16,6 +17,18 @@ describe('streamSettingsMismatch', () => {
     expect(PCM_SAMPLE_RATE).toBe(16_000);
     expect(PCM_ENCODING).toBe('linear16');
     expect(streamSettingsMismatch(settings({}))).toBeNull();
+  });
+
+  it('accepts what the API returns for AssemblyAI (it maps linear16 to pcm_s16le itself)', () => {
+    expect(
+      streamSettingsMismatch({
+        model: 'universal-streaming-english',
+        language: 'en',
+        sampleRate: 16_000,
+        encoding: 'linear16',
+        pricePerHourUsd: 0.15,
+      }),
+    ).toBeNull();
   });
 
   it('names both values when the API asks for another sample rate', () => {

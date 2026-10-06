@@ -31,10 +31,12 @@ migrated it logs `database_not_ready` and exits.
 | --- | --- | --- |
 | `DATABASE_URL` | required | `postgresql+asyncpg://...`. Plain `postgres://` and `postgresql://` URLs are accepted and switched to asyncpg. Alembic reads the same variable. |
 | `ROGER_API_TOKEN` | required | Shared bearer secret for `/v1/*` and `/mcp`. At least 16 characters; startup fails on the `.env.example` placeholder (anything starting with `change-me`). |
-| `STT_PROVIDER` | `fake` | `fake` or `deepgram`. |
+| `STT_PROVIDER` | `fake` | `assemblyai` (Roger's vendor), `deepgram` (second adapter) or `fake` (no vendor). See [Speech-to-text tokens](#speech-to-text-tokens). |
+| `ASSEMBLYAI_API_KEY` | empty | Required when `STT_PROVIDER=assemblyai`; startup fails without it. Never leaves the API. |
 | `DEEPGRAM_API_KEY` | empty | Required when `STT_PROVIDER=deepgram`; startup fails without it. Never leaves the API. |
-| `STT_TOKEN_TTL_SECONDS` | `30` | Lifetime of the speech-to-text token handed to the desktop (1..3600). |
-| `STT_MODEL` / `STT_LANGUAGE` | `nova-3` / `en` | Returned to the desktop as stream settings. |
+| `STT_TOKEN_TTL_SECONDS` | `30` | Lifetime of the speech-to-text token handed to the desktop (1..3600; at most 600 with `assemblyai`, the vendor's limit). |
+| `STT_MODEL` / `STT_LANGUAGE` | unset / `en` | Returned to the desktop as stream settings. Unset `STT_MODEL` means the provider's English streaming model: `universal-streaming-english` (assemblyai), `nova-3` (deepgram), `fake`. Startup fails on the other vendor's model (`nova-*` with assemblyai, `universal-*` with deepgram). |
+| `STT_PRICE_PER_HOUR_USD` | unset | USD per hour of one open stream, returned to the desktop as `stream.price_per_hour_usd`. Unset means the vendor's list price for the model (`src/roger_api/stt_vendors.py`); a model with no list price there returns `null` and logs `stt_price_unknown` at startup. |
 | `STT_SAMPLE_RATE` / `STT_ENCODING` | `16000` / `linear16` | Returned to the desktop as stream settings. |
 | `DEFAULT_WORKSPACE_ID` | `805dd994-ff52-405c-a3cc-58f09b32a2dd` | The one workspace every M1 request resolves to. |
 | `DEFAULT_WORKSPACE_NAME` | `Linkt` | Used only when the workspace row is first created. |
@@ -44,6 +46,46 @@ migrated it logs `database_not_ready` and exits.
 | `TEST_DATABASE_URL` | `postgresql+asyncpg://postgres:postgres@localhost:5432/roger_test` | Test suite only. |
 
 The version reported by `/health` comes from the package metadata (`pyproject.toml`).
+
+## Speech-to-text tokens
+
+`POST /v1/stt/token` hands the desktop a short-lived vendor credential plus stream settings; the
+vendor key never leaves the API. Each vendor is one `SttTokenIssuer` in
+`src/roger_api/services/stt_tokens.py` and one entry in the vendor registry,
+`src/roger_api/stt_vendors.py` (issuer, default model, model-name prefix, token TTL limit, list
+price per stream-hour), picked by `STT_PROVIDER`. To add a vendor, follow "Add a speech-to-text
+vendor" in [`apps/desktop/README.md`](../desktop/README.md#add-a-speech-to-text-vendor): the
+desktop and the API change together.
+
+AssemblyAI is Roger's vendor (owner decision, 2026-10-06: AssemblyAI lists Granola as a customer,
+live text costs about $0.15 an hour per stream, and it has generous free hours). The model
+is Universal-Streaming English. Deepgram stays as the second adapter for the M3 bake-off. To
+switch from the fake provider, set in `.env`:
+
+```bash
+STT_PROVIDER=assemblyai
+ASSEMBLYAI_API_KEY=...   # from the AssemblyAI dashboard
+```
+
+and leave `STT_MODEL` empty. The issuer asks AssemblyAI for a temporary token
+(`GET https://streaming.assemblyai.com/v3/token?expires_in_seconds=<STT_TOKEN_TTL_SECONDS>&max_session_duration_seconds=10800`,
+raw key as `Authorization`). The TTL is only the window to open a stream; one token opens both of
+the desktop's streams, and each session can then run for up to 3 hours, a cap asked for explicitly
+so a change of the vendor's default never lengthens a billed session. A vendor that refuses, fails
+or times out is a `502 stt_provider_error`.
+
+Two vendor rules to know before testing (read 2026-10-06):
+
+- AssemblyAI bills the time each websocket is open, not the audio sent
+  ([docs](https://www.assemblyai.com/docs/universal-streaming)). A call opens two, mic and system
+  audio, so a call hour costs about $0.30, and a silent or dead system stream costs as much as a
+  live one while it is open. The desktop's cost guards close such a session and stop a forgotten
+  recording (apps/desktop/README.md, "Cost guards").
+- A free account may start 5 streaming sessions a minute, paid accounts 100 or more
+  ([docs](https://www.assemblyai.com/docs/streaming/rate-limits)). Every Start opens two, so a
+  third Start within a minute would fail at the vendor with "Too many concurrent sessions"
+  although nothing leaked. The desktop's own limiter (4 opens a minute) refuses it first and says
+  when to try.
 
 ## Errors
 
@@ -129,6 +171,7 @@ src/roger_api/
   main.py              ASGI entry point (`app = create_app()`)
   app.py               create_app(): lifespan, middleware, error handlers, routers, /mcp
   config.py            Settings (pydantic-settings); DatabaseSettings for Alembic
+  stt_vendors.py       speech-to-text vendor registry (issuer, default model, price)
   log.py               structlog setup (console in development, JSON in production)
   middleware.py        request id, access log, 500 envelope
   error_handlers.py    the error envelope for every other error
