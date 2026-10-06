@@ -231,7 +231,7 @@ function gapMs(fromSample: number, toSample: number): { startMs: number; endMs: 
 }
 
 /** `mm:ss`, as the clip flags and reference lines write it. */
-function formatClock(ms: number): string {
+export function formatClock(ms: number): string {
   const totalSeconds = Math.floor(ms / 1000);
   const minutes = String(Math.floor(totalSeconds / 60)).padStart(2, '0');
   return `${minutes}:${String(totalSeconds % 60).padStart(2, '0')}`;
