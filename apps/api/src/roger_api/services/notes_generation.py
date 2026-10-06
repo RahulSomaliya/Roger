@@ -53,6 +53,7 @@ from roger_api.log import get_logger
 from roger_api.schemas.note_templates import NoteTemplate
 from roger_api.schemas.notes import NoteOut, note_doc_problem, storable_doc
 from roger_api.services.citations import (
+    CheckedLine,
     Citation,
     CitedLine,
     DroppedLine,
@@ -79,7 +80,7 @@ from roger_api.services.notes_markdown import (
 )
 from roger_api.services.notes_model import ModelEvent, ModelRequest, TextDelta, notes_request
 from roger_api.services.notes_prompt import PROMPT_VERSION, NotesPrompt, build_notes_prompt
-from roger_api.services.notes_protocol import Heading, LineProtocolParser, ProtocolLine
+from roger_api.services.notes_protocol import Bullet, Heading, LineProtocolParser, ProtocolLine
 
 # The transcript's one order (start, then "me" before "them", then id), so `L1..Ln` run as the
 # transcript reads. Imported, never copied: two orders would number the prompt one way and show
@@ -93,6 +94,9 @@ type Json = dict[str, Any]
 type ModelStream = Callable[[ModelRequest], AbstractAsyncContextManager[AsyncIterator[ModelEvent]]]
 # Where the core sends each event: a run's `RunContext.emit`, or a list in the eval.
 type Emit = Callable[[RunEvent], None]
+# Keeps, moves to "From your notes" or drops one parsed bullet: `check_line` against the run's ref
+# map.
+type LineCheck = Callable[[Bullet], CheckedLine]
 
 # The AI doc's names. `citation` is `CITATION_NODE_TYPE` in the desktop's shared/notes.ts, and its
 # attrs are `CitationAttrs` there; `NOT_SAID_ON_THE_CALL` is the constant of the same name.
@@ -120,9 +124,12 @@ class NotesSources:
         return not self.lines and not self.note_blocks
 
     def prompt(self) -> NotesPrompt:
-        """The blocks as Markdown, as the user structured them (see the module's first trap)."""
-        shown = tuple(block.markdown for block in self.note_blocks)
-        return build_notes_prompt(self.template, RefMap(self.lines, shown))
+        return build_notes_prompt(self.template, self.shown_refs())
+
+    def shown_refs(self) -> RefMap:
+        """The map a prompt numbers: the blocks as Markdown, as the user structured them (see the
+        module's first trap)."""
+        return RefMap(self.lines, tuple(block.markdown for block in self.note_blocks))
 
     def refs(self) -> RefMap:
         """The map every line is checked against: the blocks' words alone (first trap)."""
@@ -178,29 +185,19 @@ async def generate_notes(sources: NotesSources, stream: ModelStream, emit: Emit)
     or fails, `ModelCutOffError` when the answer stopped at its limit. Then nothing is returned,
     and a run keeps the AI notes it had.
     """
-    writer = _NotesWriter(sources, emit)
-    parser = LineProtocolParser()
-    pieces: list[str] = []
-    async with stream(notes_request(sources.prompt())) as events:
-        async for event in events:
-            if not isinstance(event, TextDelta):
-                continue
-            text = _storable_text(event.text)
-            pieces.append(text)
-            for line in parser.feed(text):
-                writer.take(line)
-    for line in parser.finish():
-        writer.take(line)
-    return writer.result("".join(pieces))
+    refs = sources.refs()
+    writer = NotesWriter(sources.template, lambda bullet: check_line(bullet, refs), emit)
+    return await write_notes(notes_request(sources.prompt()), stream, writer)
 
 
-class _NotesWriter:
-    """Files each parsed line under its section, "From your notes" or the removed lines."""
+class NotesWriter:
+    """Files each parsed line under its section, "From your notes" or the removed lines, as `check`
+    decides, and emits each one's event."""
 
-    def __init__(self, sources: NotesSources, emit: Emit) -> None:
-        self._refs = sources.refs()
+    def __init__(self, template: NoteTemplate, check: LineCheck, emit: Emit) -> None:
+        self._check = check
         self._emit = emit
-        sections = sources.template.sections
+        sections = template.sections
         # Headings by `_heading_key`: the template's first, then each one the model adds.
         self._headings = {
             _heading_key(section.heading): (index, section.heading)
@@ -218,7 +215,7 @@ class _NotesWriter:
         if isinstance(line, Heading):
             self._start_section(line.text)
             return
-        match check_line(line, self._refs):
+        match self._check(line):
             case CitedLine() as cited:
                 self._keep(cited)
             case FromNotesLine() as moved:
@@ -263,6 +260,26 @@ class _NotesWriter:
             self._emit(RunEvent("section", {"index": index, "heading": heading}))
         self._kept[index][1].append(line)
         self._emit(item_event(index, line))
+
+
+async def write_notes(
+    request: ModelRequest, stream: ModelStream, writer: NotesWriter
+) -> GeneratedNotes:
+    """Streams the answer to `request` into `writer`, one finished line at a time, and returns
+    what `writer` filed, with the answer as `output_text`. Raises what the stream raises."""
+    parser = LineProtocolParser()
+    pieces: list[str] = []
+    async with stream(request) as events:
+        async for event in events:
+            if not isinstance(event, TextDelta):
+                continue
+            text = _storable_text(event.text)
+            pieces.append(text)
+            for line in parser.feed(text):
+                writer.take(line)
+    for line in parser.finish():
+        writer.take(line)
+    return writer.result("".join(pieces))
 
 
 def _heading_key(heading: str) -> str:
