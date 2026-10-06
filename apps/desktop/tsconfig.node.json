@@ -1,6 +1,8 @@
 {
   "extends": "./tsconfig.base.json",
   "compilerOptions": {
+    // No DOM: the main process and preload have no `window` or `document`. Code that hands
+    // callbacks to a page (e2e/, qa/) is checked by tsconfig.e2e.json, which has DOM.
     "lib": ["ES2023"],
     "types": ["node"]
   },
@@ -9,10 +11,9 @@
     "src/preload/**/*.ts",
     "src/shared/**/*.ts",
     "bench/**/*.ts",
-    "e2e/**/*.ts",
-    "qa/**/*.ts",
     "electron.vite.config.ts",
     "vite.preview.config.ts",
-    "vitest.*.ts"
+    "vitest.config.ts",
+    "vitest.mac.config.ts"
   ]
 }

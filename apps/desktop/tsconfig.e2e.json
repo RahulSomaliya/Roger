@@ -1,0 +1,14 @@
+// Node code that drives a page through playwright-core: the Electron smoke test (e2e/) and the QA
+// driver (qa/). The callbacks they hand to `page.evaluate` run in the page, so this program has the
+// DOM types as well as Node's. Keep DOM out of tsconfig.node.json: there it would let `window` and
+// `document` type-check in src/main and src/preload, where they crash at runtime.
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "types": ["node"]
+  },
+  // vitest.e2e.config.ts also keeps this program non-empty: with no e2e/ or qa/ file yet, `tsc`
+  // fails a program that has no inputs (TS18003).
+  "include": ["e2e/**/*.ts", "qa/**/*.ts", "vitest.e2e.config.ts"]
+}
