@@ -29,7 +29,11 @@ from roger_api.services.notes_model import ModelMessage, ModelRequest, TextPart
 # Private there because notes_prompt.py has another owner in Phase 2. One sanitiser for both
 # prompts: a second copy that drifted would let source text close a fence in only one of them.
 from roger_api.services.notes_prompt import _source_text, transcript_line
-from roger_api.services.notes_protocol import MAX_REFS_PER_LINE, Ref, split_refs
+
+# `_REF_GROUP` is private there for the same reason: one way to find a ref group in notes and in
+# chat. Chat once had its own copy, which matched a single bracket only and so left the brackets a
+# model wraps around groups (`[[L12]]`, `([L12], [L13])`) in the stored answer as `[]` or `(,)`.
+from roger_api.services.notes_protocol import _REF_GROUP, MAX_REFS_PER_LINE, Ref, split_refs
 
 # Stored on every chat run (`llm_runs.prompt_version`). Bump it with any change to the rules or the
 # layout below.
@@ -161,16 +165,16 @@ def _fenced(tag: str, lines: list[str]) -> str:
 
 # --- The answer's refs ---------------------------------------------------------------------------
 
-# A ref group as the rules ask for one: `[L12]`, `[L12, L15]`, `[L12-L15]`, `[N2]`, with the space
+# A ref group is found as notes_protocol finds one (`_REF_GROUP`, imported above): `[L12]`,
+# `[L12, L15]`, `[L12-L15]`, `[N2]`, or groups wrapped in one more pair of brackets, with the space
 # before it (so a group taken out leaves no double space). What a group means, ranges written out,
-# repeats counted once and the first MAX_REFS_PER_LINE kept, is `notes_protocol.split_refs`'s
-# reading, so a chat ref and a notes ref mean the same. Single optional spaces, never `\s*`:
-# notes_protocol.py explains the quadratic scan that avoids.
-_DASH = r"[-\u2013\u2014]"
-_REF = rf"[LN]\d{{1,6}}(?: ?{_DASH} ?[LN]?\d{{1,6}})?"
-_REF_GROUP = re.compile(rf"(?P<space> ?)\[ ?{_REF}(?: ?[,;] ?{_REF})* ?\]", re.IGNORECASE)
+# repeats counted once and the first MAX_REFS_PER_LINE kept, is `split_refs`'s reading, so a chat
+# ref and a notes ref mean the same.
+#
 # How far back a `[` is still waited on to close a group across pieces. A longer group is still
-# read whole by `finish`; only its chips wait for `done`.
+# read whole by `finish`; only its chips wait for `done`. The stream reads a wrapped group one inner
+# group at a time, as each closes: past MAX_REFS_PER_LINE refs in one wrapper it can send a chip
+# that `finish` leaves out, and `done`'s text replaces the streamed text (api-contract.md, Chat).
 _OPEN_GROUP_CHARS = 512
 
 
@@ -180,8 +184,9 @@ class ReadAnswer:
     """The answer as the model wrote it (`llm_runs.output_text`)."""
     text: str
     """The answer to store and show: each ref group holds only the line refs the map has, written
-    out (`[L12, L13]`, never a range); a group left with none is taken out. Note block refs go too:
-    they ground the answer but have no chip."""
+    out (`[L12, L13]`, never a range), and a wrapped one (`([L12], [L13])`) becomes one plain group;
+    a group left with none is taken out. Note block refs go too: they ground the answer but have no
+    chip."""
     citations: tuple[Citation, ...]
     """Every ref left in `text`, once each, in the order they first appear."""
 
@@ -227,7 +232,8 @@ class AnswerReader:
                 return ""
             for citation in kept:
                 citations.setdefault(citation.ref, citation)
-            return f"{group['space']}[{', '.join(citation.ref for citation in kept)}]"
+            space = " " if group.group().startswith(" ") else ""
+            return f"{space}[{', '.join(citation.ref for citation in kept)}]"
 
         text = _REF_GROUP.sub(rewrite, raw).strip()
         return ReadAnswer(raw=raw, text=text, citations=tuple(citations.values()))

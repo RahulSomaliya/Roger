@@ -4,6 +4,7 @@ import json
 from uuid import uuid4
 
 import httpx
+import pytest
 
 from roger_api.config_notes import NotesSettings
 from roger_api.services.chat_prompt import (
@@ -131,6 +132,7 @@ def test_history_comes_oldest_first_between_the_meeting_and_the_question() -> No
     history = (
         ChatExchange("Who is on the call?", "Me and Them [L1, L2]."),
         ChatExchange("What did they price it at?", "Fifty thousand [L2-L3] as noted [N1]."),
+        ChatExchange("And the beta?", "Friday [[L1], [L2]], as written ([N1])."),
     )
 
     request = prompt_for().request(history, QUESTION)
@@ -143,6 +145,8 @@ def test_history_comes_oldest_first_between_the_meeting_and_the_question() -> No
         ("assistant", "Me and Them."),
         ("user", "What did they price it at?"),
         ("assistant", "Fifty thousand as noted."),
+        ("user", "And the beta?"),
+        ("assistant", "Friday, as written."),
         ("user", QUESTION),
     ]
 
@@ -207,6 +211,34 @@ def test_stored_answer_keeps_valid_line_refs_and_drops_the_rest() -> None:
         ("L2", LINES[1].segment_id, 7_000),
         ("L3", LINES[2].segment_id, 3_725_000),
     ]
+
+
+@pytest.mark.parametrize(
+    ("written", "stored", "cited"),
+    [
+        pytest.param("Friday [[L1], [L9]].", "Friday [L1].", ["L1"], id="bracketed-groups"),
+        pytest.param("Friday ([L1], [L9]).", "Friday [L1].", ["L1"], id="parenthesised-groups"),
+        pytest.param("Friday [[L1]].", "Friday [L1].", ["L1"], id="one-bracketed-group"),
+        pytest.param("Friday [[L9]].", "Friday.", [], id="unknown-ref-only"),
+        pytest.param("Friday [[N1]].", "Friday.", [], id="bracketed-note-ref"),
+        pytest.param("Friday ([N1]).", "Friday.", [], id="parenthesised-note-ref"),
+    ],
+)
+def test_ref_groups_wrapped_in_more_brackets_are_read_with_their_wrapper(
+    written: str, stored: str, cited: list[str]
+) -> None:
+    whole = AnswerReader(REFS)
+    whole.feed(written)
+    pieces = AnswerReader(REFS)
+    streamed = [c.ref for i in range(len(written)) for c in pieces.feed(written[i])]
+
+    # The wrapper goes with its groups (notes_protocol reads them so): left in, the stored answer
+    # would show `[]`, `(,)` or `[[L1],]` around or instead of its chips.
+    answer = whole.finish()
+    assert answer.text == stored
+    assert [citation.ref for citation in answer.citations] == cited
+    assert streamed == cited
+    assert pieces.finish() == answer
 
 
 def test_brackets_that_are_not_refs_stay_text() -> None:
