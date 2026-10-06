@@ -5,6 +5,15 @@ export interface SttOpenLimits {
   perMeeting: number;
 }
 
+/**
+ * What an open draws on:
+ * - meeting: a slot in the minute window and one of the meeting's opens (Start, stall and failure
+ *   reopens)
+ * - minute: a slot in the minute window only, never the meeting's count (the gap re-run, the
+ *   silence gate's reopens, which keep a count of their own)
+ */
+export type SttOpenScope = 'meeting' | 'minute';
+
 export type SttOpenDecision =
   | { ok: true }
   /** The minute is full: an open may go ahead at `retryAtMs` (clock time). */
@@ -16,15 +25,26 @@ export type SttOpenDecision =
 const WINDOW_MS = 60_000;
 
 /**
- * The one gate every vendor session open passes: Start's two, a reopen after a stall, a reopen
- * after a vendor failure, for both sources. Every open is billed from its handshake, and AssemblyAI
- * refuses a free account's 6th start in a minute only after that handshake ("Too many concurrent
- * sessions"), so a reopen loop that ignored this would both spend money and lock Start out.
+ * The one gate every vendor session open passes. Every open is billed from its handshake, and
+ * AssemblyAI refuses a free account's 6th start in a minute only after that handshake ("Too many
+ * concurrent sessions"), so an open loop that ignored this would both spend money and lock Start
+ * out.
+ *
+ * Every caller acquires right before `stt.openStream`, and an adapter never opens a socket on its
+ * own (CLAUDE.md, architecture rule 9). These are the callers; a new one is added here and to the
+ * rule in the same change:
+ * - CaptureSession, on the meeting's allowance (`acquire(count)`): Start's two opens, and every
+ *   reopen after a stall or a vendor failure, for both sources.
+ * - CaptureSession's silence-gate reopens (M3-T20), in the minute only (`acquire(1, 'minute')`):
+ *   the gate keeps its own per-meeting count, so it never spends the opens a failure needs.
+ * - The gap re-run (M2-T16), in the minute only, through the one budget createCaptureRuntime.ts
+ *   builds and shares with CaptureService: it runs after Stop, when the count still holds the last
+ *   meeting's opens, and a meeting with gaps is the one whose failures spent them.
+ * - The bench (M3-T11), through a budget of its own.
  *
  * The minute window outlives a meeting on purpose: the vendor counts per account, so Start, Stop,
- * Start inside a minute spends the same window. The per-meeting count restarts at every Start.
- * CaptureSession must call acquire() right before stt.openStream and nowhere else; an adapter
- * never opens a socket on its own (CLAUDE.md, architecture rule 9).
+ * Start inside a minute spends the same window, and so does a re-run after Stop. The per-meeting
+ * count restarts at every Start, a crash resume's included (M2 D7).
  */
 export class SttOpenBudget {
   /** Clock times of opens in the last WINDOW_MS, oldest first. */
@@ -45,10 +65,10 @@ export class SttOpenBudget {
   }
 
   /** Whether `count` opens could go ahead now. Takes nothing. */
-  check(count = 1): SttOpenDecision {
+  check(count = 1, scope: SttOpenScope = 'meeting'): SttOpenDecision {
     const now = this.clock();
     this.recent = this.recent.filter((at) => now - at < WINDOW_MS);
-    if (this.meetingOpens + count > this.limits.perMeeting) {
+    if (scope === 'meeting' && this.meetingOpens + count > this.limits.perMeeting) {
       return {
         ok: false,
         kind: 'per-meeting',
@@ -74,12 +94,12 @@ export class SttOpenBudget {
   }
 
   /** Takes `count` opens when all of them fit, else none. */
-  acquire(count = 1): SttOpenDecision {
-    const decision = this.check(count);
+  acquire(count = 1, scope: SttOpenScope = 'meeting'): SttOpenDecision {
+    const decision = this.check(count, scope);
     if (!decision.ok) return decision;
     const now = this.clock();
     for (let i = 0; i < count; i += 1) this.recent.push(now);
-    this.meetingOpens += count;
+    if (scope === 'meeting') this.meetingOpens += count;
     return decision;
   }
 }

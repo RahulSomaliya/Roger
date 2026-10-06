@@ -89,3 +89,57 @@ describe('SttOpenBudget', () => {
     expect(b.acquire(2)).toMatchObject({ ok: false, kind: 'per-minute', retryAtMs: 1_060_000 });
   });
 });
+
+// The gap re-run (M2-T16) and the silence gate's reopens (M3-T20) open in the minute only.
+describe('SttOpenBudget, minute-only opens', () => {
+  it('takes a slot in the minute window, which every other open then waits behind', () => {
+    const { b, at } = budget();
+    expect(b.acquire(1, 'minute')).toEqual({ ok: true });
+    at(10_000);
+    expect(b.acquire(3, 'minute')).toEqual({ ok: true });
+
+    at(20_000);
+    // The vendor counts per account: a meeting's Start waits behind a re-run's opens.
+    expect(b.acquire(2)).toMatchObject({ ok: false, kind: 'per-minute', retryAtMs: 1_070_000 });
+    expect(b.acquire(1, 'minute')).toEqual({
+      ok: false,
+      kind: 'per-minute',
+      retryAtMs: 1_060_000,
+      message:
+        "4 speech-to-text sessions opened in the last minute (Roger's limit is 4, " +
+        'sttOpensPerMinute); the next may open in 40 s',
+    });
+    expect(b.check(1, 'minute').ok).toBe(false);
+
+    at(60_000);
+    expect(b.acquire(1, 'minute')).toEqual({ ok: true });
+  });
+
+  it("never spends the meeting's opens", () => {
+    const { b, at } = budget(4, 3);
+    for (let i = 0; i < 10; i += 1) {
+      at(i * 60_000);
+      expect(b.acquire(1, 'minute').ok).toBe(true);
+    }
+    expect(b.openedThisMeeting).toBe(0);
+    at(3_600_000);
+    expect(b.acquire(3)).toEqual({ ok: true }); // the meeting's whole allowance is still there
+  });
+
+  it("goes ahead when the meeting's opens are spent: a re-run after Stop still runs", () => {
+    const { b, at } = budget(4, 2);
+    b.acquire(2);
+    expect(b.check()).toMatchObject({ ok: false, kind: 'per-meeting' });
+    at(60_000);
+    expect(b.check(1, 'minute')).toEqual({ ok: true });
+    expect(b.acquire(1, 'minute')).toEqual({ ok: true });
+    expect(b.openedThisMeeting).toBe(2);
+  });
+
+  it('takes nothing when refused, and grants several all or none', () => {
+    const { b } = budget(4);
+    b.acquire(3, 'minute');
+    expect(b.acquire(2, 'minute')).toMatchObject({ ok: false, kind: 'per-minute' });
+    expect(b.acquire(1)).toEqual({ ok: true }); // the refused pair took no slot
+  });
+});
