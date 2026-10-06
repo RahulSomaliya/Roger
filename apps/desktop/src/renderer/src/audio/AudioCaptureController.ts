@@ -15,6 +15,7 @@ import { type CaptureStream, stopTracks } from './streams';
 const CHUNK_SAMPLES = PCM_SAMPLE_RATE / 10;
 
 const STOPPED_WHILE_STARTING = 'The recording stopped while audio capture was starting';
+const CALL_AUDIO_GIVEN_UP = 'Call audio stopped earlier in this meeting';
 
 export interface AudioStartResult {
   /** Null when the system stream is running; otherwise why it is not. The mic failing throws. */
@@ -60,6 +61,16 @@ export type MainCapture = Pick<CaptureStatus, 'phase' | 'meetingId' | 'sources' 
  */
 function opensCallAudio(status: MainCapture): boolean {
   return status.systemCapture === undefined || status.systemCapture === 'electron';
+}
+
+/**
+ * Main closed this source's session for the meeting (G1: it failed or ended) and never reopens it,
+ * so a capture opened for it here (a page reloaded mid-recording) would stream into nothing until
+ * Stop. Only a new Start resets it.
+ */
+function mainGaveUpOn(status: MainCapture, source: AudioSource): boolean {
+  const { health } = status.sources[source];
+  return health === 'error' || health === 'ended';
 }
 
 /** Runs both renderer-side captures and ships their chunks to main through the IPC contract. */
@@ -175,14 +186,13 @@ export class AudioCaptureController<S extends CaptureStream = MediaStream> {
   /**
    * Main records and the mic does not capture. Not while a start runs (statuses join it), not
    * between the person's Stop and main going idle (stoppedUntilIdle), not for a mic main gave up
-   * on this meeting (G1: a failed or ended source never reopens, so its audio would go nowhere),
-   * and not again for one that failed here: main sends a status every second while it records,
-   * and each would open the mic again.
+   * on this meeting (mainGaveUpOn), and not again for one that failed here: main sends a status
+   * every second while it records, and each would open the mic again. Call audio is gated the
+   * same way in open().
    */
   private shouldOpenMic(status: MainCapture): boolean {
     if (this.stoppedUntilIdle || this.captures.has('mic') || this.starting !== null) return false;
-    const { health } = status.sources.mic;
-    if (health === 'error' || health === 'ended') return false;
+    if (mainGaveUpOn(status, 'mic')) return false;
     return this.micFailedFor?.meetingId !== status.meetingId;
   }
 
@@ -199,9 +209,12 @@ export class AudioCaptureController<S extends CaptureStream = MediaStream> {
       this.micFailedFor = { meetingId: status.meetingId };
       throw error;
     }
-    const result = opensCallAudio(status)
-      ? await this.startCallAudio(generation)
-      : { systemAudioError: null };
+    let result: AudioStartResult = { systemAudioError: null };
+    if (opensCallAudio(status)) {
+      result = mainGaveUpOn(status, 'system')
+        ? { systemAudioError: CALL_AUDIO_GIVEN_UP }
+        : await this.startCallAudio(generation);
+    }
     this.lastStart = result;
     return result;
   }

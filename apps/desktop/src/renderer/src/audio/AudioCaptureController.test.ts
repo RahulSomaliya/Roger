@@ -362,6 +362,25 @@ describe('AudioCaptureController', () => {
     expect(h.mic.opens).toBe(1);
   });
 
+  it('leaves call audio shut on a reload when main gave up on it this meeting', async () => {
+    for (const health of ['ended', 'error'] as const) {
+      const h = harness();
+      // Call audio's track ended (or never opened) earlier: main closed its session (G1), and a
+      // capture opened now would stream into nothing for the rest of the meeting.
+      const status = recording();
+      status.sources.system = { ...emptySourceStatus(), health };
+      h.controller.followMain(status);
+      await settle();
+      h.micReady();
+      await settle();
+
+      expect(h.live('mic')).toHaveLength(1);
+      expect(h.roger.getSystemAudioSourceId).not.toHaveBeenCalled();
+      expect(h.openSystemAudio).not.toHaveBeenCalled();
+      await h.controller.stop();
+    }
+  });
+
   it("opens call audio only on Electron's path: the helper's tap runs in main", async () => {
     const opensCallAudio = async (status: CaptureStatus): Promise<boolean> => {
       const h = harness();
