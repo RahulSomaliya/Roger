@@ -45,7 +45,7 @@ milestone plan.
 3. **Vendor keys never ship in the app.** The API holds speech-to-text and LLM keys and hands the
    desktop app short-lived tokens. The desktop app only ever holds the Roger API token.
 4. **Vendors sit behind our own small interfaces.** `SpeechToText` (desktop), `SttTokenIssuer`
-   (API), later `NotesModel`. Swapping a vendor is a config change plus one new adapter, never a
+   and `NotesModel` (API). Swapping a vendor is a config change plus one new adapter, never a
    change to callers.
 5. **In Electron, the main process owns secrets, network and persistence.** The renderer captures
    audio and renders UI. It talks to main only through the typed IPC contract in
