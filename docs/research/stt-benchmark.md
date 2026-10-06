@@ -332,9 +332,11 @@ Things the commands do not say on their own:
   startup disk.
 - **Two path rules differ.** A relative `--save-wire` resolves against the folder `make` ran in. A
   relative `clip --user-data` resolves against `apps/desktop` (where pnpm runs the bench), so give
-  that one an absolute path. `--user-data` defaults to the installed app's
-  `~/Library/Application Support/Roger` (its `roger started` log line prints the folder in use); a
-  build run from the checkout keeps its data elsewhere. Quote a path with spaces inside `ARGS`:
+  that one an absolute path. `--user-data` defaults to `~/Library/Application Support/Roger`, the
+  folder the installed app and `make dev-desktop` both use today; the app's `roger started` log
+  line prints the folder in use. Once M5-T11 lands, a build run from the checkout keeps its data in
+  `Roger Dev` beside it instead, and only then does a meeting recorded that way need
+  `--user-data`. Quote a path with spaces inside `ARGS`:
   `make bench ARGS="clip ... --user-data '/Users/me/Library/Application Support/Roger Dev'"`.
 - **`draft` never rewrites a draft.** An item that has a `reference.draft.txt` may hold the owner's
   fixes in progress, so it is left alone; delete that item's draft to draft it again.
