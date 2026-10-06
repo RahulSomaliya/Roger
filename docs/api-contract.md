@@ -49,6 +49,9 @@ same change as the code on both sides. Base URL in development: `http://127.0.0.
 
 ```ts
 type MeetingStatus = "recording" | "ended";
+// How the recording was started. `notification` is a click on the calendar prompt,
+// `call_detected` one on the call-detected card; `manual` is the default.
+type StartSource = "manual" | "notification" | "home" | "tray" | "call_detected";
 
 interface Meeting {
   id: string;
@@ -58,8 +61,30 @@ interface Meeting {
   started_at: string;        // instant
   ended_at: string | null;   // instant
   segment_count: number;     // transcript segments stored so far
+  start_source: StartSource; // "manual" for every meeting stored before it existed
+  calendar_event: MeetingCalendarEvent | null; // the event it was started for
   created_at: string;
   updated_at: string;
+}
+
+type ResponseStatus = "accepted" | "tentative" | "declined" | "needs_action";
+
+interface CalendarAttendee {
+  email: string;
+  display_name: string | null;
+  response_status: ResponseStatus;
+  is_self: boolean;
+  is_organizer: boolean;          // rooms and other resources are never listed
+}
+
+interface MeetingCalendarEvent {
+  provider: "google" | "fake";
+  event_id: string;                // the instance id for a recurring event
+  ical_uid: string | null;         // the same for every invitee
+  recurring_event_id: string | null;
+  scheduled_start: string;         // instant
+  scheduled_end: string;           // instant
+  attendees: CalendarAttendee[];   // at most 200, in invite order
 }
 
 type AudioSource = "mic" | "system";
@@ -103,11 +128,25 @@ Create a meeting. Idempotent on `id`.
 Request:
 
 ```json
-{ "id": "uuid (optional)", "title": "string (optional, default \"Untitled meeting\")", "started_at": "instant (optional, default now)" }
+{
+  "id": "uuid (optional)",
+  "title": "string (optional, default \"Untitled meeting\")",
+  "started_at": "instant (optional, default now)",
+  "start_source": "StartSource (optional, default \"manual\")",
+  "calendar_event": "MeetingCalendarEvent (optional, default null)"
+}
 ```
 
+`calendar_event` links the meeting to the calendar event it was started for. Every field of it and
+of its attendees is required except `ical_uid`, `recurring_event_id` and `display_name`, which may
+be left out; any of those three sent blank is stored as `null`. Every text field is 1 to 2048
+characters after trimming. At most 200 attendees, kept in the order sent. `scheduled_start` and
+`scheduled_end` are instants with an offset; their order is not checked, as they copy what the
+calendar said. A bad value is a `422` naming the field (`body.calendar_event.attendees[1].email`).
+
 Response: `201 Meeting` when created, `200 Meeting` when `id` already exists in this workspace. The
-`200` is the stored meeting as it is: a different `title` or `started_at` in the re-send is ignored.
+`200` is the stored meeting as it is: a different `title`, `started_at`, `start_source` or
+`calendar_event` in the re-send is ignored, and a link sent only in a re-send is not stored.
 
 ### `GET /v1/meetings?limit=50&before=<instant>&before_id=<uuid>`
 
