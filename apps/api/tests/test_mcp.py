@@ -87,12 +87,13 @@ async def seed_weekly_sync(client: httpx.AsyncClient) -> str:
     return meeting_id
 
 
-async def test_lists_exactly_get_transcript(connect: Connect) -> None:
+async def test_lists_get_transcript_and_get_notes(connect: Connect) -> None:
     async with connect() as mcp:
         tools = (await mcp.list_tools()).tools
 
-    assert [tool.name for tool in tools] == ["get_transcript"]
-    [tool] = tools
+    # get_notes (M4-T11) has its own checks in test_mcp_notes.py.
+    assert [tool.name for tool in tools] == ["get_transcript", "get_notes"]
+    tool = tools[0]
     assert tool.description == GET_TRANSCRIPT_DESCRIPTION == CONTRACT_DESCRIPTION
     assert set(tool.input_schema["properties"]) == {"meeting_id"}
     assert "meeting_id" not in tool.input_schema.get("required", [])
