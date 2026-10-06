@@ -138,7 +138,9 @@ Behind a TLS-terminating proxy, run uvicorn with `--proxy-headers --forwarded-al
 The tests run against a real Postgres. Point `TEST_DATABASE_URL` at a database you do not mind
 losing: the suite migrates it down and up again with Alembic at the start of the run (so the
 migrations themselves are tested, and a test checks they match the models), and truncates every
-table before each test.
+table before each test. The database name must start with `roger_test`: the suite refuses any other
+name before it connects, and creates the database when it does not exist yet. Parallel worktrees
+each use their own: `make check TEST_DB=roger_test_<task>`.
 
 ```bash
 uv run --frozen ruff check . && uv run --frozen ruff format --check .   # make lint-api
@@ -154,11 +156,17 @@ three for both apps.
 
 ## Migrations
 
-Tables are only ever created by Alembic. To change the schema:
+Tables are only ever created by Alembic. The chain is fixed through `0005`: Phase 2's revisions
+`0002` to `0005` exist as empty stubs, each owned by one task (`docs/plans/phase-2-build-order.md`,
+section 2), and `tests/test_migrations.py` fails on a second head or a re-pointed `down_revision`.
+To fill a stub, run step 2 into a scratch revision, move its operations into the stub, and delete
+the scratch file. To change the schema:
 
-1. Edit `src/roger_api/db/models.py`.
-2. `uv run --frozen alembic revision --autogenerate --rev-id 0002 -m "Add meeting notes"`
-   against a database at `head`. The file is formatted by ruff automatically.
+1. Edit the models: `src/roger_api/db/models_<domain>.py` for a Phase 2 domain (`db/models.py`
+   imports each at its end), `db/models.py` for the M1 tables.
+2. `uv run --frozen alembic revision --autogenerate --rev-id 0006 -m "Add ..."` against a
+   database at `head`. The file is formatted by ruff automatically. A new revision also needs its
+   row in the plan's table and in `test_revision_chain_is_fixed`.
 3. Read the generated file and fix what autogenerate gets wrong (server defaults, data
    migrations, index expressions). Keep `downgrade()` working.
 4. `uv run --frozen alembic upgrade head`, then run the tests: `test_migrations.py` fails if the
@@ -171,6 +179,8 @@ src/roger_api/
   main.py              ASGI entry point (`app = create_app()`)
   app.py               create_app(): lifespan, middleware, error handlers, routers, /mcp
   config.py            Settings (pydantic-settings); DatabaseSettings for Alembic
+  config_notes.py      NotesSettings mixin of Settings (notes model)
+  config_calendar.py   CalendarSettings mixin of Settings (Google Calendar)
   stt_vendors.py       speech-to-text vendor registry (issuer, default model, price)
   log.py               structlog setup (console in development, JSON in production)
   middleware.py        request id, access log, 500 envelope
@@ -180,10 +190,11 @@ src/roger_api/
   dependencies.py      FastAPI dependencies for app state (settings, database, sessions)
   domain.py            shared vocabulary (statuses, sources, limits)
   mcp_server.py        MCP server, get_transcript tool, bearer middleware
-  db/                  engine wrapper, declarative base, models
+  db/                  engine wrapper, declarative base, models (one module per Phase 2 domain)
   migrations/          Alembic environment and revisions
   schemas/             pydantic models at the HTTP edge
-  services/            meetings, segments, workspaces, STT tokens, transcript rendering
-  routers/             health, meetings, stt
+  services/            meetings, segments, workspaces, STT tokens, transcript rendering, notes,
+                       the LLM run registry, calendar
+  routers/             health, meetings, stt, and one per Phase 2 feature (all included in app.py)
 tests/                 pytest against real Postgres; MCP tests go through the SDK client
 ```
