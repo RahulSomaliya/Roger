@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { UsageError, parseBenchArgs } from './args';
+import { USAGE, UsageError, parseBenchArgs } from './args';
 
 const CWD = '/repo';
 
@@ -58,6 +58,41 @@ describe('parseBenchArgs', () => {
       command: 'canary',
       saveWireDir: '/tmp/wire',
     });
+  });
+
+  it('hands clip, draft, check and forget their words as given, for the test-set tools to parse', () => {
+    const clip = ['--meeting', 'm-1', '--from', '0:00', '--to', '2:00', '--name', 'standup-1'];
+    expect(parseBenchArgs(['clip', ...clip, '--person', 'Ana:2026-10-01'], CWD)).toEqual({
+      command: 'dataset',
+      name: 'clip',
+      args: [...clip, '--person', 'Ana:2026-10-01'],
+    });
+    expect(parseBenchArgs(['draft', '--runs', 'a,b'], CWD)).toEqual({
+      command: 'dataset',
+      name: 'draft',
+      args: ['--runs', 'a,b'],
+    });
+    expect(parseBenchArgs(['check'], CWD)).toEqual({ command: 'dataset', name: 'check', args: [] });
+    expect(parseBenchArgs(['forget', '--person', 'Ana'], CWD)).toEqual({
+      command: 'dataset',
+      name: 'forget',
+      args: ['--person', 'Ana'],
+    });
+  });
+
+  it('lists every command of the M3 design in the usage', () => {
+    for (const command of [
+      'clip',
+      'run',
+      'draft',
+      'check',
+      'score',
+      'report',
+      'forget',
+      'canary',
+    ]) {
+      expect(USAGE).toMatch(new RegExp(`^  ${command}\\b`, 'm'));
+    }
   });
 
   it('refuses unknown commands, unknown options and stray arguments, naming them', () => {

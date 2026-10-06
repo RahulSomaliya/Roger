@@ -2,13 +2,21 @@ import { isAbsolute, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { assertBenchId } from '../core/events';
 
+/**
+ * The test-set commands. They are M3-T12's (bench/dataset/commands.ts), which parses their options
+ * itself, so this file passes their words on as given; run/dataset.ts finds the table.
+ */
+export const DATASET_COMMAND_NAMES = ['clip', 'draft', 'check', 'forget'] as const;
+export type DatasetCommandName = (typeof DATASET_COMMAND_NAMES)[number];
+
 /** The bench CLI's commands and their options (`make bench ARGS="..."`; cli.ts runs them). */
 export type BenchCommand =
   | { command: 'help' }
   | { command: 'run'; itemIds: string[] | null; keyterms: boolean; parallel: number }
   | { command: 'score'; runId: string | null; echoFilter: boolean }
   | { command: 'report' }
-  | { command: 'canary'; saveWireDir: string | null };
+  | { command: 'canary'; saveWireDir: string | null }
+  | { command: 'dataset'; name: DatasetCommandName; args: string[] };
 
 /** A command line the bench does not understand; cli.ts prints it with the usage. */
 export class UsageError extends Error {
@@ -20,12 +28,21 @@ export class UsageError extends Error {
 
 export const USAGE = `usage: make bench ARGS="<command> [options]"
 
+  clip --meeting <id> --from <mm:ss> --to <mm:ss> --name <id> [--user-data <dir>]
+       [--person <name>:<consent date> ...] [--kind <kind>] [--setup <setup>]
+      Cut both streams of a stretch of a meeting from the local backup into a new item.
   run [--items <id>,<id>] [--no-keyterms] [--parallel 3]
       Replay every item (or the ones named) at 1x through the vendor the API's token names.
+  draft --runs <a>,<b>
+      Write reference.draft.txt for items without a reference.txt, braces where runs disagree.
+  check
+      List unresolved braces, unknown speakers, empty items and items with no consent.
   score [--run <id>] [--no-echo-filter]
       Score one run, or every finished run, into reports/<run-id>.json and .md.
   report --summary
       Print the aggregate table of every scored run, with no transcript text.
+  forget --person <name> | --meeting <id>
+      Delete every item holding that person or meeting, and those items' run outputs.
   canary [--save-wire <dir>]
       Synthetic jargon clip through the current vendor; exits non-zero on failure.
 
@@ -111,6 +128,11 @@ export function parseBenchArgs(argv: readonly string[], cwd: string): BenchComma
         saveWireDir: dir === undefined ? null : isAbsolute(dir) ? dir : resolve(cwd, dir),
       };
     }
+    case 'clip':
+    case 'draft':
+    case 'check':
+    case 'forget':
+      return { command: 'dataset', name: command, args: rest };
     default:
       throw new UsageError(`unknown command ${JSON.stringify(command)}`);
   }
