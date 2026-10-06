@@ -1,8 +1,10 @@
-// Stub from P2-F1; owned by M4-S1.
-import type { AppApi } from '../../shared/ipc/app';
+import { appChannels, type AppApi } from '../../shared/ipc/app';
+import { send, subscribe } from '../bridge';
 
-/**
- * The app shell feature's part of `window.roger`, built from the helpers in ../bridge.ts. It
- * implements src/shared/ipc/app.ts: a member added there fails the type check until it is here.
- */
-export const appBridge: AppApi = {};
+/** The app shell's part of `window.roger`. */
+export const appBridge: AppApi = {
+  appReady: () => {
+    send(appChannels.AppReady, null);
+  },
+  onNavigate: (listener) => subscribe(appChannels.AppNavigate, listener),
+};
