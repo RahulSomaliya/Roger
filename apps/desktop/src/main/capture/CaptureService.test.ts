@@ -132,6 +132,10 @@ function harness(
     guards?: Partial<CostGuards>;
     /** Built on the harness clock: `(clock) => new SttOpenBudget(limits, clock)`. */
     budget?: (clock: () => number) => SttOpenBudget;
+    /** notes.sqlite's check, handed to the uploader as main wires it (M4-T16). */
+    hasNotes?: (meetingId: string) => boolean;
+    /** The windows' editor save (`notes:flush-request`), handed to the uploader likewise. */
+    saveOpenNotes?: () => Promise<void>;
   } = {},
 ) {
   const store = overrides.store ?? new InMemoryTranscriptStore();
@@ -162,7 +166,13 @@ function harness(
   };
   let now = 1_000_000;
   const stt = new ScriptedSpeechToText(() => now);
-  const uploader = new TranscriptUploader({ store, api, logger });
+  const uploader = new TranscriptUploader({
+    store,
+    api,
+    logger,
+    ...(overrides.hasNotes === undefined ? {} : { hasNotes: overrides.hasNotes }),
+    ...(overrides.saveOpenNotes === undefined ? {} : { saveOpenNotes: overrides.saveOpenNotes }),
+  });
   const budget = overrides.budget?.(() => now);
   const service = new CaptureService({
     store,
@@ -1599,5 +1609,220 @@ describe('defaultMeetingTitle', () => {
     expect(defaultMeetingTitle(new Date('2026-10-05T10:05:00Z'))).toMatch(
       /^Meeting 5 Oct 2026 \d\d:\d\d$/,
     );
+  });
+});
+
+describe('CaptureService meetings with notes (M4)', () => {
+  it('Stop keeps a meeting with notes when nobody spoke', async () => {
+    const h = harness({ hasNotes: () => true });
+    const ended: RecordingEnded[] = [];
+    h.service.onRecording({ ended: (recording) => ended.push(recording) });
+    const { meetingId } = await h.service.start();
+    await h.service.stop();
+
+    // A string, not just "not null": a deleted meeting reads undefined, which passes not.toBeNull().
+    expect(h.store.getMeeting(meetingId!)?.endedAt).toEqual(expect.any(String));
+    expect(ended).toEqual([{ meetingId, reason: 'user', discarded: false, stopFailed: false }]);
+    // Stop's upload flush creates it and ends it in one pass, with no line.
+    expect(h.api.createMeeting).toHaveBeenCalledTimes(1);
+    expect(h.api.appendSegments).not.toHaveBeenCalled();
+    expect(h.api.endMeeting).toHaveBeenCalledTimes(1);
+    expect(h.store.getMeeting(meetingId!)?.remoteState).toBe('ended');
+  });
+
+  it('a failed start keeps a meeting that has notes', async () => {
+    const h = harness({ hasNotes: () => true });
+    h.stt.failWith = new SttConnectError('rejected with HTTP 401', 401);
+    const status = await h.service.start();
+    expect(status.phase).toBe('idle');
+    expect(status.error).toContain('401');
+
+    const kept = [...h.store.meetings.values()];
+    expect(kept).toHaveLength(1);
+    // Ended, so the uploader's pending rule creates it rather than wait for an end that never comes.
+    expect(kept[0]?.endedAt).toEqual(expect.any(String));
+    await h.uploader.flush();
+    expect(h.api.createMeeting).toHaveBeenCalledTimes(1);
+    expect(h.api.endMeeting).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the meeting at Stop when its notes cannot be read, and logs why', async () => {
+    const lines: string[] = [];
+    const h = harness({
+      hasNotes: () => {
+        throw new Error('database is locked');
+      },
+      logger: createLogger({ level: 'error', format: 'json', sink: (line) => lines.push(line) }),
+    });
+    const { meetingId } = await h.service.start();
+    const stopped = await h.service.stop();
+
+    // The Stop itself went through: the uploader asks again on every tick and says so there.
+    expect(stopped).toMatchObject({ phase: 'idle', error: null });
+    expect(h.store.getMeeting(meetingId!)?.endedAt).toEqual(expect.any(String));
+    expect(
+      lines.some(
+        (line) =>
+          line.includes('kept a meeting whose notes could not be checked') &&
+          line.includes(`could not read the notes of meeting ${meetingId!}: database is locked`),
+      ),
+    ).toBe(true);
+  });
+
+  it('a failed start keeps and ends a meeting whose notes cannot be read, and logs why', async () => {
+    const log = jsonLog('error');
+    const h = harness({
+      hasNotes: () => {
+        throw new Error('database is locked');
+      },
+      logger: log.logger,
+    });
+    h.stt.failWith = new SttConnectError('rejected with HTTP 401', 401);
+    const status = await h.service.start();
+    expect(status).toMatchObject({ phase: 'idle' });
+    expect(status.error).toContain('401');
+
+    // Kept, as at Stop: deleted, a meeting whose notes exist would strand them for good.
+    const kept = [...h.store.meetings.values()];
+    expect(kept).toHaveLength(1);
+    const meetingId = kept[0]?.id;
+    expect(kept[0]?.endedAt).toEqual(expect.any(String));
+    expect(log.lines).toContainEqual(
+      expect.objectContaining({
+        message: 'kept a meeting whose notes could not be checked',
+        meetingId,
+        error: `could not read the notes of meeting ${meetingId}: database is locked`,
+      }),
+    );
+  });
+});
+
+/**
+ * The editor's save, as a window answers main's `notes:flush-request`: it lands a moment later,
+ * and only then does notes.sqlite hold the note typed in the editor's last 400 ms.
+ */
+function lateSave(): { saveOpenNotes: () => Promise<void>; hasNotes: () => boolean } {
+  let saved = false;
+  return {
+    saveOpenNotes: () =>
+      new Promise((resolve) => {
+        setTimeout(() => {
+          saved = true;
+          resolve();
+        }, 5);
+      }),
+    hasNotes: () => saved,
+  };
+}
+
+describe('CaptureService saves the open notes before it decides (M4)', () => {
+  it('Stop keeps a meeting whose note was still in the editor', async () => {
+    // The tray, the shortcut, Cmd-Q and the auto-stops never blur the editor, so a note typed
+    // just before them reaches notes.sqlite only when main asks the windows to save.
+    const h = harness(lateSave());
+    const ended: RecordingEnded[] = [];
+    h.service.onRecording({ ended: (recording) => ended.push(recording) });
+    const { meetingId } = await h.service.start();
+    await h.service.stop({ reason: 'quit', flushUploads: false });
+
+    expect(h.store.getMeeting(meetingId!)?.endedAt).toEqual(expect.any(String));
+    expect(ended).toEqual([{ meetingId, reason: 'quit', discarded: false, stopFailed: false }]);
+  });
+
+  it('a failed start keeps a meeting whose note was still in the editor', async () => {
+    const h = harness(lateSave());
+    h.stt.failWith = new SttConnectError('rejected with HTTP 401', 401);
+    await h.service.start();
+
+    const kept = [...h.store.meetings.values()];
+    expect(kept).toHaveLength(1);
+    expect(kept[0]?.endedAt).toEqual(expect.any(String));
+  });
+
+  it('Stop discards a meeting with no line once the editors saved and it has no notes', async () => {
+    const calls: string[] = [];
+    const h = harness({
+      saveOpenNotes: () => {
+        calls.push('save');
+        return Promise.resolve();
+      },
+      hasNotes: (meetingId) => {
+        calls.push(`check ${meetingId}`);
+        return false;
+      },
+    });
+    const ended: RecordingEnded[] = [];
+    h.service.onRecording({ ended: (recording) => ended.push(recording) });
+    const { meetingId } = await h.service.start();
+    await h.service.stop();
+
+    expect(calls).toEqual(['save', `check ${meetingId!}`]);
+    expect(h.store.getMeeting(meetingId!)).toBeNull();
+    expect(ended).toEqual([{ meetingId, reason: 'user', discarded: true, stopFailed: false }]);
+  });
+
+  it('Stop does not wait for the editors when the meeting has a line', async () => {
+    const saveOpenNotes = vi.fn(() => Promise.resolve());
+    const h = harness({ saveOpenNotes, hasNotes: () => false });
+    const { meetingId } = await h.service.start();
+    sayFinal(h, 'mic', 'hello');
+    await h.service.stop({ flushUploads: false });
+
+    expect(saveOpenNotes).not.toHaveBeenCalled();
+    expect(h.store.getMeeting(meetingId!)?.endedAt).toEqual(expect.any(String));
+  });
+
+  it('keeps the meeting at Stop when the open notes cannot be saved, and logs why', async () => {
+    const log = jsonLog('error');
+    const hasNotes = vi.fn(() => false);
+    const h = harness({
+      saveOpenNotes: () => Promise.reject(new Error('the window is gone')),
+      hasNotes,
+      logger: log.logger,
+    });
+    const { meetingId } = await h.service.start();
+    const stopped = await h.service.stop({ flushUploads: false });
+
+    // Kept and ended: the uploader decides again on its next tick, after a late save has landed.
+    expect(stopped).toMatchObject({ phase: 'idle', error: null });
+    expect(h.store.getMeeting(meetingId!)?.endedAt).toEqual(expect.any(String));
+    expect(hasNotes).not.toHaveBeenCalled();
+    expect(log.lines).toContainEqual(
+      expect.objectContaining({
+        message: 'kept a meeting whose notes could not be checked',
+        meetingId,
+        error: 'could not save the notes open in an editor: the window is gone',
+      }),
+    );
+  });
+
+  it('waits at most 1 s for the open notes, then keeps the meeting', async () => {
+    vi.useFakeTimers();
+    try {
+      const log = jsonLog('error');
+      const h = harness({
+        // A window that never answers (a hung renderer): Stop must still end, Cmd-Q still quit.
+        saveOpenNotes: () => new Promise<void>(() => undefined),
+        hasNotes: () => false,
+        logger: log.logger,
+      });
+      const { meetingId } = await h.service.start();
+      const stopping = h.service.stop({ reason: 'quit', flushUploads: false });
+      await vi.advanceTimersByTimeAsync(999);
+      expect(h.service.phase).toBe('stopping');
+
+      await vi.advanceTimersByTimeAsync(1);
+      await expect(stopping).resolves.toMatchObject({ phase: 'idle', error: null });
+      expect(h.store.getMeeting(meetingId!)?.endedAt).toEqual(expect.any(String));
+      expect(log.lines).toContainEqual(
+        expect.objectContaining({
+          message: 'kept a meeting whose notes could not be checked',
+          meetingId,
+          error: 'saving the open notes timed out after 1000 ms',
+        }),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

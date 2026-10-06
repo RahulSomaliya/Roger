@@ -787,3 +787,207 @@ describe('TranscriptUploader: no stranded lines (M2)', () => {
     expect(store.countUnsyncedSegments()).toBe(0);
   });
 });
+
+describe('TranscriptUploader: meetings with notes (M4)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('a notes-only meeting is created and ended exactly once', async () => {
+    const store = new InMemoryTranscriptStore();
+    const api = fakeApi();
+    // Nobody spoke, but the user wrote notes during the call.
+    store.createMeeting({ id: 'm1', title: 'T', startedAt: '2026-10-05T10:00:00Z' });
+    store.markMeetingEnded('m1', ENDED_AT);
+    const uploader = new TranscriptUploader({
+      store,
+      api,
+      logger,
+      intervalMs: 1000,
+      hasNotes: (meetingId) => meetingId === 'm1',
+    });
+    uploader.start();
+
+    // In one pass: created, then ended in the same tick.
+    await vi.advanceTimersByTimeAsync(0);
+    expect(api.createMeeting).toHaveBeenCalledExactlyOnceWith({
+      id: 'm1',
+      title: 'T',
+      startedAt: '2026-10-05T10:00:00Z',
+    });
+    expect(api.endMeeting).toHaveBeenCalledExactlyOnceWith('m1', ENDED_AT);
+    expect(store.getMeeting('m1')?.remoteState).toBe('ended');
+
+    await vi.advanceTimersByTimeAsync(5_000);
+    await uploader.flush();
+    expect(api.createMeeting).toHaveBeenCalledTimes(1);
+    expect(api.endMeeting).toHaveBeenCalledTimes(1);
+    expect(api.appendSegments).not.toHaveBeenCalled();
+    uploader.stop();
+  });
+
+  it('a recording meeting with notes and no line is not created', async () => {
+    const store = new InMemoryTranscriptStore();
+    const api = fakeApi();
+    store.createMeeting({ id: 'm1', title: 'T', startedAt: '2026-10-05T10:00:00Z' });
+    const hasNotes = vi.fn((_meetingId: string) => true);
+    const uploader = new TranscriptUploader({ store, api, logger, hasNotes });
+
+    await uploader.flush();
+    await uploader.flush();
+    // Postgres never holds a meeting with no line while it is still recording.
+    expect(api.createMeeting).not.toHaveBeenCalled();
+    expect(store.getMeeting('m1')?.remoteState).toBe('pending');
+    // notes.sqlite is read only when its answer decides something, not on every 2 s tick.
+    expect(hasNotes).not.toHaveBeenCalled();
+
+    store.markMeetingEnded('m1', ENDED_AT);
+    await uploader.flush();
+    expect(hasNotes).toHaveBeenCalledWith('m1');
+    expect(api.createMeeting).toHaveBeenCalledTimes(1);
+    expect(api.endMeeting).toHaveBeenCalledExactlyOnceWith('m1', ENDED_AT);
+    expect(api.appendSegments).not.toHaveBeenCalled();
+  });
+
+  it('an ended lineless meeting with notes is never discarded', async () => {
+    const store = new InMemoryTranscriptStore();
+    const api = fakeApi();
+    // Both ended with no line (a crash right after Start); only m1 has notes.
+    store.createMeeting({ id: 'm1', title: 'T', startedAt: '2026-10-05T10:00:00Z' });
+    store.markMeetingEnded('m1', '2026-10-05T10:00:00Z');
+    store.createMeeting({ id: 'm2', title: 'T', startedAt: '2026-10-05T11:00:00Z' });
+    store.markMeetingEnded('m2', '2026-10-05T11:00:00Z');
+    api.createMeeting.mockRejectedValue(new ApiError(0, 'network_error', 'down'));
+    const uploader = new TranscriptUploader({
+      store,
+      api,
+      logger,
+      hasNotes: (meetingId) => meetingId === 'm1',
+    });
+
+    // Offline: the create fails, and the meeting stays for the next try.
+    await expect(uploader.flush()).rejects.toThrow('down');
+    await expect(uploader.flush()).rejects.toThrow('down');
+    expect(store.getMeeting('m1')).toMatchObject({ remoteState: 'pending' });
+    expect(store.getMeeting('m2')).toBeNull();
+
+    api.createMeeting.mockImplementation((input) => Promise.resolve(meetingDto(input.id)));
+    await uploader.flush();
+    expect(api.createMeeting.mock.calls.map((call) => call[0].id)).toEqual(['m1', 'm1', 'm1']);
+    expect(api.endMeeting).toHaveBeenCalledExactlyOnceWith('m1', '2026-10-05T10:00:00Z');
+    expect(store.getMeeting('m1')?.remoteState).toBe('ended');
+  });
+
+  it('keeps a lineless meeting whose notes cannot be read, and backs off naming it', async () => {
+    const store = new InMemoryTranscriptStore();
+    const api = fakeApi();
+    store.createMeeting({ id: 'm1', title: 'T', startedAt: '2026-10-05T10:00:00Z' });
+    store.markMeetingEnded('m1', ENDED_AT);
+    let readable = false;
+    const uploader = new TranscriptUploader({
+      store,
+      api,
+      logger,
+      baseBackoffMs: 500,
+      hasNotes: () => {
+        if (!readable) throw new Error('database is locked');
+        return true;
+      },
+    });
+    uploader.start();
+
+    await vi.advanceTimersByTimeAsync(0);
+    expect(store.getMeeting('m1')).not.toBeNull();
+    expect(uploader.getStatus()).toMatchObject({
+      state: 'backoff',
+      lastError: 'could not read the notes of meeting m1: database is locked',
+    });
+
+    readable = true;
+    await vi.advanceTimersByTimeAsync(500);
+    expect(api.createMeeting).toHaveBeenCalledTimes(1);
+    expect(api.endMeeting).toHaveBeenCalledTimes(1);
+    expect(uploader.getStatus()).toMatchObject({ state: 'idle', lastError: null });
+    uploader.stop();
+  });
+
+  it('markMeetingMissing re-creates the meeting and re-sends its lines', async () => {
+    const store = new InMemoryTranscriptStore();
+    const api = fakeApi();
+    store.createMeeting({ id: 'm1', title: 'T', startedAt: '2026-10-05T10:00:00Z' });
+    store.appendSegment(segment('m1', 0));
+    store.appendSegment(segment('m1', 1));
+    store.markMeetingEnded('m1', ENDED_AT);
+    const uploader = new TranscriptUploader({ store, api, logger });
+    await uploader.flush();
+    expect(store.getMeeting('m1')?.remoteState).toBe('ended');
+
+    // A notes PUT answered 404: Postgres lost the meeting (a reset dev database).
+    uploader.markMeetingMissing('m1');
+    // At once: NotesSync reads the state right after the call, and waits while it is pending.
+    expect(store.getMeeting('m1')?.remoteState).toBe('pending');
+    expect(store.countUnsyncedSegments()).toBe(2);
+
+    await uploader.flush();
+    expect(api.createMeeting).toHaveBeenCalledTimes(2);
+    expect(sentBatches(api)).toEqual([
+      ['m1-seg-0', 'm1-seg-1'],
+      ['m1-seg-0', 'm1-seg-1'],
+    ]);
+    expect(api.endMeeting.mock.calls).toEqual([
+      ['m1', ENDED_AT],
+      ['m1', ENDED_AT],
+    ]);
+    expect(store.getMeeting('m1')?.remoteState).toBe('ended');
+  });
+
+  it('markMeetingMissing takes a notes-only meeting back too, and leaves an unknown one unknown', async () => {
+    const store = new InMemoryTranscriptStore();
+    const api = fakeApi();
+    store.createMeeting({ id: 'm1', title: 'T', startedAt: '2026-10-05T10:00:00Z' });
+    store.markMeetingEnded('m1', ENDED_AT);
+    const uploader = new TranscriptUploader({ store, api, logger, hasNotes: () => true });
+    await uploader.flush();
+
+    uploader.markMeetingMissing('m1');
+    expect(store.getMeeting('m1')?.remoteState).toBe('pending');
+    await uploader.flush();
+    expect(api.createMeeting).toHaveBeenCalledTimes(2);
+    expect(api.endMeeting).toHaveBeenCalledTimes(2);
+    expect(store.getMeeting('m1')?.remoteState).toBe('ended');
+
+    // Discarded as empty before its notes were saved: NotesSync reads null and deals with it.
+    uploader.markMeetingMissing('gone');
+    expect(store.getMeeting('gone')).toBeNull();
+    expect(store.listMeetingsNeedingSync()).toEqual([]);
+  });
+
+  it('saveOpenNotes runs the injected save, and names what it was doing when that fails', async () => {
+    const store = new InMemoryTranscriptStore();
+    // Not wired (before M4-T16): no editor can hold notes, so there is nothing to wait for.
+    const unwired = new TranscriptUploader({ store, api: fakeApi(), logger });
+    await expect(unwired.saveOpenNotes()).resolves.toBeUndefined();
+
+    const save = vi.fn(() => Promise.resolve());
+    await new TranscriptUploader({
+      store,
+      api: fakeApi(),
+      logger,
+      saveOpenNotes: save,
+    }).saveOpenNotes();
+    expect(save).toHaveBeenCalledTimes(1);
+
+    const failing = new TranscriptUploader({
+      store,
+      api: fakeApi(),
+      logger,
+      saveOpenNotes: () => Promise.reject(new Error('the window is gone')),
+    });
+    await expect(failing.saveOpenNotes()).rejects.toThrow(
+      'could not save the notes open in an editor: the window is gone',
+    );
+  });
+});

@@ -41,6 +41,11 @@ import { type StopReason, stopNotice } from './stopReasons';
 export interface CaptureServiceOptions {
   store: TranscriptStore;
   api: SttTokenApi;
+  /**
+   * Also the notes check both delete sites ask (`TranscriptUploader.hasNotes`), and the editors'
+   * save they wait for first (`TranscriptUploader.saveOpenNotes`). There is no notes option here on
+   * purpose: wired into the uploader once, the check cannot disagree with its pending rule.
+   */
   uploader: TranscriptUploader;
   createSpeechToText: SpeechToTextFactory;
   ensureMicrophoneAccess: () => Promise<MicrophoneAccess>;
@@ -109,7 +114,13 @@ export interface RecordingStarted {
 export interface RecordingEnded {
   meetingId: string;
   reason: StopReason;
-  /** True when the meeting had no line and was deleted: nothing to upload, nothing to write up. */
+  /**
+   * True when the meeting had no line and no notes and was deleted: nothing to upload, nothing to
+   * write up. A meeting nobody spoke in that has notes is kept and ended (`discarded` false). So
+   * is one whose notes could not be saved or read in time (keepsForNotes): the uploader's pending
+   * rule may still discard it as empty a tick later, so a listener that acts on a lineless meeting
+   * must expect it to be gone.
+   */
   discarded: boolean;
   /**
    * True when Stop threw before it ended the meeting (a store write refused: full disk, SQLite
@@ -215,6 +226,12 @@ const FAKE_STREAM_SETTINGS: SttStreamSettings = {
 
 /** How often the audio flow is checked and chunk counters are pushed to the UI while recording. */
 const MONITOR_INTERVAL_MS = 500;
+
+/**
+ * How long a delete site waits for the open editors to save (keepsForNotes): the 1 s main gives
+ * each window at quit (M4 plan, "Saving at quit"). Past it the meeting is kept, never deleted.
+ */
+const OPEN_NOTES_SAVE_TIMEOUT_MS = 1_000;
 
 const SPEAKER_TITLE: Record<AudioSource, string> = { mic: 'Me', system: 'Them' };
 
@@ -640,7 +657,21 @@ export class CaptureService {
           this.recordMeter(meetingId, 'start-failed', null);
         }
         // A failed resume leaves its meeting open as it was: CrashRecovery (M2-T23) decides.
-        if (meetingCreated) store.deleteMeetingIfEmpty(meetingId);
+        //
+        // Trap: one of the three sites that decide which meetings no one spoke in are kept, with
+        // the Stop below and the pending rule in TranscriptUploader.syncMeeting; all three ask the
+        // uploader's hasNotes, and both here only once the editors have saved (keepsForNotes). The
+        // uploader is the only code that creates meetings in Postgres, and NotesSync waits for it,
+        // so a meeting deleted here with notes strands them for good. One with notes is ended
+        // instead, which lets the pending rule create it; left open, it would never be created
+        // and would read as a crash at the next launch.
+        if (meetingCreated) {
+          if (await this.keepsForNotes(meetingId)) {
+            store.markMeetingEnded(meetingId, new Date(this.clock()).toISOString());
+          } else {
+            store.deleteMeetingIfEmpty(meetingId);
+          }
+        }
       } catch (cleanupError) {
         logger.error('cleanup after failed start failed', {
           meetingId,
@@ -671,11 +702,21 @@ export class CaptureService {
         this.recordMeter(meetingId, reason, null);
         if (this.stt !== null) this.lastMeter = this.meterStatus(this.stt);
         // A meeting with no line was never sent to Postgres: TranscriptUploader.syncMeeting creates
-        // it only once it holds one, and lines are never deleted, so this delete cannot race an
-        // upload. If the uploader ever creates meetings earlier again, this leaves Postgres a
-        // meeting stuck in "recording".
+        // it only once it holds one, or once it has ended with notes (not before this Stop ends
+        // it), and lines are never deleted, so this delete cannot race an upload. If the uploader
+        // ever creates meetings earlier again, this leaves Postgres a meeting stuck in "recording".
+        //
+        // Trap: one of the three sites that decide which meetings no one spoke in are kept, with
+        // the failed Start above and the pending rule in TranscriptUploader.syncMeeting; all three
+        // ask the uploader's hasNotes before the delete, and this one only once the editors have
+        // saved (keepsForNotes: Stop rarely blurs them). The uploader is the only code that creates
+        // meetings in Postgres and NotesSync waits for it, so a meeting deleted here with notes
+        // strands them for good. One with notes is ended below, and the pending rule creates it.
+        // A meeting with a line is never deleted, so it does not wait for the editors.
         if (
           store.getMeeting(meetingId)?.remoteState === 'pending' &&
+          store.countSegments(meetingId) === 0 &&
+          !(await this.keepsForNotes(meetingId)) &&
           store.deleteMeetingIfEmpty(meetingId)
         ) {
           discarded = true;
@@ -730,6 +771,42 @@ export class CaptureService {
         reason,
         error: errorMessage(error),
       });
+    }
+  }
+
+  /**
+   * Whether a meeting no one spoke in is kept for its notes, by the uploader's check
+   * (`TranscriptUploader.hasNotes`), so both delete sites here and its pending rule always agree.
+   *
+   * Trap: the open editors save first (`TranscriptUploader.saveOpenNotes`), and the check must
+   * never move before that save. An editor writes 400 ms after the last keystroke
+   * (renderer/src/notes/debouncedSaver.ts), and the tray, the shortcut, Cmd-Q and the auto-stops
+   * stop without blurring it. Asked first, a note typed just before them reads as none, the
+   * meeting is deleted, and the save that lands next waits for a meeting that is gone, for good
+   * (NotesSync). At quit, this save is the one in time: the quit hook's flush runs after Stop.
+   *
+   * A save that fails or outlasts OPEN_NOTES_SAVE_TIMEOUT_MS, or a check that fails, keeps the
+   * meeting: a delete could strand notes for good, while a kept meeting is decided again by the
+   * uploader's pending rule on its next tick (Stop's own upload flush, or 2 s later), with whatever
+   * has saved by then; a failed check shows in the upload status until notes.sqlite reads again. A
+   * window that saves only after that tick still finds the meeting gone: the plan's 1 s limit, as
+   * at quit.
+   */
+  private async keepsForNotes(meetingId: string): Promise<boolean> {
+    const { uploader, logger } = this.options;
+    try {
+      await withTimeout(
+        uploader.saveOpenNotes(),
+        OPEN_NOTES_SAVE_TIMEOUT_MS,
+        'saving the open notes',
+      );
+      return uploader.hasNotes(meetingId);
+    } catch (error) {
+      logger.error('kept a meeting whose notes could not be checked', {
+        meetingId,
+        error: errorMessage(error),
+      });
+      return true;
     }
   }
 
