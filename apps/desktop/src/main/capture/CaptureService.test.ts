@@ -674,6 +674,25 @@ describe('CaptureService metering', () => {
     expect((await h.service.start()).meter).toBeNull(); // Start forgets the last meeting's meter
   });
 
+  it('shows the cost as unknown, never NaN, when an older API sends no price', async () => {
+    const h = harness();
+    // An API from before stream.price_per_hour_usd: the field is missing, not null.
+    const { price_per_hour_usd: _missing, ...olderStream } = (await h.api.getSttToken()).stream;
+    h.api.getSttToken.mockResolvedValue({
+      provider: 'scripted',
+      access_token: 'tok',
+      expires_in: 30,
+      stream: olderStream,
+    });
+
+    await h.service.start();
+    h.advance(60_000);
+
+    expect(h.stt.opened[0]?.settings.pricePerHourUsd).toBeNull();
+    expect(h.service.getStatus().meter?.total.estimatedCostUsd).toBeNull();
+    await h.service.stop();
+  });
+
   it('logs and saves the meter whenever a session closes mid-meeting', async () => {
     const log = infoLog();
     const h = harness({ logger: log.logger });

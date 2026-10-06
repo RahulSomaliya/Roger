@@ -433,7 +433,8 @@ export class CaptureService {
         language: token.stream.language,
         sampleRate: token.stream.sample_rate,
         encoding: token.stream.encoding,
-        pricePerHourUsd: token.stream.price_per_hour_usd,
+        // Missing from an older API: unknown, so the meter says "cost unknown", not "$NaN".
+        pricePerHourUsd: token.stream.price_per_hour_usd ?? null,
       },
     };
   }
