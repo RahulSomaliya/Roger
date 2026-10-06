@@ -3,8 +3,9 @@ import { firstString, isFiniteNumber, isRecord } from '../json';
 import type { SttEvent } from '../SpeechToText';
 
 /**
- * AssemblyAI Universal-Streaming (v3) wire format → SttEvent. Pure, so it is unit-tested without a
- * socket. Shapes follow these docs, read on 2026-10-06:
+ * AssemblyAI streaming (v3) wire format → SttEvent, for Universal-Streaming and the Universal-3 Pro
+ * models alike. Pure, so it is unit-tested without a socket, on inline examples and on the wire
+ * files in fixtures/ (wireFixtures.ts). Shapes follow these docs, read on 2026-10-06:
  * - https://www.assemblyai.com/docs/streaming/api-spec/streaming-websocket (every message and field)
  * - https://www.assemblyai.com/docs/streaming/message-sequence (partials, end of turn, format_turns)
  * - https://www.assemblyai.com/docs/streaming/common-session-errors-and-closures (the Error frame)
@@ -20,8 +21,9 @@ import type { SttEvent } from '../SpeechToText';
  * confidence is the mean word confidence instead.
  * M9: with `speaker_labels=true` a Turn also carries `speaker_label`; read it here.
  *
- * Deciding which Turn becomes the one saved line (format_turns sends two) is the adapter's job:
- * this parser reports `turnOrder` and `formatted` with every turn event.
+ * Deciding which Turn becomes the one saved line is the adapter's job (format_turns sends two on
+ * Universal-Streaming; on the Pro models an end of turn is final at once): this parser reports
+ * `turnOrder` and `formatted` with every turn event.
  */
 
 type InterimEvent = Extract<SttEvent, { type: 'interim' }>;

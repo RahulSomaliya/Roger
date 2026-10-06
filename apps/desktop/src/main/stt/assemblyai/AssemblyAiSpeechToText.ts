@@ -14,10 +14,16 @@ import { SttConnectError, type SttEvent, type SttStreamSettings } from '../Speec
 import { ASSEMBLYAI_TERMINATE, parseAssemblyAiMessage } from './messages';
 
 /**
- * AssemblyAI Universal-Streaming (v3) adapter. Docs relied on, read 2026-10-06:
+ * AssemblyAI streaming (v3) adapter: Universal-Streaming English (preset `assemblyai`) and the
+ * Universal-3 Pro models (`assemblyai-pro`). Docs relied on, read 2026-10-06:
  * - https://www.assemblyai.com/docs/streaming/api-spec/streaming-websocket (URL, query
  *   parameters, messages; 50 to 1000 ms of audio per message; sessions capped at 3 hours;
  *   `inactivity_timeout` 5 to 3600 s, unset meaning none)
+ * - https://www.assemblyai.com/docs/api-reference/streaming-api/streaming-api (`keyterms_prompt`
+ *   and `language_codes` as JSON arrays; Begin's `configuration.model`)
+ * - https://www.assemblyai.com/docs/streaming/migration-guides/universal-to-universal-3-5-pro-streaming
+ *   (on the Pro models formatting is always on, not a parameter, and end_of_turn and
+ *   turn_is_formatted always agree: one formatted end of turn per turn; pass `language_codes`)
  * - https://www.assemblyai.com/docs/streaming/authenticate-with-a-temporary-token (the `token`
  *   query parameter; one token may open several sessions, so mic and system share one)
  * - https://www.assemblyai.com/docs/streaming/message-sequence (format_turns sends a turn twice)
@@ -83,7 +89,9 @@ const MAX_INACTIVITY_TIMEOUT_S = 3600;
  * Universal-Streaming (`universal-streaming-*`) finishes a turn raw and, with `format_turns`, sends
  * it again punctuated and cased. The Universal-3 Pro models (`universal-3-*-pro`) send one end of
  * turn, always formatted, and take no `format_turns` (AssemblyAI's migration guide to Universal-3
- * Pro).
+ * Pro). The URL and the held-turn rule (AssemblyAiSession) both read this one predicate: a Pro
+ * turn held for a formatted copy would wait formattedTurnWaitMs for one that never comes, and
+ * every line of the call would show 2 s late with a warning.
  */
 function sendsEachTurnTwice(model: string): boolean {
   return model.startsWith('universal-streaming');
@@ -198,18 +206,24 @@ interface HeldTurn {
   timer: NodeJS.Timeout;
 }
 
-/** One stream's protocol state: the frame sizer and the turn waiting for its formatted copy. */
+/**
+ * One stream's protocol state: the frame sizer and, on Universal-Streaming, the turn waiting for its
+ * formatted copy.
+ */
 class AssemblyAiSession implements SttProtocolSession {
   private readonly frames: AudioFrameSizer;
   /** turn_order of the last line emitted. Turn orders only grow, so anything at or below is a copy. */
   private lastFinalTurnOrder = -1;
   /** An unformatted finished turn waiting for its formatted copy. */
   private held: HeldTurn | null = null;
+  /** False on the Pro models: their one end of turn is the final line (sendsEachTurnTwice). */
+  private readonly turnsComeTwice: boolean;
 
   constructor(
     private readonly context: SttProtocolContext,
     private readonly formattedTurnWaitMs: number,
   ) {
+    this.turnsComeTwice = sendsEachTurnTwice(context.settings.model);
     this.frames = new AudioFrameSizer({
       sampleRate: context.settings.sampleRate,
       minMs: MIN_FRAME_MS,
@@ -258,7 +272,9 @@ class AssemblyAiSession implements SttProtocolSession {
    * One saved line per turn_order. With format_turns a finished turn arrives unformatted, then
    * formatted with the same turn_order: the unformatted copy is held until the formatted one
    * replaces it, the next turn starts, the stream ends, or formattedTurnWaitMs passes. A formatted
-   * copy arriving after that is a duplicate and dropped. Returns the lines to emit now, in order.
+   * copy arriving after that is a duplicate and dropped. On the Pro models a turn ends once,
+   * formatted, so its end of turn is saved at once, whatever turn_is_formatted says. Returns the
+   * lines to emit now, in order.
    */
   private acceptTurn(
     turnOrder: number,
@@ -275,7 +291,7 @@ class AssemblyAiSession implements SttProtocolSession {
       if (this.held === null) events.push(event);
       return events;
     }
-    if (formatted) {
+    if (formatted || !this.turnsComeTwice) {
       this.dropHeldTurn();
       this.lastFinalTurnOrder = turnOrder;
       events.push(event);

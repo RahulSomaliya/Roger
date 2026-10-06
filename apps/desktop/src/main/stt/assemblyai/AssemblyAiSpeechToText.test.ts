@@ -1,14 +1,18 @@
 import type { AddressInfo } from 'node:net';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { WebSocketServer, type WebSocket } from 'ws';
+import { isRecord } from '../json';
 import { createLogger } from '../../logger';
+import type { TranscriptEvent } from '../core/SttProtocol';
 import { SttConnectError, type SttEvent, type SttStreamSettings } from '../SpeechToText';
 import { rawDataToString } from '../websocket';
 import {
   AssemblyAiSpeechToText,
   type AssemblyAiOptions,
+  assemblyAiProtocol,
   buildStreamingUrl,
 } from './AssemblyAiSpeechToText';
+import { readWireFixture, WIRE_FIXTURE_MODELS } from './fixtures/wireFixtures';
 
 const logger = createLogger({ level: 'error', format: 'json', sink: () => undefined });
 const settings: SttStreamSettings = {
@@ -301,6 +305,31 @@ describe('AssemblyAiSpeechToText', () => {
     expect(events[0]).toMatchObject({ text: 'cut off' });
   });
 
+  it('saves a Pro end of turn at once, formatted or not, and only once', async () => {
+    script.onAudio = (socket, frame) => {
+      // The Pro models format every turn and send its end once. This one says it is unformatted:
+      // a rule read from turn_is_formatted alone would hold it for a copy that never comes.
+      if (frame === 1) socket.send(turn(0, 'My name is Sonny.', { endOfTurn: true }));
+      // A copy of a turn already saved is dropped, as on Universal-Streaming.
+      if (frame === 2)
+        socket.send(turn(0, 'My name is Sonny!', { endOfTurn: true, formatted: true }));
+    };
+    const { stream, events } = await open({ formattedTurnWaitMs: 10_000 }, 'temp-token', {
+      ...settings,
+      model: 'universal-3-6-pro',
+    });
+
+    stream.send(new Uint8Array(CHUNK_100_MS));
+    await waitFor(() => events.some((e) => e.type === 'final'), 1_000);
+    stream.send(new Uint8Array(CHUNK_100_MS));
+    await waitFor(() => log.binaryFrames.length === 2);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    await stream.close();
+
+    expect(events.map((e) => e.type)).toEqual(['final', 'closed']);
+    expect(events[0]).toMatchObject({ type: 'final', text: 'My name is Sonny.', startMs: 100 });
+  });
+
   it('saves a formatted-only end of turn at once', async () => {
     script.onAudio = (socket) => {
       socket.send(turn(3, 'Formatted only.', { endOfTurn: true, formatted: true }));
@@ -557,6 +586,68 @@ describe('AssemblyAiSpeechToText', () => {
     expect(events.at(-1)?.type).toBe('closed');
   });
 });
+
+/**
+ * Each model's wire file (fixtures/wireFixtures.ts) through the protocol's session, as the core
+ * hands it the vendor's messages. Properties only, so a recording from close step 0 keeps it green.
+ */
+describe.each(WIRE_FIXTURE_MODELS)('the %s wire through the protocol', (model) => {
+  it('saves one line per finished turn as it ends, the formatted copy when there is one', () => {
+    vi.useFakeTimers();
+    try {
+      const warnings: string[] = [];
+      const releasedByTimer: TranscriptEvent[] = [];
+      const session = assemblyAiProtocol().session({
+        logger: createLogger({
+          level: 'warn',
+          format: 'json',
+          sink: (line) => warnings.push(line),
+        }),
+        settings: { ...settings, model },
+        audioSentMs: () => 0,
+        emit: (event) => releasedByTimer.push(event),
+      });
+      const lines = readWireFixture(model);
+      const saved: Extract<SttEvent, { type: 'final' }>[] = [];
+      for (const line of lines) {
+        const message = session.read(line);
+        expect(message.kind, line.slice(0, 40)).not.toBe('invalid');
+        if (message.kind === 'transcript' || message.kind === 'finished') {
+          for (const event of message.events) if (event.type === 'final') saved.push(event);
+        }
+      }
+      expect(session.release()).toEqual([]);
+      vi.advanceTimersByTime(60_000);
+
+      // Nothing waited for a copy that never came: the wait timer released nothing, and said so.
+      expect(releasedByTimer).toEqual([]);
+      expect(warnings).toEqual([]);
+      expect(saved.map((event) => event.text)).toEqual(finishedTurnTexts(lines));
+      for (const event of saved) expect(event.words.length).toBeGreaterThan(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+/**
+ * Read straight from the wire, apart from the parser: per turn_order, in order, the transcript of
+ * its formatted end of turn when the vendor sent one, else of its first end of turn.
+ */
+function finishedTurnTexts(lines: string[]): string[] {
+  const turns = new Map<number, { text: string; formatted: boolean }>();
+  for (const line of lines) {
+    const message: unknown = JSON.parse(line);
+    if (!isRecord(message) || message.type !== 'Turn' || message.end_of_turn !== true) continue;
+    const { turn_order: order, transcript, turn_is_formatted: formatted } = message;
+    if (typeof order !== 'number' || typeof transcript !== 'string') continue;
+    const seen = turns.get(order);
+    if (seen === undefined || (!seen.formatted && formatted === true)) {
+      turns.set(order, { text: transcript, formatted: formatted === true });
+    }
+  }
+  return [...turns.values()].map((turn) => turn.text);
+}
 
 function begin(): string {
   return JSON.stringify({ type: 'Begin', id: 'session-1', expires_at: 1772570132 });
