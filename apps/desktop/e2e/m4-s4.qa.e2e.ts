@@ -6,6 +6,7 @@ import * as qa from '../qa/driver';
 import { idleCaptureStatus } from '../src/shared/capture';
 import { IpcChannel } from '../src/shared/ipc';
 import type { CaptureApi } from '../src/shared/ipc/capture';
+import type { MeetingsApi } from '../src/shared/ipc/meetings';
 
 /**
  * M4-S4's browser QA: the meeting page and the sidebar's recent meetings, in both themes at 1440
@@ -20,14 +21,23 @@ interface AbWatch {
   fewestLinesWhileShown: number;
 }
 
+/** How often the page read main's store (countStoreReads). */
+interface StoreReads {
+  list: number;
+  get: number;
+}
+
 declare global {
   interface Window {
     __abWatch?: AbWatch;
+    __storeReads?: StoreReads;
+    /** Whether a meeting page ever showed an empty transcript while this watch ran. */
+    __emptyTranscriptSeen?: boolean;
     /**
      * The preview's fake, as far as this script reads it. The renderer types the whole of it in
      * src/renderer/src/roger.d.ts, which this Node program (tsconfig.e2e.json) does not include.
      */
-    roger?: Pick<CaptureApi, 'getCaptureStatus'>;
+    roger?: Pick<CaptureApi, 'getCaptureStatus'> & MeetingsApi;
   }
 }
 
@@ -72,6 +82,32 @@ async function openFromSidebar(page: Page, title: string): Promise<void> {
   await waitForTitle(page, title);
 }
 
+/** Counts the page's store reads (meetings:list, meetings:get) from now on. */
+async function countStoreReads(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    const roger = window.roger;
+    if (roger === undefined) throw new Error('No window.roger: not the preview page');
+    const reads: StoreReads = { list: 0, get: 0 };
+    const list = roger.listMeetings.bind(roger);
+    const get = roger.getMeeting.bind(roger);
+    roger.listMeetings = (request) => {
+      reads.list += 1;
+      return list(request);
+    };
+    roger.getMeeting = (request) => {
+      reads.get += 1;
+      return get(request);
+    };
+    window.__storeReads = reads;
+  });
+}
+
+async function storeReads(page: Page): Promise<StoreReads> {
+  const reads = await page.evaluate(() => window.__storeReads);
+  if (reads === undefined) throw new Error('countStoreReads was not called on this page');
+  return reads;
+}
+
 async function lineCount(page: Page): Promise<number> {
   return page.locator(LINES).count();
 }
@@ -111,6 +147,22 @@ it(
         `${PAST_MEETING.lines.length} lines from the store, newest in view; title, day and span in the header; listed in the sidebar and marked current; no sideways scroll; no console errors.`,
       );
 
+      // Main's idle heartbeat: a fresh status after every uploader pass, every 2 s, each in its
+      // own task. Neither the sidebar nor the page reads the store again for one.
+      await countStoreReads(page);
+      const idle = await page.evaluate(() => {
+        if (window.roger === undefined) throw new Error('No window.roger: not the preview page');
+        return window.roger.getCaptureStatus();
+      });
+      for (let pass = 1; pass <= 5; pass += 1) {
+        await qa.emitEvent(page, IpcChannel.CaptureStatusChanged, {
+          ...idle,
+          upload: { ...idle.upload, state: pass % 2 === 0 ? 'uploading' : 'idle' },
+        });
+        await qa.settle(page);
+      }
+      expect(await storeReads(page)).toEqual({ list: 0, get: 0 });
+
       // Failure path: the store read fails. React's StrictMode (the preview is a dev build) runs
       // the page's effect twice, and LatestRead.readFor reads once for both: fail that one.
       await page.locator('.sidebar button', { hasText: 'Home' }).click();
@@ -123,16 +175,18 @@ it(
       expect(await page.locator('.meeting-read-error').textContent()).toContain(
         'Roger could not read this meeting on this Mac: database is locked',
       );
-      expect(await titleOf(page)).toBe('Untitled meeting');
+      expect(await titleOf(page)).toBe('Could not read this meeting');
+      // This window played the standup, so the capture view still holds its lines.
+      expect(await lineCount(page)).toBe(PAST_MEETING.lines.length);
       qa.expectNoConsoleErrors(preview);
       await qa.expectNoPageOverflow(page);
       await gallery.shoot(
         page,
         'Read failed',
         `read-failed-${theme}-${width}`,
-        `The store read fails (${theme}, ${width})`,
+        `The store read fails, lines heard live (${theme}, ${width})`,
         'pass',
-        'The reason in an alert with Try again; the page keeps its frame and live lines would still show.',
+        'The reason in an alert with Try again; the title says Roger could not read the meeting (never a made-up one); the lines this window heard live stay.',
       );
       await page.locator('.meeting-read-error button', { hasText: 'Try again' }).click();
       await waitForTitle(page, PAST_MEETING.title);
@@ -386,10 +440,21 @@ it(
       );
 
       // One from three weeks back: the list scrolls it into reach, the page shows its one line.
+      // Watch the page open: before main answers it knows no lines, and must never say none
+      // were saved.
+      await page.evaluate(() => {
+        window.__emptyTranscriptSeen = false;
+        new MutationObserver(() => {
+          if (document.querySelector('.meeting-page .transcript .empty') !== null) {
+            window.__emptyTranscriptSeen = true;
+          }
+        }).observe(document.body, { subtree: true, childList: true, characterData: true });
+      });
       const old = page.locator('.recent-meetings-list > li').nth(20).locator('button');
       const oldTitle = (await old.getAttribute('title')) ?? '';
       await old.click();
       await waitForTitle(page, oldTitle);
+      expect(await page.evaluate(() => window.__emptyTranscriptSeen)).toBe(false);
       expect(await lineCount(page)).toBe(1);
       expect(await page.locator('.meeting-page .page-meta').textContent()).toMatch(
         /9:00(\s?AM)? to 9:01(\s?AM)?$/,
@@ -407,8 +472,37 @@ it(
         `old-meeting-${theme}-${width}`,
         `A meeting from three weeks back (${theme}, ${width})`,
         'pass',
-        'Opened from the list: its day and span, its one line, marked current in the sidebar.',
+        'Opened from the list: its day and span, its one line, marked current in the sidebar; no empty transcript while the read ran (MutationObserver).',
       );
+
+      // Failure path: the store read fails for a meeting this window never heard live, as after
+      // a restart. No lines to show, so no transcript claims there are none.
+      await qa.failNextRequest(page, 'database is locked');
+      const unread = page.locator('.recent-meetings-list > li').nth(21).locator('button');
+      const unreadTitle = (await unread.getAttribute('title')) ?? '';
+      await unread.click();
+      await page.waitForSelector('.meeting-read-error');
+      await qa.settle(page);
+      await qa.expectVisible(page, '.meeting-read-error');
+      expect(await titleOf(page)).toBe('Could not read this meeting');
+      expect(await page.locator('.meeting-page .transcript').count()).toBe(0);
+      await qa.expectVisible(page, '.meeting-page .empty-state');
+      expect(await page.locator('.meeting-page .empty-state').textContent()).toBe(
+        'The transcript shows here once Roger can read this meeting.',
+      );
+      await qa.expectNoPageOverflow(page);
+      qa.expectNoConsoleErrors(preview);
+      await gallery.shoot(
+        page,
+        'Read failed',
+        `unread-${theme}-${width}`,
+        `The store read fails, nothing heard live (${theme}, ${width})`,
+        'pass',
+        'The reason in an alert with Try again; no made-up title and no "No lines were saved": the page says the transcript shows once Roger can read the meeting.',
+      );
+      await page.locator('.meeting-read-error button', { hasText: 'Try again' }).click();
+      await waitForTitle(page, unreadTitle);
+      expect(await lineCount(page)).toBe(1);
 
       // Failure path: main opens a meeting this Mac does not have (a link to a deleted one).
       await qa.emitEvent(page, IpcChannel.AppNavigate, `meeting/${crypto.randomUUID()}`);
