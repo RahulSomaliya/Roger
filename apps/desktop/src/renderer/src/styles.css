@@ -17,45 +17,6 @@ body {
   color: var(--ink);
 }
 
-.app {
-  display: flex;
-  flex-direction: column;
-  height: 100vh;
-  padding: 16px;
-  gap: 12px;
-}
-
-.header {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-}
-
-.header h1 {
-  margin: 0;
-  font-size: 20px;
-  font-weight: 650;
-}
-
-.phase {
-  font-size: 12px;
-  font-weight: 600;
-  padding: 2px 8px;
-  border-radius: 999px;
-  background: var(--line);
-  color: var(--muted);
-}
-
-.phase-recording {
-  background: var(--danger-bg);
-  color: var(--recording);
-}
-
-.controls {
-  display: flex;
-  justify-content: center;
-}
-
 .button {
   min-width: 160px;
   padding: 12px 20px;
