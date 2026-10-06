@@ -426,6 +426,26 @@ describe('ReminderScheduler', () => {
     h.scheduler.stop();
   });
 
+  it('logs policy with no rule for a call accepted again before its window, then never shown', async () => {
+    // PromptService took the offer but never logged the card: the sweep logs the miss.
+    const h = harness({ logsShown: false });
+    h.setEvents([call('review', 5, { selfResponse: 'declined' })]);
+    h.scheduler.start();
+    await advanceTo(1);
+
+    const accepted = call('review', 5);
+    h.setEvents([accepted]);
+    await advanceTo(16);
+
+    expect(h.offeredKeys()).toEqual([promptKey(accepted)]);
+    expect(h.log.get(ACCOUNT, promptKey(accepted))).toMatchObject({
+      action: 'missed',
+      reason: 'policy',
+      detail: null,
+    });
+    h.scheduler.stop();
+  });
+
   it('never logs a call due before the account first connected', async () => {
     const h = harness({ connectedAt: START - HOUR });
     const before = call('before', -2 * 60);

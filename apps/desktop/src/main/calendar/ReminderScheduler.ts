@@ -126,7 +126,8 @@ export class ReminderScheduler {
   /**
    * The rule that last kept each cached call from prompting (a decline, a solo block). A call that
    * becomes prompt-worthy only after its window closed is logged `policy` with this as `detail`,
-   * so the owner can tune reminderPolicy.ts from the log. In memory: it describes this run.
+   * so the owner can tune reminderPolicy.ts from the log. Dropped once the call is worthy inside
+   * its window (`noteRules`). In memory: it describes this run.
    */
   private readonly rulesSeen = new Map<string, PolicyRule>();
   private unsubscribeCatchUp: (() => void) | null = null;
@@ -251,15 +252,25 @@ export class ReminderScheduler {
     const nowMs = this.nowMs();
     const lead = this.options.leadMinutes();
     const events = this.options.cache.listEvents();
-    this.noteRules(events);
+    this.noteRules(events, nowMs, lead);
     this.sweepMissed(account, events, nowMs, lead);
     const pending = this.pendingEvents(account, events, nowMs, lead);
     if (pending.some((event) => isDue(event, nowMs, lead))) this.showDue();
     this.holdBlocker(pending, nowMs, lead);
   }
 
-  /** Remember why each cached call does not prompt, for a later `policy` miss; forget the rest. */
-  private noteRules(events: readonly CalendarEvent[]): void {
+  /**
+   * Remember why each cached call does not prompt, for a later `policy` miss; forget the rest. A
+   * call that is prompt-worthy again while its window is still open drops its rule: no rule kept it
+   * from prompting, so a miss after that (an offer that failed, a card PromptService never showed)
+   * names none. Only while open: this runs before the sweep, and a call accepted again after its
+   * window closed must keep the rule that held it through the window.
+   */
+  private noteRules(
+    events: readonly CalendarEvent[],
+    nowMs: number,
+    lead: ReminderLeadMinutes,
+  ): void {
     const cached = new Set<string>();
     for (const event of events) {
       if (event.allDay) continue;
@@ -267,6 +278,7 @@ export class ReminderScheduler {
       cached.add(key);
       const worthiness = promptWorthiness(event);
       if (!worthiness.worthy) this.rulesSeen.set(key, worthiness.rule);
+      else if (nowMs < dueWindow(worthiness.event, lead).untilMs) this.rulesSeen.delete(key);
     }
     for (const key of this.rulesSeen.keys()) if (!cached.has(key)) this.rulesSeen.delete(key);
   }
