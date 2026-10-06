@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import type { UploadStatus } from '../../shared/capture';
+import type { SttMeter, SttMeterStatus, UploadStatus } from '../../shared/capture';
 import {
+  describeCost,
   describeHealth,
+  describeMeter,
+  formatDuration,
+  meterDetails,
   describeSaved,
   describeStream,
   describeUpload,
@@ -63,6 +67,49 @@ describe('describeUpload', () => {
   it('mentions lines the API rejected so nobody thinks they were uploaded', () => {
     expect(describeUpload(upload({ rejected: 2 }))).toBe(
       'all lines uploaded · 2 rejected by the API',
+    );
+  });
+});
+
+describe('formatDuration', () => {
+  it('reads like a stopwatch, coarser past an hour', () => {
+    expect(formatDuration(0)).toBe('0s');
+    expect(formatDuration(45_400)).toBe('45s');
+    expect(formatDuration(750_000)).toBe('12m 30s');
+    expect(formatDuration(3_720_000)).toBe('1h 02m');
+  });
+});
+
+describe('describeCost', () => {
+  it('rounds to cents and never shows a guess as exact', () => {
+    expect(describeCost(0.0625)).toBe('about $0.06');
+    expect(describeCost(0.004)).toBe('under $0.01');
+    expect(describeCost(0)).toBe('no cost');
+    expect(describeCost(null)).toBe('cost unknown');
+  });
+});
+
+describe('describeMeter', () => {
+  const meter = (connectedMs: number, estimatedCostUsd: number | null): SttMeter => ({
+    sessionsOpened: 1,
+    connectedMs,
+    audioSentMs: connectedMs - 5_000,
+    estimatedCostUsd,
+  });
+  const status: SttMeterStatus = {
+    vendorName: 'AssemblyAI',
+    total: { ...meter(750_000, 0.0313), sessionsOpened: 3 },
+    sources: { mic: meter(375_000, 0.0156), system: meter(375_000, 0.0156) },
+  };
+
+  it('says vendor, connected time and cost in one line', () => {
+    expect(describeMeter(status)).toBe('AssemblyAI · 12m 30s connected · about $0.03');
+  });
+
+  it('gives sessions, audio and each source in the details', () => {
+    expect(meterDetails(status)).toBe(
+      '3 sessions opened · 12m 25s of audio sent. Mic (me): 6m 15s connected, about $0.02. ' +
+        'Call audio (them): 6m 15s connected, about $0.02.',
     );
   });
 });

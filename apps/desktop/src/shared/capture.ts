@@ -51,6 +51,22 @@ export interface UploadStatus {
   nextAttemptAt: number | null;
 }
 
+/** Speech-to-text use as the vendor bills it: the time sessions are open, silent or not. */
+export interface SttMeter {
+  sessionsOpened: number;
+  connectedMs: number;
+  audioSentMs: number;
+  /** Open time at the API's price per stream-hour; null when the price is unknown. */
+  estimatedCostUsd: number | null;
+}
+
+export interface SttMeterStatus {
+  /** For people, e.g. "AssemblyAI". */
+  vendorName: string;
+  total: SttMeter;
+  sources: Record<AudioSource, SttMeter>;
+}
+
 export interface CaptureStatus {
   phase: CapturePhase;
   meetingId: string | null;
@@ -68,6 +84,8 @@ export interface CaptureStatus {
   upload: UploadStatus;
   /** Last error worth showing the user, or null. */
   error: string | null;
+  /** This meeting's speech-to-text use while recording; the last meeting's after Stop. */
+  meter: SttMeterStatus | null;
   /**
    * Why Roger stopped the last recording on its own (no speech, the length cap, quit, sleep, the
    * window closing or crashing), or null. Cleared by the next Start.
@@ -92,6 +110,7 @@ export function idleCaptureStatus(upload: UploadStatus): CaptureStatus {
     segmentsUnsaved: 0,
     upload,
     error: null,
+    meter: null,
     notice: null,
   };
 }

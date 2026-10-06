@@ -27,6 +27,8 @@ export interface CaptureSessionListeners {
   onStreamFailure(source: AudioSource, reason: string, retryAtMs: number | null): void;
   /** A final line could not be written to the local store. onSegment still gets it right after. */
   onSaveFailure(source: AudioSource, reason: string): void;
+  /** One of the source's streams finished closing mid-meeting (not at Stop): meter it now. */
+  onStreamClosed(source: AudioSource): void;
 }
 
 export interface CaptureSessionOptions {
@@ -83,6 +85,7 @@ interface HeldChunk {
 /** One vendor stream, from its open until its close settles. */
 interface StreamHandle {
   readonly stream: SttStream;
+  readonly source: AudioSource;
   /**
    * Meeting offset of the stream's first audio byte, the vendor's time zero. Per stream, not per
    * source: a reopened stream starts its own clock. Null until its first chunk is sent.
@@ -414,6 +417,7 @@ export class CaptureSession {
   private track(source: AudioSource, stream: SttStream): StreamHandle {
     const handle: StreamHandle = {
       stream,
+      source,
       offsetMs: null,
       closing: null,
       openedAtMs: this.clock(),
@@ -434,6 +438,8 @@ export class CaptureSession {
       })
       .finally(() => {
         this.handles.delete(handle);
+        // Stop meters every stream at once itself; mid-meeting closes are metered one by one.
+        if (!this.closing) this.options.listeners.onStreamClosed(handle.source);
       });
     return handle.closing;
   }

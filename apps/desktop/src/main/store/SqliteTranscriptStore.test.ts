@@ -1,9 +1,12 @@
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it } from 'vitest';
 import type { TranscriptSegment } from '../../shared/transcript';
+import { InMemoryTranscriptStore } from './InMemoryTranscriptStore';
 import { SqliteTranscriptStore } from './SqliteTranscriptStore';
+import type { MeetingSttUsage, TranscriptStore } from './TranscriptStore';
 
 function segment(n: number, overrides: Partial<TranscriptSegment> = {}): TranscriptSegment {
   return {
@@ -130,5 +133,76 @@ describe('SqliteTranscriptStore', () => {
     expect(second.getMeeting('m1')?.title).toBe('T');
     expect(second.countUnsyncedSegments()).toBe(1);
     second.close();
+  });
+
+  it('adds the usage table to a store written before it, keeping its data', () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'roger-store-')), 'roger.sqlite');
+    const first = new SqliteTranscriptStore(path);
+    first.createMeeting({ id: 'm1', title: 'T', startedAt: '2026-10-05T10:00:00Z' });
+    first.close();
+    // Wind the file back to schema 2, as a Mac that ran the app before this change has it.
+    const raw = new DatabaseSync(path);
+    raw.exec('DROP TABLE stt_usage; PRAGMA user_version = 2');
+    raw.close();
+
+    const second = new SqliteTranscriptStore(path);
+    second.saveSttUsage(usage('m1'));
+    second.close();
+    const third = new SqliteTranscriptStore(path); // the migration does not run twice
+    expect(third.getSttUsage('m1')).toEqual(usage('m1'));
+    expect(third.getMeeting('m1')?.title).toBe('T');
+    third.close();
+  });
+});
+
+function usage(meetingId: string, overrides: Partial<MeetingSttUsage> = {}): MeetingSttUsage {
+  const source = (connectedMs: number) => ({
+    sessionsOpened: 1,
+    connectedMs,
+    audioSentMs: connectedMs - 1_000,
+    droppedChunks: 0,
+    estimatedCostUsd: 0.0025,
+  });
+  return {
+    meetingId,
+    provider: 'assemblyai',
+    total: {
+      sessionsOpened: 2,
+      connectedMs: 120_000,
+      audioSentMs: 118_000,
+      droppedChunks: 0,
+      estimatedCostUsd: 0.005,
+    },
+    bySource: { mic: source(60_000), system: source(60_000) },
+    stopReason: null,
+    updatedAt: '2026-10-06T10:02:00.000Z',
+    ...overrides,
+  };
+}
+
+describe.each([
+  ['SqliteTranscriptStore', () => new SqliteTranscriptStore(':memory:')],
+  ['InMemoryTranscriptStore', () => new InMemoryTranscriptStore()],
+])('%s speech-to-text usage', (_name, open: () => TranscriptStore) => {
+  it('keeps one usage row per meeting, the latest one winning', () => {
+    const store = open();
+    expect(store.getSttUsage('m1')).toBeNull();
+    store.saveSttUsage(usage('m1'));
+    const final = usage('m1', {
+      total: { ...usage('m1').total, connectedMs: 300_000, estimatedCostUsd: null },
+      stopReason: 'no-speech',
+    });
+    store.saveSttUsage(final);
+    expect(store.getSttUsage('m1')).toEqual(final);
+    store.close();
+  });
+
+  it('keeps the usage of a meeting deleted for having no lines: its sessions were still billed', () => {
+    const store = open();
+    store.createMeeting({ id: 'm1', title: 'T', startedAt: '2026-10-05T10:00:00Z' });
+    store.saveSttUsage(usage('m1'));
+    expect(store.deleteMeetingIfEmpty('m1')).toBe(true);
+    expect(store.getSttUsage('m1')).toEqual(usage('m1'));
+    store.close();
   });
 });

@@ -13,7 +13,7 @@ import {
   type SttEventListener,
   type SttStream,
 } from '../stt/SpeechToText';
-import type { SttUsage } from '../stt/usage';
+import { sumUsage, type SttUsage } from '../stt/usage';
 import { TranscriptUploader } from '../upload/TranscriptUploader';
 import { CaptureService, defaultMeetingTitle } from './CaptureService';
 
@@ -39,6 +39,12 @@ class ScriptedStream implements SttStream {
   readonly sent: Uint8Array[] = [];
   closed = false;
   closeCalls = 0;
+  closedAtMs: number | null = null;
+  constructor(
+    readonly options: OpenStreamOptions,
+    readonly openedAtMs: number,
+    private readonly clock: () => number,
+  ) {}
   /** Emitted while closing, like a vendor flushing its last final after CloseStream. */
   finalOnClose: string | null = null;
   send(pcm: Uint8Array): void {
@@ -58,6 +64,7 @@ class ScriptedStream implements SttStream {
       });
     }
     this.closed = true;
+    this.closedAtMs = this.clock();
     // Like a vendor's: the close it was asked for still ends in "closed".
     this.emitter.emit({ type: 'closed', code: 1000, reason: null });
     return Promise.resolve();
@@ -70,24 +77,32 @@ class ScriptedStream implements SttStream {
 class ScriptedSpeechToText implements SpeechToText {
   readonly provider = 'scripted';
   readonly vendorName = 'Scripted';
-  usage(): SttUsage {
-    return {
-      sessionsOpened: 0,
-      connectedMs: 0,
-      audioSentMs: 0,
-      droppedChunks: 0,
-      estimatedCostUsd: 0,
-    };
-  }
   readonly streams = new Map<string, ScriptedStream>();
+  private readonly all: ScriptedStream[] = [];
   readonly opened: OpenStreamOptions[] = [];
   failWith: Error | null = null;
   /** Applied to every stream this double opens. */
   finalOnClose: string | null = null;
+  constructor(private readonly clock: () => number) {}
+  /** Metered like a vendor: open time on the harness clock, 100 ms per 3200-byte chunk. */
+  usage(label?: string): SttUsage {
+    return sumUsage(
+      this.all
+        .filter((stream) => label === undefined || stream.options.label === label)
+        .map((stream) => ({
+          opened: true,
+          connectedMs: (stream.closedAtMs ?? this.clock()) - stream.openedAtMs,
+          audioSentMs: stream.sent.reduce((ms, pcm) => ms + pcm.byteLength / 32, 0),
+          droppedChunks: 0,
+          pricePerHourUsd: stream.options.settings.pricePerHourUsd,
+        })),
+    );
+  }
   openStream(options: OpenStreamOptions): Promise<SttStream> {
     this.opened.push(options);
     if (this.failWith) return Promise.reject(this.failWith);
-    const stream = new ScriptedStream();
+    const stream = new ScriptedStream(options, this.clock(), this.clock);
+    this.all.push(stream);
     stream.finalOnClose = this.finalOnClose;
     this.streams.set(options.label, stream);
     return Promise.resolve(stream);
@@ -129,9 +144,9 @@ function harness(
       Promise.resolve(meetingDto(meetingId)),
     ),
   };
-  const stt = new ScriptedSpeechToText();
-  const uploader = new TranscriptUploader({ store, api, logger });
   let now = 1_000_000;
+  const stt = new ScriptedSpeechToText(() => now);
+  const uploader = new TranscriptUploader({ store, api, logger });
   const service = new CaptureService({
     store,
     api,
@@ -591,6 +606,92 @@ describe('CaptureService cost guards', () => {
     const system = h.stt.streams.get('system')!;
     system.emitter.emit({ type: 'error', message: 'Session Cancelled', fatal: true });
     expect(system.closeCalls).toBe(1);
+    await h.service.stop();
+  });
+});
+
+describe('CaptureService metering', () => {
+  function infoLog() {
+    const lines: Record<string, unknown>[] = [];
+    const infoLogger = createLogger({
+      level: 'info',
+      format: 'json',
+      sink: (line) => lines.push(JSON.parse(line) as Record<string, unknown>),
+    });
+    return { lines, logger: infoLogger };
+  }
+
+  it('shows connected time, audio, sessions and cost per source and per meeting, and keeps them after Stop', async () => {
+    const log = infoLog();
+    const h = harness({ logger: log.logger });
+    const { meetingId } = await h.service.start();
+    h.service.pushAudio('mic', new Uint8Array(3200));
+    h.advance(6 * 60_000);
+
+    const meter = h.service.getStatus().meter;
+    const source = (audioSentMs: number) => ({
+      sessionsOpened: 1,
+      connectedMs: 360_000,
+      audioSentMs,
+      // Six minutes open at the API's $0.15 an hour, silent or not.
+      estimatedCostUsd: 0.015,
+    });
+    expect(meter).toEqual({
+      vendorName: 'Scripted',
+      total: { sessionsOpened: 2, connectedMs: 720_000, audioSentMs: 100, estimatedCostUsd: 0.03 },
+      sources: { mic: source(100), system: source(0) },
+    });
+
+    h.advance(60_000);
+    const stopped = await h.service.stop();
+    expect(stopped.phase).toBe('idle');
+    expect(stopped.meter?.total).toMatchObject({ connectedMs: 840_000, estimatedCostUsd: 0.035 });
+    h.advance(60_000);
+    expect(h.service.getStatus().meter?.total.connectedMs).toBe(840_000); // the meter stopped
+
+    const summary = log.lines.find((line) => line.message === 'stt meter at stop');
+    expect(summary).toMatchObject({
+      meetingId,
+      provider: 'scripted',
+      stopReason: 'user',
+      total: { sessionsOpened: 2, connectedMs: 840_000, estimatedCostUsd: 0.035 },
+      mic: { connectedMs: 420_000 },
+      system: { connectedMs: 420_000 },
+    });
+    expect(h.store.getSttUsage(meetingId!)).toMatchObject({
+      provider: 'scripted',
+      total: { sessionsOpened: 2, connectedMs: 840_000, estimatedCostUsd: 0.035 },
+      bySource: { mic: { connectedMs: 420_000 }, system: { connectedMs: 420_000 } },
+      stopReason: 'user',
+    });
+
+    h.api.getSttToken.mockRejectedValueOnce(new Error('API unreachable'));
+    expect((await h.service.start()).meter).toBeNull(); // Start forgets the last meeting's meter
+  });
+
+  it('logs and saves the meter whenever a session closes mid-meeting', async () => {
+    const log = infoLog();
+    const h = harness({ logger: log.logger });
+    const { meetingId } = await h.service.start();
+    h.advance(30_000);
+    h.service.reportSourceState(
+      'system',
+      'error',
+      'No screen source is available for system audio',
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const line = log.lines.find((entry) => entry.message === 'stt meter');
+    expect(line).toMatchObject({
+      meetingId,
+      closedSource: 'system',
+      system: { connectedMs: 30_000 },
+    });
+    expect(h.store.getSttUsage(meetingId!)).toMatchObject({
+      stopReason: null,
+      bySource: { system: { connectedMs: 30_000 } },
+    });
     await h.service.stop();
   });
 });

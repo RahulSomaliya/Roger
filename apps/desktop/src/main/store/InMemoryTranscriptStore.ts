@@ -1,6 +1,7 @@
 import type { TranscriptSegment } from '../../shared/transcript';
 import type {
   LocalMeeting,
+  MeetingSttUsage,
   NewLocalMeeting,
   RemoteState,
   TranscriptStore,
@@ -13,6 +14,7 @@ export class InMemoryTranscriptStore implements TranscriptStore {
     string,
     TranscriptSegment & { syncedAt: string | null; rejectedAt: string | null }
   >();
+  readonly sttUsage = new Map<string, MeetingSttUsage>();
 
   createMeeting(meeting: NewLocalMeeting): void {
     if (this.meetings.has(meeting.id)) return;
@@ -109,6 +111,15 @@ export class InMemoryTranscriptStore implements TranscriptStore {
 
   countSegments(meetingId: string): number {
     return [...this.segments.values()].filter((segment) => segment.meetingId === meetingId).length;
+  }
+
+  saveSttUsage(usage: MeetingSttUsage): void {
+    this.sttUsage.set(usage.meetingId, structuredClone(usage));
+  }
+
+  getSttUsage(meetingId: string): MeetingSttUsage | null {
+    const usage = this.sttUsage.get(meetingId);
+    return usage === undefined ? null : structuredClone(usage);
   }
 
   close(): void {

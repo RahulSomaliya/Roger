@@ -112,6 +112,7 @@ function listeners(): CaptureSessionListeners & {
       saveFailures.push([source, reason]);
     },
     onInterim: () => undefined,
+    onStreamClosed: () => undefined,
     onStreamState: (source, state) => {
       states.push(`${source}:${state}`);
     },

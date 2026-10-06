@@ -8,6 +8,8 @@ import {
   type CapturePhase,
   type CaptureStatus,
   type SourceStatus,
+  type SttMeter,
+  type SttMeterStatus,
   type SttStreamState,
 } from '../../shared/capture';
 import { PCM_ENCODING, PCM_SAMPLE_RATE } from '../../shared/ipc';
@@ -24,7 +26,8 @@ import { errorMessage, type Logger } from '../logger';
 import type { MicrophoneAccess } from '../permissions';
 import type { TranscriptStore } from '../store/TranscriptStore';
 import type { SpeechToTextFactory } from '../stt/createSpeechToText';
-import type { SttStreamSettings } from '../stt/SpeechToText';
+import type { SpeechToText, SttStreamSettings } from '../stt/SpeechToText';
+import type { SttUsage } from '../stt/usage';
 import { streamSettingsMismatch } from '../stt/streamSettings';
 import type { TranscriptUploader } from '../upload/TranscriptUploader';
 import { Emitter } from '../util/emitter';
@@ -95,6 +98,10 @@ export class CaptureService {
   private readonly budget: SttOpenBudget;
   private phase: CapturePhase = 'idle';
   private session: CaptureSession | null = null;
+  /** The meeting's adapter: its usage() is the meter. */
+  private stt: SpeechToText | null = null;
+  /** The last meeting's meter, shown after Stop until the next Start. */
+  private lastMeter: SttMeterStatus | null = null;
   private sttProvider: string | null = null;
   private startedAt: string | null = null;
   private sources: Record<AudioSource, SourceStatus> = {
@@ -138,7 +145,12 @@ export class CaptureService {
   getStatus(): CaptureStatus {
     const upload = this.options.uploader.getStatus();
     if (this.phase === 'idle' && !this.session) {
-      return { ...idleCaptureStatus(upload), error: this.error, notice: this.notice };
+      return {
+        ...idleCaptureStatus(upload),
+        error: this.error,
+        meter: this.lastMeter,
+        notice: this.notice,
+      };
     }
     return {
       phase: this.phase,
@@ -152,6 +164,7 @@ export class CaptureService {
       segmentsUnsaved: this.segmentsUnsaved,
       upload,
       error: this.error,
+      meter: this.stt === null ? this.lastMeter : meterStatus(this.stt),
       notice: this.notice,
     };
   }
@@ -225,6 +238,7 @@ export class CaptureService {
     const { logger, store } = this.options;
     this.error = null;
     this.notice = null;
+    this.lastMeter = null;
     this.resetSessionState();
     this.budget.beginMeeting();
     this.setPhase('starting');
@@ -243,6 +257,7 @@ export class CaptureService {
       const mismatch = streamSettingsMismatch(settings);
       if (mismatch !== null) throw new Error(mismatch);
       const stt = this.options.createSpeechToText(provider);
+      this.stt = stt;
       this.sttProvider = provider;
       this.startedAt = new Date(startedAtMs).toISOString();
       store.createMeeting({
@@ -302,6 +317,9 @@ export class CaptureService {
             });
             this.emitStatus();
           },
+          onStreamClosed: (source) => {
+            this.recordMeter(meetingId, null, source);
+          },
           onSaveFailure: (source, reason) => {
             // Recording goes on. The likely causes (disk full, the file locked past SQLite's 5 s
             // busy timeout) are often brief or fixable mid-call, and M1 keeps no audio to
@@ -325,6 +343,8 @@ export class CaptureService {
       logger.error('capture start failed', { meetingId, error: this.error });
       try {
         if (session) await session.close();
+        // A failed connect that reached the handshake may be billed: keep its numbers too.
+        this.recordMeter(meetingId, 'start-failed', null);
         if (meetingCreated) store.deleteMeetingIfEmpty(meetingId);
       } catch (cleanupError) {
         logger.error('cleanup after failed start failed', {
@@ -349,6 +369,8 @@ export class CaptureService {
       if (session) {
         await session.close();
         const meetingId = session.meetingId;
+        this.recordMeter(meetingId, reason, null);
+        if (this.stt !== null) this.lastMeter = meterStatus(this.stt);
         // A meeting with no line was never sent to Postgres: TranscriptUploader.syncMeeting creates
         // it only once it holds one, and lines are never deleted, so this delete cannot race an
         // upload. If the uploader ever creates meetings earlier again, this leaves Postgres a
@@ -431,6 +453,7 @@ export class CaptureService {
     this.streams = { mic: 'closed', system: 'closed' };
     this.streamMessages = { mic: null, system: null };
     this.streamErrors = { mic: null, system: null };
+    this.stt = null;
     this.sttProvider = null;
     this.startedAt = null;
     this.recordingSinceMs = null;
@@ -519,9 +542,68 @@ export class CaptureService {
     void this.stop({ reason });
   }
 
+  /**
+   * Logs the meeting's speech-to-text use and keeps it in the local store (cost guard G7): after
+   * every stream that closes mid-meeting, and once at Stop with the reason. Saving at each close
+   * keeps most of it should the app die before Stop.
+   */
+  private recordMeter(
+    meetingId: string,
+    stopReason: StopReason | 'start-failed' | null,
+    closedSource: AudioSource | null,
+  ): void {
+    const { stt, sttProvider: provider } = this;
+    if (stt === null || provider === null) return;
+    const total = stt.usage();
+    const bySource = { mic: stt.usage('mic'), system: stt.usage('system') };
+    const { logger, store } = this.options;
+    logger.info(stopReason === null ? 'stt meter' : 'stt meter at stop', {
+      meetingId,
+      provider,
+      closedSource,
+      stopReason,
+      total,
+      mic: bySource.mic,
+      system: bySource.system,
+    });
+    try {
+      store.saveSttUsage({
+        meetingId,
+        provider,
+        total,
+        bySource,
+        stopReason,
+        updatedAt: new Date(this.clock()).toISOString(),
+      });
+    } catch (error) {
+      // The log line above keeps the numbers; recording goes on.
+      logger.error('speech-to-text usage not saved locally', {
+        meetingId,
+        error: errorMessage(error),
+      });
+    }
+  }
+
   private emitStatus(): void {
     this.events.emit('status', this.getStatus());
   }
+}
+
+function meterStatus(stt: SpeechToText): SttMeterStatus {
+  return {
+    vendorName: stt.vendorName,
+    total: toMeter(stt.usage()),
+    sources: { mic: toMeter(stt.usage('mic')), system: toMeter(stt.usage('system')) },
+  };
+}
+
+function toMeter({
+  sessionsOpened,
+  connectedMs,
+  audioSentMs,
+  estimatedCostUsd,
+}: SttUsage): SttMeter {
+  return { sessionsOpened, connectedMs, audioSentMs, estimatedCostUsd };
 }
 
 export function defaultMeetingTitle(startedAt: Date): string {
