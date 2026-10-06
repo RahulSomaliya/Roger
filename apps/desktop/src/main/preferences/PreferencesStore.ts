@@ -17,6 +17,9 @@ export interface PreferenceFiles {
 
 const NODE_FILES: PreferenceFiles = { readFileSync, writeFileSync, renameSync };
 
+const UNREADABLE =
+  'preferences file unreadable; using defaults, and moving it aside at the next save';
+
 export interface PreferencesStoreOptions {
   /** `userData/preferences.json`. */
   path: string;
@@ -33,7 +36,9 @@ export interface PreferencesStoreOptions {
  *
  * The file holds only what the user set, plus every key this build does not know: a default is
  * never written, so a default changed in a later build reaches everyone who never chose, and an
- * older build saving never drops a newer build's keys.
+ * older build saving never drops a newer build's keys. A file that exists but cannot be used (not
+ * JSON, not an object, no permission) reads as defaults and is moved aside, intact, before the
+ * first save (moveAside), so a save never replaces values Roger could not read.
  *
  * Everything is synchronous on purpose. A set is a few hundred bytes, and two async writes in
  * flight could rename in the wrong order and leave the older value on disk.
@@ -45,6 +50,8 @@ export class PreferencesStore {
   private readonly registry = new PreferenceRegistry();
   /** The file as last read or written, every key in it, registered or not. */
   private stored: ReadonlyMap<string, unknown>;
+  /** The file exists but read() could not use it: the next save moves it aside first. */
+  private unreadable: boolean;
   /** The registered keys whose stored value passed their spec. Others read as the default. */
   private readonly values = new Map<string, unknown>();
   private readonly listeners = new Set<(change: PreferenceChange) => void>();
@@ -53,7 +60,9 @@ export class PreferencesStore {
     this.path = path;
     this.logger = logger;
     this.files = files;
-    this.stored = this.read();
+    const stored = this.read();
+    this.unreadable = stored === null;
+    this.stored = stored ?? new Map();
   }
 
   /** Adds a milestone's keys (PreferenceRegistry.register) and checks their values in the file. */
@@ -117,33 +126,30 @@ export class PreferencesStore {
     };
   }
 
-  private read(): ReadonlyMap<string, unknown> {
+  /** Every key in the file; an empty map when there is none; null when it exists but is unusable. */
+  private read(): ReadonlyMap<string, unknown> | null {
     let text: string;
     try {
       text = this.files.readFileSync(this.path, 'utf8');
     } catch (error) {
       if (errnoCode(error) === 'ENOENT') return new Map();
       // The code only, as config.ts does: an EACCES must not read as "no preferences" silently.
-      this.logger.warn('preferences file ignored; using defaults', {
+      this.logger.warn(UNREADABLE, {
         error: `${this.path} could not be read (${errnoCode(error) ?? 'unknown error'})`,
       });
-      return new Map();
+      return null;
     }
     let parsed: unknown;
     try {
       parsed = JSON.parse(text);
     } catch {
       // Not the parse error: V8 quotes the input, and the notice text is the user's own words.
-      this.logger.warn('preferences file ignored; using defaults', {
-        error: `${this.path} is not valid JSON`,
-      });
-      return new Map();
+      this.logger.warn(UNREADABLE, { error: `${this.path} is not valid JSON` });
+      return null;
     }
     if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-      this.logger.warn('preferences file ignored; using defaults', {
-        error: `${this.path} must contain a JSON object`,
-      });
-      return new Map();
+      this.logger.warn(UNREADABLE, { error: `${this.path} must contain a JSON object` });
+      return null;
     }
     return new Map(Object.entries(parsed));
   }
@@ -158,12 +164,38 @@ export class PreferencesStore {
       this.files.writeFileSync(temp, `${JSON.stringify(Object.fromEntries(next), null, 2)}\n`, {
         flush: true,
       });
+      if (this.unreadable) this.moveAside();
       this.files.renameSync(temp, this.path);
     } catch (error) {
       throw new Error(`could not save preference ${key} to ${this.path}: ${errorMessage(error)}`, {
         cause: error,
       });
     }
+  }
+
+  /**
+   * Keeps a file read() could not use: the save holds only what was set since startup, so renaming
+   * over it would lose every other value in it for good (a hand edit's trailing comma, a file root
+   * owns).
+   * config.ts falls back to defaults the same way but never writes config.json, so it needs no
+   * such step; this store does write. Throws, so the save writes nothing, when the move fails.
+   */
+  private moveAside(): void {
+    const aside = `${this.path}.unreadable-${new Date().toISOString().replace(/[:.]/g, '-')}`;
+    try {
+      this.files.renameSync(this.path, aside);
+      this.logger.warn('unreadable preferences file moved aside; copy its values back by hand', {
+        file: aside,
+      });
+    } catch (error) {
+      // Deleted since startup: nothing is left to keep.
+      if (errnoCode(error) !== 'ENOENT') {
+        throw new Error(`could not move the unreadable file aside: ${errorMessage(error)}`, {
+          cause: error,
+        });
+      }
+    }
+    this.unreadable = false;
   }
 }
 

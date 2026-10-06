@@ -2,6 +2,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   renameSync,
   rmSync,
@@ -240,5 +241,92 @@ describe('PreferencesStore', () => {
     const { store, lines } = open();
     expect(store.get('theme')).toBe('system');
     expect(lines[0]).toContain(`${path} could not be read (EISDIR)`);
+  });
+
+  // A save holds only what was set: renamed over a file Roger could not read, it would lose every
+  // other value in it for good, and a trailing comma in a hand edit is a one-character fix.
+  describe('a file it could not read', () => {
+    const asideFiles = (): string[] =>
+      readdirSync(dir).filter((name) => name !== 'preferences.json');
+
+    it.each([
+      ['is not JSON', '{"theme": "dark", "calendar.reminderLeadMinutes": 5,}'],
+      ['is not a JSON object', '["dark"]'],
+    ])('is moved aside, intact, before the first save when it %s', (_, original) => {
+      writeFileSync(path, original);
+      const { store, lines, changes } = open();
+      store.set('notes.autoGenerate', false);
+      expect(fileJson()).toEqual({ 'notes.autoGenerate': false });
+      expect(changes).toEqual([{ key: 'notes.autoGenerate', value: false }]);
+      const [aside, ...more] = asideFiles();
+      expect(more).toEqual([]);
+      expect(aside).toMatch(
+        /^preferences\.json\.unreadable-\d{4}-\d\d-\d\dT\d\d-\d\d-\d\d-\d{3}Z$/,
+      );
+      expect(readFileSync(join(dir, aside!), 'utf8')).toBe(original);
+      expect(JSON.parse(lines.at(-1)!)).toMatchObject({
+        level: 'warn',
+        file: join(dir, aside!),
+      });
+    });
+
+    it('is moved aside only once: later saves go to the file Roger wrote', () => {
+      writeFileSync(path, '{"theme": "dark",}');
+      const { store } = open();
+      store.set('theme', 'light');
+      store.set('notes.whenUnsure', 'general');
+      expect(asideFiles()).toHaveLength(1);
+      expect(fileJson()).toEqual({ theme: 'light', 'notes.whenUnsure': 'general' });
+    });
+
+    it('is moved aside when it could not be opened (EACCES)', () => {
+      writeFileSync(path, JSON.stringify({ 'notice.text': 'my own words' }));
+      const { files } = recordingFiles();
+      const denied: PreferenceFiles = {
+        ...files,
+        readFileSync: () => {
+          throw Object.assign(new Error(`EACCES: permission denied, open '${path}'`), {
+            code: 'EACCES',
+          });
+        },
+      };
+      const { store } = open(denied);
+      store.set('theme', 'dark');
+      const [aside] = asideFiles();
+      expect(JSON.parse(readFileSync(join(dir, aside!), 'utf8'))).toEqual({
+        'notice.text': 'my own words',
+      });
+      expect(fileJson()).toEqual({ theme: 'dark' });
+    });
+
+    it('refuses the save, writing nothing, when it cannot be moved aside', () => {
+      writeFileSync(path, 'not json');
+      const { files } = recordingFiles();
+      const stuck: PreferenceFiles = {
+        ...files,
+        renameSync: (from, to) => {
+          if (from === path) throw new Error(`EPERM: operation not permitted, rename '${from}'`);
+          files.renameSync(from, to);
+        },
+      };
+      const { store, changes } = open(stuck);
+      expect(() => {
+        store.set('theme', 'dark');
+      }).toThrow(
+        `could not save preference theme to ${path}: could not move the unreadable file aside`,
+      );
+      expect(readFileSync(path, 'utf8')).toBe('not json');
+      expect(store.get('theme')).toBe('system');
+      expect(changes).toEqual([]);
+    });
+
+    it('saves as usual when it was deleted since startup', () => {
+      writeFileSync(path, 'not json');
+      const { store } = open();
+      rmSync(path);
+      store.set('theme', 'dark');
+      expect(asideFiles()).toEqual([]);
+      expect(fileJson()).toEqual({ theme: 'dark' });
+    });
   });
 });
