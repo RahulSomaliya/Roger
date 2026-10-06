@@ -1,8 +1,11 @@
-// Stub from P2-F1; owned by M4-T13.
-import type { ChatApi } from '../../shared/ipc/chat';
+import { chatChannels, type ChatApi } from '../../shared/ipc/chat';
+import { invoke, subscribe } from '../bridge';
 
-/**
- * The chat feature's part of `window.roger`, built from the helpers in ../bridge.ts. It implements
- * src/shared/ipc/chat.ts: a member added there fails the type check until it is here.
- */
-export const chatBridge: ChatApi = {};
+/** Chat's part of `window.roger`. */
+export const chatBridge: ChatApi = {
+  getChatThread: (meetingId) => invoke(chatChannels.ChatGetThread, meetingId),
+  sendChatMessage: (request) => invoke(chatChannels.ChatSend, request),
+  cancelChatAnswer: (request) => invoke(chatChannels.ChatCancel, request),
+  onChatEvent: (listener) => subscribe(chatChannels.ChatEvent, listener),
+  onChatThreadChanged: (listener) => subscribe(chatChannels.ChatThreadChanged, listener),
+};
