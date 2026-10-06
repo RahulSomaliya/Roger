@@ -8,7 +8,7 @@
   "author": "Linkt",
   "license": "UNLICENSED",
   "engines": {
-    "node": ">=22.12.0"
+    "node": ">=22.13.0"
   },
   "scripts": {
     "dev": "electron-vite dev",
@@ -23,7 +23,11 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "test:mac": "vitest run --config vitest.mac.config.ts",
+    "test:e2e": "electron-vite build && vitest run --config vitest.e2e.config.ts",
+    "preview:renderer": "vite --config vite.preview.config.ts",
+    "bench": "vite build --config bench/vite.config.ts && node bench/dist/cli.js"
   },
   "dependencies": {
     "@tiptap/core": "3.31.3",
