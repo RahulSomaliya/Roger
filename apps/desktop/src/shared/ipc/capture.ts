@@ -53,11 +53,12 @@ export interface AudioChunkMessage {
    *
    * Build it per chunk as `Date.now()` minus the first frame's age on the monotonic clock
    * (`performance.now()` less the frame's `performanceTime`, mapped through
-   * `AudioContext.getOutputTimestamp()`). Never `performance.timeOrigin + performanceTime`, as the
-   * design's "Timeline" row has it: on macOS Chromium's monotonic clock stops while the Mac
-   * sleeps, so that sum falls behind the wall clock by every sleep since the page loaded, and the
-   * page lives for days once closing the window hides it (M5-T11). Under a day the mic's lines
-   * land hours early and miss the ±700 ms echo window; past a day main refuses every mic chunk.
+   * `AudioContext.getOutputTimestamp()`), as the M2 design's "Timeline" row says. Never
+   * `performance.timeOrigin + performanceTime`: on macOS Chromium's monotonic clock stops while
+   * the Mac sleeps, so that sum falls behind the wall clock by every sleep since the page loaded,
+   * and the page lives for days once closing the window hides it (M5-T11). Under a day the mic's
+   * lines land hours early and miss the ±700 ms echo window; past a day main refuses every mic
+   * chunk.
    * Anchoring once per capture is not enough either: a recording that lives through a sleep drifts.
    */
   capturedAtMs?: number;

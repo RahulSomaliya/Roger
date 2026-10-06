@@ -63,15 +63,16 @@ export interface RoutePage {
  * The current route, for useSyncExternalStore.
  *
  * Trap: navigating never writes `location.hash`, and nothing in the shell may (no
- * `<a href="#/...">`, no `history.pushState`). A hash change is a same-document navigation, and
- * Chromium starts a load for it (DevTools' `Page.frameStartedLoading` fires on one; seen in Chrome
- * on 2026-10-06). M1's lifecycle (main/lifecycle.ts, watchWindow) stops the recording on any
- * `did-start-loading` as a reload. Whether Electron emits that for a hash change was not checked
- * (it needs the running app); if it does, a hash-driven router ends the call the moment "New note"
- * opens the meeting. Until M2-T12 removes that stop, the route lives here and in sessionStorage,
- * which a reload keeps. The URL hash is read once at start (a QA script's `index.html#/settings`
- * wins over the saved route) and followed when someone else changes it; it is not updated as the
- * user moves around.
+ * `<a href="#/...">`, no `history.pushState` or `history.replaceState`). Each is a same-document
+ * navigation, and Chromium starts a load for it (DevTools' `Page.frameStartedLoading` fires on a
+ * hash change and on a `replaceState`; seen in Chrome on 2026-10-06). M1's lifecycle
+ * (main/lifecycle.ts, watchWindow) stops the recording on any `did-start-loading` as a reload.
+ * Whether Electron emits that for a same-document navigation was not checked (it needs the running
+ * app; the controller's Electron check after wave 2 settles it); if it does, a hash-driven router
+ * ends the call the moment "New note" opens the meeting. Until M2-T12 removes that stop, the
+ * route lives here and in sessionStorage, which a reload keeps. The URL hash is read once at
+ * start (a QA script's `index.html#/settings` wins over the saved route) and followed when someone
+ * else changes it; it is not updated as the user moves around.
  */
 export class RouteStore {
   private route: Route;

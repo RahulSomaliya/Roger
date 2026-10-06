@@ -172,9 +172,10 @@ def desktop_stt_provider_ids() -> set[str]:
 
 # API vendors the desktop cannot run yet. The plan lands Soniox in two waves
 # (docs/plans/phase-2-build-order.md): its issuer and preset in M3-T14 (wave 3), its desktop adapter
-# in M3-T15 (wave 5). Neither task owns this file, and an exact match would turn every gate red in
+# in M3-T15 (wave 5). M3-T14 leaves this file alone: an exact match would turn every gate red in
 # between. Until then STT_PROVIDER=soniox fails Start on the Mac (UnsupportedSttProviderError).
-# Remove the entry once registry.ts lists soniox; if M3-T15 is dropped, the API's soniox goes too.
+# M3-T15 deletes the entry in the commit that adds soniox to registry.ts. If M3-T15 is dropped, the
+# controller deletes it, with M3-T14's soniox if that merged (the build order's section 10).
 AWAITING_A_DESKTOP_ADAPTER = frozenset({"soniox"})
 
 

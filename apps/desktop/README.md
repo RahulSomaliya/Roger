@@ -150,7 +150,11 @@ and a local fake vendor, and fails if any test leaves a socket open. Shipping ad
 
 ### Add a speech-to-text vendor
 
-Both apps change together, in one commit with `docs/api-contract.md` (house rule 8).
+Both apps change together, in one commit with `docs/api-contract.md` (house rule 8). The one
+allowed split is the API first: list the vendor in `AWAITING_A_DESKTOP_ADAPTER`
+(`apps/api/tests/test_stt_providers.py`) until `registry.ts` names it, and delete it from there in
+the commit that adds the adapter. Meanwhile a Start on its preset fails on the Mac. Phase 2 lands
+Soniox this way (M3-T14, then M3-T15).
 
 Desktop:
 
@@ -178,10 +182,14 @@ API:
    short-lived token (the vendor key never leaves the API), with tests on `httpx.MockTransport`.
 6. The provider id in `SttProvider` (`apps/api/src/roger_api/domain.py`), its key setting
    (`<VENDOR>_API_KEY`) and a case in `Settings.stt_vendor_key` (`config.py`).
-7. One entry in `STT_VENDORS` (`apps/api/src/roger_api/stt_vendors.py`): issuer, default model,
-   model-name prefix, the vendor's token TTL limit, and the list price per stream-hour by model,
-   with the pricing URL and the date read. Say whether the vendor bills open time or audio sent.
-8. `.env.example`, `apps/api/README.md` and the provider table in `docs/api-contract.md`.
+7. One entry in `STT_VENDORS` (`apps/api/src/roger_api/stt_vendors.py`): issuer, the vendor's
+   token TTL limit, and the list price per stream-hour by model, with the pricing URL and the date
+   read. Say whether the vendor bills open time or audio sent. Then at least one `STT_PRESETS` row
+   (a preset id, the vendor, and the model spelt as the vendor spells it), its id added to
+   `SttPresetId`: `STT_PROVIDER` names a preset, never a vendor, and a test fails on a vendor no
+   preset names.
+8. `.env.example`, and the preset tables in `apps/api/README.md` and `docs/api-contract.md` (the
+   contract's list of `provider` ids too).
 
 Before relying on it: know the vendor's sessions-per-minute limit (every Start opens two), what it
 bills for a silent stream, and whether it can be asked to close an idle session itself (pass

@@ -393,7 +393,7 @@ and `m1-assemblyai` (a3be3ee). Still to run: P2-F1, P2-F2 and M3-T18 (M2-T0 is t
 | M2-T20a | S | `renderer/src/components/capture/{WarningBanner,StreamStatus,LevelMeter,Notices}.tsx`, `e2e/capture-status.shots.e2e.ts`, `app/slots/m2-capture-status.ts`, the stream wording in `renderer/src/format.ts` (keeps the meter line and the stop notice) |
 | M3-T4b | S | `capture/CaptureSession.ts` (a connect rejected for its keyterms reopens once without them, through `SttOpenBudget`), `capture/CaptureService.ts` (the `keyterms_rejected` capture warning), their tests |
 | M3-T9 | S | `app/slots/m3-transcript.ts` (`LiveTranscript` and `VocabularySettings`), `renderer/src/state/useCapture.ts` (drops the segment and interim state), deletes `components/TranscriptView.tsx` |
-| M3-T15 | M | Optional (OD-10). `main/stt/soniox/*`, one line in `stt/registry.ts`, one entry in `stt/testing/conformanceVendors.ts`, the opening-messages hook in `stt/core/{SttProtocol,SttConnection}.ts` if Soniox needs it, the Soniox note and step 7 of the vendor checklist in `apps/desktop/README.md`, the `soniox` line of `AWAITING_A_DESKTOP_ADAPTER` in `apps/api/tests/test_stt_providers.py` (deleted) |
+| M3-T15 | M | Optional (OD-10). `main/stt/soniox/*`, one line in `stt/registry.ts`, one entry in `stt/testing/conformanceVendors.ts`, the opening-messages hook in `stt/core/{SttProtocol,SttConnection}.ts` if Soniox needs it, the Soniox note in `apps/desktop/README.md`, the `soniox` line of `AWAITING_A_DESKTOP_ADAPTER` in `apps/api/tests/test_stt_providers.py` (deleted) |
 | M3-T19b | M | `upload/SttUsageUploader.ts` (a `422` is a rejected row, marked and never retried until a later save), `api/sttUsageClient.ts`, local migration 6 and the usage sync statements in `store/*`, the M3-T19b runtime slot (with tests) |
 | M4-T18 | M | `renderer/src/notes/{AiNotesPanel,TemplatePicker,NotesSettings}.tsx`, `aiNotesStream.ts`, `aiNotesActions.ts` (with tests) |
 | M4-T19 | M | `renderer/src/chat/*` (with tests) |
@@ -463,7 +463,7 @@ Every other file has exactly one writer in Phase 2.
 | --- | --- | --- |
 | `docs/api-contract.md` | P2-F2 (skeleton, error rows) → wave 1: M3-T1 (token `provider` and presets), M3-T2, M4-T1, M4-T3, M5-T1 → wave 2: M3-T3, M4-T6, M5-T3, M5-T4 → wave 3: M4-T8, M4-T10, M4-T11, M3-T14, M3-T19a (STT usage) | Each task edits only its own section, which P2-F2 created. The token section has a different writer in each wave (M3-T1, then M3-T3, then M3-T14). Contract and code change in the same commit (house rule 8). M3-T2 also wrote the route-heading rule under `## Endpoints`, which `test_http_plumbing.py` reads. |
 | `apps/api/tests/test_http_plumbing.py` (`test_openapi_documents_the_contract_routes`) | M1 (landed) → M3-T2 (wave 1: the route check reads the contract) | No later task edits it. The test compares the served OpenAPI routes with the contract's route headings (``### `GET /v1/...` ``, or `####` under the feature's own heading), so a task adds a route by writing that heading in its own contract section. A route without a heading, or a heading without a route, fails the test. A branch cut before M3-T2 merged that still adds its path to the old path list takes M3-T2's version of the file when it merges. |
-| `apps/api/tests/test_stt_providers.py` | M3-T1 (1) → M3-T15 (5, deletes `soniox` from `AWAITING_A_DESKTOP_ADAPTER` in the commit that adds it to `registry.ts`) | M3-T14 (3) needs no edit: the set lets the API mint Soniox tokens before the desktop has the adapter. |
+| `apps/api/tests/test_stt_providers.py` | M3-T1 (1) → the controller (after wave 1, the comment on `AWAITING_A_DESKTOP_ADAPTER`) → M3-T15 (5, deletes `soniox` from `AWAITING_A_DESKTOP_ADAPTER` in the commit that adds it to `registry.ts`) | M3-T14 (3) needs no edit: the set lets the API mint Soniox tokens before the desktop has the adapter. If M3-T15 is dropped, the controller deletes the entry (section 10). |
 | `src/shared/ipc.ts` and `src/preload/index.ts` | P2-F1 only | Feature tasks own `shared/ipc/<feature>.ts`, `preload/bridges/<feature>.ts` and `preview/fakes/<feature>.ts`. `capture.ts` and its bridge: M2-T2 (wave 1), then M5-T5 (wave 4). The barrel keeps exporting `PCM_SAMPLE_RATE` and `PCM_ENCODING`. A task that adds a member to its feature API stubs it in every test double typed as that whole API, in the same commit, even in another task's file (M2-T2 added five to `AudioCaptureController.test.ts`, M2-T12's). |
 | `src/shared/capture.ts` | M2-T2 (1, `offline` and M2's fields) → M5-T5 (4, `StartSource`, `title`) → M3-T20 (6, `SttMeter.gatedMs`, `estimatedSavedUsd`) | One writer per wave; every writer keeps the landed fields (`paused`, `retrying`, `streamMessages`, `meter`, `notice`) |
 | `src/main/index.ts` | P2-F1 (slots) → M4-S2, M4-S1 (wave 1) → M2-T4, M3-T8 (2) → M4-S4b (3) → M2-T13, M4-T16 (4) → M5-T9c, M5-T11 (6) → M2-T23 (7) | Named slots (section 1). Inside a wave the slots differ, so the slot bodies merge cleanly; the import lines at the top are outside every slot and do conflict (M4-S1 and M4-S2 both edited the `electron` import): resolve as the union. Nobody edits outside their slot and its imports. The cost-guard wiring and the `RecordingLifecycle` stay inside `[slot M2-T4 runtime]`. |
@@ -497,7 +497,7 @@ Every other file has exactly one writer in Phase 2.
 | `db/models.py` | P2-F2 (imports) → M5-T1 (the `Meeting` columns) | New tables live in per-domain modules |
 | `.env.example` | P2-F2 (sections) → M3-T1, M4-T2, M5-T1 (1) → M3-T13 (Benchmark), M3-T14 (the Soniox key) (3) → M3-T20 (6, its cost-guard lines) | Each task writes in its own section; the landed cost-guard block keeps every guard |
 | `apps/api/README.md` | M3-T1 (1, STT settings and presets; `STT_MODEL` retired), M3-T2 (1, one sentence of "Migrations": the stubs began empty) → M5-T3 (2, the calendar pointer) → M3-T14 (3, Soniox) | Each its own section |
-| `apps/desktop/README.md` | M3-T18 (0) and M3-T4a (1), one line each in "Add a speech-to-text vendor" (declare `audioPacing`; map keyterms and `keytermsRejected`), and M3-T18's "Reopen buffer" row of "Cost guards" (held audio is paced, not sent at once) → M3-T15 (5, the Soniox vendor note, and step 7 of "Add a speech-to-text vendor": `STT_PRESETS`, section 10) → M3-T20 (6, the gate rows of "Cost guards") → M2-T21 (9, helper, permissions, audio folder, M2's sleep and crash changes) | Each its own section |
+| `apps/desktop/README.md` | M3-T18 (0) and M3-T4a (1), one line each in "Add a speech-to-text vendor" (declare `audioPacing`; map keyterms and `keytermsRejected`), and M3-T18's "Reopen buffer" row of "Cost guards" (held audio is paced, not sent at once) → the controller (after wave 1: steps 7 and 8 of "Add a speech-to-text vendor" name `STT_PRESETS`, and its opening allows the API-first split) → M3-T15 (5, the Soniox vendor note) → M3-T20 (6, the gate rows of "Cost guards") → M2-T21 (9, helper, permissions, audio folder, M2's sleep and crash changes) | Each its own section |
 | `apps/desktop/package.json`, `pnpm-lock.yaml` | P2-F3 only | A task that truly needs a new package asks the controller, which makes a separate F3-style commit |
 | root `Makefile` | P2-F3 → M2-T7 (the Darwin `check` lines) | - |
 | `CLAUDE.md` | M4-T2 (rule 4, wave 1) → M2-T4 (rule 9's open-budget sentence, wave 2) → M3-T13 (commands, wave 3) → M3-T20 (rule 9's "no audio, no session" sentence gains the gate, wave 6) → M2-T21 (repo map, commands, wave 9). The controller appends failure-log lines. | Tasks put proposed failure-log lines in their hand-off note. The controller appends them once per wave. Architecture rule 9 (the STT core and the open budget) is landed; M2-T4 and M3-T20 reword it to cover the re-run, the bench and the gate, and no task loosens it: every open still acquires first, right before `openStream`. |
@@ -910,6 +910,9 @@ From wave 1 (14 tasks merged 2026-10-06; their boxes in the milestone plans are 
   `chunk.capturedAtMs` to the fan-out (`null` means the arrival time). The status-contributor seam
   sets the optional M2 fields of `CaptureStatus` and `SourceStatus` (a missing one reads as empty).
   Unhide refuses a line that is not `hidden`, as the preview fake does.
+- **M2-T4:** the T19 runtime slot gets no navigation port. It runs inside `[slot M2-T4 runtime]`,
+  before `[slot M4-S1]` declares `navigation`, so M2-T19 opens the setup route from the renderer
+  (its bullet below).
 - **M2-T10, M2-T11, M2-T14b, M2-T15, M2-T17b:** import the thresholds from `shared/capture.ts`,
   never redefine them. `config.capture`: `systemAudioCapture` (T10), `audioBackup` (already false
   when retention is 0) and `audioRetentionDays` (0 to 30) (T15), `echoFilter` (T14b),
@@ -922,16 +925,22 @@ From wave 1 (14 tasks merged 2026-10-06; their boxes in the milestone plans are 
   `window.ts` still opens 520x760, so the shell's narrow top-bar layout is the default (also
   M5-T11's file).
 - **M2-T19:** register `setup:*` in your own registrar; validate `setup:open-settings-pane` with
-  `parseSettingsPaneRequest`. The setup route opens from the app menu (M4-S1); first run and a
-  permission-refused Start are yours: `navigation.navigate('setup')` on the const of `[slot M4-S1]`,
-  declared after `[slot M2-T4 runtime]` in `main/index.ts`, so reach it lazily.
+  `parseSettingsPaneRequest`. The app menu opens the setup route (M4-S1). First run and a Start
+  refused for the microphone are yours, and open it from the renderer, never through main's
+  `navigation` (your runtime slot runs before `[slot M4-S1]` declares it, and M2-T4 passes no
+  port). In `app/slots/m2-setup.ts`, add a `banner` entry (rendered above every page, the setup
+  route included, and kept mounted across routes) that renders nothing and calls
+  `useShell().navigate({ name: 'setup' })`: once per page load when `getSetupStatus()` reports
+  `microphone.state` `not-determined` (Roger never asked: a first run), and when
+  `capture.status.error` turns non-null while `microphone.state` is `denied` or `restricted`. Any
+  banner entry makes the banner box render on every page, as M2-T20a's will. The setup fake starts
+  on a ready Mac, so the shots never redirect.
 - **M2-T19, M2-T20a, M2-T20b (shots):** seed with `hub.emit(IpcChannel.CaptureGetReport, report)`
   and `hub.emit(IpcChannel.SetupGetStatus, status)`; the setup fake starts on a ready Mac with the
   notification test not yet run.
 - **M2-T20b:** Unhide on hidden lines only. Progress is `CaptureStatus.rerun`; `rerunGaps` and
-  `deleteMeetingAudio` answer the updated report. No call lists the meetings whose audio is kept for
-  a re-run (the Home card): that is a contract change for `shared/ipc/capture.ts`'s next writer,
-  M5-T5 (wave 4); raise it before wave 4.
+  `deleteMeetingAudio` answer the updated report. The Home card's list of meetings whose audio is
+  kept for a re-run has no call yet: see the M5-T5 bullet.
 - **M2-T21:** document the five new `config.json` keys in `apps/desktop/README.md`.
 - **M3-T3:** a preset is `SttPreset(vendor, model)`; `Settings.stt_stream_price_per_hour_usd` is the
   base price, and the keyterm surcharge per model sits beside `SttVendor.price_per_hour_usd`. Read
@@ -953,15 +962,10 @@ From wave 1 (14 tasks merged 2026-10-06; their boxes in the milestone plans are 
   price, `soniox_api_key` and its case in `Settings.stt_vendor_key`. The registry test stays green
   through `AWAITING_A_DESKTOP_ADAPTER`; `vendor_keys()` picks up the key unedited.
 - **M3-T15:** delete `soniox` from `AWAITING_A_DESKTOP_ADAPTER`
-  (`apps/api/tests/test_stt_providers.py`) in the commit that adds it to `registry.ts`. In
-  `apps/desktop/README.md` "Add a speech-to-text vendor", step 7 still lists the removed default
-  model and model-name prefix; replace it with: "7. One entry in `STT_VENDORS`
-  (`apps/api/src/roger_api/stt_vendors.py`): issuer, the vendor's token TTL limit, and the list
-  price per stream-hour by model, with the pricing URL and the date read. Say whether the vendor
-  bills open time or audio sent. Then at least one `STT_PRESETS` row (a preset id, the vendor, and
-  the model spelt as the vendor spells it), its id added to `SttPresetId`: `STT_PROVIDER` names a
-  preset, never a vendor, and a test fails on a vendor no preset names." Step 8 says "the preset
-  tables in", and the section's "Both apps change together, in one commit" notes the Soniox split.
+  (`apps/api/tests/test_stt_providers.py`) in the commit that adds it to `registry.ts`. The README's
+  vendor checklist already names `STT_PRESETS` (steps 7 and 8) and the API-first split (the
+  controller, after wave 1); add only the Soniox note. If you are dropped, the Controller bullet
+  below covers the API side.
 - **M4-S4:** while B starts, meeting A's placeholder page shows "Roger can show only the meeting it
   recorded last for now..." until the shell navigates to B; your page reads stored meetings, so it
   goes with the placeholder (comment in `meeting/MeetingPage.tsx`). Props: `MeetingPage { meetingId
@@ -998,9 +1002,12 @@ From wave 1 (14 tasks merged 2026-10-06; their boxes in the milestone plans are 
   `preferences` const of `[slot M4-S2]` (T23 through an injected getter). Template ids are
   `general`, `standup`, `client_call` and `one_on_one`. Retry after a failed run takes a new run id.
 - **M4-T17:** name the node with `CITATION_NODE_TYPE`; ack a flush once, after every open editor
-  saved. Lists nested deeper than 13 levels with a link in them (14 without) exceed
-  `MAX_NOTE_DOC_DEPTH`, and `saveNote` then rejects with no sync state to show it: cap list sinking
-  on Tab, or show the refused save.
+  saved. By `jsonProblem` (`shared/notes.ts`), list depth d puts an item's text node at level
+  2d + 3, its `marks` list at 2d + 4, a mark at 2d + 5 (a link's attrs at 2d + 6) and a citation's
+  `segmentIds` at 2d + 5. So an item 13 lists deep holds anything; at 14 only unmarked text fits (a
+  bold word, a link or a citation chip exceeds `MAX_NOTE_DOC_DEPTH`), and at 15 only an empty item.
+  `saveNote` then rejects with no sync state to show it: cap list sinking on Tab at 13, or show the
+  refused save.
 - **M4-T18:** import `FROM_YOUR_NOTES_HEADING` and `NOT_SAID_ON_THE_CALL` from `shared/notes.ts`.
   The API lists templates by name ignoring case (1:1, Client call, General, Standup); order the
   picker here if General should lead.
@@ -1019,9 +1026,23 @@ From wave 1 (14 tasks merged 2026-10-06; their boxes in the milestone plans are 
   `FakeCalendarProvider(started_at=..., events_file=...)`; on `CalendarAccessTokenRejectedError`
   refresh once and retry once. `CalendarProviderName` exists twice (`config_calendar.py`,
   `services/calendar/provider.py`): import one. The contract's 424 also covers `invalid_grant` at
-  the code exchange; `video_link_source: conference` means nothing was typed.
+  the code exchange; `video_link_source: conference` means nothing was typed. For
+  `test_secrets_never_logged`, do not rely on plain `structlog.testing.capture_logs()`: it misses a
+  module logger first used under an earlier test's `create_app()` (each one installs a new
+  processor list; checked with structlog 26.1, the CLAUDE.md failure log), so the test would pass
+  on nothing. Attach a root `logging.Handler` after `create_app()`, as `recorded_events()` in
+  `test_stt_providers.py` does, and assert the expected events arrived before asserting that no
+  secret did. Firing `services/calendar/google.py`'s logger under an app in your tests can also
+  break `test_calendar_google.py`, whose `capture_logs` asserts exact entries.
 - **M5-T4:** `meetings.calendar_provider` and `meeting_attendees.response_status` have no check
   constraint: the pydantic schemas validate them.
+- **M5-T5, and the controller before wave 4 starts:** no call lists the meetings whose audio is
+  kept for a re-run, which M2-T20b's Home card (`AudioKept`, wave 8) needs. It is a contract change
+  to `shared/ipc/capture.ts`, and M5-T5 is that file's last planned writer. Before wave 4, the
+  controller either adds the member to M5-T5's brief (the channel, its type, bridge and preview
+  fake, and a stub in every test double typed as `CaptureApi`) and names the task that registers
+  its handler (M2-T15 keeps the audio, same wave; M2-T16 re-runs it, wave 6), or records here that
+  the card reads something else.
 - **M5-T6:** connect and disconnect call `CalendarSync.connected(accountEmail)` and
   `disconnected()`, never the cache's `recordConnected` or `recordDisconnected`. For IPC read
   `sync.getState()` and `cache.listEvents()`; subscribe with `sync.onStateChange` and
@@ -1041,8 +1062,31 @@ From wave 1 (14 tasks merged 2026-10-06; their boxes in the milestone plans are 
   `cache.close()`.
 - **Controller (files with no later writer):** `src/shared/ipc.ts` (P2-F1, frozen) still says "Today
   it would still compile, because the stubs add nothing", false now that capture, notes and chat
-  have members; `styles.css` (M4-S2) keeps M1's unused `.app`, `.header` and `.controls` rules. Both
-  need a comment-or-CSS-only commit.
+  have members; `styles.css` (M4-S2) keeps M1's unused `.app`, `.header` and `.controls` rules, and
+  its `.phase-recording` pill (the meeting page's "Recording", 12px) reads `--recording` on
+  `--danger-bg`, 3.7 to 4.1:1 in both themes: give it `--danger-ink` (about 5:1 in both). Both
+  files need a comment-or-CSS-only commit.
+- **Controller, `shared/meetingLinks.test.ts` (M5-T8 landed; no later writer):** add the rows of
+  the API's `PARSER_EDGE_CASES` that both sides refuse (`evil%2F.zoom.us`, the backslash host,
+  `xn--zz`, the two bad ports, the Arabic-Indic digits and the Kelvin sign, written as `\u`
+  escapes) as a table of their own, never in `JOIN_LINK_CASES`, which the API's
+  `test_table_matches_the_desktop` compares row for row. Skip the three the desktop accepts on
+  purpose (`/./`, `%2E`, no slashes). Say in `meetingLinks.ts`'s header that the API test now fails
+  when the two tables differ.
+- **Controller, after wave 2 merges: run M4-S1 in Electron** (it was built without launching the
+  app). In `make dev-desktop`: Cmd+C, Cmd+V and Cmd+Z still work in a text field (the app menu
+  lists Electron's default roles again); Settings... (Cmd+,) and Set up Roger... open their routes
+  and bring the window forward, also while the page loads or after a reload (`app:navigate` waits
+  for `app:ready`). Then start a recording on the fake provider and run `location.hash =
+  '#/settings'`, then `history.replaceState(null, '', '#/')`, in DevTools: if main logs the
+  `page-reloaded` stop, Electron emits `did-start-loading` on a same-document navigation. Write the
+  answer into the CLAUDE.md line on `location.hash` and the trap comment in `app/router.ts`. Rerun
+  M4-S1's shell screenshots through M4-S3's driver: they used stand-in values for S2's tokens.
+- **Controller, if M3-T15 is dropped (OD-10):** delete `soniox` from `AWAITING_A_DESKTOP_ADAPTER`
+  and, if M3-T14 merged, its API side in the same commit: the `STT_VENDORS` entry and preset,
+  `soniox` in `SttProvider` and `SttPresetId`, `SONIOX_API_KEY` and its case in `stt_vendor_key`,
+  its `.env.example`, `apps/api/README.md` and contract lines, and `tests/test_stt_token_soniox.py`.
+  Kept, `STT_PROVIDER=soniox` passes the API's startup and fails every Start on the Mac.
 - **Owner:** delete `STT_MODEL` from the API's `.env` if it holds a value (the API now refuses to
   start and names it). No task builds a theme control in Settings, and main does not set
   `nativeTheme.themeSource`, so a forced theme flashes the system one at load. On the first real

@@ -180,6 +180,12 @@ Each line is a trap someone already hit. Add one when you hit a new one.
   it lets `extra="ignore"` drop a leftover `.env` line in silence, and the API runs something other
   than what `.env` says (`STT_MODEL`, M3-T1).
 - Never name a conftest helper `test_*`: imported into a test module, pytest collects it (P2-F2).
+- `structlog.testing.capture_logs()` misses a module logger first used under an earlier
+  `create_app()`: each `configure_logging` call installs a new processor list, a cached logger
+  keeps the one it first saw, and `capture_logs` edits only the current one. In a suite that builds
+  an app per test, a "never logged" assertion then passes on nothing. Attach a root
+  `logging.Handler` after `create_app()` (`recorded_events()` in `test_stt_providers.py`) and assert
+  the expected event arrived before asserting what did not (M3-T1; checked with structlog 26.1).
 - STT pacing tests drive a manual clock with real timers: the pace timer only wakes the queue and the
   clock decides what may go. Move the clock, then `waitFor` the frames (M3-T18).
 - A migration test that winds `roger.sqlite` back to schema N must also undo every later migration,
@@ -203,19 +209,22 @@ Each line is a trap someone already hit. Add one when you hit a new one.
   refuses `[...text]` on a string; count code points as Python's `len` does with
   `Array.from(text).length` (M3-T4a).
 - `src/renderer` and `src/shared` are type-checked without Node types (`tsconfig.web.json`): a test
-  there reads a JSON fixture with a JSON import (`shared/notes.test.ts`) and other files through
+  there reads a JSON fixture with a JSON import (`shared/notes.test.ts`) and a CSS file through
   `renderer/src/theme/rendererSources.ts`, never `import.meta.glob(..., { query: '?raw' })`, which
-  Vitest empties for CSS, so a colour scan through it passes on anything (M4-S2, M4-T13).
+  Vitest empties for CSS, so a colour scan through it passes on anything (M4-S2, M4-T13). `?raw`
+  is fine for other files: `preview/index.test.ts` imports both `index.html` pages that way (M4-S3).
 - A CSS scan with `/\{([^{}]*)\}/` reads only innermost blocks and skips every declaration of a rule
   that holds a nested rule; read declarations with `renderer/src/theme/cssDeclarations.ts` (M4-S2).
-- In dark, one colour cannot be both a fill under white text and text on `--panel`. `--accent` and
+- In dark, one colour cannot be both a fill under white text and text on `--panel`; in light,
+  danger cannot either (4.46:1 as text on `--bg`, 3.7:1 in the error box). `--accent` and
   `--danger` are fills under `--on-accent`; text in those hues uses `--accent-ink` and
-  `--danger-ink`, and `tokens.test.ts` checks both contrasts (M4-S2).
+  `--danger-ink`, and `tokens.test.ts` checks the fills, the inks on `--panel` and `--bg`, and
+  error text on its `--danger-bg` tint (M4-S2).
 - Main's errors reach the renderer as text ("Error invoking remote method '<channel>': ApiError:
   ..."), never as the class: renderer code never checks `instanceof ApiError`;
   `app/describeError.ts` strips the wrapper (M4-S3).
-- Never write `location.hash`, `<a href="#/...">` or `history.pushState` in the renderer while
-  `lifecycle.ts` stops recording on `did-start-loading`: Chromium starts a load on a same-document
-  navigation (seen in Chrome; Electron not yet checked). The shell keeps its route in
-  `sessionStorage` (`app/router.ts`). The controller drops this line once M2-T12 removes the stop
-  (M4-S1).
+- Never write `location.hash`, `<a href="#/...">`, `history.pushState` or `history.replaceState`
+  in the renderer while `lifecycle.ts` stops recording on `did-start-loading`: Chromium starts a
+  load on a same-document navigation, a hash change or a `replaceState` (seen in Chrome; Electron
+  not yet checked). The shell keeps its route in `sessionStorage` (`app/router.ts`). The
+  controller drops this line once M2-T12 removes the stop (M4-S1).
