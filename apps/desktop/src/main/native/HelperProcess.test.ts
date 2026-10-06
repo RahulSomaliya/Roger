@@ -1,3 +1,7 @@
+import { spawn } from 'node:child_process';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it, type TestContext, vi } from 'vitest';
 import { createLogger } from '../logger';
@@ -209,6 +213,17 @@ function supervise(
 const events = (lines: string[]): string[] =>
   lines.map((line) => (JSON.parse(line) as { event: string }).event);
 
+/** An executable file of bytes no Mac can run: spawning it fails with ENOEXEC. */
+function garbageExecutable(context: TestContext): string {
+  const dir = mkdtempSync(join(tmpdir(), 'roger-garbage-'));
+  context.onTestFinished(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+  const file = join(dir, 'roger-audio');
+  writeFileSync(file, Buffer.from([0xde, 0xad, 0xbe, 0xef, 0, 1, 2, 3]), { mode: 0o755 });
+  return file;
+}
+
 // Concurrent: each test runs its own fake helper processes, and most of them wait on real time.
 describe.concurrent('HelperProcess', () => {
   it('hands on tap frames with their capture times, and the stderr lines', async (context) => {
@@ -368,6 +383,37 @@ describe.concurrent('HelperProcess', () => {
     });
     expect(seen.failed[0]).toMatchObject({ run: 2, cause: 'crashed', restarts: 1 });
     expect(seen.failed[0]!.detail).toContain('ENOENT');
+  });
+
+  // Node throws a spawn failure outside its async list (EACCES, EAGAIN, EMFILE, ENFILE, ENOENT) at
+  // once: ENOEXEC for a binary `make native` is still writing, EBADARCH for an x64 Roger.app on an
+  // Intel Mac that carries the arm64 helper (electron-builder.yml).
+  it('treats a helper whose spawn throws as one that cannot start, at start and at every restart', async (context) => {
+    const file = garbageExecutable(context);
+    // The case under test: this Node throws for it rather than emitting 'error'.
+    expect(() => spawn(file, [], { stdio: 'ignore' })).toThrow('spawn ENOEXEC');
+    const { helper, seen } = supervise(
+      context,
+      { file, args: ['tap'], env: {} },
+      { maxRestarts: 2 },
+    );
+    expect(() => {
+      helper.start();
+    }).not.toThrow();
+    await vi.waitFor(() => {
+      expect(seen.failed.length).toBe(1);
+    });
+    expect(seen.spawns).toEqual([1, 2, 3]);
+    expect(seen.restarts.map((end) => end.restarts)).toEqual([1, 2]);
+    expect(seen.failed[0]).toEqual({
+      run: 3,
+      cause: 'crashed',
+      exitCode: null,
+      signal: null,
+      detail: `could not start ${file}: spawn ENOEXEC`,
+      restarts: 2,
+    });
+    expect(helper.writeLine('rebuild')).toBe(false);
   });
 
   it('stop closes stdin, and a helper that exits on it is not restarted', async (context) => {

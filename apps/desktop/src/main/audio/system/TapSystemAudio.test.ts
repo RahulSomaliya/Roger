@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it, type TestContext, vi } from 'vitest';
 import type {
@@ -212,6 +215,32 @@ describe.concurrent('TapSystemAudio', () => {
     expect(events()).toEqual([...Array<string>(5).fill('helper-restarted'), 'helper-failed']);
     // Each run sent audio before it crashed; capture got it all.
     expect(capture.pushed.length).toBeGreaterThanOrEqual(6);
+  });
+
+  // An x64 Roger.app on an Intel Mac carries the arm64 helper: spawning it throws (EBADARCH, here
+  // ENOEXEC) instead of emitting 'error', and Start must still end in G1's close.
+  it('reports call audio failed when the helper binary cannot run at all', async (context) => {
+    const dir = mkdtempSync(join(tmpdir(), 'roger-garbage-'));
+    context.onTestFinished(() => {
+      rmSync(dir, { recursive: true, force: true });
+    });
+    const path = join(dir, 'roger-audio');
+    writeFileSync(path, Buffer.from([0xde, 0xad, 0xbe, 0xef, 0, 1, 2, 3]), { mode: 0o755 });
+    const { tap, capture, events } = harness(context, '', {
+      selection: { mode: 'tap', helper: { origin: 'bundle', path } },
+    });
+    expect(() => {
+      tap.start(RECORDING);
+    }).not.toThrow();
+    await vi.waitFor(() => {
+      expect(capture.states.length).toBe(1);
+    });
+    expect(capture.states[0]).toEqual({
+      source: 'system',
+      state: 'error',
+      message: `the call audio helper stopped 6 times in a row (last: could not start ${path}: spawn ENOEXEC)`,
+    });
+    expect(events()).toEqual([...Array<string>(5).fill('helper-restarted'), 'helper-failed']);
   });
 
   // `pkill -STOP roger-audio` in the exit check: Roger warns, kills and restarts it.

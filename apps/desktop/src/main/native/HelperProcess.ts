@@ -249,6 +249,9 @@ interface Run {
   terminate: NodeJS.Timeout[];
 }
 
+/** What deciding a run's sequel needs of it; a run whose spawn threw has only this. */
+type RunOutcome = Pick<Run, 'run' | 'spawnedAtMs' | 'killed' | 'replaced' | 'spawnError'>;
+
 type State = 'new' | 'running' | 'stopping' | 'stopped' | 'failed';
 
 export class HelperProcess {
@@ -352,7 +355,36 @@ export class HelperProcess {
   private spawnRun(): void {
     this.runs += 1;
     const { command, logger, name } = this.options;
-    const child = spawn(command.file, [...command.args], { env: command.env, stdio: 'pipe' });
+    let child: ChildProcessWithoutNullStreams;
+    try {
+      child = spawn(command.file, [...command.args], { env: command.env, stdio: 'pipe' });
+    } catch (error) {
+      // Node throws a spawn failure outside its async list (EACCES, EAGAIN, EMFILE, ENFILE,
+      // ENOENT) at once: ENOEXEC for a binary `make native` is still writing, EBADARCH for an x64
+      // Roger.app on an Intel Mac that carries the arm64 helper (electron-builder.yml). It is a run
+      // that could not start, like the async 'error' below. Uncaught, a throw at Start skipped the
+      // restart count and onFailed, so call audio was never reported failed, and a throw from the
+      // restart timer or the 'close' handler was an uncaught exception in main.
+      const number = this.runs;
+      logger.error('audio helper process error', {
+        helper: name,
+        run: number,
+        error: errorMessage(error),
+      });
+      this.tell('onSpawn', number, (listener) => listener.onSpawn?.({ run: number, pid: null }));
+      this.afterRun(
+        {
+          run: number,
+          spawnedAtMs: this.clock(),
+          killed: null,
+          replaced: false,
+          spawnError: `could not start ${command.file}: ${errorMessage(error)}`,
+        },
+        null,
+        null,
+      );
+      return;
+    }
     const run: Run = {
       run: this.runs,
       child,
@@ -380,16 +412,16 @@ export class HelperProcess {
           return;
         }
         for (const frame of parsed) {
-          this.tell('onFrame', run, (listener) => listener.onFrame?.(frame));
+          this.tell('onFrame', run.run, (listener) => listener.onFrame?.(frame));
         }
       });
     } else {
       this.readLines(run, child.stdout, (line) => {
-        this.tell('onStdoutLine', run, (listener) => listener.onStdoutLine?.(line));
+        this.tell('onStdoutLine', run.run, (listener) => listener.onStdoutLine?.(line));
       });
     }
     this.readLines(run, child.stderr, (line) => {
-      this.tell('onStderrLine', run, (listener) => listener.onStderrLine?.(line));
+      this.tell('onStderrLine', run.run, (listener) => listener.onStderrLine?.(line));
     });
     // EPIPE once the helper has exited: expected, and its end is handled on 'close'. Without a
     // listener, Node throws it as an uncaught exception and takes main down.
@@ -416,7 +448,7 @@ export class HelperProcess {
       this.ended(run, code, signal);
     });
     logger.info('audio helper started', { helper: name, run: run.run, pid: child.pid ?? null });
-    this.tell('onSpawn', run, (listener) =>
+    this.tell('onSpawn', run.run, (listener) =>
       listener.onSpawn?.({ run: run.run, pid: child.pid ?? null }),
     );
   }
@@ -482,6 +514,14 @@ export class HelperProcess {
     clearTimeout(run.watchdog);
     for (const timer of run.terminate) clearTimeout(timer);
     if (this.current === run) this.current = null;
+    this.afterRun(run, exitCode, signal);
+  }
+
+  /**
+   * What follows a run that is over: the stop's answer, the replacement `restart()` asked for, a
+   * counted restart, or giving up. A run whose spawn threw comes here straight from spawnRun.
+   */
+  private afterRun(run: RunOutcome, exitCode: number | null, signal: NodeJS.Signals | null): void {
     const { logger, name } = this.options;
 
     if (this.state === 'stopping' || this.state === 'stopped') {
@@ -510,13 +550,13 @@ export class HelperProcess {
     if (this.restartsInARow >= this.maxRestarts) {
       this.state = 'failed';
       logger.error('audio helper failed; no restarts left', { helper: name, ...end });
-      this.tell('onFailed', run, (listener) => listener.onFailed?.(end));
+      this.tell('onFailed', run.run, (listener) => listener.onFailed?.(end));
       return;
     }
     this.restartsInARow += 1;
     end.restarts = this.restartsInARow;
     logger.warn('audio helper ended; restarting', { helper: name, ...end });
-    this.tell('onRestart', run, (listener) => listener.onRestart?.(end));
+    this.tell('onRestart', run.run, (listener) => listener.onRestart?.(end));
     this.restartTimer = setTimeout(() => {
       this.restartTimer = null;
       if (this.state === 'running') this.spawnRun();
@@ -526,7 +566,7 @@ export class HelperProcess {
   /** One listener call; one that throws is logged and never reaches the child's stream events. */
   private tell(
     callback: keyof HelperProcessListener,
-    run: Run,
+    run: number,
     call: (listener: HelperProcessListener) => void,
   ): void {
     try {
@@ -534,7 +574,7 @@ export class HelperProcess {
     } catch (error) {
       this.options.logger.error('audio helper listener failed', {
         helper: this.options.name,
-        run: run.run,
+        run,
         callback,
         error: errorMessage(error),
       });
