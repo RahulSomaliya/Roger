@@ -382,18 +382,18 @@ and `m1-assemblyai` (a3be3ee). Still to run: P2-F1, P2-F2 and M3-T18 (M2-T0 is t
 | M4-T9 | M | `services/notes_long.py`, the budget switch in `notes_generation.py` |
 | M4-T12 | M | the `roger_api/evals/` package, `apps/api/evals/notes/cases/synthetic_standup.json`, `tests/test_notes_eval.py` |
 | M4-T16 | M | `main/notes/{notes-ipc,notes-ipc-validation,notesQuitGuard}.ts` (with tests), `[slot M4-T16 …]` (three slots) |
-| M5-T5 | M | `shared/capture.ts` (`StartSource`, `StartCaptureRequest`, `title`), `shared/ipc/capture.ts` with its bridge and fake, `main/ipc.ts`, `main/ipc-validation.ts`, `capture/CaptureService.ts` (`start(request)`, the enricher port, `requestStart` and `takePendingStart`), `roger.sqlite` migration 5 and `findMeetingIdsByEventIds`, `upload/TranscriptUploader.ts` (the create payload), `ApiClient.createMeeting`, `renderer/src/state/useCapture.ts` |
+| M5-T5 | M | `shared/capture.ts` (`StartSource`, `StartCaptureRequest`, `title`), `shared/ipc/capture.ts` with its bridge and fake, `main/ipc.ts`, `main/ipc-validation.ts`, `capture/CaptureService.ts` (`start(request)`, the enricher port, `requestStart` and `takePendingStart`), `roger.sqlite` migration 5 and `findMeetingIdsByEventIds`, `upload/TranscriptUploader.ts` (the create payload), `main/api/ApiClient.ts` (`createMeeting`, and the optional `price_per_hour_usd_without_keyterms` on `SttTokenResponse.stream`; section 10), `renderer/src/state/useCapture.ts` |
 
 **Wave 5**
 
 | Task | Size | Owns |
 | --- | --- | --- |
-| M2-T14b | M | `capture/echo/*` except `EchoFilter.ts` (with tests), the T14b runtime slot (including T3b's `beforeFirstTick`) |
+| M2-T14b | M | `capture/echo/*` except `EchoFilter.ts` (with tests), the T14b runtime slot (including the settle it sets with `setBeforeFirstTick`) |
 | M2-T18 | S | `power/PowerCoordinator.ts` (with test), the T18 runtime slot, the `suspend` handling in `main/lifecycle.ts` (a sleep no longer stops the recording unless it lasts `noSpeechStopMs`) |
 | M2-T19 | M | `main/setup/*`, `renderer/src/components/setup/*`, `e2e/setup.shots.e2e.ts`, `app/slots/m2-setup.ts`, the T19 runtime slot |
 | M2-T20a | S | `renderer/src/components/capture/{WarningBanner,StreamStatus,LevelMeter,Notices}.tsx`, `e2e/capture-status.shots.e2e.ts`, `app/slots/m2-capture-status.ts`, the stream wording in `renderer/src/format.ts` (keeps the meter line and the stop notice) |
 | M3-T4b | S | `capture/CaptureSession.ts` (a connect rejected for its keyterms reopens once without them, through `SttOpenBudget`), `capture/CaptureService.ts` (the `keyterms_rejected` capture warning), their tests |
-| M3-T9 | S | `app/slots/m3-transcript.ts` (`LiveTranscript` and `VocabularySettings`), `renderer/src/state/useCapture.ts` (drops the segment and interim state), deletes `components/TranscriptView.tsx`; `app/RecentMeetings.tsx` and `meeting/recentMeetingsKey.ts` (the sidebar's re-list key reads `useCapture`'s segments today; section 10) |
+| M3-T9 | S | `app/slots/m3-transcript.ts` (`LiveTranscript` and `VocabularySettings`), `renderer/src/state/useCapture.ts` (drops the segment and interim state), deletes `components/TranscriptView.tsx`; `app/RecentMeetings.tsx` and `meeting/recentMeetingsKey.ts` (the sidebar's re-list key reads `useCapture`'s segments today; section 10); `transcript/LiveTranscript.tsx` (while following, also follow the region's size changes; section 10) |
 | M3-T15 | M | Optional (OD-10). `main/stt/soniox/*`, one line in `stt/registry.ts`, one entry in `stt/testing/conformanceVendors.ts`, the opening-messages hook in `stt/core/{SttProtocol,SttConnection}.ts` if Soniox needs it, the Soniox note in `apps/desktop/README.md`, the `soniox` line of `AWAITING_A_DESKTOP_ADAPTER` in `apps/api/tests/test_stt_providers.py` (deleted) |
 | M3-T19b | M | `upload/SttUsageUploader.ts` (a `422` is a rejected row, marked and never retried until a later save), `api/sttUsageClient.ts`, local migration 6 and the usage sync statements in `store/*`, the M3-T19b runtime slot (with tests) |
 | M4-T18 | M | `renderer/src/notes/{AiNotesPanel,TemplatePicker,NotesSettings}.tsx`, `aiNotesStream.ts`, `aiNotesActions.ts` (with tests) |
@@ -476,7 +476,7 @@ Every other file has exactly one writer in Phase 2.
 | `src/main/capture/SttOpenBudget.ts` (landed, with its test) | M2-T4 (2, the minute-only acquire and the doc comment naming every allowed caller) | Only M2-T4 edits it. M2-T16 and M3-T20 (both wave 6) call the minute-only acquire; the bench builds its own instance. |
 | `src/main/upload/TranscriptUploader.ts` | M2-T3b (2) → M4-T22 (3) → M5-T5 (4) | One writer per wave. M3-T19b's usage uploader is its own file. |
 | `src/main/store/*` | M2-T3 (1, migration 4) → M2-T3b (2) → M4-S4b (3) → M5-T5 (4, migration 5) → M3-T19b (5, migration 6) | One writer per wave; migration 3 (`stt_usage`) is landed and nobody edits it |
-| `src/main/api/ApiClient.ts` | P2-F1 (0) → M3-T4a (1) → M5-T5 (4) | Feature clients live in their own files |
+| `src/main/api/ApiClient.ts` | P2-F1 (0) → M3-T4a (1) → M5-T5 (4, `createMeeting` and `SttTokenResponse.stream.price_per_hour_usd_without_keyterms`) | Feature clients live in their own files |
 | `src/main/stt/core/{SttProtocol,SttConnection,WebSocketSpeechToText}.ts`, `src/main/stt/conformance.test.ts`, `src/main/stt/testing/*` | M3-T18 (0, pacing) → M3-T4a (1, keyterm rejection) → M3-T5 (2, wire tap) → M2-T6 (4, ping liveness) → M3-T15 (5, opening messages) | One writer per wave. Each adds a field the core applies and a conformance case; no adapter opens, times, retries or closes a socket (house rule 9) |
 | `src/main/stt/registry.ts` | M3-T15 (5, one line) | - |
 | `bench/run/replay.ts`, `bench/report/report.ts`, `bench/run/run.ts`, `bench/cli.ts` | M3-T11 (2; it also parses `run --gate` in `bench/run/args.ts` and threads it to the replay) → M3-T20 (6, the gated replay, its settings through `RunDeps` and `cli.ts`, and its report columns) | Every other `bench/run/*` file has no later writer |
@@ -486,6 +486,7 @@ Every other file has exactly one writer in Phase 2.
 | `src/main/ipc.ts`, `src/main/ipc-validation.ts` | P2-F1 (0, trust helpers) → M2-T2 (`ipc-validation.ts`, 1) → M2-T4 (`ipc.ts`, 2) → M5-T5 (4) | Other features register in their own modules |
 | `src/renderer/src/state/useCapture.ts` | M2-T12 (3) → M5-T5 (4) → M3-T9 (5) | Each keeps the landed `followMain` call and the status re-read on focus. Until M3-T9, `segments` and `interim` stay: M4-S4's transcript seed (`app/slots/m3-transcript.ts`) and sidebar key (`meeting/recentMeetingsKey.ts`) read them |
 | `src/renderer/src/app/RecentMeetings.tsx`, `meeting/recentMeetingsKey.ts` | M4-S4 (2) → M3-T9 (5, a new input for the re-list key once `useCapture` drops its segments) | - |
+| `src/renderer/src/transcript/LiveTranscript.tsx` | M3-T7 (2) → M3-T9 (5, follows the region's size changes, not only new lines) | - |
 | `src/renderer/src/format.ts` (with `format.test.ts`) | M2-T2 (1, the `offline` case of `describeStream`) → M2-T20a (5, stream wording) → M3-T20 (6, savings on the meter line, the gate spent, `paused` while gated) | `describeStream` has no default case, so whoever adds an `SttStreamState` adds its case in the same commit |
 | `src/main/window.ts` | M2-T12 (3) → M5-T11 (6) | - |
 | `src/renderer/src/styles.css`, `theme/tokens.css` | M4-S2 only. Later tasks never write colours; they use tokens. A task that needs a new token adds it at the end of all three blocks of `tokens.css` (light, system dark, forced dark; `tokens.test.ts` checks they agree) and never renames one. | S2 shipped the union the plans need: `--bg`, `--panel`, `--ink`, `--muted`, `--line`, `--accent`, `--danger`, `--warn`, `--ok`, `--danger-bg`, `--warn-bg`, `--ok-bg`, `--interim-ink`, `--hidden-ink`, `--cited-bg`, `--recording`, `--focus-ring`, `--sidebar-bg`, `--chip-bg`, `--conflict-bg`, plus `--on-accent` (text on a fill), `--accent-ink` and `--danger-ink`. `--accent` and `--danger` are fills; text in those hues reads the `-ink` tokens (in dark, one value cannot be both; `tokens.test.ts` fails a `color:` read from a fill). It keeps the landed `.notice` rule (the stop notice). |
@@ -1231,6 +1232,17 @@ are the hand-offs, wave 3's tasks first:
   `pending_generate` row written at Stop for a meeting then discarded as empty is never cleaned
   up: write it after the discard, or delete it then. On the retry after a 409, the page first gets
   the conflict `error` event, then the new `run` (M4-T18 resets its view on `run`).
+- **M4-T23, M4-T16:** after `cancelNotes` or `cancelChat`, a stream can still end `done`, or
+  `dropped` with cause `cancel_unconfirmed` (`StreamEnd` in `main/notes/LlmStreams.ts`): the run
+  beat the cancel (or the cancel request failed) and may have saved its output. Handle them as any
+  `done` or drop (`store.applyServerNote`, or poll the run), never as `cancelled`, or notes.sqlite
+  keeps an older AI doc than Postgres. The page already got a `cancelled` event; that load
+  corrects it.
+- **M2-T13:** `main/e2eMode.ts` uses the rule `main/native/helperPath.ts` uses for the fake
+  helper, `env.ROGER_E2E === '1' && !app.isPackaged`; keep the two in step. Launch Electron on the
+  `apps/desktop` folder, so that `app.getAppPath()` resolves to it (`loadDevEnv` in `index.ts`
+  assumes the same): with any other app path, neither the dev build nor the fake helper is found
+  (`HelperPathContext.appPath`).
 - **M2-T13 and every QA script:** `make e2e-desktop` now runs `e2e/m3-t7.qa.e2e.ts`,
   `m3-t8.qa.e2e.ts`, `m4-s4.qa.e2e.ts` and `m4-t17.qa.e2e.ts`. The shell is `100vh` and scrolls in
   `.shell-page`, so `qa/driver.ts`'s grow-to-document never shows what is below the fold;
@@ -1280,7 +1292,12 @@ are the hand-offs, wave 3's tasks first:
   `e2e/m3-t8.qa.e2e.ts`. Dropping `useCapture`'s segments breaks `recentMeetingsKey`, which keys
   the sidebar's re-list on the newest line's meeting (its doc says what the key must catch: a
   start and a stop that React renders as one burst); give it another input (section 3 now lists
-  both files as yours).
+  both files as yours). `LiveTranscript` follows only when its lines change (the layout effect on
+  `[following, container, items]` in `transcript/LiveTranscript.tsx`; there is no
+  `ResizeObserver`), so a banner that appears after the last line, such as the stop notice,
+  shrinks the region and cuts that line off (M4-S4's "After Stop" shots show it for
+  `TranscriptView`). While following, follow the region's size changes too, with a test; section
+  3 now lists that file as yours as well.
 - **M3-T17:** step 0 records with `make stt-canary ARGS="--save-wire <dir>"`, which writes
   `<model>.jsonl` (M3-T5's tap is in). Run E (`--no-keyterms`) is priced with the surcharge until
   the Controller's `credentials.ts` fix below.
@@ -1351,6 +1368,12 @@ are the hand-offs, wave 3's tasks first:
     bake-off run E. `bench/run/args.ts`'s `USAGE` still says `draft` writes for "items without a
     reference.txt". Optional, same files: `BenchWireRecord` (`bench/run/adapters.ts`) can become
     an import of `SttWireRecord`, and `bench/run/dataset.ts`'s glob a static import.
+  - `index.ts`, `[slot M2-T4 runtime]` (M2-T3b's not-fixed item): the `new TranscriptUploader`
+    call has no comment saying it must stay before anything that stores a line. The uploader's
+    `launchedAt` (its clock at construction) precedes every line of this run only because of that
+    order, and T14b's settle relies on it (the `BeforeFirstTick` doc in `TranscriptUploader.ts`).
+    The comment above `uploader.start()` still says "T3b's beforeFirstTick": it is the hook T14b
+    sets with `setBeforeFirstTick`.
   - Move `fitShellPage` (`e2e/m3-t8.qa.e2e.ts`) into `qa/driver.ts` (M4-S3's) before M3-T9, M4-T20
     and M5-T13 write their QA.
   - `app/labels.ts`'s `UNTITLED_MEETING` doc is stale (main names meetings "Meeting 6 Oct 2026
@@ -1360,6 +1383,24 @@ are the hand-offs, wave 3's tasks first:
     `CalendarAttendee`, which points at it; the two change together.
   - Publish the QA galleries the builders built but did not publish, or fold them into one per
     wave: M3-T7, M3-T8, M4-S4 and M4-T17 (this session's scratchpad, `qa-out/`).
+  - Optional; no task writes these files again:
+    - Product call (`services/notes.py`, M4-T6): a `running` notes row whose heartbeat died refuses
+      AI-doc `PUT`s (409 "being generated") until the next sweep, and the sweep runs only at
+      startup and inside `llm_runs.claim_run`. If the `PUT` should fail stale runs first, call the
+      sweep (`_fail_stale_runs`, private to `llm_runs.py` today); never copy `STALE_AFTER`.
+    - Parity (`shared/notes.ts`, M4-T13's): the API's `note_doc_problem` also refuses keys that
+      collide, or become `__proto__`, `constructor` or `prototype`, once U+0000 is dropped and lone
+      surrogates become U+FFFD. The desktop's `noteDocProblem` does not, so for those keys only the
+      API is stricter. The editor writes only schema keys, so only a hand-made doc meets it.
+    - `main/stt/keyterms.ts` (M3-T4a's) repeats `VOCABULARY_LIMITS` (as `KEYTERM_LIMITS`) and the
+      control-character check of `shared/vocabulary.ts`; import them (export the check).
+      `shared/vocabulary.test.ts` guards the limits' equality until then.
+    - The snake_case-to-camelCase `Note` mapping exists twice, in `main/notes/LlmStreams.ts`
+      (`toNote`, for `done`) and `main/api/notesClient.ts`; one shared mapper would do.
+      `main/api/streamRequest.ts` repeats `http.ts`'s private `describe()`: export it from
+      `http.ts`.
+    - `docs/api-contract.md`: `MeetingCalendarEvent.provider` (Entities) writes `"google" | "fake"`
+      inline; it can reference the Calendar section's `CalendarProvider`.
 - **Owner (Mac):** run `make test-native-route` once (audible; the first run asks the terminal for
   System Audio Recording, then says to run again) and attach the log to M2's exit check log: that
   `afplay` follows a change of default output, and that a published stacked aggregate can become

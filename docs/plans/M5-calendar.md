@@ -517,7 +517,9 @@ T11 in wave 6; T12 in wave 7; T13 in wave 8.
   `CaptureService.start(request)` with an optional injected `StartRequestEnricher` port, and
   `requestStart(request)` / `takePendingStart()` (a request expires after 60 s); `roger.sqlite`
   migration 5 (after M2-T3's migration 4; 3 is M1's `stt_usage`), `findMeetingIdsByEventIds` in
-  the store; the create payload in `TranscriptUploader.ts` and `ApiClient.createMeeting`. Edits
+  the store; the create payload in `TranscriptUploader.ts` and `ApiClient.createMeeting`, and in
+  `ApiClient.ts` the optional `price_per_hour_usd_without_keyterms` on `SttTokenResponse.stream`
+  (M3-T4b and the bench's `credentials.ts` read it; phase-2 build order, section 10). Edits
   `src/renderer/src/state/useCapture.ts` after M2-T12: `start(request)` as a thin wrapper over the
   existing start (it keeps the landed `followMain` call and the status re-read on focus), and
   taking a pending request on mount. Edits `CaptureService.ts` after M2-T4 and M4-T22, and

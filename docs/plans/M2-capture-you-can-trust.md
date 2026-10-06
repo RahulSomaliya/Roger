@@ -584,7 +584,8 @@ plus one slot block. Every task is TDD: the failing test first,
   every 5 s while recording. A resume calls T4's `capture.start({ resume: { meetingId } })`, which
   reads the meeting's start and saved `stt_usage` row from the store, so the cost record carries
   on instead of restarting at zero; the open allowance starts afresh (D7). Holds are settled by
-  T14b's `beforeFirstTick` (only lines created before the uploader's `launchedAt`).
+  the hook T14b sets with `setBeforeFirstTick` (only lines created before the uploader's
+  `launchedAt`).
 
 If the day runs short, T16, T17b, T18 and T23 land after the first exit-check calls; the core
 set above gates "no lost or doubled text" (the Wi-Fi cut waits for T16).
