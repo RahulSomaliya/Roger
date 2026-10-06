@@ -320,7 +320,10 @@ export class HelperProcess {
       this.spawnRun();
       return;
     }
-    if (run.replaced || run.ended) return;
+    // A run this class already killed (hung, protocol) is ending, and its own restart follows its
+    // 'close', counted. Marking it replaced too sent it down the uncounted path: a real hang went
+    // missing from the count, onRestart and the capture report.
+    if (run.replaced || run.ended || run.killed !== null) return;
     this.options.logger.info('audio helper restart requested', {
       helper: this.options.name,
       run: run.run,

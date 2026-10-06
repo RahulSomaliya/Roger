@@ -485,6 +485,44 @@ describe.concurrent('HelperProcess', () => {
     expect(helper.restarts).toBe(0);
   });
 
+  // M2-T18 restarts the helper at wake. A wake between a hang kill and that run's 'close' must not
+  // turn a real hang into an uncounted replacement that the capture report never hears of.
+  it('still counts a hang when a restart is asked for before the killed run closes', async (context) => {
+    const { helper, seen } = supervise(context, fake(['tap']), {
+      hangKillMs: 500,
+      logger: createLogger({
+        level: 'warn',
+        format: 'json',
+        sink: (line) => {
+          if ((JSON.parse(line) as { message: string }).message !== 'audio helper killed') return;
+          // Runs right after the SIGKILL, before the run's 'close' can arrive.
+          queueMicrotask(() => {
+            helper.restart('the Mac woke up');
+          });
+        },
+      }),
+    });
+    helper.start();
+    await vi.waitFor(() => {
+      expect(seen.frames.length).toBeGreaterThan(0);
+    });
+    helper.writeLine('hang');
+    await vi.waitFor(() => {
+      expect(seen.spawns).toEqual([1, 2]);
+    });
+    expect(seen.restarts).toEqual([
+      {
+        run: 1,
+        cause: 'hung',
+        exitCode: null,
+        signal: 'SIGKILL',
+        detail: 'no output for 500 ms',
+        restarts: 1,
+      },
+    ]);
+    expect(helper.restarts).toBe(1);
+  });
+
   it('logs a listener that throws, and the helper keeps going', async (context) => {
     const lines: string[] = [];
     const helper = new HelperProcess({
