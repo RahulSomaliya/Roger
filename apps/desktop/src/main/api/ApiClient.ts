@@ -1,8 +1,13 @@
 import type { TranscriptSegment } from '../../shared/transcript';
+import { type ApiConnection, type ApiRequest, createApiRequest } from './http';
+
+// Re-exported: the uploader and its tests import ApiError from here.
+export { ApiError } from './http';
 
 /**
- * Typed client for the Roger API (docs/api-contract.md). The desktop speaks camelCase; the wire
- * speaks snake_case; the mapping lives here and nowhere else.
+ * Typed client for the Roger API's meeting and STT token routes (docs/api-contract.md), on the
+ * shared HTTP core in ./http.ts. Other features' routes have their own client files. The desktop
+ * speaks camelCase; the wire speaks snake_case; each client maps its own routes, never a caller.
  */
 
 export interface MeetingDto {
@@ -29,9 +34,9 @@ export interface SttTokenResponse {
     /**
      * USD per hour of one open stream; null when the API knows no price for the model. Optional
      * here although the contract requires it: an API older than the field omits it, and this
-     * response is cast, not validated (request<T>), so it arrives as undefined. Map it with
-     * `?? null` (CaptureService.resolveStt): undefined passes every `=== null` check in the meter
-     * and the status line read "about $NaN".
+     * response is cast, not validated (ApiRequest, http.ts), so it arrives as undefined. Map it
+     * with `?? null` (CaptureService.resolveStt): undefined passes every `=== null` check in the
+     * meter and the status line read "about $NaN".
      */
     price_per_hour_usd?: number | null;
   };
@@ -42,35 +47,11 @@ export interface SegmentsAppendResult {
   duplicates: number;
 }
 
-export class ApiError extends Error {
-  constructor(
-    readonly status: number,
-    readonly code: string,
-    message: string,
-  ) {
-    super(message);
-    this.name = 'ApiError';
-  }
-
-  get isNotFound(): boolean {
-    return this.status === 404;
-  }
-}
-
-export interface ApiClientOptions {
-  baseUrl: string;
-  token: string;
-  fetchImpl?: typeof fetch;
-  timeoutMs?: number;
-}
-
 export class ApiClient {
-  private readonly fetchImpl: typeof fetch;
-  private readonly timeoutMs: number;
+  private readonly request: ApiRequest;
 
-  constructor(private readonly options: ApiClientOptions) {
-    this.fetchImpl = options.fetchImpl ?? globalThis.fetch;
-    this.timeoutMs = options.timeoutMs ?? 10_000;
+  constructor(connection: ApiConnection) {
+    this.request = createApiRequest(connection);
   }
 
   getSttToken(): Promise<SttTokenResponse> {
@@ -97,45 +78,6 @@ export class ApiClient {
     return this.request<MeetingDto>('POST', `/v1/meetings/${encodeURIComponent(meetingId)}/end`, {
       ended_at: endedAt,
     });
-  }
-
-  private async request<T>(method: 'GET' | 'POST', path: string, body?: unknown): Promise<T> {
-    const controller = new AbortController();
-    const timer = setTimeout(() => {
-      controller.abort();
-    }, this.timeoutMs);
-    let response: Response;
-    try {
-      response = await this.fetchImpl(`${this.options.baseUrl}${path}`, {
-        method,
-        headers: {
-          Authorization: `Bearer ${this.options.token}`,
-          Accept: 'application/json',
-          ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
-        },
-        body: body === undefined ? null : JSON.stringify(body),
-        signal: controller.signal,
-      });
-    } catch (error) {
-      const reason = controller.signal.aborted
-        ? `timed out after ${this.timeoutMs} ms`
-        : describe(error);
-      throw new ApiError(0, 'network_error', `${method} ${path} failed: ${reason}`);
-    } finally {
-      clearTimeout(timer);
-    }
-    const text = await response.text();
-    if (!response.ok) throw toApiError(response.status, text, method, path);
-    try {
-      // The contract promises JSON on every 2xx; the caller's type parameter names the shape.
-      return JSON.parse(text) as T;
-    } catch {
-      throw new ApiError(
-        response.status,
-        'invalid_response',
-        `${method} ${path} returned non-JSON`,
-      );
-    }
   }
 }
 
@@ -165,30 +107,4 @@ function segmentToWire(segment: TranscriptSegment): Record<string, unknown> {
             confidence: word.confidence,
           })),
   };
-}
-
-function toApiError(status: number, text: string, method: string, path: string): ApiError {
-  try {
-    const parsed: unknown = JSON.parse(text);
-    if (
-      typeof parsed === 'object' &&
-      parsed !== null &&
-      'error' in parsed &&
-      typeof parsed.error === 'object' &&
-      parsed.error !== null &&
-      'code' in parsed.error &&
-      'message' in parsed.error
-    ) {
-      return new ApiError(status, String(parsed.error.code), String(parsed.error.message));
-    }
-  } catch {
-    // fall through: not the contract envelope
-  }
-  return new ApiError(status, 'http_error', `${method} ${path} returned HTTP ${status}`);
-}
-
-function describe(error: unknown): string {
-  if (error instanceof Error)
-    return error.cause instanceof Error ? error.cause.message : error.message;
-  return String(error);
 }
