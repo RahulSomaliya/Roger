@@ -193,6 +193,30 @@ describe('NoteDocument', () => {
     expect(document.getState().docGeneration).toBe(generation);
   });
 
+  it("never reloads for a doc main replaced with this editor's save while both changes waited", async () => {
+    const { main, document } = open();
+    await main.answerLoad({ user: note({ doc: docSaying('mine'), revisionId: 'rev-0' }) });
+    const generation = document.getState().docGeneration;
+    const saving = document.save(docSaying('mine, typed'));
+    // A 409 lands in main while the save is on its way, then main writes the save over the
+    // server's doc: the save's change comes last, and is the note as main holds it now.
+    main.emit(
+      note({ doc: docSaying('theirs'), conflictCopy: docSaying('mine'), sync: 'conflict' }),
+    );
+    const saved = note({
+      doc: docSaying('mine, typed'),
+      revisionId: 'rev-1',
+      conflictCopy: docSaying('mine'),
+      sync: 'conflict',
+    });
+    main.emit(saved);
+    main.saves.shift()?.resolve(saved);
+    await saving;
+    expect(document.getState()).toEqual(
+      expect.objectContaining({ note: saved, docGeneration: generation, docProblem: null }),
+    );
+  });
+
   it('follows the sync state of its own saves without reloading', async () => {
     const { main, document } = open();
     await main.answerLoad({});

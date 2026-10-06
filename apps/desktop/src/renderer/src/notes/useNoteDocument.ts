@@ -14,7 +14,7 @@ import { noteDocSchemaProblem } from './citationNode';
  * coming back: it moves the sync state, never the editor's content, which may already hold newer
  * typing. Any other doc (a conflict's server doc, "Use mine", a run's AI notes) is one the editor
  * must load, and bumps `docGeneration`. Changes that arrive while a save is on its way wait for
- * its answer, which names its revision.
+ * its answer, which names its revision; then only the newest of them is applied.
  */
 
 export interface NoteDocumentState {
@@ -111,9 +111,13 @@ export class NoteDocument {
     } finally {
       this.savesInFlight -= 1;
       if (this.savesInFlight === 0) {
-        const held = this.held;
+        // Only the newest held change counts: main sends one per stored change, in order, so the
+        // last is the note as main holds it now. Applied one by one, a server doc that main then
+        // wrote this editor's save over would still be loaded, and the next save would store it
+        // over that save.
+        const newest = this.held.at(-1);
         this.held = [];
-        for (const note of held) this.apply(note);
+        if (newest !== undefined) this.apply(newest);
       }
     }
   }
