@@ -687,7 +687,95 @@ Its stream ends with the `error` code `cancelled`. A run of another meeting or w
 
 ### Chat
 
-Not built yet. Owner: M4-T10, which writes its routes here, with their `409`s.
+One thread per meeting: the person's questions and the answers to them. Each answer is written by
+a chat run (`llm_runs.kind` `chat`) from the meeting's transcript, the user's notes and the AI
+notes, and cites the transcript lines it rests on.
+
+```ts
+type ChatRole = "user" | "assistant";
+type ChatMessageStatus = "complete" | "streaming" | "failed";
+
+interface RefCitation {
+  ref: string;         // "L12": the transcript line as the answer cites it
+  segment_id: string;  // that line's segment
+  start_ms: number;    // and its start, so a chip outlives a re-numbered transcript
+}
+
+interface ChatMessage {
+  id: string;                       // a question's id is the desktop's `message_id`
+  role: ChatRole;                   // "user": a question; "assistant": an answer
+  text: string;                     // "" while an answer streams
+  citations: RefCitation[] | null;  // an answer's, each ref once, in the order it first appears
+                                    // in `text`; null for a question
+  reply_to: string | null;          // the question an answer replies to; null for a question
+  run_id: string | null;            // the run that wrote an answer (the latest, when written
+                                    // again); null for a question
+  status: ChatMessageStatus;        // a question is always "complete"
+  created_at: string;               // instant
+}
+```
+
+An answer's `text` cites lines as `[L12]` or `[L12, L15]`. In a stored answer every bracket holds
+only refs that its `citations` list, written out (`[L12, L13, L14]`, never a range): the desktop
+turns each into a chip. Refs to lines the meeting does not hold are taken out, and so are refs to
+the user's note blocks (`[N2]`): they ground an answer but have no line to show.
+
+#### `GET /v1/meetings/{meeting_id}/chat?limit=50`
+
+Response: `200 { "items": ChatMessage[] }`, the latest `limit` messages (1 to 200, default 50),
+oldest first. A question sorts before its answer. No `409`s.
+
+#### `POST /v1/meetings/{meeting_id}/chat`
+
+Asks a question about the meeting. Any meeting, recording or ended.
+
+```json
+{ "message_id": "uuid", "text": "When does the beta ship?" }
+```
+
+- `message_id`: the desktop's id for the question, new for every question.
+- `text`: 1 to 4,000 characters (code points), counted after trimming; spaces alone are a `422`.
+  As in notes docs, U+0000 is dropped and an unpaired surrogate becomes U+FFFD.
+
+Response: `200 text/event-stream`, with a `: ping` comment after every 15 s of silence. Each event's
+`data` is one JSON object:
+
+| Event | Data | When |
+| --- | --- | --- |
+| `run` | `{ run_id, model }` | First, before any text. Both fields are always there. |
+| `delta` | `{ text }` | The answer's next piece, as the model wrote it |
+| `citation` | `RefCitation` | Once per line the answer cites, as soon as its bracket closes. A ref with no `citation` stays text. |
+| `done` | `{ message: ChatMessage }` | Last, once the answer is stored. Its `text` replaces the streamed text. |
+| `error` | `{ code, message }` | Last, when no answer was stored: `llm_provider_error`, `cut_off`, `cancelled` or `internal_error`. The answer is stored `failed`. |
+
+The answer is written in the background: a dropped stream does not stop it, and it is stored when
+it finishes. Read it with the thread, or by sending the same `message_id` again. Cancel it with
+`POST /v1/meetings/{meeting_id}/runs/{run_id}/cancel` (Notes runs and streaming), using the `run`
+event's `run_id`. A chat run takes no meeting lock: an AI-notes save while an answer streams is not
+a `409`, and chat runs beside a notes run.
+
+Re-sends: a `message_id` already stored as a question of this meeting never stores a second
+message, and the `text` sent with it is ignored (matched by id alone, like segment ids).
+
+- Its answer is complete: the stream is that answer's `done` alone, nothing is paid for twice.
+- Its answer is being written: the stream attaches to it, the events so far, then live ones.
+- Its answer failed, or the API process writing it stopped: the same answer (same `id`) is written
+  again by a new run, with a new `run` event.
+
+Before the stream, as the error envelope:
+
+- `404 not_found`: an unknown meeting, or one in another workspace.
+- `409 conflict`, nothing stored or replayed: `message_id` is stored under another meeting or
+  workspace, or is an answer's id. Also when its answer is being written by another API process
+  (a re-send that reached another one; Roger runs one until M6), or when a new question was sent
+  twice at once.
+- `422 validation_error`: the body.
+- `422 meeting_too_long`, nothing stored: the meeting's transcript and notes are over the chat
+  budget, `NOTES_MAX_INPUT_TOKENS` (default 200,000 tokens, estimated as characters / 4; about 10
+  hours of talk). The thread a question carries never counts: it is capped on its own, at the 10
+  latest complete exchanges and 24,000 characters.
+- `502 llm_provider_error`: the model's vendor refused before the stream started. The question is
+  stored and its answer `failed`, so sending the same `message_id` again asks again.
 
 ### Calendar
 
