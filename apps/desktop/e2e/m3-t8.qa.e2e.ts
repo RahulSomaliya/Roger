@@ -82,6 +82,8 @@ const SECTION_URL = servedUrl('../src/renderer/src/settings/VocabularySettings.t
  * wave 5), so the shots show it in the real Settings page with the real shell around it. The
  * entry joins the app's own `slots` object: importing the same URL gives the page's module, not a
  * copy, and SettingsPage reads the slot each time it renders. Before navigating to Settings.
+ * Once M3-T9 has mounted the section, this adds nothing: a second entry would draw it twice, and
+ * with one id React logs a duplicate key, failing every shot's console check.
  *
  * The page code is a string, not a function: Vitest rewrites every `import()` in this file to its
  * own loader (`__vite_ssr_dynamic_import__`), and Playwright would send that rewritten call to the
@@ -93,6 +95,7 @@ async function mountInSettings(page: Page): Promise<void> {
       import(${JSON.stringify(SLOTS_URL)}),
       import(${JSON.stringify(SECTION_URL)}),
     ]);
+    if (slots.settings.some((entry) => entry.component === VocabularySettings)) return;
     slots.settings.push({ id: 'm3-vocabulary', order: 10, component: VocabularySettings });
   })()`);
 }
