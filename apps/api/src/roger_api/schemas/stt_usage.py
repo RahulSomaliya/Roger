@@ -6,6 +6,7 @@ everything here refuses only what no Mac ever sends (a negative count, a blank n
 a Mac of another release could hold.
 """
 
+import math
 from typing import Annotated, Self
 from uuid import UUID
 
@@ -14,9 +15,26 @@ from pydantic import BaseModel, BeforeValidator, Field, StringConstraints
 from roger_api.db.models_stt_usage import MAX_USAGE_LABEL_LENGTH, MeetingSttUsage
 from roger_api.schemas.common import UtcDatetime
 
-# Postgres `integer` and `bigint`: a larger number would fail the insert with a 500.
+
+def _nearest_ms(value: object) -> object:
+    # The desktop turns PCM bytes into ms in floating point (`pcmBytesToMs` in shared/pcm.ts) and
+    # never rounds: whole chunks sum to 16100.000000000002, and its SQLite row keeps that REAL.
+    # Refused, the row would be rejected for good. Only a finite fraction at or above 0 is rounded;
+    # anything else reaches the int check and is refused there (-0.25 never rounds up to 0).
+    if isinstance(value, float) and math.isfinite(value) and value >= 0:
+        return round(value)
+    return value
+
+
+# Postgres `integer` and `bigint`: a larger number would fail the insert with a 500. Counts are
+# whole: the desktop only ever adds 1 to one.
 UsageCount = Annotated[int, Field(ge=0, le=2_147_483_647)]
-UsageMs = Annotated[int, Field(ge=0, le=9_223_372_036_854_775_807)]
+UsageMs = Annotated[
+    int,
+    Field(ge=0, le=9_223_372_036_854_775_807),
+    # After the bounds, so it runs before them: they check the rounded number.
+    BeforeValidator(_nearest_ms),
+]
 # No Mac meters a million dollars of speech-to-text for one meeting: a day-long call at the
 # dearest list price in stt_vendors.py, keyterms included, costs under $30. The cap keeps every
 # summary figure a finite float. The saving multiplies a cost by up to 9.2e18 (gated_ms over

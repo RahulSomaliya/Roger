@@ -245,6 +245,32 @@ async def test_gated_ms_reads_as_zero_when_it_is_missing(client: httpx.AsyncClie
     assert stored["by_source"] == {"mic": source_usage(), "system": source_usage()}
 
 
+async def test_a_fraction_of_a_ms_is_rounded_to_the_nearest_ms(client: httpx.AsyncClient) -> None:
+    # The desktop turns PCM bytes into ms in floating point (`pcmBytesToMs`), so 16.1 s of whole
+    # chunks reads 16100.000000000002, and its local row keeps the float. Refused, the row would be
+    # marked rejected and never sent again (M3-T19b).
+    mic = source_usage(audio_sent_ms=16100.000000000002, connected_ms=1_799_999.75)
+    system = source_usage(audio_sent_ms=4003.9999999999995, gated_ms=0.25)
+    body = usage_body(
+        connected_ms=3_599_999.75,
+        audio_sent_ms=20104.000000000002,
+        gated_ms=0.25,
+        by_source={"mic": mic, "system": system},
+    )
+
+    stored = await put_usage(client, uuid4(), body)
+
+    assert (stored["connected_ms"], stored["audio_sent_ms"], stored["gated_ms"]) == (
+        HOUR_MS,
+        20104,
+        0,
+    )
+    assert stored["by_source"] == {
+        "mic": source_usage(audio_sent_ms=16100, connected_ms=1_800_000),
+        "system": source_usage(audio_sent_ms=4004, gated_ms=0),
+    }
+
+
 async def test_a_missing_stop_reason_reads_as_null(client: httpx.AsyncClient) -> None:
     # A recording still running has no stop reason yet.
     stored = await put_usage(client, uuid4(), without(usage_body(), "stop_reason"))
@@ -319,7 +345,22 @@ def _bad_bodies() -> list[Any]:
         pytest.param(
             usage_body(connected_ms=INT8_MAX + 1), "body.connected_ms", id="duration-over-int8"
         ),
+        pytest.param(
+            usage_body(sessions_opened=1.5), "body.sessions_opened", id="count-with-a-fraction"
+        ),
         pytest.param(usage_body(gated_ms=-1), "body.gated_ms", id="negative-gated-time"),
+        # A time with a fraction is rounded, but a negative one is refused, never rounded up to 0.
+        pytest.param(
+            usage_body(audio_sent_ms=-0.25), "body.audio_sent_ms", id="negative-fraction-of-a-ms"
+        ),
+        pytest.param(
+            usage_body(connected_ms=float(INT8_MAX + 1)),
+            "body.connected_ms",
+            id="time-over-int8-as-a-float",
+        ),
+        pytest.param(
+            usage_body(connected_ms=float("inf")), "body.connected_ms", id="infinite-time"
+        ),
         pytest.param(
             usage_body(estimated_cost_usd=-0.01), "body.estimated_cost_usd", id="negative-cost"
         ),

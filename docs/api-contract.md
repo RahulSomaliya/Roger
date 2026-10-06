@@ -324,7 +324,7 @@ price its token named (see `POST /v1/stt/token`).
 interface SttSourceUsage {
   sessions_opened: number;           // sockets that completed the handshake; each may be billed
   connected_ms: number;              // open time summed over sessions: what the vendor bills
-  audio_sent_ms: number;             // audio sent, in ms of PCM
+  audio_sent_ms: number;             // audio sent, in ms of PCM; a fraction is rounded (PUT below)
   dropped_chunks: number;            // chunks dropped because their stream was not open
   gated_ms: number;                  // stream time the silence gate kept closed (M3-T20)
   estimated_cost_usd: number | null; // null when a session opened with no known price, never 0
@@ -363,15 +363,19 @@ the row was created or replaced.
   `stop_reason` may also be `null` or left out. U+0000 is dropped from both.
 - `gated_ms`, at the top and in each source, reads as `0` when left out. Every other field is
   required: `estimated_cost_usd` is `null` when the price is unknown, never left out.
+- Counts (`sessions_opened`, `dropped_chunks`) are whole numbers. A time (every `*_ms` field) may
+  carry a fraction, which is rounded to the nearest ms before the rules below check it and the
+  row stores it: the desktop computes audio time from PCM bytes in floating point, so whole
+  chunks can sum to `16100.000000000002`. The response carries the rounded times.
 
 Breaking a rule is a `422 validation_error` whose message names the field (`body.stop_reason`,
-`body.by_source.system.connected_ms`), and nothing is stored: a negative number, a count over
-2147483647 or a time over 9223372036854775807 ms, a cost that is not a finite number or is over
-1000000 USD (a day-long call at today's dearest list price costs under 30), a source missing from
-`by_source`, a blank or over-long `provider` or `stop_reason`. The desktop treats a
-`422` as a rejected row and sends it again only after the meeting's usage changes (M3-T19b), so
-nothing a Mac of another release could hold is refused. There is no `409`: a `PUT` replaces
-whatever is stored.
+`body.by_source.system.connected_ms`), and nothing is stored: a negative number, a count with a
+fraction, a count over 2147483647 or a time over 9223372036854775807 ms, a time or cost that is
+not a finite number, a cost over 1000000 USD (a day-long call at today's dearest list price costs
+under 30), a source missing from `by_source`, a blank or over-long `provider` or `stop_reason`.
+The desktop treats a `422` as a rejected row and sends it again only after the meeting's usage
+changes (M3-T19b), so nothing a Mac of another release could hold is refused. There is no `409`: a
+`PUT` replaces whatever is stored.
 
 #### `GET /v1/stt-usage/summary?since=<instant>`
 
