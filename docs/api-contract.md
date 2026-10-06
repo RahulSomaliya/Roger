@@ -33,7 +33,7 @@ same change as the code on both sides. Base URL in development: `http://127.0.0.
   | 422 | `validation_error` | Body or query failed validation; `message` lists the fields |
   | 422 | `empty_meeting` | Notes were asked for a meeting with no transcript lines and no user notes |
   | 422 | `meeting_too_long` | The meeting is over the chat model's input budget (about 10 hours of talk) |
-  | 424 | `calendar_reconnect_required` | Google refused the stored refresh token (`invalid_grant`), or the user did not grant calendar access. The message says what to do. |
+  | 424 | `calendar_reconnect_required` | Only connecting the calendar again helps: Google refused the stored refresh token or a used or expired sign-in code (`invalid_grant`), the user did not grant calendar access, or the API can no longer use the stored grant (`CALENDAR_TOKEN_KEY` changed). Also when `CALENDAR_PROVIDER` changed since the connect, where setting it back helps too. The message says what to do. |
   | 500 | `internal_error` | Unexpected; details only in server logs |
   | 502 | `stt_provider_error` | The speech-to-text vendor refused or failed a token request |
   | 502 | `llm_provider_error` | The notes model's vendor refused or failed before the stream started |
@@ -410,7 +410,146 @@ Not built yet. Owner: M4-T10, which writes its routes here, with their `409`s.
 
 ### Calendar
 
-Not built yet. Owner: M5-T3, which writes its routes here, with their `409`s.
+Google Calendar, read only: the primary calendar's events for the desktop's "Today" list and its
+prompts (M5). The API signs in to Google for the desktop and keeps the refresh token, encrypted
+(`calendar_connections`, Database below); the desktop never holds a Google token. Events are not
+stored: every `GET /v1/calendar/events` asks Google live. One connection per workspace (per user
+from M6). `CALENDAR_PROVIDER=fake`, the default, answers every route here with no Google client:
+its authorization URL is the desktop's own redirect with `code=fake`, and its events are a script
+anchored to the API's start time.
+
+Sign-in: the desktop makes a PKCE verifier, its S256 challenge and a state, and listens on
+`http://127.0.0.1:<random port>/oauth/callback`. It asks for the authorization URL, opens it in the
+default browser, takes `code` and `state` from the redirect (checking the state itself), and sends
+the code and the verifier to the connection route, which redeems them at Google.
+
+```ts
+type CalendarProvider = "google" | "fake";
+type ResponseStatus = "accepted" | "tentative" | "declined" | "needs_action";
+
+interface CalendarAttendee {
+  email: string;
+  display_name: string | null;
+  response_status: ResponseStatus;
+  is_self: boolean;
+  is_organizer: boolean;          // rooms and other resources are never listed
+}
+
+interface CalendarEvent {
+  provider: CalendarProvider;
+  id: string;                      // instance id for a recurring event
+  ical_uid: string | null;
+  recurring_event_id: string | null;
+  title: string;                   // "" when the invite has none
+  status: "confirmed" | "tentative"; // cancelled events are never returned
+  all_day: boolean;
+  start: string | null;            // instant; null when all_day
+  end: string | null;
+  start_date: string | null;       // "2026-10-06" when all_day; never turned into midnight UTC
+  end_date: string | null;         // exclusive
+  self_response: ResponseStatus | "organizer" | "unknown";
+  attendees: CalendarAttendee[];   // invite order, at most 100
+  attendees_omitted: boolean;      // Google left some out (privacy or more than 100)
+  video_link: string | null;       // Meet, Zoom or Teams join links only
+  video_link_source: "conference" | "location" | "description" | null;
+  html_link: string | null;
+}
+
+interface CalendarConnection {
+  provider: CalendarProvider;
+  account_email: string;
+  status: "active" | "reconnect_required";
+  connected_at: string;            // instant
+  expires_hint: string | null;     // connected_at + 7 d, see below
+  last_error: string | null;       // the 424's message while reconnect_required
+}
+```
+
+`video_link` is the first join link someone typed into the location, then the description; only
+without one does it come from the conference data Google adds by itself (`hangoutLink`, then video
+entry points). So `conference` means nothing was typed: many Workspace calendars add a Meet link to
+every new event, a solo block included.
+
+`expires_hint` is `connected_at` + 7 days for a Google connection while the consent screen is
+External in publishing status Testing (`GOOGLE_OAUTH_AUDIENCE=external_testing`, the default),
+because Google expires such refresh tokens after 7 days; `null` for `external_production`,
+`internal` and the fake provider.
+
+`424 calendar_reconnect_required` is final until the user connects again. On the events route it
+also sets the connection's `status` to `reconnect_required` with the message in `last_error`, and
+later event requests answer the same `424` without asking Google. One events `424` stores nothing:
+`CALENDAR_PROVIDER` changed since the connect. The grant is still good, so the connection stays
+`active` and setting `CALENDAR_PROVIDER` back serves events again. No route here answers `409`.
+
+#### `POST /v1/calendar/google/authorization`
+
+Request:
+
+```json
+{
+  "redirect_uri": "http://127.0.0.1:53682/oauth/callback",
+  "code_challenge": "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM",
+  "state": "st-8f2c1d9e0a7b"
+}
+```
+
+- `redirect_uri` is exactly `http://127.0.0.1:<port>/<path>`: any port from 1 to 65535 written
+  without a leading zero, printable ASCII only, no fragment, no backslash, no user info. Never
+  `localhost` or another loopback address.
+- `code_challenge` is the S256 of the verifier: base64url without padding, 43 characters.
+- `state`: 1 to 512 of `A-Z a-z 0-9 - . _ ~`.
+
+Response: `200 {"authorization_url": "https://accounts.google.com/o/oauth2/v2/auth?..."}` with the
+client id, the redirect, the scopes `openid email https://www.googleapis.com/auth/calendar.events.readonly`,
+the challenge (`S256`), the state, `access_type=offline`, `prompt=consent` and
+`include_granted_scopes=true`. Building it calls nobody.
+
+#### `POST /v1/calendar/google/connection`
+
+Request:
+
+```json
+{
+  "code": "4/0AVG7fiQ...",
+  "code_verifier": "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk",
+  "redirect_uri": "http://127.0.0.1:53682/oauth/callback"
+}
+```
+
+`code`: 1 to 2048 printable ASCII characters. `code_verifier`: 43 to 128 of `A-Z a-z 0-9 - . _ ~`
+(RFC 7636). `redirect_uri`: the same value the authorization used, under the same rule. A `422`
+names the field, never its value.
+
+Response: `201 CalendarConnection`, `status: "active"`. It replaces the workspace's connection if it
+had one; the replaced grant is not revoked at Google. `424` when Google refuses the code (used or
+expired) or the user did not grant calendar access (the message says to connect again and tick
+"View events on all your calendars"); `502` when Google fails. Nothing is stored on an error.
+
+#### `GET /v1/calendar/connection`
+
+Response: `200 {"connection": CalendarConnection}`, or `{"connection": null}` before any connect
+and after a disconnect.
+
+#### `DELETE /v1/calendar/connection`
+
+`204`, no body. Deletes the connection, then revokes its grant at Google. A revoke that fails is
+logged (`calendar_revoke_failed`) and the connection stays deleted. Repeatable: `204` with no
+connection.
+
+#### `GET /v1/calendar/events?from=<instant>&to=<instant>`
+
+Both instants carry an offset (a time without one is a `422`), `from` is before `to`, and the
+window is at most 7 days; otherwise `422 validation_error`. The desktop asks for now - 36 h to
+now + 36 h.
+
+Response: `200 {"items": CalendarEvent[], "fetched_at": "<instant>"}`: the primary calendar's
+events that end after `from` and start before `to`, ordered by start (all-day events by date, as
+Google orders them), recurring events expanded into instances. Focus time, out of office, working
+location and birthdays are not listed. `fetched_at` is when the API had Google's answer.
+
+`404` with no connection; `424` (above); `502` when Google fails, with the connection's status
+unchanged. The Google access token is kept in the API's memory until a minute before it expires;
+when Google refuses it, the API refreshes once and retries once, and a second refusal is a `502`.
 
 ## MCP
 

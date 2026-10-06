@@ -100,6 +100,24 @@ Two vendor rules to know before testing (read 2026-10-06):
   although nothing leaked. The desktop's own limiter (4 opens a minute) refuses it first and says
   when to try.
 
+## Calendar
+
+The `/v1/calendar/*` routes sign in to Google Calendar for the desktop and list the primary
+calendar's events (contract: "Calendar"). The API keeps the Google refresh token, encrypted in
+Postgres with pgcrypto under `CALENDAR_TOKEN_KEY`; the desktop never sees a Google token.
+`CALENDAR_PROVIDER=fake`, the default, needs no Google client: sign-in completes at once and the
+events are a script anchored to the API's start time (restart for a fresh "call in 2 minutes"), or
+the `events.list` JSON in `FAKE_CALENDAR_FILE`.
+
+For real calendars, create the Google OAuth client first:
+[`docs/plans/M5-calendar.md`, "Owner setup: Google Cloud"](../../docs/plans/M5-calendar.md#owner-setup-google-cloud-about-10-minutes)
+(about 10 minutes). Then set `CALENDAR_PROVIDER=google`, `GOOGLE_OAUTH_CLIENT_ID`,
+`GOOGLE_OAUTH_CLIENT_SECRET` and `CALENDAR_TOKEN_KEY` (`openssl rand -hex 32`) in `.env`, as
+`.env.example` describes. Keep the key: with another key the stored grant is unreadable and the
+calendar must be connected again. `GOOGLE_OAUTH_AUDIENCE` stays `external_testing` until Google has
+verified the app: Google then expires each connection after 7 days, and the API reports when
+(`expires_hint`).
+
 ## Errors
 
 Every error uses the envelope from the contract, `{"error": {"code": "...", "message": "..."}}`,
