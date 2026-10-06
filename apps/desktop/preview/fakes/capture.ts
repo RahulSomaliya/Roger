@@ -1,4 +1,9 @@
-import { type CaptureStatus, idleCaptureStatus } from '../../src/shared/capture';
+import {
+  type CaptureReport,
+  type CaptureStatus,
+  idleCaptureStatus,
+  type TranscriptSegmentChange,
+} from '../../src/shared/capture';
 import { captureChannels, type CaptureApi } from '../../src/shared/ipc/capture';
 import type { FakeHub } from './hub';
 
@@ -8,6 +13,12 @@ import type { FakeHub } from './hub';
  * (`paused`, `retrying`), `streamMessages`, `meter` and `notice` included, and any field added
  * there later. A status a scenario sends on CaptureStatusChanged becomes the one
  * getCaptureStatus answers, as it would be in main.
+ *
+ * Capture reports have no event of their own, so a scenario describes a meeting's report by
+ * emitting it on the CaptureGetReport channel (`hub.emit(IpcChannel.CaptureGetReport, report)`):
+ * it becomes that meeting's answer, and a re-run or a delete changes it as main would. A meeting
+ * no scenario described has an empty report. A line a scenario hides or trims (an event on
+ * TranscriptSegmentChanged) can be unhidden, which sends the `unhidden` event main sends.
  */
 export function createCaptureFake(hub: FakeHub): CaptureApi {
   let status = idleCaptureStatus({
@@ -24,6 +35,24 @@ export function createCaptureFake(hub: FakeHub): CaptureApi {
     hub.emit(captureChannels.CaptureStatusChanged, next);
     return next;
   };
+
+  const reports = new Map<string, CaptureReport>();
+  hub.on(captureChannels.CaptureGetReport, (report: CaptureReport) => {
+    reports.set(report.meetingId, report);
+  });
+  const reportOf = (meetingId: string): CaptureReport =>
+    reports.get(meetingId) ?? emptyReport(meetingId);
+  const saveReport = (report: CaptureReport): CaptureReport => {
+    reports.set(report.meetingId, report);
+    return report;
+  };
+
+  /** Lines hidden or trimmed and not unhidden since, by segment id. */
+  const changed = new Map<string, TranscriptSegmentChange>();
+  hub.on(captureChannels.TranscriptSegmentChanged, (change: TranscriptSegmentChange) => {
+    if (change.change === 'unhidden') changed.delete(change.segmentId);
+    else changed.set(change.segmentId, change);
+  });
 
   return {
     startCapture: () =>
@@ -51,5 +80,58 @@ export function createCaptureFake(hub: FakeHub): CaptureApi {
     onCaptureStatus: (listener) => hub.on(captureChannels.CaptureStatusChanged, listener),
     onTranscriptSegment: (listener) => hub.on(captureChannels.TranscriptSegment, listener),
     onTranscriptInterim: (listener) => hub.on(captureChannels.TranscriptInterim, listener),
+    onTranscriptSegmentChanged: (listener) =>
+      hub.on(captureChannels.TranscriptSegmentChanged, listener),
+    getCaptureReport: ({ meetingId }) =>
+      hub.request(captureChannels.CaptureGetReport, () => reportOf(meetingId)),
+    // Every open gap comes back, as if its audio was kept and the vendor heard it.
+    rerunGaps: ({ meetingId }) =>
+      hub.request(captureChannels.CaptureRerunGaps, () => {
+        const report = reportOf(meetingId);
+        const now = new Date().toISOString();
+        return saveReport({
+          ...report,
+          gaps: report.gaps.map((gap) => ({
+            ...gap,
+            recoveredAt: gap.recoveredAt ?? now,
+            recoverError: null,
+          })),
+          backup: { ...report.backup, keptForRerun: false },
+        });
+      }),
+    deleteMeetingAudio: ({ meetingId }) =>
+      hub.request(captureChannels.AudioDeleteMeeting, () =>
+        saveReport({
+          ...reportOf(meetingId),
+          backup: {
+            state: 'deleted',
+            bytes: 0,
+            keepUntil: null,
+            keptForRerun: false,
+            message: null,
+          },
+        }),
+      ),
+    unhideSegment: ({ segmentId }) =>
+      hub.request(captureChannels.TranscriptUnhideSegment, () => {
+        const change = changed.get(segmentId);
+        if (change === undefined) throw new Error(`no hidden line ${segmentId}`);
+        hub.emit(captureChannels.TranscriptSegmentChanged, {
+          ...change,
+          change: 'unhidden',
+          echoOf: null,
+        } satisfies TranscriptSegmentChange);
+      }),
+  };
+}
+
+function emptyReport(meetingId: string): CaptureReport {
+  return {
+    meetingId,
+    stopReason: null,
+    gaps: [],
+    events: [],
+    echo: { hidden: 0, trimmed: 0, held: 0 },
+    backup: { state: 'off', bytes: 0, keepUntil: null, keptForRerun: false, message: null },
   };
 }
