@@ -84,8 +84,10 @@ class LlmRun(Base):
     user_notes_version: Mapped[int | None] = mapped_column(Integer)
     ai_base_version: Mapped[int | None] = mapped_column(Integer)
     # The prompt's short refs (`L12`, `N3`) to what they stand for, so every citation the model
-    # writes is checked against exactly the sources it was shown.
-    ref_map: Mapped[dict[str, Any]] = mapped_column(JSONB)
+    # writes is checked against exactly the sources it was shown. `none_as_null` on a NOT NULL
+    # column too: plain JSONB writes a Python None as the JSON literal `null`, which NOT NULL lets
+    # through, and the 'required' map reads back as None. Here the insert fails instead.
+    ref_map: Mapped[dict[str, Any]] = mapped_column(JSONB(none_as_null=True))
     output_text: Mapped[str | None] = mapped_column(Text)
     # Python None is stored as SQL NULL, not as the JSON literal `null` (`IS NULL` misses that).
     output_doc: Mapped[dict[str, Any] | None] = mapped_column(JSONB(none_as_null=True))
@@ -129,7 +131,8 @@ class MeetingNote(Base):
     workspace_id: Mapped[UUID] = mapped_column(ForeignKey("workspaces.id"))
     meeting_id: Mapped[UUID] = mapped_column(ForeignKey("meetings.id", ondelete="CASCADE"))
     kind: Mapped[NoteKind] = mapped_column(Text)
-    doc: Mapped[dict[str, Any]] = mapped_column(JSONB)
+    # NOT NULL, and `none_as_null` so a None doc fails the insert (see `LlmRun.ref_map`).
+    doc: Mapped[dict[str, Any]] = mapped_column(JSONB(none_as_null=True))
     version: Mapped[int] = mapped_column(Integer)
     # The revision of the write that made this version: the same id sent again is a re-send.
     last_revision_id: Mapped[UUID]

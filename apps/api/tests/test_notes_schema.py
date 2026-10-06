@@ -273,3 +273,13 @@ async def test_none_is_stored_as_sql_null_not_json_null(database: Database) -> N
             text("SELECT count(*) FROM chat_messages WHERE citations IS NULL")
         )
     assert (runs, messages) == (1, 1)
+
+
+async def test_a_required_json_column_refuses_none(database: Database) -> None:
+    """A note's doc and a run's ref_map are NOT NULL. Without `none_as_null` a Python None is
+    written as the JSON literal `null`, which passes NOT NULL, so a bad caller would store a
+    'required' value that reads back as None instead of failing at the insert."""
+    meeting = await add_meeting(database)
+
+    await assert_refused(database, note(meeting, doc=None), 'null value in column "doc"')
+    await assert_refused(database, run(meeting, ref_map=None), 'null value in column "ref_map"')
