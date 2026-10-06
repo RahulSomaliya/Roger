@@ -1,0 +1,21 @@
+/*
+ * The lines a citation chip revealed: transcriptNavigator.ts marks them `data-cited` for 2 s.
+ * Colours come only from the theme tokens (theme/tokens.css, light and dark);
+ * theme/noLiteralColours.test.ts fails on a literal colour.
+ *
+ * The mark never changes a line's size: the panel turns scroll anchoring off (transcript.css), so
+ * a line that grew would push the lines below it while the reader looks for the cited one. The
+ * tint reaches 6 px into the log's 12 px side padding for room beside the words, and the negative
+ * margin gives back what the padding takes: the words keep their place and wrap the same.
+ *
+ * No transition or animation, in or out: M4-T20's browser check waits for document.getAnimations()
+ * to be empty and then expects the line to carry `data-cited`, so a fade as long as the mark would
+ * outlast it, and the shot would catch the tint mid-fade.
+ */
+
+.live-transcript-lines [data-cited] {
+  margin-inline: -6px;
+  padding-inline: 6px;
+  border-radius: 6px;
+  background: var(--cited-bg);
+}
