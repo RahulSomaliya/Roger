@@ -90,7 +90,10 @@ export class SttConnection implements SttStream {
 
   constructor(options: SttConnectionOptions) {
     this.protocol = options.protocol;
-    this.logger = options.logger.child({ stream: options.stream.label });
+    this.logger = options.logger.child({
+      stream: options.stream.label,
+      model: options.stream.settings.model,
+    });
     this.clock = options.clock;
     this.sampleRate = options.stream.settings.sampleRate;
     this.pricePerHourUsd = options.stream.settings.pricePerHourUsd;

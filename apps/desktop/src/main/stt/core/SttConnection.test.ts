@@ -382,6 +382,8 @@ describe('SttConnection', () => {
     expect(connection.usage()).toEqual({ connectedMs: 60_000, audioSentMs: 300, droppedChunks: 0 });
     const closedLine = lines.find((line) => line.message === 'stt stream closed');
     expect(closedLine?.fields).toMatchObject({ connectedMs: 60_000, audioSentMs: 300 });
+    const openLine = lines.find((line) => line.message === 'stt stream open');
+    expect(openLine?.fields).toMatchObject({ stream: 'mic', model: 'toy-1' });
   });
 
   it('logs what the closed stream cost at the price the API named', async () => {
