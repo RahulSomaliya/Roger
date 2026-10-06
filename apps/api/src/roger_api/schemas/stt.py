@@ -20,11 +20,20 @@ class SttStreamSettings(BaseModel):
     # without knowing vendor prices. It includes the vendor's keyterm surcharge when `keyterms` is
     # not empty. None when no price is known for the model.
     price_per_hour_usd: float | None
+    # USD per hour of one stream of the same model opened with no keyterms: the base price, never
+    # the surcharge, and equal to `price_per_hour_usd` when `keyterms` is empty. The vendor bills a
+    # stream by what it was opened with, so a stream opened with `keyterms: []` from a token that
+    # carried a list (CaptureSession's reopen after the vendor rejected the list, the bench's
+    # `--no-keyterms` run) is metered at this price. At `price_per_hour_usd` it would over-count,
+    # and the bench would price a run without the list the same as one with it. None when no base
+    # price is known.
+    price_per_hour_usd_without_keyterms: float | None
 
     @classmethod
     def from_settings(cls, settings: Settings, *, keyterms: Sequence[str] = ()) -> Self:
         """The stream of the `STT_PROVIDER` preset for a workspace whose jargon list is `keyterms`:
-        its model, and that model's price with the keyterm surcharge when the list is not empty."""
+        its model, that model's price with the keyterm surcharge when the list is not empty, and
+        its price without keyterms."""
         return cls(
             model=settings.stt_stream_model,
             language=settings.stt_language,
@@ -32,6 +41,7 @@ class SttStreamSettings(BaseModel):
             encoding=settings.stt_encoding,
             keyterms=list(keyterms),
             price_per_hour_usd=_price_per_hour_usd(settings, with_keyterms=bool(keyterms)),
+            price_per_hour_usd_without_keyterms=_price_per_hour_usd(settings, with_keyterms=False),
         )
 
 

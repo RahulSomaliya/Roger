@@ -48,6 +48,7 @@ STREAM = {
     "encoding": "linear16",
     "keyterms": [],
     "price_per_hour_usd": 0.0,
+    "price_per_hour_usd_without_keyterms": 0.0,
 }
 
 type Handler = Callable[[httpx.Request], httpx.Response]
@@ -170,6 +171,7 @@ def test_stream_settings_come_from_config(database_url: str) -> None:
         "model": "universal-3-6-pro",
         "sample_rate": 48000,
         "price_per_hour_usd": 0.45,
+        "price_per_hour_usd_without_keyterms": 0.45,
     }
 
 
@@ -197,6 +199,7 @@ def test_unknown_stream_price_is_null(database_url: str, monkeypatch: pytest.Mon
         **STREAM,
         "model": "nova-2",
         "price_per_hour_usd": None,
+        "price_per_hour_usd_without_keyterms": None,
     }
 
 
@@ -359,7 +362,12 @@ async def test_assemblyai_token_through_the_api(
         "expires_in": 30,
         # Our encoding name: the desktop adapter maps linear16 to AssemblyAI's pcm_s16le.
         # The price is per hour of one open stream, silent or not; a meeting opens two.
-        "stream": {**STREAM, "model": "universal-streaming-english", "price_per_hour_usd": 0.15},
+        "stream": {
+            **STREAM,
+            "model": "universal-streaming-english",
+            "price_per_hour_usd": 0.15,
+            "price_per_hour_usd_without_keyterms": 0.15,
+        },
     }
     assert ASSEMBLYAI_KEY not in response.text
 
@@ -501,11 +509,32 @@ def test_keyterm_surcharge_only_with_a_list(
     assert price([f"term{index}" for index in range(100)]) == with_list
 
 
+@pytest.mark.parametrize(
+    ("preset", "without_list"), [(preset, without_list) for preset, without_list, _ in SURCHARGES]
+)
+def test_price_without_keyterms_never_carries_the_surcharge(
+    database_url: str, preset: str, without_list: float
+) -> None:
+    # The vendor bills a stream by what it was opened with. A stream opened with `keyterms: []`
+    # from a token that carried a list (a reopen after the vendor rejected the list, the bench's
+    # --no-keyterms run) pays no surcharge: metered at `price_per_hour_usd` it would over-count,
+    # and the bench would price a run without the list the same as one with it.
+    settings = make_settings(database_url, stt_provider=preset, **VENDOR_KEYS)
+
+    for keyterms in ([], ["Linkt"], [f"term{index}" for index in range(100)]):
+        stream = SttStreamSettings.from_settings(settings, keyterms=keyterms)
+        assert stream.price_per_hour_usd_without_keyterms == without_list, keyterms
+
+
 async def test_token_price_includes_the_surcharge_with_a_list(
     assemblyai_client: Callable[[Handler], httpx.AsyncClient],
 ) -> None:
     client = assemblyai_client(temporary_token)
-    universal_streaming = {**STREAM, "model": "universal-streaming-english"}
+    universal_streaming = {
+        **STREAM,
+        "model": "universal-streaming-english",
+        "price_per_hour_usd_without_keyterms": 0.15,
+    }
 
     assert await token_stream(client) == {**universal_streaming, "price_per_hour_usd": 0.15}
 
@@ -531,6 +560,7 @@ def test_keyterm_surcharge_is_added_to_the_price_override(database_url: str) -> 
     stream = SttStreamSettings.from_settings(settings, keyterms=["Linkt"])
 
     assert stream.price_per_hour_usd == 0.426
+    assert stream.price_per_hour_usd_without_keyterms == 0.348
 
 
 def test_unknown_price_stays_null_with_a_list(
@@ -543,21 +573,28 @@ def test_unknown_price_stays_null_with_a_list(
     )
     settings = make_settings(database_url, stt_provider="deepgram", deepgram_api_key=DEEPGRAM_KEY)
 
-    assert SttStreamSettings.from_settings(settings, keyterms=["Linkt"]).price_per_hour_usd is None
+    stream = SttStreamSettings.from_settings(settings, keyterms=["Linkt"])
+
+    assert stream.price_per_hour_usd is None
+    assert stream.price_per_hour_usd_without_keyterms is None
 
 
 def test_unknown_keyterm_surcharge_makes_the_price_null(
     database_url: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # The base price alone would under-count every meeting with a list; null says "unknown".
+    # A stream opened without the list pays no surcharge, so its price is still known.
     no_surcharge = dataclasses.replace(STT_VENDORS["deepgram"], keyterm_surcharge_per_hour_usd={})
     monkeypatch.setattr(
         config, "STT_VENDORS", MappingProxyType({**STT_VENDORS, "deepgram": no_surcharge})
     )
     settings = make_settings(database_url, stt_provider="deepgram", deepgram_api_key=DEEPGRAM_KEY)
 
+    stream = SttStreamSettings.from_settings(settings, keyterms=["Linkt"])
+
     assert SttStreamSettings.from_settings(settings).price_per_hour_usd == 0.462
-    assert SttStreamSettings.from_settings(settings, keyterms=["Linkt"]).price_per_hour_usd is None
+    assert stream.price_per_hour_usd is None
+    assert stream.price_per_hour_usd_without_keyterms == 0.462
 
 
 def test_every_preset_model_has_a_keyterm_surcharge() -> None:

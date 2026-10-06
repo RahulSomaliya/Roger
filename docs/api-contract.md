@@ -167,7 +167,7 @@ model is one config line on the API: `STT_PROVIDER` names a preset, a vendor and
 sides keep a vendor registry with the same provider ids (`STT_VENDORS` in `stt_vendors.py`,
 `apps/desktop/src/main/stt/registry.ts`); the desktop never sees presets.
 
-| `STT_PROVIDER` (preset) | `provider` | `stream.model` | `stream.price_per_hour_usd`, no jargon list | With a jargon list |
+| `STT_PROVIDER` (preset) | `provider` | `stream.model` | `stream.price_per_hour_usd_without_keyterms`, and `price_per_hour_usd` with no jargon list | `stream.price_per_hour_usd` with a jargon list |
 | --- | --- | --- | --- | --- |
 | `assemblyai` (Roger's vendor since 2026-10-06) | `assemblyai` | `universal-streaming-english` | `0.15` | `0.19` |
 | `assemblyai-pro` | `assemblyai` | `universal-3-6-pro` | `0.45` | `0.45` (keyterms included) |
@@ -193,7 +193,8 @@ Response:
     "sample_rate": 16000,
     "encoding": "linear16",
     "keyterms": ["Linkt", "Roger"],
-    "price_per_hour_usd": 0.19
+    "price_per_hour_usd": 0.19,
+    "price_per_hour_usd_without_keyterms": 0.15
   }
 }
 ```
@@ -221,6 +222,16 @@ counts the surcharge twice. It is `null` when the API knows no base price for th
 knows no keyterm surcharge for it. It is per stream and per hour the stream is open: a meeting
 opens two streams, and AssemblyAI bills the open time, silent or not. The desktop uses it to
 estimate what a stream cost and never hardcodes vendor prices.
+
+`stream.price_per_hour_usd_without_keyterms` is what one stream of `stream.model` costs per hour
+when it is opened with no keyterms: the base alone, never the surcharge (the first price column
+above), and the same as `stream.price_per_hour_usd` when `stream.keyterms` is empty. The vendor
+bills a stream by what it was opened with, so a stream the desktop opens with `keyterms: []` from
+a token that carried a list is metered at this price: the one reopen after the vendor rejected the
+list, and every stream of a bench `--no-keyterms` run. Metered at `stream.price_per_hour_usd`, the
+reopen would over-count and the bench would price a run without the list the same as one with it.
+It is `null` only when the API knows no base price. An API older than the field omits it; the
+desktop then meters such a stream at `stream.price_per_hour_usd`, which errs high.
 
 With `STT_PROVIDER=fake` the response is `{"provider": "fake", "access_token": "", "expires_in": 0, "stream": {...}}`
 and the desktop uses its built-in fake adapter (useful for development without a vendor key). The

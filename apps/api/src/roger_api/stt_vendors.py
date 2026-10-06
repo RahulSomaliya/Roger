@@ -19,7 +19,8 @@ A stream that carries keyterms (the workspace's jargon list, sent with every tok
 vendor's keyterm surcharge for its model, added to the base price, the override included
 (schemas/stt.py). It is per stream hour, whatever the list's length; 0.0 where the model's price
 includes keyterms. So the override is a rate without keyterms: an all-in rate would count the
-surcharge twice on every stream with a list.
+surcharge twice on every stream with a list. A stream opened with no keyterms pays the base alone,
+which the token also carries (`stream.price_per_hour_usd_without_keyterms`).
 - AssemblyAI, https://www.assemblyai.com/pricing (read 2026-10-06): Universal-Streaming English
   and Multilingual $0.15/hr, Universal-3.6 Pro realtime $0.45/hr base, "billed on session
   duration: the time the WebSocket connection is open, not the duration of audio sent".
