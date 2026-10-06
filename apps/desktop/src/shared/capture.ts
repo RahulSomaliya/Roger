@@ -408,6 +408,11 @@ export interface StartCaptureRequest {
 export interface CaptureStatus {
   phase: CapturePhase;
   meetingId: string | null;
+  /**
+   * The recording meeting's title: the start request's, or main's "Meeting 6 Oct 2026 09:30".
+   * Null whenever `meetingId` is.
+   */
+  title: string | null;
   /** ISO 8601 instant, UTC. */
   startedAt: string | null;
   sttProvider: string | null;
@@ -470,6 +475,7 @@ export function idleCaptureStatus(upload: UploadStatus): CaptureStatus {
   return {
     phase: 'idle',
     meetingId: null,
+    title: null,
     startedAt: null,
     sttProvider: null,
     sources: { mic: emptySourceStatus(), system: emptySourceStatus() },

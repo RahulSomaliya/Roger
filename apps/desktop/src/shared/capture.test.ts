@@ -44,6 +44,7 @@ describe('idleCaptureStatus', () => {
       [
         'phase',
         'meetingId',
+        'title',
         'startedAt',
         'sttProvider',
         'sources',
