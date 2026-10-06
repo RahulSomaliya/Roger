@@ -65,7 +65,9 @@ export function deepgramProtocol(options: DeepgramProtocolOptions = {}): SttProt
     finishedOn: 'vendor-close',
     // Deepgram closes a socket that receives nothing for about 10 s (NET-0001); a KeepAlive every
     // 5 s keeps a quiet stream open. That is a billed session held open on purpose, so the core
-    // sends it only while the stream is open, never once Stop or a failure began.
+    // sends it only while the stream is open and its source sent audio within the stall window
+    // (SttConnection keepAliveForMs): never once Stop or a failure began, never for a stalled
+    // source, which Deepgram then closes itself.
     keepAlive: { message: DEEPGRAM_KEEP_ALIVE, intervalMs: 5_000 },
     session: () => ({
       encodeAudio: (pcm) => [pcm],

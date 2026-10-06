@@ -209,6 +209,31 @@ describe.each(CONFORMANCE_VENDORS)('$provider conforms', (vendor) => {
     expect(server.last().texts.filter((text) => text === keepAlive)).toHaveLength(count);
   });
 
+  itIf(vendor.keepAliveMessage !== null)(
+    'sends no keep-alive once no audio was sent for the keep-alive window',
+    async () => {
+      const keepAlive = vendor.keepAliveMessage ?? '';
+      const clock = manualClock(0);
+      const adapter = create(vendor, {
+        logger,
+        baseUrl: server.baseUrl,
+        keepAliveMs: 10,
+        keepAliveForMs: 1_000,
+        clock: clock.now,
+      });
+      const { stream } = await open(adapter);
+      const count = (): number => server.last().texts.filter((text) => text === keepAlive).length;
+      await waitFor(() => count() > 0);
+
+      clock.set(1_000);
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      const stalled = count();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(count()).toBe(stalled);
+      await stream.close();
+    },
+  );
+
   it('reports a vendor close mid-call as one fatal error, then closed', async () => {
     const { code, reason } = vendor.midCallClose;
     server.script.onBinary = (connection) => {

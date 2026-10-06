@@ -30,7 +30,8 @@ import type {
  *
  * - connecting: the handshake plus the vendor's ready signal, under one connect timeout. A failure
  *   terminates the socket and rejects `whenOpen()` only once the socket is closed.
- * - open: audio flows, the keep-alive runs. A vendor close here is one fatal error, then "closed".
+ * - open: audio flows. The keep-alive runs only while audio was sent within keepAliveForMs. A
+ *   vendor close here is one fatal error, then "closed".
  * - finishing: Stop sent the finish sequence (or the vendor reported a fatal error). No audio, no
  *   keep-alive. After closeTimeoutMs the socket is terminated, whatever the vendor does.
  * - closed: final. Audio is dropped and counted; close() returns the same settled promise.
@@ -59,6 +60,11 @@ export interface SttConnectionOptions {
   connectTimeoutMs: number;
   /** Hard cap from Stop (or a fatal vendor error) to the socket closing. Then it is terminated. */
   closeTimeoutMs: number;
+  /**
+   * The keep-alive is sent only while audio was sent within this long (or the stream opened within
+   * it). The capture's stall close (costGuards: sttStallCloseMs) is the same window.
+   */
+  keepAliveForMs: number;
   clock: () => number;
 }
 
@@ -78,6 +84,7 @@ export class SttConnection implements SttStream {
   /** The OpenStreamOptions label (the audio source), so usage can be read per source. */
   readonly label: string;
   private readonly closeTimeoutMs: number;
+  private readonly keepAliveForMs: number;
   private connectTimer: NodeJS.Timeout | null;
   private finishTimer: NodeJS.Timeout | null = null;
   private keepAliveTimer: NodeJS.Timeout | null = null;
@@ -89,6 +96,8 @@ export class SttConnection implements SttStream {
   private fatalReported = false;
   private openedAtMs: number | null = null;
   private closedAtMs: number | null = null;
+  /** Clock time of the last audio handed to send() while open; the keep-alive window counts from it. */
+  private lastAudioAtMs: number | null = null;
   private audioSentBytes = 0;
   private droppedChunks = 0;
 
@@ -103,6 +112,7 @@ export class SttConnection implements SttStream {
     this.pricePerHourUsd = options.stream.settings.pricePerHourUsd;
     this.label = options.stream.label;
     this.closeTimeoutMs = options.closeTimeoutMs;
+    this.keepAliveForMs = options.keepAliveForMs;
     // Throws SttConnectError on settings the vendor cannot take, before any socket exists.
     const target = this.protocol.target(options.stream);
     this.session = this.protocol.session({
@@ -176,6 +186,7 @@ export class SttConnection implements SttStream {
       }
       return;
     }
+    this.lastAudioAtMs = this.clock();
     for (const frame of this.session.encodeAudio(pcm)) this.sendFrame(frame);
   }
 
@@ -218,8 +229,13 @@ export class SttConnection implements SttStream {
     const keepAlive = this.protocol.keepAlive;
     if (keepAlive !== null) {
       // A keep-alive holds a billed session open on purpose. It runs only while open: it stops the
-      // moment Stop, a vendor error or a close begins, so it can never keep a dead stream alive.
+      // moment Stop, a vendor error or a close begins. And only while audio flows: a source that
+      // sent nothing for keepAliveForMs is stalled, and a keep-alive would bill its silence (Deepgram
+      // $0.46 an hour) until the capture closes it; without one the vendor closes it itself
+      // (Deepgram NET-0001 after about 10 s).
       this.keepAliveTimer = setInterval(() => {
+        const since = this.lastAudioAtMs ?? this.openedAtMs ?? this.clock();
+        if (this.clock() - since >= this.keepAliveForMs) return;
         if (this.currentState === 'open' && this.socket.readyState === WebSocket.OPEN) {
           this.socket.send(keepAlive.message);
         }

@@ -134,6 +134,7 @@ describe('SttConnection', () => {
       }),
       connectTimeoutMs: 1_000,
       closeTimeoutMs: 1_000,
+      keepAliveForMs: 30_000,
       clock: () => Date.now(),
       ...overrides,
     };
@@ -364,6 +365,32 @@ describe('SttConnection', () => {
 
     expect(vendor.last().texts.length).toBe(sentAtClose);
     expect(vendor.last().texts.at(-1)).toBe(FINISH);
+  });
+
+  it('sends the keep-alive only while audio was sent within the keep-alive window', async () => {
+    const clock = manualClock(0);
+    const keepAlives = (): number => vendor.last().texts.filter((t) => t === KEEP_ALIVE).length;
+    const { connection } = await open({
+      clock: clock.now,
+      keepAliveForMs: 1_000,
+      protocol: toyProtocol(vendor.baseUrl, {
+        keepAlive: { message: KEEP_ALIVE, intervalMs: 10 },
+      }),
+    });
+
+    // Just opened: the window counts from the open.
+    await waitFor(() => keepAlives() > 0);
+    // A stalled source: no audio for the whole window. A keep-alive now would hold a billed
+    // session open for a source that sends nothing.
+    clock.set(1_000);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    const stalled = keepAlives();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(keepAlives()).toBe(stalled);
+
+    connection.send(new Uint8Array(CHUNK_100_MS));
+    await waitFor(() => keepAlives() > stalled);
+    await connection.close();
   });
 
   it('meters connected time from the handshake to the close, and the audio sent', async () => {

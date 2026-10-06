@@ -1,3 +1,4 @@
+import { DEFAULT_COST_GUARDS } from '../../costGuards';
 import type { Logger } from '../../logger';
 import type { OpenStreamOptions, SpeechToText, SttStream } from '../SpeechToText';
 import { sumUsage, type SttUsage } from '../usage';
@@ -12,6 +13,8 @@ export interface WebSocketSttOptions {
   closeTimeoutMs?: number;
   /** Overrides the protocol's keep-alive interval (tests). No effect on a vendor without one. */
   keepAliveMs?: number;
+  /** Keep-alive only while audio was sent within this long. Default: the capture's stall close. */
+  keepAliveForMs?: number;
   clock?: () => number;
 }
 
@@ -27,6 +30,7 @@ export class WebSocketSpeechToText implements SpeechToText {
   private readonly logger: Logger;
   private readonly connectTimeoutMs: number;
   private readonly closeTimeoutMs: number;
+  private readonly keepAliveForMs: number;
   private readonly clock: () => number;
   /**
    * Every connection this adapter made, failed ones too, for usage(). CaptureService makes one
@@ -45,6 +49,7 @@ export class WebSocketSpeechToText implements SpeechToText {
     this.logger = options.logger;
     this.connectTimeoutMs = options.connectTimeoutMs ?? 10_000;
     this.closeTimeoutMs = options.closeTimeoutMs ?? 5_000;
+    this.keepAliveForMs = options.keepAliveForMs ?? DEFAULT_COST_GUARDS.sttStallCloseMs;
     this.clock = options.clock ?? (() => Date.now());
   }
 
@@ -55,6 +60,7 @@ export class WebSocketSpeechToText implements SpeechToText {
       logger: this.logger,
       connectTimeoutMs: this.connectTimeoutMs,
       closeTimeoutMs: this.closeTimeoutMs,
+      keepAliveForMs: this.keepAliveForMs,
       clock: this.clock,
     });
     this.connections.push(connection);
