@@ -765,9 +765,9 @@ describe('NotesGenerator: the run', () => {
     // A server error before the stream, then the Generate button on the waiting row: same id.
     h.streams.last().end({ kind: 'error', code: 'internal_error', message: 'Oops', status: 503 });
     await settle();
-    expect(h.generator.generate(MEETING, 'general')).toMatchObject({
+    expect(h.generator.generate(MEETING, 'standup')).toMatchObject({
       runId: RUN_1,
-      templateId: 'general',
+      templateId: 'standup',
       reason: 'button',
     });
     await settle();
@@ -991,6 +991,33 @@ describe('NotesGenerator: the run', () => {
     await settle();
     expect(h.streams.calls).toHaveLength(2);
     expect(h.store.listPendingGenerates()).toEqual([]);
+  });
+
+  it('refuses another template for a run the API may hold', async () => {
+    const h = harness();
+    h.generator.start();
+    h.generator.generate(MEETING, 'standup');
+    await settle();
+    // The API may have claimed RUN_1 before it failed. Re-sent, the id gets that standup run back
+    // whatever template the request names, while the row and the panel would say another.
+    h.streams.last().end({ kind: 'error', code: 'internal_error', message: 'Oops', status: 503 });
+    await settle();
+
+    expect(() => h.generator.generate(MEETING, 'general')).toThrow('cancel them');
+    expect(h.store.getPendingGenerate(MEETING)).toMatchObject({
+      runId: RUN_1,
+      templateId: 'standup',
+    });
+    // Nor is the refused pick remembered for the title.
+    expect(h.store.getTemplateChoice('acme client call')).toBe('standup');
+
+    // A row nothing sent yet takes another template, and keeps its run id.
+    h.transcripts.appendSegment(segment(OTHER_MEETING, 1));
+    h.generator.generate(OTHER_MEETING, 'standup');
+    expect(h.generator.generate(OTHER_MEETING, 'general')).toMatchObject({
+      runId: RUN_2,
+      templateId: 'general',
+    });
   });
 
   it('rejects a second generate while a run streams', async () => {

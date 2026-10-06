@@ -200,7 +200,8 @@ export class NotesGenerator {
    * The Generate button, Retry, or the answer to "Which kind of call was this?"
    * (`notes:generate`). A pending generate that has not failed takes this template and keeps its
    * run id and reason; a failed one, or none, gets a new run id with reason `button`. The pick is
-   * remembered under the meeting's title. Throws while an attempt runs.
+   * remembered under the meeting's title. Throws while an attempt runs, and for another template
+   * on a run the API may hold.
    */
   generate(meetingId: string, templateId: string): PendingGenerateState {
     if (templateId.trim() === '') throw new Error(`notes of meeting ${meetingId} need a template`);
@@ -209,6 +210,18 @@ export class NotesGenerator {
     }
     const { store } = this.options;
     const current = store.getPendingGenerate(meetingId);
+    // Trap: the API answers a re-sent run id with the run it holds, in that run's template, and
+    // never reads the template the request names. A 5xx or an unreachable API after the claim, a
+    // poll stopped at its limit, or a failed pull leaves such a row waiting with no attempt: a
+    // swapped template there would replay the old notes while the row, the panel and the
+    // remembered pick all say the new one.
+    const held = current?.templateId ?? null;
+    if (current !== null && held !== null && held !== templateId && this.mayBeInApi(current)) {
+      throw new Error(
+        `the notes of meeting ${meetingId} may already be generating as ${held}: ` +
+          'cancel them before picking another template',
+      );
+    }
     const row: StoredPendingGenerate =
       current !== null && current.lastError === null
         ? // An attempt may already have reached the API: a new id would start a second paid run.
