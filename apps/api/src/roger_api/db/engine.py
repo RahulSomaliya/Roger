@@ -17,7 +17,12 @@ class Database:
     """
 
     def __init__(self, url: str) -> None:
-        self.engine = create_async_engine(url, pool_pre_ping=True)
+        # hide_parameters: a failed statement renders its bind parameters into the error's text
+        # ("[parameters: (...)]"), and middleware.py logs that text with every unhandled error.
+        # The calendar store binds the Google refresh token and CALENDAR_TOKEN_KEY
+        # (services/calendar/connections.py, which also keeps them out of production tracebacks).
+        # Never turn it off: debug a statement with its SQL and SQLSTATE instead.
+        self.engine = create_async_engine(url, pool_pre_ping=True, hide_parameters=True)
         self.session_factory = async_sessionmaker(self.engine, expire_on_commit=False)
 
     def session(self) -> AsyncSession:
