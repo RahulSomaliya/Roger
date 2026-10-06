@@ -645,6 +645,28 @@ describe('SttConnection', () => {
         fields: { queuedMs: 2_900 },
       });
     });
+    it('drops the queue on a vendor error while Stop drains it', async () => {
+      const clock = manualClock(0);
+      const { connection, events } = await open({
+        clock: clock.now,
+        protocol: realtime(),
+        closeTimeoutMs: 300,
+      });
+      sendBurst(connection, 30);
+      const closing = connection.close();
+      await waitFor(() => vendor.last().binaryFrames.length === 1);
+
+      vendor.last().socket.send(JSON.stringify({ type: 'error', text: 'quota exceeded' }));
+      await waitFor(() => events.some((event) => event.type === 'error'));
+      clock.set(60_000);
+      await closing;
+
+      expect(vendor.last().binaryFrames).toEqual([CHUNK_100_MS]);
+      expect(vendor.last().texts).toEqual([]);
+      expect(lines.find((line) => line.message === 'stt paced audio dropped')).toMatchObject({
+        fields: { queuedMs: 2_900 },
+      });
+    });
   });
 
   describe('connect failures end with the socket closed', () => {

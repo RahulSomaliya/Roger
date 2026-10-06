@@ -341,10 +341,12 @@ export class SttConnection implements SttStream {
    * sequence is pointless here: the vendor already ended the session.
    */
   private endAfterFatal(message: string): void {
+    // Also while Stop drains it: audio still waiting for its pace, and the finish sequence behind
+    // it, would go to a session the vendor already ended.
+    this.dropPacedAudio();
     if (this.currentState === 'open') {
       this.currentState = 'finishing';
       this.stopKeepAlive();
-      this.dropPacedAudio();
       this.socket.close(1000);
       this.armFinishTimer();
     }
