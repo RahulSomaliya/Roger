@@ -120,6 +120,9 @@ def test_headings_keep_their_text() -> None:
         "Beta ships Friday [L12]",
         "- Beta ships Friday [l12]",
         "- Beta ships Friday. [L12]",
+        "- Beta ships Friday **[L12]**",
+        "- **Beta ships Friday** [L12]",
+        "- *Beta* ships _Friday_ [L12]",
     ],
 )
 def test_bullet_forms_parse_to_the_same_item(line: str) -> None:
@@ -142,6 +145,38 @@ def test_brackets_that_are_not_refs_stay_in_the_text() -> None:
     assert parsed.text == "Rename the [TBD] field before v2 [sic]"
     assert parsed.refs == (Ref("L", 3),)
     assert bullet("- Follow up on [L3, see above]").refs == ()
+
+
+def test_emphasis_marks_are_taken_out_of_the_text() -> None:
+    # The AI doc is built from plain text nodes: a mark left here shows as literal asterisks, and a
+    # bolded heading would not equal the template heading it names.
+    assert parse_line("- **Them:** send the deck by **Monday** [L3]") == Bullet(
+        "Them: send the deck by Monday", (Ref("L", 3),)
+    )
+    assert bullet("- ***Me:*** book the _follow-up_ by __Friday__ [L4]").text == (
+        "Me: book the follow-up by Friday"
+    )
+    assert bullet("- **Send the _deck_ today** [L4]").text == "Send the deck today"
+    assert bullet("- **Beta ships Friday [L12]**").refs == (Ref("L", 12),)
+    assert parse_line("## **Action items**") == Heading("Action items")
+    assert parse_line("### *Risks* [L2]") == Heading("Risks")
+
+
+def test_a_wholly_bold_line_is_a_heading() -> None:
+    assert parse_line("**Action items**") == Heading("Action items")
+    assert parse_line("__Action items__") == Heading("Action items")
+    # With refs it is a bullet whose dash the model forgot.
+    assert parse_line("**Beta ships Friday** [L12]") == Bullet("Beta ships Friday", (Ref("L", 12),))
+    # Bold inside a line with no refs is still a preamble.
+    assert parse_line("Here are your **notes**:") is None
+
+
+def test_marks_that_are_not_emphasis_stay_in_the_text() -> None:
+    assert bullet("- Rename user_id to account_id [L3]").text == "Rename user_id to account_id"
+    assert bullet("- Fix the `__init__` and `*args` handling [L3]").text == (
+        "Fix the `__init__` and `*args` handling"
+    )
+    assert bullet("- Size is 2 * 3 * 5, or 2*3*5 [L3]").text == "Size is 2 * 3 * 5, or 2*3*5"
 
 
 def test_a_bullet_with_no_refs_parses_with_none() -> None:

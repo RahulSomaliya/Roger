@@ -7,9 +7,10 @@ object cannot (M4 plan, "What the model writes"). If the eval's dropped rate goe
 plan switches to strict JSON output: only this module changes.
 
 The parser is lenient about form (other bullet markers, a missing dash, refs mid-line, ranges
-written `L12-15`) and strict about content: a ref group is taken only when every entry in the
-brackets is a ref, so `[TBD]` or `[sic]` stay in the text. It never decides whether a line is
-kept; a bullet with no refs comes out with `refs == ()` for `citations.py` to drop.
+written `L12-15`, bold and italic marks) and strict about content: a ref group is taken only when
+every entry in the brackets is a ref, so `[TBD]` or `[sic]` stay in the text. It never decides
+whether a line is kept; a bullet with no refs comes out with `refs == ()` for `citations.py` to
+drop. Text comes out plain: the AI doc is built from plain text nodes, with no Markdown step.
 """
 
 import re
@@ -62,6 +63,21 @@ _HEADING = re.compile(r"#{1,6} (.*)")
 # `-`, `*`, `+`, `•` or `1.` / `1)`, then an optional task box (`[ ]`, `[x]`) models add to actions.
 _BULLET = re.compile(r"(?:[-*+•]|\d{1,3}[.)]) (?:\[[ xX]\] )?(.*)")
 _FENCES = ("```", "~~~")
+# Bold and italic marks, which the model copies from the Markdown notes it is shown
+# (`- **Them:** send the deck by **Monday**`). Left in, they show as literal asterisks in the AI
+# doc, and `## **Decisions**` would not equal the template heading "Decisions". As in Markdown, a
+# mark opens only before a non-space and closes only after one, never inside a word, so `user_id`
+# and `2 * 3` stay. A code span is matched first and kept as written (`__init__` in backticks).
+# Inner text stops at the next mark of its kind, so a line full of stray marks is still one linear
+# scan; `_unmarked` reads the other kind inside it (`**send the _deck_**`).
+_EMPHASIS = re.compile(
+    r"(?P<code>`[^`]*`)"
+    r"|(?<![\w*])(?P<stars>\*{1,3})(?=[^\s*])(?P<starred>[^*]+?)(?<=[^\s*])(?P=stars)(?![\w*])"
+    r"|(?<!\w)(?P<lows>_{1,3})(?=[^\s_])(?P<lowered>[^_]+?)(?<=[^\s_])(?P=lows)(?!\w)"
+)
+# A line that is all bold, with no marker and no refs, is a heading the model wrote without `##`.
+# Read as a preamble it would be skipped, and its bullets would land under the section before it.
+_BOLD_LINE = re.compile(r"\*\*[^*]+\*\*|__[^_]+__")
 
 
 class LineProtocolParser:
@@ -101,12 +117,14 @@ def parse_line(raw: str) -> ProtocolLine | None:
     if not line or line.startswith(_FENCES):
         return None
     if heading := _HEADING.fullmatch(line):
-        text, _ = split_refs(heading.group(1))
+        text, _ = _plain_text_and_refs(heading.group(1))
         return Heading(text) if text else None
     if marked := _BULLET.fullmatch(line):
-        text, refs = split_refs(marked.group(1))
+        text, refs = _plain_text_and_refs(marked.group(1))
         return Bullet(text, refs) if text else None
-    text, refs = split_refs(line)
+    text, refs = _plain_text_and_refs(line)
+    if text and not refs and _BOLD_LINE.fullmatch(line):
+        return Heading(text)
     return Bullet(text, refs) if text and refs else None
 
 
@@ -124,6 +142,18 @@ def split_refs(text: str) -> tuple[str, tuple[Ref, ...]]:
 
     remaining = _REF_GROUP.sub(take, _squash(text))
     return _squash(remaining), _first_unique(_expand(groups), MAX_REFS_PER_LINE)
+
+
+def _plain_text_and_refs(text: str) -> tuple[str, tuple[Ref, ...]]:
+    # Marks come out first, so a bolded ref group (`**[L12]**`) leaves no `****` behind.
+    return split_refs(_EMPHASIS.sub(_unmarked, text))
+
+
+def _unmarked(match: re.Match[str]) -> str:
+    if match["code"] is not None:
+        return match["code"]
+    # Two levels at most: text inside `*` marks holds no `*`, and text inside `_` marks no `_`.
+    return _EMPHASIS.sub(_unmarked, match["starred"] or match["lowered"])
 
 
 def _parse_all(lines: Iterable[str]) -> list[ProtocolLine]:
