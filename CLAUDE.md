@@ -133,7 +133,9 @@ Each line is a trap someone already hit. Add one when you hit a new one.
   `open --stderr <file> --stdout <file> /Applications/Roger.app` to read its log.
 - Ruff `RUF001` rejects lookalike Unicode (en dash, curly quotes, `‹`) in Python string literals:
   write `\u2013`, `\u2019`, `\u2039`. An agent's file-writing tool turned the escapes back into
-  literal characters twice (M4-T5, 2026-10-06), so grep after writing.
+  literal characters twice (M4-T5, 2026-10-06), so grep after writing. It does the same to `\u`
+  escapes in TypeScript strings and regexes (a BOM in a regex failed `no-irregular-whitespace`;
+  curly quotes passed silently, M3-T10): grep `[^\x00-\x7F]` after writing.
 - `eslint-plugin-react-hooks` v7 (`react-hooks/refs`) rejects a ref read inside a closure built in a
   `useState` initializer. Keep the latest callback in a plain variable on the once-made object and
   update it from a layout effect. `renderToString` runs no effects: test effect-based registration
@@ -149,3 +151,23 @@ Each line is a trap someone already hit. Add one when you hit a new one.
 - AssemblyAI's session cap, `max_session_duration_seconds`, is a parameter of the temporary-token
   request (the API sets it), not of the websocket URL; `inactivity_timeout` is the other way round
   (the desktop sets it). Its streaming page lists only the second (2026-10-06).
+- Alembic revisions 0002-0005 began as empty stubs (P2-F2). A stub filled in place is invisible to a
+  database migrated while it was empty: `upgrade head` is a no-op and `downgrade` raises
+  `UndefinedTable`. Tests drop and rebuild their database every run, so they never show it. Never
+  `make migrate` the dev database from a Phase 2 branch before its stubs are filled; to repair one,
+  `uv run --frozen alembic stamp 0001 && uv run --frozen alembic upgrade head` (2026-10-06).
+- IPC stub APIs are `object`. typescript-eslint refuses `{}`, empty interfaces and `object & object`:
+  give a stub its first member as an interface, and never rewrite `RogerApi` as `A & B & ...` while
+  stubs remain. Two features sharing a member name is no type error (the preload spreads silently
+  overwrite); `shared/ipc.test.ts` and `preview/fakeRoger.test.ts` guard it (P2-F1).
+- A pydantic-settings mixin with its own `model_config` changes how every setting is read; feature
+  config modules are plain `BaseModel`. Never name a conftest helper `test_*`: imported into a test
+  module, pytest collects it (P2-F2).
+- STT pacing tests drive a manual clock with real timers: the pace timer only wakes the queue and the
+  clock decides what may go. Move the clock, then `waitFor` the frames (M3-T18).
+- A migration test that winds `roger.sqlite` back to schema N must also undo every later migration,
+  or reopening re-runs them (`duplicate column name`); each new local migration adds its own
+  wind-back helper (M2-T3).
+- `swiftc` fails with "input file ... was modified during the build" if `native/roger-audio` changes
+  while `make check` runs. `roger-audio selftest` must never create a real tap or open a device: that
+  would raise a macOS privacy prompt for whatever ran `make` (M2-T7).

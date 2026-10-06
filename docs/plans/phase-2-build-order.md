@@ -506,8 +506,9 @@ Every other file has exactly one writer in Phase 2.
   with `-` turned into `_`: `roger_test_p2_f2`, `roger_test_m3_t2`, `roger_test_m4_t8`,
   `roger_test_m5_t3`, `roger_test_m2_t14b`. Desktop-only tasks too, because `make check` runs the
   API tests.
-- P2-F2's conftest creates the database when it is missing. It refuses any name that does not
-  start with `roger_test`. One Postgres (`make dev-db`) serves every worktree.
+- P2-F2's conftest drops and recreates the test database on every run (as built). It refuses any
+  name that does not start with `roger_test`. Never `make migrate` the dev database `roger` from
+  a Phase 2 branch while revisions 0002-0005 are still empty stubs (CLAUDE.md failure log). One Postgres (`make dev-db`) serves every worktree.
 - The controller's integration runs use `roger_test_integration`. The dev database `roger` is only
   for `make dev-api` and the exit checks.
 - Never set `TEST_DATABASE_URL` in a shared `.env`. Worktrees have no `.env` (it is untracked), so
