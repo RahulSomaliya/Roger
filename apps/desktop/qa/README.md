@@ -124,6 +124,10 @@ is published as one page (an Artifact), never as loose PNG paths.
 - **Never `fullPage`.** It re-runs fill-mode CSS animations inside the capture. `screenshot()`
   grows the viewport to the document instead. `screenshotElement()` clips that page: never
   `locator.screenshot()`, which scrolls the page so the next click lands off its target.
+- **The shell scrolls inside itself.** The app shell is one screen tall and scrolls in
+  `.shell-page`, so growing to the document shows nothing below the fold. On a page in the shell,
+  call `fitShellPage()` before `screenshot()` or `expectVisible()`: it grows the viewport until
+  the column stops scrolling.
 - **Visible means a person can see it.** `expectVisible()` checks the box, the viewport and
   `document.elementFromPoint` at its centre; a class or attribute check passes on an element drawn
   under an overlay. `elementFromPoint` skips `pointer-events: none`: check a disabled control's
