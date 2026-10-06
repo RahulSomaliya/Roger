@@ -11,6 +11,9 @@
     "src/preload/**/*.ts",
     "src/shared/**/*.ts",
     "bench/**/*.ts",
+    // Scripts under test/, such as the one that makes the backup fixture. eslint.config.mjs gives
+    // the same folder Node globals; typed lint refuses a TypeScript file no tsconfig includes.
+    "test/**/*.ts",
     "electron.vite.config.ts",
     "vite.preview.config.ts",
     "vitest.config.ts",

@@ -35,15 +35,14 @@ export default defineConfig([
     },
   },
   {
-    // `bench` (the STT benchmark CLI), `e2e` (the Electron smoke test) and `qa` (the browser QA
-    // driver) run under Node.
-    files: [
-      'src/main/**/*.ts',
-      'src/preload/**/*.ts',
-      'bench/**/*.ts',
-      'e2e/**/*.ts',
-      'qa/**/*.ts',
-    ],
+    // `bench` (the STT benchmark CLI), `e2e` (the Electron smoke test), `qa` (the browser QA
+    // driver) and `test` (fixtures and the scripts that make them, such as the fake helper
+    // `test/fixtures/fake-roger-audio.mjs`) run under Node. JS files are listed too: unlike
+    // TypeScript files they keep `no-undef`, so without these globals `process` is an error. A new
+    // Node folder goes here, and its TypeScript into a tsconfig `include` (tsconfig.node.json, or
+    // tsconfig.e2e.json for code that drives a page), or typed lint refuses the file ("not found
+    // in any of the provided project(s)").
+    files: ['src/main/**/*.ts', 'src/preload/**/*.ts', '{bench,e2e,qa,test}/**/*.{ts,js,mjs,cjs}'],
     languageOptions: { globals: globals.node },
   },
   {
