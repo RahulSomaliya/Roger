@@ -25,7 +25,9 @@ interface UploaderEvents extends Record<string, unknown> {
 /**
  * Drains the local store into Postgres. It runs for the life of the app, not per meeting, so a
  * crash or an offline stretch is recovered on the next tick: pending meetings are created once
- * they hold a line, unsynced lines are appended in batches, ended meetings are ended remotely.
+ * they hold a line, unsynced lines are appended in batches, ended meetings are ended remotely once
+ * they hold no line back. A meeting ended remotely is synced again whenever it gets a line that
+ * can upload (a re-run, an unhidden or a released line), so no later line is stranded.
  * Everything it sends is idempotent (house rule 7), so a retry after a half-failed tick is always
  * safe.
  */
@@ -193,7 +195,12 @@ export class TranscriptUploader {
         await this.uploadBatch(meeting.id, batch);
         this.setStatus({});
       }
-      if (meeting.endedAt !== null) {
+      // Never while the meeting holds lines: Postgres reads an ended meeting as finished, and a mic
+      // line held for its echo check can land up to its cap (120 s) after Stop. A meeting not yet
+      // ended remotely stays listed, so the end goes out on the tick after the last release or
+      // cap; one ended remotely comes back with the released line (listMeetingsNeedingSync), and
+      // its end is re-sent after it (the API's end is idempotent).
+      if (meeting.endedAt !== null && store.countHeldSegments(meeting.id) === 0) {
         await api.endMeeting(meeting.id, meeting.endedAt);
         store.setMeetingRemoteState(meeting.id, 'ended');
       }

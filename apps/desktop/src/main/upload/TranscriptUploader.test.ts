@@ -378,3 +378,150 @@ describe('TranscriptUploader', () => {
     uploader.stop();
   });
 });
+
+/** A clock the test moves, for hold caps (the store decides with it whether a cap has passed). */
+function manualClock(iso: string): { now: () => Date; set: (next: string) => void } {
+  let current = new Date(iso);
+  return {
+    now: () => current,
+    set: (next) => {
+      current = new Date(next);
+    },
+  };
+}
+
+const ENDED_AT = '2026-10-05T10:30:00Z';
+
+/** What each appendSegments call sent, as line ids. */
+function sentBatches(api: FakeApi): string[][] {
+  return api.appendSegments.mock.calls.map((call) => call[1].map((s) => s.id));
+}
+
+describe('TranscriptUploader: no stranded lines (M2)', () => {
+  it('uploads re-run lines added after the meeting ended remotely, then re-sends its end', async () => {
+    const store = new InMemoryTranscriptStore();
+    const api = fakeApi();
+    store.createMeeting({ id: 'm1', title: 'T', startedAt: '2026-10-05T10:00:00Z' });
+    store.appendSegment(segment('m1', 0));
+    store.markMeetingEnded('m1', ENDED_AT);
+    const uploader = new TranscriptUploader({ store, api, logger });
+    await uploader.flush();
+    expect(store.getMeeting('m1')?.remoteState).toBe('ended');
+
+    // The gap re-run (M2-T16) adds the words the live stream lost, after the meeting ended.
+    store.appendSegment(segment('m1', 3), 'rerun');
+    store.appendSegment(segment('m1', 5), 'rerun');
+    await uploader.flush();
+
+    expect(sentBatches(api)).toEqual([['m1-seg-0'], ['m1-seg-3', 'm1-seg-5']]);
+    // Only the line's own fields go up: its origin is local.
+    expect(api.appendSegments.mock.calls[1]?.[1]).toEqual([segment('m1', 3), segment('m1', 5)]);
+    expect(api.createMeeting).toHaveBeenCalledTimes(1);
+    expect(api.endMeeting.mock.calls).toEqual([
+      ['m1', ENDED_AT],
+      ['m1', ENDED_AT],
+    ]);
+    expect(store.getMeeting('m1')?.remoteState).toBe('ended');
+    expect(uploader.getStatus()).toMatchObject({ state: 'idle', pending: 0 });
+  });
+
+  it('uploads a line unhidden after the meeting ended remotely, and re-sends its end', async () => {
+    const store = new InMemoryTranscriptStore();
+    const api = fakeApi();
+    store.createMeeting({ id: 'm1', title: 'T', startedAt: '2026-10-05T10:00:00Z' });
+    store.appendSegment(segment('m1', 1)); // call audio
+    store.appendSegment(segment('m1', 2)); // the mic heard it too
+    store.suppressSegment('m1-seg-2', 'echo', 'm1-seg-1');
+    store.markMeetingEnded('m1', ENDED_AT);
+    const uploader = new TranscriptUploader({ store, api, logger });
+    await uploader.flush();
+    expect(sentBatches(api)).toEqual([['m1-seg-1']]);
+
+    // The user says it was not an echo.
+    expect(store.unhideSegment('m1-seg-2')).toBe(true);
+    await uploader.flush();
+
+    expect(sentBatches(api)).toEqual([['m1-seg-1'], ['m1-seg-2']]);
+    expect(api.endMeeting).toHaveBeenCalledTimes(2);
+    expect(store.getMeeting('m1')?.remoteState).toBe('ended');
+  });
+
+  it('does not send end while the meeting holds lines, and sends it once they are released', async () => {
+    const store = new InMemoryTranscriptStore();
+    const api = fakeApi();
+    store.createMeeting({ id: 'm1', title: 'T', startedAt: '2026-10-05T10:00:00Z' });
+    store.appendSegment(segment('m1', 0));
+    store.appendSegment(segment('m1', 2));
+    // A mic line waiting for the call-audio stream's watermark (M2 D2), cap far ahead.
+    store.holdSegment('m1-seg-2', '2099-01-01T00:00:00.000Z');
+    store.markMeetingEnded('m1', ENDED_AT);
+    const uploader = new TranscriptUploader({ store, api, logger });
+
+    await uploader.flush();
+    await uploader.flush();
+    expect(sentBatches(api)).toEqual([['m1-seg-0']]);
+    expect(api.endMeeting).not.toHaveBeenCalled();
+    expect(store.getMeeting('m1')?.remoteState).toBe('created');
+    expect(store.listMeetingsNeedingSync().map((m) => m.id)).toEqual(['m1']);
+
+    store.releaseSegments(['m1-seg-2']);
+    await uploader.flush();
+    expect(sentBatches(api)).toEqual([['m1-seg-0'], ['m1-seg-2']]);
+    expect(api.endMeeting).toHaveBeenCalledExactlyOnceWith('m1', ENDED_AT);
+    expect(store.getMeeting('m1')?.remoteState).toBe('ended');
+  });
+
+  it('neither creates nor discards an ended meeting whose only line is held, and ends it after the cap', async () => {
+    const clock = manualClock('2026-10-05T10:30:00.000Z');
+    const store = new InMemoryTranscriptStore(clock.now);
+    const api = fakeApi();
+    store.createMeeting({ id: 'm1', title: 'T', startedAt: '2026-10-05T10:00:00Z' });
+    store.appendSegment(segment('m1', 0));
+    store.holdSegment('m1-seg-0', '2026-10-05T10:32:00.000Z');
+    store.markMeetingEnded('m1', ENDED_AT);
+    const uploader = new TranscriptUploader({ store, api, logger, clock: clock.now });
+
+    await uploader.flush();
+    expect(store.getMeeting('m1')?.remoteState).toBe('pending');
+    expect(api.createMeeting).not.toHaveBeenCalled();
+    expect(api.endMeeting).not.toHaveBeenCalled();
+
+    // The call-audio stream never caught up: the cap lets the line go, uncompared.
+    clock.set('2026-10-05T10:32:00.000Z');
+    await uploader.flush();
+    expect(api.createMeeting).toHaveBeenCalledTimes(1);
+    expect(sentBatches(api)).toEqual([['m1-seg-0']]);
+    expect(api.endMeeting).toHaveBeenCalledExactlyOnceWith('m1', ENDED_AT);
+    expect(store.getMeeting('m1')?.remoteState).toBe('ended');
+  });
+
+  it('does not touch a meeting again once it has nothing to upload', async () => {
+    const store = new InMemoryTranscriptStore();
+    const api = fakeApi();
+    store.createMeeting({ id: 'm1', title: 'T', startedAt: '2026-10-05T10:00:00Z' });
+    store.appendSegment(segment('m1', 0));
+    store.appendSegment(segment('m1', 1));
+    store.appendSegment(segment('m1', 2));
+    store.markSegmentRejected('m1-seg-0', 'text too short', '2026-10-05T10:10:00.000Z');
+    store.suppressSegment('m1-seg-2', 'echo', 'm1-seg-1');
+    store.markMeetingEnded('m1', ENDED_AT);
+    const uploader = new TranscriptUploader({ store, api, logger });
+    await uploader.flush();
+    expect(sentBatches(api)).toEqual([['m1-seg-1']]);
+    const calls = (): number[] => [
+      api.createMeeting.mock.calls.length,
+      api.appendSegments.mock.calls.length,
+      api.endMeeting.mock.calls.length,
+    ];
+    expect(calls()).toEqual([1, 1, 1]);
+
+    // A late line that is held is not one that can upload yet either.
+    store.appendSegment(segment('m1', 4));
+    store.holdSegment('m1-seg-4', '2099-01-01T00:00:00.000Z');
+    await uploader.flush();
+    await uploader.flush();
+
+    expect(calls()).toEqual([1, 1, 1]);
+    expect(store.listMeetingsNeedingSync()).toEqual([]);
+  });
+});
