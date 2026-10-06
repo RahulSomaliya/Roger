@@ -56,14 +56,18 @@ milestone plan.
    always safe. Any retry logic relies on this.
 8. **The API contract is a document first.** `docs/api-contract.md` is updated in the same change
    as the code on both sides.
-9. **Every vendor connection goes through the shared STT core and the per-meeting open limiter.**
+9. **Every vendor connection goes through the shared STT core and the open budget.**
    Vendors bill every second a session is open, silent or not. An adapter only describes its
    protocol (`SttProtocol`); it never opens, times or closes a socket itself (`SttConnection` does,
-   and the conformance suite fails on a leaked socket). Every open, Start's and every reopen, passes
-   `SttOpenBudget` in `CaptureSession`, right before `openStream`. A source with no audio never holds
-   an open vendor session: a failed or ended source closes its session at once, a silent one after
-   the stall window, and it reopens only with audio. The numbers live in
-   `apps/desktop/src/main/costGuards.ts`.
+   and the conformance suite fails on a leaked socket). Every vendor session open acquires from
+   `SttOpenBudget` first, right before `openStream`: `CaptureSession`'s (Start's two and every
+   stall or failure reopen on the meeting's allowance, the silence gate's reopens in the per-minute
+   window only), the gap re-run's (the per-minute window only, through the one budget
+   `createCaptureRuntime.ts` shares with `CaptureService`) and the bench's (its own budget). The
+   budget's doc comment lists these callers; a new caller is added there and here in one change.
+   A source with no audio never holds an open vendor session: a failed or ended source closes its
+   session at once, a silent one after the stall window, and it reopens only with audio. The
+   numbers live in `apps/desktop/src/main/costGuards.ts`.
 
 ## Code rules
 

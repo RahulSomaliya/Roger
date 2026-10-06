@@ -13,6 +13,7 @@ import {
   type SttStreamState,
 } from '../../shared/capture';
 import { PCM_ENCODING, PCM_SAMPLE_RATE } from '../../shared/ipc';
+import { pcmBytesToMs } from '../../shared/pcm';
 import {
   AUDIO_SOURCES,
   SPEAKER_FOR_SOURCE,
@@ -24,7 +25,7 @@ import type { SttTokenApi } from '../api/ApiClient';
 import { type CostGuards, DEFAULT_COST_GUARDS } from '../costGuards';
 import { errorMessage, type Logger } from '../logger';
 import type { MicrophoneAccess } from '../permissions';
-import type { TranscriptStore } from '../store/TranscriptStore';
+import type { MeetingSttUsage, TranscriptStore } from '../store/TranscriptStore';
 import type { SpeechToTextFactory } from '../stt/createSpeechToText';
 import type { SpeechToText, SttStreamSettings } from '../stt/SpeechToText';
 import type { SttUsage } from '../stt/usage';
@@ -32,6 +33,7 @@ import { streamSettingsMismatch } from '../stt/streamSettings';
 import type { TranscriptUploader } from '../upload/TranscriptUploader';
 import { Emitter } from '../util/emitter';
 import { withTimeout } from '../util/time';
+import { AudioFanout, type AudioSink } from './AudioFanout';
 import { CaptureSession, type StreamCredentials } from './CaptureSession';
 import { SttOpenBudget } from './SttOpenBudget';
 import { type StopReason, stopNotice } from './stopReasons';
@@ -51,7 +53,27 @@ export interface CaptureServiceOptions {
   stopFlushTimeoutMs?: number;
   /** Bounds on billed speech-to-text time (costGuards.ts). Defaults to the defaults. */
   guards?: CostGuards;
+  /**
+   * The open budget every session open passes (cost guard G3). createCaptureRuntime.ts builds the
+   * one budget and shares it with the gap re-run (M2-T16), which opens outside a recording; left
+   * out, one is built from `guards`, as before.
+   */
+  budget?: SttOpenBudget;
   clock?: () => number;
+}
+
+/**
+ * A meeting a previous run left open, continued in the same id (M2 D7; M2-T23's CrashRecovery
+ * decides when). Its start and its saved `stt_usage` row are read from the store, so they cannot
+ * disagree with it.
+ */
+export interface ResumeMeeting {
+  meetingId: string;
+}
+
+export interface StartOptions {
+  /** Continue this open meeting instead of creating one. */
+  resume?: ResumeMeeting;
 }
 
 export interface StopOptions {
@@ -67,6 +89,119 @@ interface CaptureEvents extends Record<string, unknown> {
   status: CaptureStatus;
   segment: TranscriptSegment;
   interim: InterimTranscript;
+}
+
+/** A recording that has begun: what `RecordingListener.started` gets. */
+export interface RecordingStarted {
+  meetingId: string;
+  /** Epoch ms of the meeting's start, which every offset counts from; a resume keeps the first. */
+  meetingStartedAtMs: number;
+  /** True when this recording continues a meeting a previous run left open (M2 D7). */
+  resumed: boolean;
+  /**
+   * The live pipeline. Features that act on it mid-recording (M2-T6's offline suspend, M2-T18's
+   * sleep, M2-T14b's watermarks) reach it here, never through an edit to this file.
+   */
+  session: CaptureSession;
+}
+
+/** A recording that is over: what `RecordingListener.ended` gets. */
+export interface RecordingEnded {
+  meetingId: string;
+  reason: StopReason;
+  /** True when the meeting had no line and was deleted: nothing to upload, nothing to write up. */
+  discarded: boolean;
+  /**
+   * True when Stop threw before it ended the meeting (a store write refused: full disk, SQLite
+   * busy). Its `ended_at` may still be NULL, so it stays resumable and CrashRecovery (M2-T23)
+   * decides at the next launch; the error is in the status. A listener that acts on an ended
+   * meeting (notes after Stop, the last usage upload) checks this first.
+   */
+  stopFailed: boolean;
+}
+
+/**
+ * The session event listeners (M2-T4): how features follow recordings without editing this file.
+ * Each call is synchronous and its own; one that throws is logged and the rest still run.
+ */
+export interface RecordingListener {
+  /**
+   * Both streams are open and the phase is `recording`; no audio has reached the session yet. A
+   * listener added while a recording runs is told at once.
+   */
+  started?(recording: RecordingStarted): void;
+  /**
+   * Stop closed both streams, saved the last lines and ended (or discarded) the meeting, unless
+   * `stopFailed` says it threw first; the upload flush may still run. Every `started` gets exactly
+   * one `ended`, a failed Stop included (a listener holding something for the recording must let it
+   * go); a Start that failed gets neither.
+   */
+  ended?(recording: RecordingEnded): void;
+}
+
+/**
+ * The M2 fields of CaptureStatus a feature fills (M2-T2 made each optional, so a status built
+ * without them is still valid). Warnings and notices from every contributor are joined; any other
+ * field has one owning feature, and a later contributor's value would replace an earlier one's.
+ */
+export type ContributedStatus = Pick<
+  CaptureStatus,
+  | 'warnings'
+  | 'notices'
+  | 'systemCapture'
+  | 'systemAudioVerified'
+  | 'route'
+  | 'trigger'
+  | 'paused'
+  | 'backup'
+  | 'echo'
+  | 'rerun'
+>;
+
+/** The M2 fields of one source's status a feature fills (M2-T11's signal, M2-T12's device). */
+export type ContributedSourceStatus = Pick<SourceStatus, 'signal' | 'levelDb' | 'device'>;
+
+export interface StatusContribution extends ContributedStatus {
+  sources?: Partial<Record<AudioSource, ContributedSourceStatus>>;
+}
+
+export interface StatusContext {
+  phase: CapturePhase;
+  /** The recording's meeting; null when idle. */
+  meetingId: string | null;
+}
+
+/**
+ * The status-contributor seam: a feature's part of every status (M2-T10, T11, T14b, T15 and
+ * later), read each time one is built, idle or recording. It runs often (every status the window
+ * gets, twice a second while recording), so it only reads state the feature keeps in memory;
+ * when that state changes, the feature calls `refreshStatus()`.
+ */
+export type StatusContributor = (context: StatusContext) => StatusContribution;
+
+/** Fields of ContributedStatus that hold one value, copied by name so nothing else gets through. */
+const CONTRIBUTED_FIELDS = [
+  'systemCapture',
+  'systemAudioVerified',
+  'route',
+  'trigger',
+  'paused',
+  'backup',
+  'echo',
+  'rerun',
+] as const satisfies readonly Exclude<keyof ContributedStatus, 'warnings' | 'notices'>[];
+
+const CONTRIBUTED_SOURCE_FIELDS = [
+  'signal',
+  'levelDb',
+  'device',
+] as const satisfies readonly (keyof ContributedSourceStatus)[];
+
+interface ContributorEntry {
+  name: string;
+  read: StatusContributor;
+  /** The error of the spell this contributor is failing in, or null. */
+  failing: string | null;
 }
 
 const FAKE_STREAM_SETTINGS: SttStreamSettings = {
@@ -103,10 +238,23 @@ export class CaptureService {
    * vendor's per-minute limit counts per account, so Start, Stop, Start spends one window.
    */
   private readonly budget: SttOpenBudget;
+  /** Every recorded chunk goes out here: the meeting's session and the features' sinks. */
+  private readonly audio: AudioFanout;
+  private readonly recordingListeners = new Set<RecordingListener>();
+  private readonly contributors: ContributorEntry[] = [];
   private currentPhase: CapturePhase = 'idle';
   private session: CaptureSession | null = null;
+  /** The running recording, as its listeners were told; null when none runs. */
+  private live: RecordingStarted | null = null;
+  /** Takes the session's sink out of the fan-out at Stop. */
+  private removeSessionSink: (() => void) | null = null;
   /** The meeting's adapter: its usage() is the meter. */
   private stt: SpeechToText | null = null;
+  /**
+   * A resumed meeting's saved use (M2 D7): the meter adds this run's sessions to it, since the new
+   * adapter counts from zero. Null for a new meeting.
+   */
+  private savedUsage: MeetingSttUsage | null = null;
   /** The last meeting's meter, shown after Stop until the next Start. */
   private lastMeter: SttMeterStatus | null = null;
   private sttProvider: string | null = null;
@@ -128,16 +276,21 @@ export class CaptureService {
   private monitorTimer: NodeJS.Timeout | null = null;
   /** Clock time the session started recording; the no-audio check counts from it until a chunk. */
   private recordingSinceMs: number | null = null;
+  /** Clock time the recording cap (maxRecordingMs) counts from: a resume's is the meeting's start. */
+  private capFromMs: number | null = null;
   /** Clock time of the last final line from either source; the no-speech stop counts from it. */
   private lastFinalAtMs: number | null = null;
 
   constructor(private readonly options: CaptureServiceOptions) {
     this.clock = options.clock ?? (() => Date.now());
     this.guards = options.guards ?? DEFAULT_COST_GUARDS;
-    this.budget = new SttOpenBudget(
-      { perMinute: this.guards.sttOpensPerMinute, perMeeting: this.guards.sttOpensPerMeeting },
-      this.clock,
-    );
+    this.budget =
+      options.budget ??
+      new SttOpenBudget(
+        { perMinute: this.guards.sttOpensPerMinute, perMeeting: this.guards.sttOpensPerMeeting },
+        this.clock,
+      );
+    this.audio = new AudioFanout(options.logger);
     this.error = options.startupError;
     options.uploader.onStatus(() => {
       this.emitStatus();
@@ -151,12 +304,53 @@ export class CaptureService {
     return this.events.on(event, listener);
   }
 
+  /**
+   * Follows recordings: `started` with the live session, `ended` with how it ended. Returns the
+   * removal. Added while a recording runs, `started` is called at once.
+   */
+  onRecording(listener: RecordingListener): () => void {
+    this.recordingListeners.add(listener);
+    const live = this.live;
+    if (live !== null) this.tell('started', live.meetingId, () => listener.started?.(live));
+    return () => {
+      this.recordingListeners.delete(listener);
+    };
+  }
+
+  /**
+   * Adds a sink that gets every chunk recorded from now on, both sources, while a recording runs
+   * (AudioFanout). Returns the removal.
+   */
+  addAudioSink(name: string, sink: AudioSink): () => void {
+    return this.audio.add(name, sink);
+  }
+
+  /** Adds a feature's part of the status (StatusContributor). Returns the removal. */
+  addStatusContributor(name: string, read: StatusContributor): () => void {
+    const entry: ContributorEntry = { name, read, failing: null };
+    this.contributors.push(entry);
+    return () => {
+      const index = this.contributors.indexOf(entry);
+      if (index !== -1) this.contributors.splice(index, 1);
+    };
+  }
+
+  /** A contributor's part changed: send the window a fresh status. */
+  refreshStatus(): void {
+    this.emitStatus();
+  }
+
   /** The phase alone: cheap, and it never reads the store (getStatus does, for upload counts). */
   get phase(): CapturePhase {
     return this.currentPhase;
   }
 
   getStatus(): CaptureStatus {
+    return this.withContributions(this.landedStatus());
+  }
+
+  /** The status as M1 built it, before any feature's part. */
+  private landedStatus(): CaptureStatus {
     const upload = this.options.uploader.getStatus();
     if (this.currentPhase === 'idle' && !this.session) {
       return {
@@ -178,15 +372,53 @@ export class CaptureService {
       segmentsUnsaved: this.segmentsUnsaved,
       upload,
       error: this.error,
-      meter: this.stt === null ? this.lastMeter : meterStatus(this.stt),
+      meter: this.stt === null ? this.lastMeter : this.meterStatus(this.stt),
       notice: this.notice,
     };
   }
 
-  start(): Promise<CaptureStatus> {
+  /** Adds every contributor's part to `status`; one that throws is logged and left out. */
+  private withContributions(status: CaptureStatus): CaptureStatus {
+    const context: StatusContext = { phase: status.phase, meetingId: status.meetingId };
+    for (const entry of this.contributors) {
+      let part: StatusContribution;
+      try {
+        part = entry.read(context);
+      } catch (error) {
+        const message = errorMessage(error);
+        // Once per spell: a broken contributor fails on every status, twice a second.
+        if (entry.failing !== message) {
+          this.options.logger.error('status contributor failed', {
+            contributor: entry.name,
+            error: message,
+          });
+        }
+        entry.failing = message;
+        continue;
+      }
+      entry.failing = null;
+      if (part.warnings !== undefined) {
+        status.warnings = [...(status.warnings ?? []), ...part.warnings];
+      }
+      if (part.notices !== undefined) {
+        status.notices = [...(status.notices ?? []), ...part.notices];
+      }
+      for (const field of CONTRIBUTED_FIELDS) copyField<ContributedStatus>(status, part, field);
+      for (const source of AUDIO_SOURCES) {
+        const sourcePart = part.sources?.[source];
+        if (sourcePart === undefined) continue;
+        for (const field of CONTRIBUTED_SOURCE_FIELDS) {
+          copyField<ContributedSourceStatus>(status.sources[source], sourcePart, field);
+        }
+      }
+    }
+    return status;
+  }
+
+  start(options: StartOptions = {}): Promise<CaptureStatus> {
     if (this.transition) return this.transition;
     if (this.currentPhase !== 'idle') return Promise.resolve(this.getStatus());
-    this.transition = this.doStart().finally(() => {
+    this.transition = this.doStart(options).finally(() => {
       this.transition = null;
     });
     return this.transition;
@@ -201,7 +433,12 @@ export class CaptureService {
     return this.transition;
   }
 
-  pushAudio(source: AudioSource, pcm: Uint8Array): void {
+  /**
+   * One chunk from a source: the renderer's (ipc.ts), or from M2-T10 the helper's call audio.
+   * `capturedAtMs` is the wall clock of its first sample where it was captured; null (M1's
+   * renderer, until M2-T12 sends it) dates it from its arrival instead.
+   */
+  pushAudio(source: AudioSource, pcm: Uint8Array, capturedAtMs: number | null = null): void {
     if (this.currentPhase !== 'recording' || !this.session) return;
     const status = this.sources[source];
     const now = this.clock();
@@ -218,8 +455,14 @@ export class CaptureService {
       status.health = 'active';
       this.emitStatus();
     }
-    // M2's silence warning (chunks arriving but all near zero, e.g. rmsInt16) belongs here.
-    this.session.pushAudio(source, pcm);
+    // The session and every feature that reads audio (M2-T11's silence warning on chunks that
+    // arrive but carry nothing, M2-T15's backup) take it from the fan-out: add a sink
+    // (addAudioSink), never a line here.
+    this.audio.push(
+      source,
+      pcm,
+      capturedAtMs ?? now - pcmBytesToMs(pcm.byteLength, PCM_SAMPLE_RATE),
+    );
   }
 
   reportSourceState(source: AudioSource, state: AudioSourceState, message: string | null): void {
@@ -244,7 +487,7 @@ export class CaptureService {
     this.emitStatus();
   }
 
-  private async doStart(): Promise<CaptureStatus> {
+  private async doStart({ resume }: StartOptions): Promise<CaptureStatus> {
     if (this.options.startupError) {
       this.error = this.options.startupError;
       return this.getStatus();
@@ -254,13 +497,31 @@ export class CaptureService {
     this.notice = null;
     this.lastMeter = null;
     this.resetSessionState();
+    // A resume's allowance starts afresh too (M2 D7): its saved sessions_opened also counts opens
+    // made in the minute only (gate reopens, re-runs), so seeding from it could refuse this Start.
     this.budget.beginMeeting();
     this.setPhase('starting');
-    const startedAtMs = this.clock();
-    const meetingId = randomUUID();
+    let startedAtMs = this.clock();
+    const meetingId = resume?.meetingId ?? randomUUID();
     let session: CaptureSession | null = null;
     let meetingCreated = false;
     try {
+      if (resume !== undefined) {
+        const meeting = store.getMeeting(meetingId);
+        if (meeting === null) {
+          throw new Error(`Meeting ${meetingId} cannot be resumed: it is not in the local store.`);
+        }
+        if (meeting.endedAt !== null) {
+          throw new Error(`Meeting ${meetingId} cannot be resumed: it already ended.`);
+        }
+        startedAtMs = Date.parse(meeting.startedAt);
+        if (!Number.isFinite(startedAtMs)) {
+          throw new Error(
+            `Meeting ${meetingId} cannot be resumed: its start "${meeting.startedAt}" is not a time.`,
+          );
+        }
+        this.savedUsage = store.getSttUsage(meetingId);
+      }
       if ((await this.options.ensureMicrophoneAccess()) === 'denied') {
         throw new Error(
           'Microphone access is denied. Allow Roger under System Settings → Privacy & Security → Microphone.',
@@ -274,12 +535,14 @@ export class CaptureService {
       this.stt = stt;
       this.sttProvider = provider;
       this.startedAt = new Date(startedAtMs).toISOString();
-      store.createMeeting({
-        id: meetingId,
-        title: defaultMeetingTitle(new Date(startedAtMs)),
-        startedAt: this.startedAt,
-      });
-      meetingCreated = true;
+      if (resume === undefined) {
+        store.createMeeting({
+          id: meetingId,
+          title: defaultMeetingTitle(new Date(startedAtMs)),
+          startedAt: this.startedAt,
+        });
+        meetingCreated = true;
+      }
       session = new CaptureSession({
         meetingId,
         meetingStartedAtMs: startedAtMs,
@@ -347,9 +610,26 @@ export class CaptureService {
       await session.open();
       this.session = session;
       this.recordingSinceMs = this.clock();
+      // The cap bounds one meeting: a resumed one has been recording since its first start.
+      this.capFromMs = resume === undefined ? this.recordingSinceMs : startedAtMs;
+      // Bound, not wrapped: when CaptureSession.pushAudio takes the capture time too (M2-T5), the
+      // fan-out's third argument reaches it with no edit here.
+      this.removeSessionSink = this.audio.add('speech-to-text', {
+        onChunk: session.pushAudio.bind(session),
+      });
       this.setPhase('recording');
       this.startMonitor();
-      logger.info('capture started', { meetingId, provider });
+      const live: RecordingStarted = {
+        meetingId,
+        meetingStartedAtMs: startedAtMs,
+        resumed: resume !== undefined,
+        session,
+      };
+      this.live = live;
+      for (const listener of [...this.recordingListeners]) {
+        this.tell('started', meetingId, () => listener.started?.(live));
+      }
+      logger.info('capture started', { meetingId, provider, resumed: resume !== undefined });
     } catch (error) {
       this.error = errorMessage(error);
       logger.error('capture start failed', { meetingId, error: this.error });
@@ -359,6 +639,7 @@ export class CaptureService {
         if ((this.stt?.usage().sessionsOpened ?? 0) > 0) {
           this.recordMeter(meetingId, 'start-failed', null);
         }
+        // A failed resume leaves its meeting open as it was: CrashRecovery (M2-T23) decides.
         if (meetingCreated) store.deleteMeetingIfEmpty(meetingId);
       } catch (cleanupError) {
         logger.error('cleanup after failed start failed', {
@@ -377,14 +658,18 @@ export class CaptureService {
     const { logger, store, uploader, stopFlushTimeoutMs = 15_000 } = this.options;
     const reason = options.reason ?? 'user';
     const session = this.session;
+    let discarded = false;
     this.setPhase('stopping');
     this.stopMonitor();
+    this.removeSessionSink?.();
+    this.removeSessionSink = null;
     try {
       if (session) {
-        await session.close();
         const meetingId = session.meetingId;
+        this.saveStopReason(meetingId, reason);
+        await session.close();
         this.recordMeter(meetingId, reason, null);
-        if (this.stt !== null) this.lastMeter = meterStatus(this.stt);
+        if (this.stt !== null) this.lastMeter = this.meterStatus(this.stt);
         // A meeting with no line was never sent to Postgres: TranscriptUploader.syncMeeting creates
         // it only once it holds one, and lines are never deleted, so this delete cannot race an
         // upload. If the uploader ever creates meetings earlier again, this leaves Postgres a
@@ -393,10 +678,12 @@ export class CaptureService {
           store.getMeeting(meetingId)?.remoteState === 'pending' &&
           store.deleteMeetingIfEmpty(meetingId)
         ) {
+          discarded = true;
           logger.info('empty meeting discarded', { meetingId });
         } else {
           store.markMeetingEnded(meetingId, new Date(this.clock()).toISOString());
         }
+        this.endRecording({ reason, discarded, stopFailed: false });
         if (options.flushUploads !== false) {
           try {
             await withTimeout(uploader.flush(), stopFlushTimeoutMs, 'upload on stop');
@@ -415,12 +702,59 @@ export class CaptureService {
       this.error = errorMessage(error);
       logger.error('capture stop failed', { error: this.error, reason });
     } finally {
+      // Also after a stop that failed: a listener holding something for the recording (a power
+      // save blocker, the helper's "recording on") must hear that it is over. The try tells the
+      // listeners itself once the meeting is ended or discarded, so this call only speaks when the
+      // try threw first, with the meeting maybe still open: `stopFailed`, never a plain end.
+      this.endRecording({ reason, discarded, stopFailed: true });
       this.notice = stopNotice(reason, new Date(this.clock()), this.guards, options.detail ?? null);
       this.session = null;
       this.resetSessionState();
       this.setPhase('idle');
     }
     return this.getStatus();
+  }
+
+  /**
+   * `meetings.stop_reason`, written before the sessions close: a quit whose stop outruns
+   * quitStopTimeoutMs then still says `quit`, and the next launch keeps it rather than `crash`
+   * (TranscriptStore.endMeetingsLeftOpen). A store that refuses is logged; the stop goes on, since
+   * the sessions bill until they close.
+   */
+  private saveStopReason(meetingId: string, reason: StopReason): void {
+    try {
+      this.options.store.setMeetingStopReason(meetingId, reason);
+    } catch (error) {
+      this.options.logger.error('stop reason not saved', {
+        meetingId,
+        reason,
+        error: errorMessage(error),
+      });
+    }
+  }
+
+  /** Tells the listeners the recording is over, once per recording. */
+  private endRecording(outcome: Omit<RecordingEnded, 'meetingId'>): void {
+    const live = this.live;
+    if (live === null) return;
+    this.live = null;
+    const ended: RecordingEnded = { meetingId: live.meetingId, ...outcome };
+    for (const listener of [...this.recordingListeners]) {
+      this.tell('ended', live.meetingId, () => listener.ended?.(ended));
+    }
+  }
+
+  /** Runs one listener call; one that throws is logged and never stops Start, Stop or the rest. */
+  private tell(event: keyof RecordingListener, meetingId: string, call: () => void): void {
+    try {
+      call();
+    } catch (error) {
+      this.options.logger.error('recording listener failed', {
+        event,
+        meetingId,
+        error: errorMessage(error),
+      });
+    }
   }
 
   private async resolveStt(): Promise<{
@@ -466,15 +800,21 @@ export class CaptureService {
   }
 
   private resetSessionState(): void {
+    // Here as well as at Stop: a Start that failed after adding the session's sink must not leave
+    // a closed session in the fan-out.
+    this.removeSessionSink?.();
+    this.removeSessionSink = null;
     this.sources = { mic: emptySourceStatus(), system: emptySourceStatus() };
     this.streams = { mic: 'closed', system: 'closed' };
     this.streamMessages = { mic: null, system: null };
     this.streamErrors = { mic: null, system: null };
     this.streamRetries = { mic: null, system: null };
     this.stt = null;
+    this.savedUsage = null;
     this.sttProvider = null;
     this.startedAt = null;
     this.recordingSinceMs = null;
+    this.capFromMs = null;
     this.lastFinalAtMs = null;
     this.segmentsUnsaved = 0;
   }
@@ -504,7 +844,7 @@ export class CaptureService {
    * while recording is marked stalled and logged once; its next chunk clears it (pushAudio). It
    * sees a capture path that stopped (renderer, worklet or IPC), not a live track of silence: that
    * still sends chunks of zeros, as system audio without its macOS permission most likely does,
-   * and is M2's silence warning (see pushAudio). Sources already `ended` or in `error` keep that
+   * and is M2-T11's silence warning, a fan-out sink (see pushAudio). Sources already `ended` or in `error` keep that
    * more specific state.
    *
    * Cost guard G2: past sttStallCloseMs with no chunk, the source's vendor session closes (it
@@ -575,7 +915,7 @@ export class CaptureService {
   private checkForgottenStop(): void {
     if (this.currentPhase !== 'recording' || this.recordingSinceMs === null) return;
     const now = this.clock();
-    const recordingForMs = now - this.recordingSinceMs;
+    const recordingForMs = now - (this.capFromMs ?? this.recordingSinceMs);
     const quietForMs = now - (this.lastFinalAtMs ?? this.recordingSinceMs);
     let reason: StopReason | null = null;
     if (recordingForMs >= this.guards.maxRecordingMs) reason = 'max-duration';
@@ -602,8 +942,8 @@ export class CaptureService {
   ): void {
     const { stt, sttProvider: provider } = this;
     if (stt === null || provider === null) return;
-    const total = stt.usage();
-    const bySource = { mic: stt.usage('mic'), system: stt.usage('system') };
+    const total = this.usage(stt);
+    const bySource = { mic: this.usage(stt, 'mic'), system: this.usage(stt, 'system') };
     const { logger, store } = this.options;
     logger.info(stopReason === null ? 'stt meter' : 'stt meter at stop', {
       meetingId,
@@ -632,16 +972,47 @@ export class CaptureService {
     }
   }
 
+  /** What the meeting used: this run's sessions, plus a resumed meeting's saved row. */
+  private usage(stt: SpeechToText, source?: AudioSource): SttUsage {
+    const live = stt.usage(source);
+    const saved = this.savedUsage;
+    if (saved === null) return live;
+    return addUsage(source === undefined ? saved.total : saved.bySource[source], live);
+  }
+
+  private meterStatus(stt: SpeechToText): SttMeterStatus {
+    return {
+      vendorName: stt.vendorName,
+      total: toMeter(this.usage(stt)),
+      sources: { mic: toMeter(this.usage(stt, 'mic')), system: toMeter(this.usage(stt, 'system')) },
+    };
+  }
+
   private emitStatus(): void {
     this.events.emit('status', this.getStatus());
   }
 }
 
-function meterStatus(stt: SpeechToText): SttMeterStatus {
+/** Copies one field when the contribution sets it; a field left out keeps what is there. */
+function copyField<T extends object>(to: T, from: T, field: keyof T): void {
+  const value = from[field];
+  if (value !== undefined) to[field] = value;
+}
+
+/**
+ * A resumed meeting's saved use plus this run's (M2 D7). An unknown cost on either side stays
+ * unknown: a partial sum would read as the whole cost (stt/usage.ts).
+ */
+function addUsage(saved: SttUsage, live: SttUsage): SttUsage {
   return {
-    vendorName: stt.vendorName,
-    total: toMeter(stt.usage()),
-    sources: { mic: toMeter(stt.usage('mic')), system: toMeter(stt.usage('system')) },
+    sessionsOpened: saved.sessionsOpened + live.sessionsOpened,
+    connectedMs: saved.connectedMs + live.connectedMs,
+    audioSentMs: saved.audioSentMs + live.audioSentMs,
+    droppedChunks: saved.droppedChunks + live.droppedChunks,
+    estimatedCostUsd:
+      saved.estimatedCostUsd === null || live.estimatedCostUsd === null
+        ? null
+        : Math.round((saved.estimatedCostUsd + live.estimatedCostUsd) * 10_000) / 10_000,
   };
 }
 

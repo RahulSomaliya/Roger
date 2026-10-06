@@ -6,9 +6,8 @@ import { APP_PREFERENCES } from '../shared/preferences';
 import { ApiClient } from './api/ApiClient';
 import type { ApiConnection } from './api/http';
 import { buildAppMenu } from './appMenu';
-import { CaptureService } from './capture/CaptureService';
+import { createCaptureRuntime } from './capture/createCaptureRuntime';
 import { loadConfig, readConfigFile } from './config';
-import { registerIpcHandlers } from './ipc';
 import { RecordingLifecycle, watchApp, watchWindow } from './lifecycle';
 import { createLogger, errorMessage } from './logger';
 import { registerNavigation } from './navigation';
@@ -114,17 +113,22 @@ async function main(): Promise<void> {
   if (settingsError !== null) logger.error(settingsError);
   const startupError =
     [missingToken, settingsError].filter((error) => error !== null).join(' ') || null;
-  const capture = new CaptureService({
+  // Capture, the one open budget, the capture IPC and every M2 feature's slot. The cost guards go
+  // in with `config`: into CaptureService and its budget there, into the adapters here.
+  const { capture, quitHooks: captureQuitHooks } = createCaptureRuntime({
+    config,
     store,
     api,
+    apiConnection,
     uploader,
     createSpeechToText: (provider) =>
       createSpeechToText(provider, { logger, guards: config.costGuards }),
     ensureMicrophoneAccess: () => ensureMicrophoneAccess(),
-    logger: logger.child({ component: 'capture' }),
-    sttProviderOverride: config.sttProviderOverride,
     startupError,
-    guards: config.costGuards,
+    userData,
+    ipcMain,
+    getWindow: () => window,
+    logger,
   });
 
   // Quit, sleep, the window closing, crashing or reloading: each stops the recording (lifecycle.ts).
@@ -140,6 +144,8 @@ async function main(): Promise<void> {
 
       // [slot M2-T4 quit] stop the uploader and close the transcript store
 
+      // The capture features' own hooks first: their timers and helpers touch the store.
+      ...captureQuitHooks,
       {
         name: 'stop the uploader and close the transcript store',
         // Synchronous, so the bound never cuts it; every hook names one all the same.
@@ -160,12 +166,7 @@ async function main(): Promise<void> {
   });
   watchApp(lifecycle, { app, powerMonitor });
 
-  registerIpcHandlers({
-    ipcMain,
-    capture,
-    getWindow: () => window,
-    logger: logger.child({ component: 'ipc' }),
-  });
+  // After createCaptureRuntime, so a hook its slots set (T3b's beforeFirstTick) runs first.
   if (missingToken === null) uploader.start();
   else logger.error(missingToken);
 
