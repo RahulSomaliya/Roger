@@ -209,20 +209,20 @@ export interface FlushableNote {
  * The page's one answer to main's `notes:flush-request` (quit): flush every open note, then ack
  * once. One subscription for the page, never one per editor: main waits for one ack per window,
  * and a second editor acking first would let main close notes.sqlite under the other's save. It
- * subscribes when the first editor opens and stays, so a window whose editors have closed still
- * answers at once instead of costing the quit main's 1 s wait.
+ * subscribes as it is made and stays for the page's life, so a page with no editor open (none
+ * yet, or all closed) answers at once instead of costing the quit main's 1 s wait.
  */
 export class NotesFlushResponder {
   private readonly notes = new Set<FlushableNote>();
-  private subscription: Unsubscribe | null = null;
 
-  constructor(private readonly api: Pick<NotesApi, 'onNotesFlushRequest' | 'ackNotesFlush'>) {}
+  constructor(private readonly api: Pick<NotesApi, 'onNotesFlushRequest' | 'ackNotesFlush'>) {
+    api.onNotesFlushRequest((request) => {
+      void this.answer(request);
+    });
+  }
 
   /** Adds an open note to every flush; returns the function that takes it out. */
   register(note: FlushableNote): () => void {
-    this.subscription ??= this.api.onNotesFlushRequest((request) => {
-      void this.answer(request);
-    });
     this.notes.add(note);
     return () => {
       this.notes.delete(note);
@@ -239,7 +239,12 @@ export class NotesFlushResponder {
 
 let pageResponder: NotesFlushResponder | undefined;
 
-/** The page's responder, over `window.roger`, made when the first editor opens. */
+/**
+ * The page's responder, over `window.roger`, made and subscribed by the first call. Every
+ * NoteEditor calls it; the app must also call it once as the page starts (M4-T20, which mounts the
+ * editors), or a window where no meeting's notes were opened yet never acks and main's quit waits
+ * its full 1 s for it.
+ */
 export function notesFlushResponder(): NotesFlushResponder {
   pageResponder ??= new NotesFlushResponder(window.roger);
   return pageResponder;

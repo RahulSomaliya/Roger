@@ -175,6 +175,26 @@ describe('DebouncedSaver', () => {
     expect(flush.acks).toEqual([{ requestId: 'quit-2' }]);
   });
 
+  it('acks at once in a page where no editor ever opened, and joins editors that open later', async () => {
+    const flush = fakeFlushApi();
+    const responder = new NotesFlushResponder(flush.api);
+    // Subscribed as it is made: main's quit must not wait its 1 s on a page with no notes open.
+    await flush.request('quit-0');
+    expect(flush.acks).toEqual([{ requestId: 'quit-0' }]);
+    const writes = slowWrites();
+    const saver = new DebouncedSaver({
+      read: () => docSaying('opened later'),
+      write: writes.write,
+      responder,
+    });
+    saver.edited();
+    await flush.request('quit-1');
+    expect(flush.listeners.size).toBe(1);
+    expect(flush.acks).toEqual([{ requestId: 'quit-0' }]);
+    await writes.land();
+    expect(flush.acks).toEqual([{ requestId: 'quit-0' }, { requestId: 'quit-1' }]);
+  });
+
   it('acks a flush request at once when nothing is unsaved', async () => {
     const { flush, writes } = setUp();
     await flush.request('quit-3');
