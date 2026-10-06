@@ -86,6 +86,29 @@ describe('LatestRead', () => {
     expect(store.getSnapshot().error).toBe('Could not read: window.roger has no getMeeting');
   });
 
+  it('reads for a key once: again for a new key, never twice for the same one', () => {
+    // useLatestRead calls readFor with its refreshKey after each change of it; React's StrictMode
+    // runs that effect twice on mount, which must not read twice.
+    const reads = manualReads<string>();
+    const store = new LatestRead(reads.read, describeFailure);
+    store.readFor('idle');
+    expect(reads.started()).toBe(1);
+    store.readFor('idle');
+    expect(reads.started()).toBe(1);
+    store.readFor('recording');
+    store.readFor('idle');
+    expect(reads.started()).toBe(3);
+  });
+
+  it('reads on refresh whatever the key, as Try again asks', () => {
+    const reads = manualReads<string>();
+    const store = new LatestRead(reads.read, describeFailure);
+    store.readFor('idle');
+    store.refresh();
+    store.readFor('idle');
+    expect(reads.started()).toBe(2);
+  });
+
   it('tells subscribers each change, and stops once they unsubscribe', async () => {
     const reads = manualReads<string>();
     const store = new LatestRead(reads.read, describeFailure);

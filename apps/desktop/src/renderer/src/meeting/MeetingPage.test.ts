@@ -16,6 +16,8 @@ import type * as UseMeeting from './useMeeting';
 const fakes = vi.hoisted(() => ({
   shell: null as Shell | null,
   read: null as Read<StoredMeeting | null> | null,
+  /** What each render passed to useMeeting: the meeting and the key that makes it read again. */
+  reads: [] as { meetingId: string; refreshKey: string }[],
 }));
 vi.mock('../app/ShellContext', () => ({
   useShell: () => {
@@ -25,8 +27,9 @@ vi.mock('../app/ShellContext', () => ({
 }));
 vi.mock('./useMeeting', async (importOriginal) => ({
   ...(await importOriginal<typeof UseMeeting>()),
-  useMeeting: () => {
+  useMeeting: (meetingId: string, refreshKey: string) => {
     if (fakes.read === null) throw new Error('set fakes.read first');
+    fakes.reads.push({ meetingId, refreshKey });
     return fakes.read;
   },
 }));
@@ -125,9 +128,21 @@ const page = (meetingId = A): string => renderToString(createElement(MeetingPage
 /** The text content of the rendered page, tags and React's comment markers removed. */
 const text = (html: string): string => html.replace(/<[^>]*>/g, '');
 
+/** The refreshKey the page passes to useMeeting for meeting `meetingId` under `fake`. */
+function readKeyFor(fake: Shell, meetingId = A): string {
+  fakes.shell = fake;
+  fakes.reads = [];
+  page(meetingId);
+  const [first] = fakes.reads;
+  if (first === undefined) throw new Error('the page never read its meeting');
+  expect(first.meetingId).toBe(meetingId);
+  return first.refreshKey;
+}
+
 beforeEach(() => {
   fakes.shell = shell({});
   fakes.read = read(undefined);
+  fakes.reads = [];
 });
 
 describe('the meeting page', () => {
@@ -241,6 +256,24 @@ describe('the meeting page', () => {
     expect(html).toContain('data-layout="single"');
     expect(html).not.toContain('aria-pressed');
     expect(html).not.toContain('role="tablist"');
+  });
+
+  it("reads again when this meeting's recording starts or stops, never for another's", () => {
+    // After Stop the store has every line the page saw live, or no meeting when nobody spoke.
+    const live = { id: A, startedAt: '2026-10-06T09:00:00.000Z' };
+    const idle = readKeyFor(shell({ status: IDLE }));
+    const recordingA = readKeyFor(shell({ status: recording(A), captureMeeting: live }));
+    expect(recordingA).not.toBe(idle);
+    expect(readKeyFor(shell({ status: { ...IDLE, meter: METER }, captureMeeting: live }))).toBe(
+      idle,
+    );
+    // Main's idle heartbeat (a new status every 2 s) reads nothing again.
+    expect(readKeyFor(shell({ status: { ...IDLE, upload: { ...IDLE.upload, pending: 2 } } }))).toBe(
+      idle,
+    );
+    // While B records, A's page has nothing new to read.
+    const b = { id: B, startedAt: '2026-10-06T10:00:00.000Z' };
+    expect(readKeyFor(shell({ status: recording(B), captureMeeting: b }), A)).toBe(idle);
   });
 
   it('names no meeting while the first read runs, rather than a wrong title', () => {

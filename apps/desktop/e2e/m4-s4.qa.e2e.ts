@@ -112,10 +112,9 @@ it(
       );
 
       // Failure path: the store read fails. React's StrictMode (the preview is a dev build) runs
-      // the page's effect twice, so the page reads twice: fail both.
+      // the page's effect twice, and LatestRead.readFor reads once for both: fail that one.
       await page.locator('.sidebar button', { hasText: 'Home' }).click();
       await qa.settle(page);
-      await qa.failNextRequest(page, 'database is locked');
       await qa.failNextRequest(page, 'database is locked');
       await page.locator(`.recent-meetings-list button[title="${PAST_MEETING.title}"]`).click();
       await page.waitForSelector('.meeting-read-error');

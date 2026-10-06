@@ -27,8 +27,10 @@ export type Read<T> = ReadState<T> & { readonly refresh: () => void };
 function useLatestRead<T>(reader: LatestRead<T>, refreshKey: string): Read<T> {
   // The server snapshot is the empty state: renderToString (the shell tests) never reads.
   const state = useSyncExternalStore(reader.subscribe, reader.getSnapshot, reader.getSnapshot);
+  // readFor decides whether to read (latestRead.test.ts covers it): renderToString, which the page
+  // tests use, runs no effects.
   useEffect(() => {
-    reader.refresh();
+    reader.readFor(refreshKey);
   }, [reader, refreshKey]);
   return useMemo(() => ({ ...state, refresh: reader.refresh }), [state, reader]);
 }
