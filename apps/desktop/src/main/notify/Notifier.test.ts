@@ -49,6 +49,12 @@ const electron = vi.hoisted(() => {
     shown,
     Notification: FakeNotification,
     app: {
+      // createCaptureRuntime also builds M2-T10's system-audio source, which reads these (the
+      // same stand-ins as createCaptureRuntime.test.ts). Without them this suite failed only
+      // after both tasks merged: "app.getAppPath is not a function".
+      isPackaged: false,
+      getAppPath: (): string => '/nonexistent/roger-app',
+      on: (): void => undefined,
       dock: {
         bounce: (type: string): number => {
           state.bounces.push(type);
