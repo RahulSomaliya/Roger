@@ -317,7 +317,88 @@ marks and no `[L12]` refs, and it is never "From your notes": that heading close
 
 ### Notes
 
-Not built yet. Owner: M4-T6, which writes its routes here, with their `409`s.
+A meeting has two notes, each one whole TipTap JSON doc: the user's own notes (`user`, "My
+notes") and the AI notes (`ai`). The desktop keeps a copy of each on the Mac and saves it here.
+Every stored save raises the note's version, so two places that edited the same version get a
+`409` instead of one silently overwriting the other.
+
+```ts
+type NoteKind = "user" | "ai";
+
+interface Note {
+  kind: NoteKind;
+  doc: { type: "doc"; content?: object[] };  // TipTap JSON, as the editor's getJSON() writes it
+  version: number;                  // 1 when created; every stored save adds 1
+  template_id: string | null;       // the template of the notes run that wrote the AI notes
+  last_run_id: string | null;       // that run
+  generated_version: number | null; // the version that run wrote: a higher `version` was edited since
+  updated_at: string;               // instant
+}
+```
+
+Notes runs write `template_id`, `last_run_id` and `generated_version` (Notes runs and streaming);
+a `PUT` never changes them, and on the user's notes they stay `null`.
+
+#### `GET /v1/meetings/{meeting_id}/notes`
+
+Response: `200 { "user": Note | null, "ai": Note | null }`, `null` where that doc was never saved.
+No `409`s.
+
+#### `PUT /v1/meetings/{meeting_id}/notes/{kind}`
+
+Saves the whole doc of one kind. `kind` is `user` or `ai`; anything else is a `422`.
+
+Request:
+
+```json
+{ "doc": { "type": "doc", "content": [] }, "base_version": 3, "revision_id": "uuid" }
+```
+
+- `base_version`: the stored version the doc was edited from; `0` creates the note.
+- `revision_id`: the client's id for this save, new for every save.
+
+Response: `200 Note`, the note as stored, one version above `base_version`.
+
+Re-sends: a `revision_id` equal to the stored note's is the save that made it, sent again. It
+answers `200` with the stored note and writes nothing, whatever else it carries (matched by id
+alone, like segment ids). Only the latest save matches: an older one sent again is a stale base.
+
+`409 conflict`, and nothing is stored, when:
+
+- `base_version` is not the stored version (`0` when nothing is stored): the doc was saved from
+  somewhere else since. The desktop loads the stored note and keeps its own doc as a conflict copy.
+- `kind` is `ai` while a notes run of this meeting is running: the run is about to replace the AI
+  notes. Save again once the run has finished. The user's notes can be saved during a run.
+
+A notes run's claim and every save take the meeting's lock first, so a save lands wholly before a
+run starts (and the run sees its version) or wholly after (and gets the `409`).
+
+Limits on `doc`. Breaking one is a `422 validation_error` whose message names `body.doc` and the
+rule, never the doc's text, and nothing is stored:
+
+- a JSON object whose `type` is `"doc"`;
+- at most 512 KiB (524,288 bytes) as compact JSON in UTF-8: no spaces after `,` and `:`,
+  characters as they are, not as `\u` escapes, and numbers as `JSON.stringify` writes them
+  (`1e-7`, not `1e-07`);
+- at most 32 levels deep. The doc is level 1, and every object or array is one level below its
+  parent, except an array under a `content` key, which stays on the level of the object holding
+  it. So each node is one level below the node holding it, and a bullet list tabbed 13 deep with
+  a link in its deepest item still fits;
+- no `__proto__`, `constructor` or `prototype` key anywhere: the editor would turn them into DOM
+  attributes that reach prototypes;
+- no `NaN` or `Infinity`, which are not JSON.
+
+The desktop refuses a save over these limits before sending it (`noteDocProblem` in
+`apps/desktop/src/shared/notes.ts`), and the API never counts more strictly: a doc the desktop
+saved but the API refused would stay unsynced on the Mac and be sent again forever. A body nested
+past what the JSON parser reads (thousands of levels) is a `400 bad_request` before these checks.
+
+Postgres cannot store U+0000 or an unpaired UTF-16 surrogate (half of an emoji) in a doc. Neither
+is text anyone reads, so the API drops each U+0000 and replaces each unpaired surrogate with
+U+FFFD, in keys and values alike, and answers with the doc as stored. The key rules apply to keys
+as stored: `"__proto\u0000__"` is a `__proto__` key, and two keys of one object that would be
+stored as one (`"type"` and `"type\u0000"`) are a `422` rather than a value lost. The editor never
+writes such keys: its keys are its schema's names.
 
 ### Notes runs and streaming
 
