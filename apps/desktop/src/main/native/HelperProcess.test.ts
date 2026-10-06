@@ -515,3 +515,50 @@ describe.concurrent('HelperProcess', () => {
     expect(helper.restarts).toBe(0);
   });
 });
+
+/** Blocks this thread, event loop included, for `ms`: main stuck in a synchronous call. */
+function blockMain(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+// Not concurrent: it blocks this process's event loop, which would starve the other tests' helpers.
+describe('HelperProcess watchdog while main is blocked', () => {
+  // A synchronous SQLite write waiting on a lock (busy_timeout, 5 s) blocks main inside an STT
+  // socket callback; libuv then runs timers before it reads the helper's pipe again.
+  it('reads the output waiting in the pipe before it kills a helper as hung', async (context) => {
+    let frames = 0;
+    const restarts: HelperRunEnd[] = [];
+    const helper = new HelperProcess({
+      name: 'tap',
+      command: fake(['tap']),
+      stdout: 'frames',
+      logger,
+      hangKillMs: 500,
+      restartDelayMs: 20,
+      listener: {
+        onFrame: () => {
+          frames += 1;
+          // Once, inside the read of a frame: an I/O callback, while the helper goes on writing.
+          if (frames === 3) blockMain(800);
+        },
+        onRestart: (end) => restarts.push(end),
+      },
+    });
+    context.onTestFinished(async () => {
+      await helper.stop();
+    });
+    helper.start();
+    await vi.waitFor(
+      () => {
+        expect(frames).toBeGreaterThan(12);
+      },
+      { timeout: 5_000 },
+    );
+    expect(restarts).toEqual([]);
+    // The watchdog is still armed: a real hang after the block is still killed.
+    helper.writeLine('hang');
+    await vi.waitFor(() => {
+      expect(restarts.map((end) => end.cause)).toEqual(['hung']);
+    });
+  });
+});

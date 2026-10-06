@@ -10,10 +10,12 @@ import type { HelperLocation } from './helperPath';
  * Monitor.swift); test/fixtures/fake-roger-audio.mjs speaks it in tests. Change the three together.
  *
  * - A helper that writes nothing, no stdout byte and no stderr line, for `hangKillMs` (3 s) is
- *   hung, stopped with `pkill -STOP` or stuck in a Core Audio call: it gets SIGKILL and a restart.
- *   A stopped helper never exits, so restarting only on exit would leave call audio dead until the
- *   person noticed. The tap's `stats` and the monitor's `alive`, both once a second, keep a
- *   healthy helper under the limit: never add a helper mode that can stay quiet for 3 s.
+ *   hung, stopped with `pkill -STOP` or stuck in a Core Audio call: it gets SIGKILL and a restart,
+ *   once main has read its pipes one more time (a blocked main is not a hung helper,
+ *   `watchdogFired`). A stopped helper never exits, so restarting only on exit would leave call
+ *   audio dead until the person noticed. The tap's `stats` and the monitor's `alive`, both once a
+ *   second, keep a healthy helper under the limit: never add a helper mode that can stay quiet
+ *   for 3 s.
  * - A helper that exits on its own, cannot start, or writes a frame that is not one, is restarted
  *   too. Every one of those restarts counts: after `maxRestarts` (5) in a row the helper is left
  *   down and `onFailed` says so. A run that lasted `healthyResetMs` starts the count afresh, so
@@ -244,6 +246,8 @@ interface Run {
   /** `restart()` asked for it to end: the next run starts at once and nothing is counted. */
   replaced: boolean;
   spawnError: string | null;
+  /** Reads of its output so far (heardFrom): the watchdog's second look compares them. */
+  heard: number;
   watchdog: NodeJS.Timeout;
   /** The stop sequence's SIGTERM and SIGKILL timers. */
   terminate: NodeJS.Timeout[];
@@ -393,8 +397,9 @@ export class HelperProcess {
       killed: null,
       replaced: false,
       spawnError: null,
+      heard: 0,
       watchdog: setTimeout(() => {
-        this.kill(run, 'hung', `no output for ${this.hangKillMs} ms`);
+        this.watchdogFired(run);
       }, this.hangKillMs),
       terminate: [],
     };
@@ -462,12 +467,41 @@ export class HelperProcess {
     });
   }
 
+  /** The run whose output is handed on and timed: the current one, while nothing is ending it. */
+  private watching(run: Run): boolean {
+    return (
+      this.state === 'running' &&
+      this.current === run &&
+      !run.ended &&
+      !run.replaced &&
+      run.killed === null
+    );
+  }
+
   /** Any output proves the run alive. False when its output must not be handed on any more. */
   private heardFrom(run: Run): boolean {
-    if (this.state !== 'running' || this.current !== run || run.ended || run.replaced) return false;
-    if (run.killed !== null) return false;
+    if (!this.watching(run)) return false;
+    run.heard += 1;
+    // Also re-arms a watchdog that already fired (watchdogFired's second look).
     run.watchdog.refresh();
     return true;
+  }
+
+  /**
+   * The watchdog saw no output for hangKillMs, but main may be the one that was stuck. A
+   * synchronous SQLite write waiting on a lock (busy_timeout, 5 s) inside an STT socket callback
+   * blocks main in an I/O callback, and libuv then runs timers before it reads the helper's pipe
+   * again: killing from the timer SIGKILLed a healthy helper whose output sat unread, counted a
+   * restart, raised a false `helper-hung` warning and dropped the audio in the pipe. So one more
+   * poll first (setImmediate runs right after it): output read there refreshes the watchdog
+   * through heardFrom, and only a run still silent is hung.
+   */
+  private watchdogFired(run: Run): void {
+    const heard = run.heard;
+    setImmediate(() => {
+      if (run.heard !== heard || !this.watching(run)) return;
+      this.kill(run, 'hung', `no output for ${this.hangKillMs} ms`);
+    });
   }
 
   private kill(run: Run, cause: Exclude<HelperEndCause, 'crashed'>, detail: string): void {
