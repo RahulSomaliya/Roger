@@ -10,19 +10,27 @@ describe('parseBenchArgs', () => {
     }
   });
 
-  it('reads run with its defaults: every item, keyterms on, 3 at a time', () => {
+  it('reads run with its defaults: every item, keyterms on, no gate, 3 at a time', () => {
     expect(parseBenchArgs(['run'], CWD)).toEqual({
       command: 'run',
       itemIds: null,
       keyterms: true,
+      gate: false,
       parallel: 3,
     });
     expect(
       parseBenchArgs(
-        ['run', '--items', 'standup-1, meet-2', '--no-keyterms', '--parallel', '1'],
+        ['run', '--items', 'standup-1, meet-2', '--no-keyterms', '--gate', '--parallel', '1'],
         CWD,
       ),
-    ).toEqual({ command: 'run', itemIds: ['standup-1', 'meet-2'], keyterms: false, parallel: 1 });
+    ).toEqual({
+      command: 'run',
+      itemIds: ['standup-1', 'meet-2'],
+      keyterms: false,
+      gate: true,
+      parallel: 1,
+    });
+    expect(USAGE).toMatch(/^ {2}run .*\[--gate\]/m);
   });
 
   it('refuses a bad --parallel and an item id that is not a plain name', () => {
@@ -97,7 +105,7 @@ describe('parseBenchArgs', () => {
 
   it('refuses unknown commands, unknown options and stray arguments, naming them', () => {
     expect(() => parseBenchArgs(['bake'], CWD)).toThrow(/unknown command "bake"/);
-    expect(() => parseBenchArgs(['run', '--gate'], CWD)).toThrow(/--gate/);
+    expect(() => parseBenchArgs(['run', '--fast'], CWD)).toThrow(/--fast/);
     expect(() => parseBenchArgs(['score', 'extra'], CWD)).toThrow(UsageError);
   });
 });

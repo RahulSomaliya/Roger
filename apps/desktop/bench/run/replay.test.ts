@@ -28,6 +28,7 @@ function setup(
     vendor?: ConstructorParameters<typeof FakeVendor>[1];
     api?: ScriptedTokenApi;
     keyterms?: boolean;
+    gate?: boolean;
   } = {},
 ): {
   timers: ManualTimers;
@@ -59,6 +60,7 @@ function setup(
           adapters: vendor.adapters,
           timers,
           signal: abort.signal,
+          gate: options.gate ?? false,
         }),
       ),
   };
@@ -295,6 +297,7 @@ describe('replayItemAttempt', () => {
       },
       timers,
       signal: new AbortController().signal,
+      gate: false,
     });
 
     await expect(timers.settle(attempt)).rejects.toThrow(RunStoppedError);
@@ -315,10 +318,22 @@ describe('replayItemAttempt', () => {
       adapters: new FakeVendor(timers).adapters,
       timers,
       signal: new AbortController().signal,
+      gate: false,
     });
 
     await expect(timers.settle(attempt)).rejects.toThrow(RunStoppedError);
     expect(api.calls).toBe(0);
+  });
+
+  it('refuses a gated replay before asking for a token, until the silence gate (M3-T20) lands', async () => {
+    const { vendor, api, attempt } = setup({ gate: true });
+
+    const refused = attempt(new Map([['mic', tone(1_000)]]));
+
+    await expect(refused).rejects.toThrow(RunStoppedError);
+    await expect(refused).rejects.toThrow(/--gate needs the silence gate \(M3-T20\)/);
+    expect(api.calls).toBe(0);
+    expect(vendor.opens).toBe(0);
   });
 
   it('asks for no token and opens nothing when the run stops while the item waits for slots', async () => {

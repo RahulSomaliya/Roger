@@ -40,6 +40,8 @@ export interface ItemAttemptInput {
    * sessions and says why.
    */
   signal: AbortSignal;
+  /** `--gate`: replay through M3-T20's SilenceGate, as CaptureSession runs it. */
+  gate: boolean;
 }
 
 export interface ItemAttempt {
@@ -100,6 +102,14 @@ interface SourceRun {
  */
 export async function replayItemAttempt(input: ItemAttemptInput): Promise<ItemAttempt> {
   const { item, timers, signal } = input;
+  if (input.gate) {
+    // args.ts parses `--gate` and run.ts records it in run.json, so the gated replay is M3-T20's
+    // to add here alone. Until it lands, a gated run stops before any token or session rather
+    // than replay ungated under `gate: true`, which would score the gate on sessions it never ran.
+    throw new RunStoppedError(
+      '--gate needs the silence gate (M3-T20), which this build does not have yet',
+    );
+  }
   // For a failed attempt's record: set inside the open budget's turn, read when it throws.
   const times: { requestedAtMs: number | null; receivedAtMs: number | null } = {
     requestedAtMs: null,

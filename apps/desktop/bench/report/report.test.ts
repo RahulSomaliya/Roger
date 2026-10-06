@@ -301,7 +301,7 @@ describe('scoreRuns and readSummaryRows', () => {
     const logger = createLogger({ level: 'error', format: 'json', sink: () => undefined });
     const outcome = await timers.settle(
       runBench(
-        { itemIds: null, keyterms: true, parallel: 3 },
+        { itemIds: null, keyterms: true, gate: false, parallel: 3 },
         {
           benchDir: bench,
           api: new ScriptedTokenApi(

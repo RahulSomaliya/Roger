@@ -37,6 +37,11 @@ export interface RunOptions {
   itemIds: readonly string[] | null;
   /** False for `--no-keyterms`. */
   keyterms: boolean;
+  /**
+   * `--gate`: replay through M3-T20's silence gate. Parsed and recorded here so that M3-T20 adds
+   * the gated replay in replay.ts alone; until then replay.ts refuses it.
+   */
+  gate: boolean;
   /** Items replayed at once; each holds one session per stream. */
   parallel: number;
 }
@@ -150,6 +155,7 @@ class BenchRun {
           adapters: this.deps.adapters,
           timers: this.deps.timers,
           signal: this.abort.signal,
+          gate: this.options.gate,
         });
       } catch (error) {
         if (!(error instanceof RunStoppedError)) throw error;
@@ -229,8 +235,7 @@ class BenchRun {
       keyterms: { enabled: this.options.keyterms, terms: label.terms },
       normaliserVersion: NORMALISER_VERSION,
       echoFilterVersion: ECHO_FILTER_VERSION,
-      // `--gate` (M3-T20) replays through the silence gate; this replay keeps every session open.
-      gate: false,
+      gate: this.options.gate,
       items: this.items.flatMap((item) => {
         const done = this.finished.get(item.id);
         return done === undefined ? [] : [done];
@@ -242,7 +247,13 @@ class BenchRun {
 function summaryLine(outcome: RunOutcome): string {
   const counts = `${outcome.ok} ok, ${outcome.failed} failed`;
   if (outcome.runJson === null) {
-    return `run ${outcome.runId}: no item got a token from the API; nothing was written (${counts})`;
+    // A stop before the first token (a refused --gate, an open budget no item fits) is not the
+    // API's doing: say why, or the owner goes looking at the API.
+    const why =
+      outcome.stopped === null
+        ? 'no item got a token from the API'
+        : `stopped before any item got a token: ${outcome.stopped}`;
+    return `run ${outcome.runId}: ${why}; nothing was written (${counts})`;
   }
   if (outcome.stopped !== null) {
     return `run ${outcome.runId}: stopped: ${outcome.stopped} (${counts}; ${outcome.runJson})`;

@@ -60,7 +60,7 @@ describe('runBench', () => {
       out: (line) => lines.push(line),
     };
     const done = timers.settle(
-      runBench({ itemIds: null, keyterms: true, parallel: 3, ...options }, deps),
+      runBench({ itemIds: null, keyterms: true, gate: false, parallel: 3, ...options }, deps),
     );
     return { timers, vendor, api, lines, done };
   }
@@ -279,6 +279,24 @@ describe('runBench', () => {
     await expect(done).rejects.toThrow(/system\.wav: not a WAV file/);
     expect(api.calls).toBe(0);
     expect(vendor.opens).toBe(0);
+  });
+
+  it('stops a --gate run before any token or session until the silence gate lands', async () => {
+    await items(2);
+    const { vendor, api, lines, done } = start({ gate: true });
+
+    const outcome = await done;
+
+    expect(outcome).toMatchObject({ ok: 0, failed: 0, runJson: null });
+    expect(outcome.stopped).toMatch(/--gate needs the silence gate \(M3-T20\)/);
+    expect(api.calls).toBe(0);
+    expect(vendor.opens).toBe(0);
+    // The stop's reason, not "no item got a token from the API", which would send the owner
+    // looking at the API.
+    expect(lines.at(-1)).toMatch(
+      /stopped before any item got a token: --gate needs the silence gate .*; nothing was written/,
+    );
+    await expect(readdir(join(bench, 'runs', outcome.runId))).rejects.toThrow(/ENOENT/);
   });
 
   it('writes nothing when no item ever got a token', async () => {

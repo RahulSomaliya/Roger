@@ -12,7 +12,7 @@ export type DatasetCommandName = (typeof DATASET_COMMAND_NAMES)[number];
 /** The bench CLI's commands and their options (`make bench ARGS="..."`; cli.ts runs them). */
 export type BenchCommand =
   | { command: 'help' }
-  | { command: 'run'; itemIds: string[] | null; keyterms: boolean; parallel: number }
+  | { command: 'run'; itemIds: string[] | null; keyterms: boolean; gate: boolean; parallel: number }
   | { command: 'score'; runId: string | null; echoFilter: boolean }
   | { command: 'report' }
   | { command: 'canary'; saveWireDir: string | null }
@@ -31,8 +31,9 @@ export const USAGE = `usage: make bench ARGS="<command> [options]"
   clip --meeting <id> --from <mm:ss> --to <mm:ss> --name <id> [--user-data <dir>]
        [--person <name>:<consent date> ...] [--kind <kind>] [--setup <setup>]
       Cut both streams of a stretch of a meeting from the local backup into a new item.
-  run [--items <id>,<id>] [--no-keyterms] [--parallel 3]
-      Replay every item (or the ones named) at 1x through the vendor the API's token names.
+  run [--items <id>,<id>] [--no-keyterms] [--gate] [--parallel 3]
+      Replay every item (or the ones named) at 1x through the vendor the API's token names;
+      --gate replays through the silence gate (M3-T20).
   draft --runs <a>,<b>
       Write reference.draft.txt for items without a reference.txt, braces where runs disagree.
   check
@@ -69,6 +70,7 @@ export function parseBenchArgs(argv: readonly string[], cwd: string): BenchComma
           options: {
             items: { type: 'string' },
             'no-keyterms': { type: 'boolean' },
+            gate: { type: 'boolean' },
             parallel: { type: 'string' },
           },
           strict: true,
@@ -79,6 +81,7 @@ export function parseBenchArgs(argv: readonly string[], cwd: string): BenchComma
         command,
         itemIds: values.items === undefined ? null : itemIds(values.items),
         keyterms: values['no-keyterms'] !== true,
+        gate: values.gate === true,
         parallel: values.parallel === undefined ? DEFAULT_PARALLEL : parallel(values.parallel),
       };
     }
@@ -139,8 +142,8 @@ export function parseBenchArgs(argv: readonly string[], cwd: string): BenchComma
 }
 
 /**
- * Runs node:util parseArgs (strict, no positionals), its errors (an unknown option such as
- * `--gate` before M3-T20, a stray word) turned into usage errors.
+ * Runs node:util parseArgs (strict, no positionals), its errors (an unknown option, a stray word)
+ * turned into usage errors.
  */
 function usage<T>(parse: () => T): T {
   try {
