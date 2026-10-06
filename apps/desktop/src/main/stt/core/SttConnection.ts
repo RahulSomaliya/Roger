@@ -10,10 +10,12 @@ import {
   type SttEventListener,
   type SttStream,
 } from '../SpeechToText';
+import { capKeyterms } from '../keyterms';
 import { estimateCostUsd } from '../usage';
 import { rawDataToString } from '../websocket';
 import { AudioPacer } from './AudioPacer';
 import type {
+  SttConnectRefusal,
   SttProtocol,
   SttProtocolMessage,
   SttProtocolSession,
@@ -30,7 +32,9 @@ import type {
  *        └──────────── timeout / refused / vendor closed ─────────────────────────────▲
  *
  * - connecting: the handshake plus the vendor's ready signal, under one connect timeout. A failure
- *   terminates the socket and rejects `whenOpen()` only once the socket is closed.
+ *   terminates the socket and rejects `whenOpen()` only once the socket is closed. A refusal the
+ *   protocol blames on the jargon list rejects with `keytermsRejected` set; it is never retried
+ *   here (see keytermsRefused).
  * - open: audio flows, paced to real time for a vendor that declares it (see pump). The keep-alive
  *   runs only while audio was sent within keepAliveForMs. A vendor close here is one fatal error,
  *   then "closed".
@@ -98,6 +102,8 @@ export class SttConnection implements SttStream {
   readonly label: string;
   private readonly closeTimeoutMs: number;
   private readonly keepAliveForMs: number;
+  /** The jargon list this stream sent, cut to the shared limits (keyterms.ts). */
+  private readonly keyterms: readonly string[];
   private connectTimer: NodeJS.Timeout | null;
   private finishTimer: NodeJS.Timeout | null = null;
   private keepAliveTimer: NodeJS.Timeout | null = null;
@@ -133,11 +139,13 @@ export class SttConnection implements SttStream {
     this.closeTimeoutMs = options.closeTimeoutMs;
     this.keepAliveForMs = options.keepAliveForMs;
     this.pacer = new AudioPacer({ pacing: this.protocol.audioPacing, sampleRate: this.sampleRate });
+    const stream = this.withCappedKeyterms(options.stream);
+    this.keyterms = stream.settings.keyterms ?? [];
     // Throws SttConnectError on settings the vendor cannot take, before any socket exists.
-    const target = this.protocol.target(options.stream);
+    const target = this.protocol.target(stream);
     this.session = this.protocol.session({
       logger: this.logger,
-      settings: options.stream.settings,
+      settings: stream.settings,
       audioSentMs: () => pcmBytesToMs(this.audioSentBytes, this.sampleRate),
       emit: (event) => {
         if (this.currentState !== 'closed') this.deliver(event);
@@ -157,10 +165,14 @@ export class SttConnection implements SttStream {
     });
     this.socket.on('unexpected-response', (_request, response: IncomingMessage) => {
       const status = response.statusCode ?? null;
+      const keytermsRejected =
+        status !== null && this.keytermsRefused({ kind: 'http-status', status });
       this.failConnect(
         new SttConnectError(
-          `${this.protocol.vendorName}: rejected with HTTP ${status ?? 'unknown'}`,
+          `${this.protocol.vendorName}: rejected with HTTP ${status ?? 'unknown'}` +
+            this.keytermsRejectedNote(keytermsRejected),
           status,
+          { keytermsRejected },
         ),
       );
     });
@@ -488,7 +500,12 @@ export class SttConnection implements SttStream {
 
     if (was === 'connecting') {
       const error = this.connectError ?? this.earlyCloseError(code, reason);
-      this.logger.warn('stt connect failed', { error: error.message, ...this.usage() });
+      this.logger.warn('stt connect failed', {
+        error: error.message,
+        keyterms: this.keyterms.length,
+        keytermsRejected: error.keytermsRejected,
+        ...this.usage(),
+      });
       this.opening.reject(error);
       this.closing.resolve();
       return;
@@ -518,10 +535,48 @@ export class SttConnection implements SttStream {
         ? ` (${this.protocol.describeClose(code, reason)})`
         : `: ${this.vendorError}`;
     const advice = this.protocol.connectAdvice(explanation);
+    const keytermsRejected = this.keytermsRefused({ kind: 'closed-before-ready', code, reason });
     return new SttConnectError(
       `${this.protocol.vendorName} ended the connection before the session began${explanation}` +
+        this.keytermsRejectedNote(keytermsRejected) +
         (advice === null ? '' : `. ${advice}`),
+      null,
+      { keytermsRejected },
     );
+  }
+
+  /**
+   * The stream's options with its jargon list cut to the shared limits, so no protocol maps more
+   * than every vendor takes. A cut list is a warning, never a failed call; the line counts terms
+   * and never names them (they name clients and colleagues).
+   */
+  private withCappedKeyterms(stream: OpenStreamOptions): OpenStreamOptions {
+    const received = stream.settings.keyterms ?? [];
+    const { terms, dropped } = capKeyterms(received);
+    if (dropped > 0) {
+      this.logger.warn('stt keyterms cut to the vendor limits', {
+        received: received.length,
+        sent: terms.length,
+        dropped,
+      });
+    }
+    return { ...stream, settings: { ...stream.settings, keyterms: terms } };
+  }
+
+  /**
+   * Whether the vendor refused this connect over the jargon list. Asked only when one was sent.
+   * The caller only sets the flag: the core never opens a second socket for it. CaptureSession's
+   * one reopen without the list goes through SttOpenBudget (M3-T4b); a retry here would be a billed
+   * open the budget never saw, and a vendor that kept refusing would make it a loop (house rule 9).
+   */
+  private keytermsRefused(refusal: SttConnectRefusal): boolean {
+    return this.keyterms.length > 0 && this.protocol.keytermsRejected?.(refusal) === true;
+  }
+
+  private keytermsRejectedNote(rejected: boolean): string {
+    if (!rejected) return '';
+    const count = this.keyterms.length;
+    return `; the jargon list (${count} ${count === 1 ? 'term' : 'terms'}) was rejected`;
   }
 
   private clearConnectTimer(): void {
