@@ -98,8 +98,8 @@ Supporting checks, run before the real calls:
 | Lines without support | Refs not in the map are removed. A line left with no valid ref is dropped and listed under "Removed lines". A line whose valid refs are all `N` goes to a closing "From your notes" list with no chips (D7). A line whose numbers, or whose words, are not in its cited lines and note blocks is kept and flagged "check this". | Flag everything, drop nothing; a second LLM pass that verifies each line | The product promise (spec.md, Notes row) is that every AI line links to the transcript lines behind it. A verifier pass doubles cost and wait; the eval's judge measures how much it would catch first. D4, D7. |
 | Number support check | `citations.py` normalises numbers on both sides before comparing: number words to digits ("fifty thousand" to 50000, "two weeks" to "2 weeks"), `k`, `m` and `bn` suffixes and `$`, thousands separators, `%` and "percent", ordinals ("6th" to 6). Tokens that mix letters and digits (`Q3`, `H1`, `v2`) compare whole, never as bare digits. | Raw digit matching | Transcripts say "fifty thousand", notes say "50k", and dates or "Q3" leave bare digits. Raw matching would flag correct lines and push past the 10% flagged target and the 2-minute budget. Same idea as M3's normaliser v1, which is TypeScript for the bench; this is a small Python module with rule-by-rule tests. |
 | Notes storage | Two TipTap JSON docs per meeting, `user` and `ai`, in Postgres table `meeting_notes`, each with a version. The `ai` row keeps `last_run_id` and `generated_version` (the version that run wrote), so the app knows whether the AI notes were edited since. The desktop keeps a copy in its own SQLite file and writes it on every edit. | Markdown text; a Yjs CRDT | TipTap JSON round-trips the editor exactly and carries citation nodes; Markdown loses them. A CRDT is two new packages and a sync server for one user on one Mac. D5. |
-| Conflict rule | `PUT` carries `base_version` and a client `revision_id`. A stale `base_version` is a `409`; the same `revision_id` again is a `200` (a re-send). An AI-doc `PUT` while a notes run is running is a `409`. The run claim and every AI-doc `PUT` lock the meeting row first (`SELECT ... FOR UPDATE`), so a `PUT` lands wholly before a claim (which then sees its version) or after it (`409`). On `409` the desktop loads the server doc and keeps its own as a conflict copy with "Use mine". | Last writer wins | House rules 1 and 7: never lose text, re-sends are safe. The meeting row exists before any notes row, so it is the one lock both paths can take. D5. |
-| AI notes and my notes | Separate docs shown as "My notes" and "AI notes". The AI doc is editable once written. A regeneration stores the doc it replaces on the new run, read under `SELECT ... FOR UPDATE` at the moment the new doc is written. `GET /runs/{id}` returns it and "Restore previous notes" puts it back as a new version. Regenerating AI notes that were edited since their run asks first. | AI rewrites the user's doc in place | The user's words are never overwritten without a way back. |
+| Conflict rule | `PUT` carries `base_version` and a client `revision_id`. A stale `base_version` is a `409`; the same `revision_id` again is a `200` (a re-send). An AI-doc `PUT` while a notes run is running is a `409`. The run claim and every `PUT` lock the meeting row first (`services.notes.lock_meeting`, built by T6 as `FOR NO KEY UPDATE`: it takes turns with itself and with `FOR UPDATE`, and leaves alone the `FOR KEY SHARE` every segment insert takes), so a `PUT` lands wholly before a claim (which then sees its version) or after it (`409`). T7's `claim_run` takes no lock itself: T8 calls `lock_meeting` first, in the same transaction. On `409` the desktop loads the server doc and keeps its own as a conflict copy with "Use mine". | Last writer wins | House rules 1 and 7: never lose text, re-sends are safe. The meeting row exists before any notes row, so it is the one lock both paths can take. D5. |
+| AI notes and my notes | Separate docs shown as "My notes" and "AI notes". The AI doc is editable once written. A regeneration stores the doc it replaces on the new run, read under the meeting lock (`lock_meeting`) at the moment the new doc is written. `GET /runs/{id}` returns it and "Restore previous notes" puts it back as a new version. Regenerating AI notes that were edited since their run asks first. | AI rewrites the user's doc in place | The user's words are never overwritten without a way back. |
 | Where generation runs | In the API, as a background task per run with its own event fan-out; the SSE response subscribes to it. The run is claimed (and a chat message stored) in a dependency with `scope="function"` that opens its own session from `DatabaseDep` and commits before it returns; the SSE generator takes no `SessionDep`. The run row has a heartbeat. Runs whose heartbeat is older than 2 minutes are marked failed at startup and before a new run starts, and chat messages tied to them become `failed`. | Inside the request handler; claim through `SessionDep` | Closing the laptop mid-run must not throw away paid output: the run finishes and saves, and the desktop reads it on reconnect. open-granola marks interrupted runs failed on reopen (`src-tauri/src/storage.rs:165`). In FastAPI 0.142.2 a request-scoped `yield` dependency (the default, so `SessionDep`) exits only after the streaming response ends; the function exit stack closes before `await response(...)` (`fastapi/routing.py`). A claim through `SessionDep` would hold its transaction for the whole stream, and the background task's session could not see the run row. |
 | Re-sent ids | A re-sent `run_id` of a running run attaches to it: the events buffered so far, then live. A finished run replays its stored result. A `run_id` or chat `message_id` already stored under another meeting or workspace is a `409` and replays nothing. Cancel with such an id is a `404`. | `409` for any running id | A reconnect after a dropped stream must re-attach; the partial unique index alone would refuse it. The `409` follows M1's rule for segment ids under another meeting. |
 | Streaming | FastAPI's built-in SSE (`response_class=EventSourceResponse`, `yield ServerSentEvent`, a `: ping` every 15 s) from the API to Electron main. Main parses SSE and sends typed IPC events to the renderer. A stream that ends with no `done` or `error` makes main poll `GET /runs/{id}` (every 2 s for 10 s, then every 5 s, until the run finishes or its heartbeat is 2 minutes old) and load the notes, or for chat the thread, when it finishes. | `sse-starlette`; an `EventSource` in the renderer | FastAPI 0.142 has it, so no dependency. House rule 5: main owns the network; the page's CSP stays closed. Stream registry per request id with an `AbortController`, after openwhispr (`src/helpers/agentStreamRequestRegistry.js`, `preload.js:1109-1120`). |
@@ -223,10 +223,10 @@ not changed, so M5 can add columns to it without touching this migration.
 | `GET /v1/meetings/{id}/notes` | `{ user: Note \| null, ai: Note \| null }`. `Note`: kind, doc, version, template_id, last_run_id, generated_version, updated_at. |
 | `PUT /v1/meetings/{id}/notes/{kind}` | Body `{ doc, base_version, revision_id }` (`base_version` 0 creates). `200 Note`. Stale base: `409 conflict`. `kind=ai` while a notes run is running: `409 conflict`. A doc that is not a TipTap `doc`, over 512 KiB (UTF-8 bytes of the compact JSON), deeper than 32 levels, or holding a `__proto__`, `constructor` or `prototype` key anywhere: `422`. Levels as the desktop's `noteDocProblem` counts them (`shared/notes.ts`, M4-T13): the doc is level 1, every object or array is one level below its parent, except an array under a `content` key, which stays on the level of the object holding it. The API measures the same way or more leniently, never more strictly, or a doc the desktop saved stays dirty and is re-sent forever. |
 | `POST /v1/meetings/{id}/notes/generate` | Body `{ run_id, template_id, user_notes_version, ai_base_version }` (0 when that doc does not exist). `text/event-stream`. Another notes run running: `409`. A version that is not the stored one: `409` (the desktop flushes and retries once). A `run_id` stored under another meeting or workspace: `409`, nothing replayed. A re-sent `run_id`: while running, the events so far then live; once finished, the stored result. No lines and no notes: `422 empty_meeting`. Vendor refused before the stream: `502 llm_provider_error`. |
-| `GET /v1/meetings/{id}/runs?kind=notes&limit=10` | Run history: status, template, model, error, dropped, flagged and from-notes counts, tokens, cost |
-| `GET /v1/meetings/{id}/runs/{run_id}` | One run with the history fields plus `output_doc` and `replaced_doc`. A run of another meeting or workspace: `404`. |
+| `GET /v1/meetings/{id}/runs?kind=notes&limit=10` | `{ items: [...] }`, the run history: status, template, model, error, dropped, flagged and from-notes counts, tokens, cost |
+| `GET /v1/meetings/{id}/runs/{run_id}` | One run with the history fields plus `output_doc` and `replaced_doc` (both keys always present, `null` when empty: T14's client refuses a run without them). A run of another meeting or workspace: `404`. |
 | `POST /v1/meetings/{id}/runs/{run_id}/cancel` | Stops a notes or chat run; `200` with the run. A run of another meeting or workspace: `404`. |
-| `GET /v1/meetings/{id}/chat?limit=50` | Messages, oldest first |
+| `GET /v1/meetings/{id}/chat?limit=50` | `{ items: [...] }`, the messages, oldest first |
 | `POST /v1/meetings/{id}/chat` | Body `{ message_id, text }` (1..4000 chars). `text/event-stream`. Meeting over the budget: `422 meeting_too_long`. A re-sent `message_id` never stores a second message: a complete answer is replayed, a streaming one is attached to, a failed one is generated again. A `message_id` stored under another meeting or workspace: `409`. |
 | MCP `get_notes` | Input `{ meeting_id? }`. Text: header, "AI notes", "From your notes" and "My notes" as Markdown. Tool text: "Get the notes for a meeting: the AI-written notes and the user's own rough notes, as Markdown. Each AI line ends with the transcript times it came from, like [00:12:03]. Notes are a summary: to quote what someone said, call get_transcript and use its exact words. If meeting_id is omitted, returns the most recent meeting." |
 
@@ -475,7 +475,7 @@ App shell (desktop):
   `preview/fakes/<feature>.ts` (the type check enforces it).
   Scenarios: an empty Mac, a past meeting, a 500-line call that adds a line every 200 ms, the API
   offline. `window.__rogerPreview` lets scripts push events and fail the next request.
-- [ ] **M4-S4. Meeting page.** M. Depends on: S1, S2, T21a (contract commit).
+- [x] **M4-S4. Meeting page.** M. Depends on: S1, S2, T21a (contract commit).
   Owns `renderer/src/meeting/` (`MeetingPage.tsx`, `MeetingHeader.tsx`, `regions.tsx`,
   `useMeeting.ts`, `meeting.css`), `renderer/src/app/RecentMeetings.tsx`, `shared/meetings.ts`,
   `shared/ipc/meetings.ts` with its bridge and preview fake (`meetings:list`, `meetings:get`). It
@@ -486,7 +486,9 @@ App shell (desktop):
   Owns `main/meetings/meetings-ipc.ts` (+ test), `[slot M4-S4b]` in `main/index.ts`, and two read
   methods appended to `main/store/TranscriptStore.ts`, `SqliteTranscriptStore.ts` and
   `InMemoryTranscriptStore.ts`: `listMeetings(limit)` and `listSegments(meetingId)` (skips
-  echo-suppressed lines; M2-T3's column exists by then).
+  echo-suppressed lines; M2-T3's column exists by then). It answers the contract S4 wrote in
+  `shared/meetings.ts` (`MeetingSummary[]`, newest first; `StoredMeeting | null`), validating with
+  its `parseListMeetingsRequest` and `parseGetMeetingRequest`.
 
 API:
 
@@ -514,15 +516,18 @@ API:
   Owns `services/notes_prompt.py`, `services/notes_protocol.py` (incremental parser),
   `services/citations.py` (ref map, removal, drop, "From your notes", number normalisation, number
   and word support checks). Pure modules.
-- [ ] **M4-T6. Notes storage routes.** M. Depends on: T1.
+- [x] **M4-T6. Notes storage routes.** M. Depends on: T1.
   Owns `services/notes.py`, `schemas/notes.py`, `routers/notes.py` (P2-F2 already includes it),
   contract section for notes and its `409` rows (P2-F2 already removed "This is the only 409").
   The AI-doc `PUT` takes the meeting row lock and refuses while a notes run is running.
-- [ ] **M4-T7. LLM run registry.** M. Depends on: T1, T2.
+- [x] **M4-T7. LLM run registry.** M. Depends on: T1, T2.
   Owns `services/llm_runs.py` (background task per run, event buffer and fan-out so a late
   subscriber gets the events so far then live, heartbeat, cancel, stale sweep of runs and their
   streaming chat messages, usage and cost, `open_llm_runtime`, which P2-F2's lifespan already
-  enters, and the FastAPI getters and `Dep` aliases; `dependencies.py` is not edited).
+  enters, and the FastAPI getters and `Dep` aliases; `dependencies.py` is not edited). As built,
+  `claim_run(session, run)` sweeps the meeting's dead runs, inserts the run and raises
+  `ConflictError` (409) when a live notes run holds the index; it takes no meeting lock and does
+  not commit. Recipe in the module docstring of `services/llm_runs.py`.
 - [ ] **M4-T8. Notes generation and its routes.** M. Depends on: T3, T4, T5, T6, T7.
   Owns `services/notes_generation.py` (DB-free core `generate_notes`, persistence wrapper, AI doc
   builder), `schemas/notes_runs.py`, `routers/notes_runs.py` (function-scoped claim; generate, get
@@ -550,14 +555,14 @@ Desktop:
   including `notes:flush-request` and its ack). The five `@tiptap/*` packages (3.31.3) are P2-F3's.
   The ApiClient prep (`main/api/http.ts`: `apiRequest` for GET, POST, PUT and DELETE, `toApiError`,
   `authHeaders`) is P2-F1's, so T14 and T15 run in parallel without editing `ApiClient.ts`.
-- [ ] **M4-T14. Local notes store and sync.** M. Depends on: T13 (builds against the contract
+- [x] **M4-T14. Local notes store and sync.** M. Depends on: T13 (builds against the contract
   from T6 with a fake API).
   Owns `main/notes/NotesStore.ts`, `main/notes/SqliteNotesStore.ts` (`notes.sqlite`: `notes`,
   `pending_generate`, `template_choices`; `applyServerNote`, `hasNotes`), `main/notes/NotesSync.ts`
   (waits while the meeting is pending, `flushMeeting`, calls an injected `onMeetingMissing` on
   `404`), `main/api/notesClient.ts` (notes, templates, runs and chat history calls, on P2-F1's
   `http.ts`).
-- [ ] **M4-T15. SSE client and stream registry.** M. Depends on: T13.
+- [x] **M4-T15. SSE client and stream registry.** M. Depends on: T13.
   Owns `main/api/sse.ts` (parser), `main/api/streamRequest.ts` (uses T13's exported helpers; no
   edit to `ApiClient.ts`), `main/notes/LlmStreams.ts`.
 - [ ] **M4-T16. Notes and chat IPC in main, quit flush.** M. Depends on: S2, T14, T15, T22, T23.
@@ -568,8 +573,10 @@ Desktop:
   `notes.autoGenerate` and `notes.whenUnsure`, `hasNotes` into the uploader and `CaptureService`,
   `onMeetingMissing` into `NotesSync`, the quit guard as a hook in the lifecycle's quit-hook list,
   before `[slot M2-T4 quit]`). Other tasks edit other slots of `index.ts`; nobody adds a
-  `before-quit` listener of their own (`main/lifecycle.ts` holds the quit).
-- [ ] **M4-T17. Notes editor.** M. Depends on: T13, T4 (fixture), T21a (contract commit).
+  `before-quit` listener of their own (`main/lifecycle.ts` holds the quit). Also the save's base
+  revision that T17 needs (build order, section 10, "From wave 2"), if the controller assigns it
+  here before wave 4.
+- [x] **M4-T17. Notes editor.** M. Depends on: T13, T4 (fixture), T21a (contract commit).
   Owns `renderer/src/notes/NoteEditor.tsx`, `citationNode.ts`, `CitationChip.tsx`,
   `useNoteDocument.ts`, `debouncedSaver.ts` (blur, unmount, `pagehide`, `beforeunload`, flush
   request from main), `saveStatus.ts`, `ConflictBanner.tsx`, `notes.css`.
@@ -639,7 +646,7 @@ Desktop (`apps/desktop/src/`, vitest under Node; components are checked in the b
 | Shared guards | `shared/notes.test.ts`: "rejects JSON that is not a doc", "rejects malformed citation attrs", "accepts the From your notes section of the fixture"; `shared/suggestTemplate.test.ts`: "last pick for the same title wins", "title words pick standup, 1:1 and client call", "an outside attendee means client call", "no cue means ask", "Untitled meeting is never remembered" |
 | Local store | `main/notes/SqliteNotesStore.test.ts`: "a save is on disk before save() returns and survives reopening", "load prefers a dirty local doc over the server copy", "applyServerNote takes the server doc when clean and keeps a conflict copy when dirty", "keeps a conflict copy until it is resolved", "pending_generate survives reopening" |
 | Sync | `main/notes/NotesSync.test.ts`: "coalesces rapid saves into one PUT", "clears dirty only when no newer local revision arrived", "on 409 loads the server doc and keeps the local one as a conflict copy", "backs off and stays dirty while the API is down", "waits while its meeting is pending and sends after the uploader creates it", "on 404 stays dirty, shows waiting and asks the uploader to re-create the meeting, never creating it", "flushMeeting uploads dirty user and AI notes and returns both versions", "uploads dirty notes from a previous run on start" |
-| API client | `main/api/ApiClient.notes.test.ts`: request shapes and error mapping for notes, templates, runs, chat; `main/api/streamRequest.test.ts`: "an error envelope before the stream rejects with ApiError" |
+| API client | `main/api/notesClient.test.ts` (T14; P2-F1 moved feature clients out of `ApiClient.ts`): request shapes and error mapping for notes, templates, runs, chat; `main/api/streamRequest.test.ts`: "an error envelope before the stream rejects with ApiError" |
 | SSE parser | `main/api/sse.test.ts`: "parses events across any byte split", "handles CRLF and multi-line data", "ignores comments and pings" |
 | Stream registry | `main/notes/LlmStreams.test.ts`: "cancel aborts the fetch and asks the API to cancel the run", "forwards events in order to the requesting window only", "closing the window aborts its streams", "a stream that ends with no done or error is reported as dropped with its run id" |
 | Generate after Stop | `main/notes/NotesGenerator.test.ts`: "Stop with auto-generate on writes one pending row with a run id", "waits while lines are waiting and reports the count", "an echo-suppressed line does not block generate", "flushes dirty user and AI notes before generating", "does not start while notes cannot upload and says why", "sends both versions with the request", "a pending generate survives a restart and fires exactly once", "a retry re-sends the same run id", "a stream that ends without done polls the run and loads the notes", "done updates notes.sqlite through applyServerNote", "asks for a template when no rule applies" |

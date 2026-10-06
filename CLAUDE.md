@@ -143,7 +143,8 @@ Each line is a trap someone already hit. Add one when you hit a new one.
 - `eslint-plugin-react-hooks` v7 (`react-hooks/refs`) rejects a ref read inside a closure built in a
   `useState` initializer. Keep the latest callback in a plain variable on the once-made object and
   update it from a layout effect. `renderToString` runs no effects: test effect-based registration
-  through the registry, not through server rendering (M4-T21a).
+  through the registry, not through server rendering (M4-T21a). It also puts `<!-- -->` between
+  adjacent text pieces (`2<!-- --> of <!-- -->100`): strip it before matching text (M3-T8).
 - A vitest test can switch time zones with `process.env.TZ`, but assert
   `new Date(...).getTimezoneOffset()` inside the switch, or a TZ test passes when the switch did
   nothing (M5-T8).
@@ -190,6 +191,9 @@ Each line is a trap someone already hit. Add one when you hit a new one.
   an app per test, a "never logged" assertion then passes on nothing. Attach a root
   `logging.Handler` after `create_app()` (`recorded_events()` in `test_stt_providers.py`) and assert
   the expected event arrived before asserting what did not (M3-T1; checked with structlog 26.1).
+  The reverse also bites: firing `services/calendar/google.py`'s logger under an app breaks
+  `test_calendar_google.py`'s `capture_logs` later in the run, so swap that module's logger per
+  test (`_fresh_google_logger` in `test_calendar_api.py`, M5-T3).
 - STT pacing tests drive a manual clock with real timers: the pace timer only wakes the queue and the
   clock decides what may go. Move the clock, then `waitFor` the frames (M3-T18).
 - A migration test that winds `roger.sqlite` back to schema N must also undo every later migration,
@@ -197,7 +201,9 @@ Each line is a trap someone already hit. Add one when you hit a new one.
   wind-back helper (M2-T3).
 - `swiftc` fails with "input file ... was modified during the build" if `native/roger-audio` changes
   while `make check` runs. `roger-audio selftest` must never create a real tap or open a device: that
-  would raise a macOS privacy prompt for whatever ran `make` (M2-T7).
+  would raise a macOS privacy prompt for whatever ran `make` (M2-T7). An agent's direct run of the
+  built helper is refused by the auto-mode classifier: iterate with `swiftc -typecheck` (the flags
+  of `scripts/build-native.sh`) and run the selftest through the gate (M2-T7b).
 - A case-insensitive dedupe feeding a unique index on `lower(...)` takes its keys from Postgres:
   Python's `str.lower()` disagrees on a final capital sigma, U+0130 and, in a C-locale database, any
   non-ASCII letter, and one multi-row `ON CONFLICT DO UPDATE` then fails "cannot affect row a second
@@ -236,3 +242,44 @@ Each line is a trap someone already hit. Add one when you hit a new one.
   `Window.roger` with a different type pass alone in their worktrees and fail together after the
   merge (TS2687/TS2717). `window.roger` is typed once in `e2e/previewWindow.d.ts`; a script names
   its own page globals (`__m4t17`, `__abWatch`) and never redeclares `roger` (wave 2, 2026-10-07).
+- On this Mac `cc` aliases `claude --enable-auto-mode`: compile test stand-ins with `/usr/bin/cc`,
+  never a copied `/bin/sleep` (macOS SIGKILLs a system binary copied out) (M2-T8).
+- `codesign --deep` skips a Mach-O in `Contents/Resources`, and swiftc's output carries the
+  linker's ad-hoc signature (`roger-audio.partial`), which `--verify --deep --strict` accepts: only
+  `install-mac.sh`'s exact requirement check catches it. Under `pipefail`, `x="$(codesign -d -r- f
+  | sed ...)"` ends the script silently on unsigned code: `{ codesign ... || true; } | sed` (M2-T9).
+- Never hold a database transaction across a vendor call: a request-scoped `SessionDep` stays idle
+  in a transaction until the response is sent. Read in your own `database.session()` and close it
+  first (`routers/stt.py`); commit a write before the vendor call (`connections.py`'s revoke)
+  (M3-T3, M5-T3).
+- Postgres refuses U+0000 in `text` and `jsonb`, and an unpaired surrogate in `jsonb`, with a 500;
+  Python's `json.loads` accepts both. Drop or replace them at the schema (`storable_doc`,
+  `CalendarText`); segment text and meeting titles still 500 on a NUL (M4-T6, M5-T4). In pydantic,
+  a `BeforeValidator` before `StringConstraints` checks length before the trim: constraints first.
+- No meeting content in logs through an error: in production `log.py`'s `dict_tracebacks` renders
+  every frame's locals (request bodies, SQL bind parameters despite `hide_parameters`). Log the
+  error type and innermost frame (`llm_runs._log_failure`) or fail as a handled error. V8's
+  `JSON.parse` error quotes the text near the fault (M4-T7, M5-T3, M4-T15).
+- The Mac's disk ignores case: two files in one folder whose names differ only in case break in
+  silence (an import resolved to the other file, TS1261; a write overwrote it) (M3-T7).
+- typescript-eslint's `no-unnecessary-condition` trusts narrowing TypeScript never undoes (a `let x:
+  T | null = null` set only in callbacks; `this.stopped` across an `await`): keep such state on an
+  object or re-read it through a non-narrowing helper (`bench/run/replay.ts`, `NotesSync`) (M3-T11).
+- `make bench` runs in `apps/desktop` (pnpm `--filter`): resolve a path the person typed against
+  `INIT_CWD`, not `process.cwd()` (`bench/run/args.ts`, M3-T11).
+- Test traps: importing a constant from a `*.test.ts` file registers its tests again (shared
+  constants go in a non-test helper); `toEqual` tells -0 from 0; `expect.*` matchers are `any`, so
+  typed lint refuses them in a `toEqual` literal; a `ReadableStream` that errors drops chunks not
+  yet read (M3-T12, M4-T15).
+- `node:sqlite`'s `prepare()` compiles only the first statement and ignores the rest: a SQL file
+  run through it holds exactly one (`PromptLog.test.ts` checks `calendar-streak.sql`, M5-T9a).
+- QA (M3-T7, M3-T8, M4-T17): an `import()` inside `page.evaluate` in an `e2e/` file throws in the
+  page (Vitest rewrites it): pass that code as a string. The shell scrolls in `.shell-page`, so
+  grow the viewport until it stops scrolling (`fitShellPage`, `e2e/m3-t8.qa.e2e.ts`). A package the
+  app has not imported yet makes Vite reload the page mid-`evaluate`: take that on a throwaway page.
+- CSS that sets `display` on an element with the `hidden` attribute overrides it: add
+  `[hidden] { display: none }` beside it (`meeting/meeting.css`, M4-S4).
+- TipTap (M4-T17): ProseMirror fills missing attrs with null, so `isRequired` lets a bare node
+  through (add `validate`); `setEditable(x)` emits `update` unless its second argument is `false`;
+  a doc given as `content` meets its first transaction at the first click (an atom click threw
+  "Selection passed to setSelection must point at the current document"): run one at load.

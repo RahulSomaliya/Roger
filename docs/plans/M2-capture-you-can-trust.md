@@ -163,7 +163,7 @@ Rows marked **owner** (D1 to D9) need Rahul's sign-off; the rest are engineering
 | **D3 owner** Loud for call audio silence | On-screen warning at 8 s of digital silence on call audio; a notification only after 60 s of it while the mic hears speech, or 180 s regardless | Notify at 8 s | Notifying at 8 s would fire in ordinary pauses. A quiet call and a cut tap look the same, so openwhispr waits 180 s before even a soft warning. Every cut that stops delivery (helper, renderer, device, network) is loud within 10 s either way. |
 | Where warnings reach the user | `Notifier`: an Electron `Notification` when Roger is not focused, one per warning spell, rate-limited per warning kind and source (at most one every 2 minutes for the same kind and source; a different kind or source always notifies); on the `failed` event, `app.dock.bounce('critical')` and a dock badge | One global limit of one every 2 minutes; a floating always-on-top pill | A global limit would hide a second, different cut (a dead mic 60 s after STT went offline), and the exit check runs three cuts back to back. Electron 42+ uses `UNUserNotificationCenter`, which needs a signed app and fails silently otherwise; the self-signed build is unverified. The pill is M11's "clear light". |
 | **D2 owner** Echo | Text-level dedupe in main, confirmed by spike T0 before sign-off. A mic word matches a call-audio word with the same normalised text within ±700 ms on the meeting timeline. A mic line is hidden when at least 70% of its words match (lines of 1 or 2 words: all words, and at least 50% time overlap). In a mixed line (under 70%), runs of 3 or more matched words are trimmed and the original text kept in a local column; a line trimmed to nothing is hidden. Re-run lines (T16) pass through the same filter against stored call-audio lines. Off when the output is known headphones. Hidden lines stay in SQLite with `suppressed_reason = 'echo'`, are not uploaded, and can be unhidden, which uploads them. If T0 shows that `getUserMedia({ audio: { echoCancellation: 'all' } })` removes call audio from the mic in Electron 44 without ducking other apps, it is turned on too and the text filter stays as the backstop | Acoustic echo cancellation only; signal correlation (openwhispr `meetingEchoLeakDetector.js`) | Chrome 141 added `echoCancellation` values `all` and `remote-only`, letting a page choose how much system playout is removed from the mic ([Chrome 141 beta](https://developer.chrome.com/blog/chrome-141-beta), [release notes](https://developer.chrome.com/release-notes/141)). Electron 44.5.1 ships a newer Chromium, but neither page says `all` works on macOS or whether it goes through Apple's voice processing, which can duck other apps' audio: T0 measures it. The older claim that Chromium only cancels its own playback held before 141 and is dropped. Correlation needs many tuned thresholds and can mute real speech. Text matching is vendor-free and testable with plain unit tests; trimming keeps the user's own words in a line that mixes both. |
-| Upload of mic lines | While the echo filter is on, a mic line is held (`upload_after` set to its creation plus 120 s) until the call-audio stream's watermark passes the line's end plus 700 ms, or that stream closes (a call-audio session closed by the stall pause or by M3-T20's silence gate counts: no echo twin can come from a closed session), whichever comes first; the 120 s is only a cap. The uploader never sends `end` for a meeting that still holds lines, and looks at a remotely ended meeting again whenever it has lines that can be uploaded (re-run, unhidden, released). At startup every hold is settled (checked once against stored call-audio lines, then released) before the uploader's first tick | A fixed 6 s hold; upload at once and retract later | A fixed hold assumes the call-audio twin lands within 1 to 2 s; while that stream reconnects or replays (its backoff is independent of the mic's), echo lines would upload before their twin and Postgres would get doubled text. M1 drops a meeting from sync for good once it is ended remotely (`TranscriptUploader.ts:196-198`, `SqliteTranscriptStore.ts:111-112`), which would strand every later line. The API accepts appends to an ended meeting and a re-sent end is idempotent (`docs/api-contract.md`), so reopening the loop needs no API change. |
+| Upload of mic lines | While the echo filter is on, a mic line is held (`upload_after` set to its creation plus 120 s) until the call-audio stream's watermark passes the line's end plus 700 ms, or that stream closes (a call-audio session closed by the stall pause or by M3-T20's silence gate counts: no echo twin can come from a closed session), whichever comes first; the 120 s is only a cap. The uploader never sends `end` for a meeting that still holds lines, and looks at a remotely ended meeting again whenever it has lines that can be uploaded (re-run, unhidden, released). At startup every hold an earlier run left (a line created before the uploader's `launchedAt`) is settled (checked once against stored call-audio lines, then released) before the uploader's first tick; a hold of this run is never touched, because a retried settle can run after a Start. From the batch listing until its answer, a line the uploader is sending (`markSegmentsSent`, in memory) can no longer be hidden, trimmed or held: Postgres may already hold it as sent | A fixed 6 s hold; upload at once and retract later | A fixed hold assumes the call-audio twin lands within 1 to 2 s; while that stream reconnects or replays (its backoff is independent of the mic's), echo lines would upload before their twin and Postgres would get doubled text. M1 dropped a meeting from sync for good once it was ended remotely (M1's `TranscriptUploader.ts:196-198`, `SqliteTranscriptStore.ts:111-112`, before T3b), which would strand every later line. The API accepts appends to an ended meeting and a re-sent end is idempotent (`docs/api-contract.md`), so reopening the loop needs no API change. |
 | **D5 owner** Audio backup | Per stream WAV files of at most 60 s, a new file at every timeline run. A closed file is turned into AAC m4a, 48 kbps, by `/usr/bin/afconvert` in the background (the WAV stays if that fails). Retention 7 days (`audioRetentionDays`, 0 to 30; 0 turns backup off), checked at startup and hourly; a meeting with an unrecovered gap keeps its audio until the gap is recovered, the user deletes it, or 30 days pass, and the capture report and a Home card say so from day 7. Paused below 2 GiB free disk. Folder `userData/audio/<meeting>`, mode 0700. Never uploaded | `MediaRecorder` webm/opus; WAV only; FLAC | System audio now reaches main as PCM, not a `MediaStream`. WAV is crash-safe (the header is repaired from the file size); AAC is about 43 MB per call hour for both streams against 230 MB of WAV. afconvert ships with macOS: no dependency. 60 s chunks and a disk reserve from anarlog `listener-core/.../recorder/chunks.rs`. The roadmap keeps audio "so a failed transcript can be re-run"; deleting it while a re-run is pending defeats that. |
 | Gap re-run | After Stop, at startup and on demand: stream each gap's backup audio (plus 1 s each side) through the same `SpeechToText` adapter (from the registry) with a fresh token, drop words that overlap lines already stored, pass mic lines through the echo filter against stored call-audio lines, save the rest with `origin = 'rerun'`. Every re-run session is an open like any other: it takes a slot in the shared `SttOpenBudget`'s per-minute window first (the vendor counts per account; T4 builds the budget in `createCaptureRuntime.ts` and injects it, so T16 shares it without editing `CaptureService.ts`), through the minute-only acquire, never from a live meeting's allowance (the meeting with gaps is the one whose failures spent it, and after Stop the count still holds that meeting's opens), and is never opened while a recording runs; the core paces it at real time; its usage is added to that meeting's `stt_usage` row, because the vendor bills it | A batch endpoint on the API | Audio never leaves the Mac in Phase 2 (C6), and it reuses the streaming adapter. Without the echo pass, a re-run gap on laptop speakers brings the doubles back. Whole-call re-runs are M12. |
 | **D6 owner** Call detection | Helper monitor polls Core Audio process objects every 1 s (`kAudioHardwarePropertyProcessObjectList`, `kAudioProcessPropertyIsRunningInput`). A PID resolves to its outermost app bundle; a process outside any bundle resolves by executable path, and `/usr/libexec/avconferenced` and `callservicesd` count as "FaceTime or phone call". Allowlist of call apps (Zoom, Teams, FaceTime, Webex, Slack, browsers). Offer "Take notes" after 5 s of mic use (15 s for a browser), 10-minute cooldown after a dismiss. Never auto-start | Deny-list of any mic app (anarlog); window titles; auto-start | No permission needed. anarlog `crates/detect/src/list/macos.rs` does the same lookup, and special-cases the call daemons there (`APPLE_CALL_DAEMON_IDS`, lines 11-16) and in `apps/desktop/src/stt/meeting-apps.ts` ("iPhone Call"): FaceTime audio runs in `avconferenced`, which has no `.app` around it. anarlog's listeners stop firing on macOS 26 ([home-assistant/iOS#5635](https://github.com/home-assistant/iOS/issues/5635)), so poll. A browser using the mic is a weaker signal, hence 15 s (anarlog's default). |
@@ -274,7 +274,11 @@ this one is migration 4 (fixed in `phase-2-build-order.md`).
   `recording off`, and on parent death while recording runs
   `open -g -b ai.linkt.roger --args --relaunched` once (`--relaunch-dry-run` prints it instead,
   for tests).
-  `roger-audio probe --seconds 2` prints the peak it heard. `roger-audio selftest` checks the
+  `roger-audio probe --seconds 2` prints `{"event":"listening","seconds":N}` once its tap runs
+  (main starts the system sound on that line), then `{"event":"result","peak":P,"audioMs":M}`:
+  `P` > 0 is heard; `M` 0 means the tap never ran (also a stderr `no_audio` warning). A route or
+  tap-format change before anything was heard ends it with exit 1, an `error` event
+  `route_changed` and no result line (`Probe.swift` header). `roger-audio selftest` checks the
   converter, framing and ring overflow; `selftest --route-switch` is the audible route test.
 
 ## Work items
@@ -318,22 +322,30 @@ plus one slot block. Every task is TDD: the failing test first,
   store kept in step. Also owns the backup fixture `apps/desktop/test/fixtures/backup/` (a small
   `roger.sqlite` built by this migration plus short WAV and m4a chunks with a gap, and the script
   that makes them), moved here from T15 so M3-T12 can start in wave 2; T15's tests read it.
-- [ ] **M2-T3b Uploader: no stranded lines** · S · desktop · depends on: T3.
+- [x] **M2-T3b Uploader: no stranded lines** · S · desktop · depends on: T3.
   Owns `src/main/upload/TranscriptUploader.ts` (+ test) and the sync statements in
   `SqliteTranscriptStore.ts` and `InMemoryTranscriptStore.ts` (`meetingsNeedingSync`, unsynced
   lines, counts, held count). Rules: a remotely ended meeting with a line that can upload is synced
-  again and its end re-sent; `end` is never sent while the meeting holds lines; a
-  `beforeFirstTick` hook (T14's settle) runs before the first tick so holds left by a crash are
-  settled first.
-- [ ] **M2-T4 Capture pipeline seams** · M · desktop · depends on: T2, T3 (`meetings.stop_reason`).
+  again and its end re-sent; `end` is never sent while the meeting holds lines
+  (`countHeldSegments`); a startup settle (T14b's) runs before the first tick so holds left by a
+  crash are settled first. As built, that hook is set with
+  `setBeforeFirstTick((launchedAt) => ...)` from T14b's runtime slot (the uploader is built before
+  the capture runtime and started after it), is handed the uploader's launch instant, and must
+  touch only holds on lines created before it. The store also gained `markSegmentsSent`: from the
+  batch listing until its answer, `suppressSegment`, `trimSegment` and `holdSegment` refuse a line
+  being sent, as they refuse an uploaded one.
+- [x] **M2-T4 Capture pipeline seams** · M · desktop · depends on: T2, T3 (`meetings.stop_reason`).
   Owns `src/main/capture/CaptureService.ts`, `src/main/capture/AudioFanout.ts`,
   `src/main/capture/createCaptureRuntime.ts`, `src/main/capture/SttOpenBudget.ts` (+ test), the
   `[slot M2-T4 …]` blocks of `src/main/index.ts`, `src/main/ipc.ts`, and the wording of
   architecture rule 9 in `CLAUDE.md`. Audio fan-out to sinks (`onChunk(source, pcm,
-  capturedAtMs)`, arrival time as the fallback until T12 sends capture times), session event
-  listeners (T6, T14b, T18 and M3-T19b reach the live `CaptureSession` through them), `start()`
-  that can take an existing meeting (id, start and its saved `stt_usage` row, which seeds the
-  meter; the open allowance starts afresh, D7) for resume. The shared budget: `createCaptureRuntime.ts` builds the one `SttOpenBudget` and
+  capturedAtMs)`; until T12 sends capture times, a chunk is dated at its arrival minus its own
+  length, the first-sample estimate `CaptureSession` already used), session event listeners
+  (`onRecording({ started, ended })`: T6, T14b, T18 and M3-T19b reach the live `CaptureSession`
+  through `started`; `ended` carries `stopFailed`, true when Stop threw before the meeting was
+  ended), `start({ resume: { meetingId } })` for resume, which reads the meeting's start and its
+  saved `stt_usage` row from the store itself (the row seeds the meter; the open allowance starts
+  afresh, D7). The shared budget: `createCaptureRuntime.ts` builds the one `SttOpenBudget` and
   injects it into `CaptureService` (an optional option; the landed construction from the guards
   stays the default, so the G3 tests build it as before) and into the T16 slot, so T16 never edits
   `CaptureService.ts`. `SttOpenBudget` gains a minute-only acquire (for example
@@ -390,23 +402,30 @@ plus one slot block. Every task is TDD: the failing test first,
   and `native/bin/` in `apps/desktop/.gitignore`. Tap with rebuild on route change, ring buffer
   and writer thread, frame header with capture time, stdin `rebuild`, exit on stdin EOF or parent
   death. `main.swift` dispatches every subcommand.
-- [ ] **M2-T7b Helper: probe and route selftest** · S · desktop (Swift) · depends on: T7.
+- [x] **M2-T7b Helper: probe and route selftest** · S · desktop (Swift) · depends on: T7.
+  (Code merged; `make test-native-route` has not yet run on a Mac: a person runs it once and
+  attaches the log.)
   Owns `native/roger-audio/Probe.swift` and `selftest --route-switch` (P2-F3 added the
-  `make test-native-route` target). The route test makes a temporary private multi-output device,
+  `make test-native-route` target). The route test makes a temporary multi-output device,
   plays a tone with `afplay`, switches the default output with `AudioObjectSetPropertyData`, and
-  asserts non-zero audio within 2 s and a `restarted` event, then restores the output.
-- [ ] **M2-T8 Helper: monitor mode** · M · desktop (Swift) · depends on: T7.
+  asserts non-zero audio within 2 s and a `restarted` event, then restores the output. As built,
+  the device is published (`private` 0), not private: a private aggregate is visible only to the
+  process that made it, and `afplay` plays only to outputs it can see. It has a fixed UID
+  (`ai.linkt.roger.audio.route-test`), so a killed run's leftover is removed by the next run.
+- [x] **M2-T8 Helper: monitor mode** · M · desktop (Swift) · depends on: T7.
   Owns `native/roger-audio/{Monitor,Route,ParentWatch}.swift` and
   `src/main/native/monitorRelaunch.mac.test.ts`. Mic users every 1 s with PID to outermost `.app`
   and non-bundle processes by executable path; default input and output with transport
   (Bluetooth, built-in speaker or headphones by data source, USB, other); emits on change only,
   plus `alive` after every poll so T10's watchdog does not kill a quiet monitor.
   Parent death while `recording on`: relaunch Roger once, then exit; otherwise exit.
-- [ ] **M2-T9 Bundle and sign the helper** · S · desktop · depends on: T7.
+- [x] **M2-T9 Bundle and sign the helper** · S · desktop · depends on: T7.
   Owns `electron-builder.yml`, `scripts/install-mac.sh`, `src/main/native/helperPath.ts` (+ test).
   `extraResources`, build before packaging, the signing order in the "Helper build, bundling and signing" row, verify both
   identifiers and fail the install on a mismatch or a missing helper. No config override of the
-  path.
+  path. As built, the install also runs the signed helper's `selftest`, and
+  `src/main/native/installMac.mac.test.ts` tests the script's two signature functions on real
+  unsigned and ad-hoc code.
 - [ ] **M2-T10 System audio through the helper** · M · desktop · depends on: T1, T3, T4, T9.
   Owns `src/main/native/HelperProcess.ts` (spawn, frame and stderr parsers, restart up to 5 times,
   the 3 s watchdog with SIGKILL, stdin closed on stop, SIGTERM then SIGKILL after 5 s),
@@ -459,9 +478,13 @@ plus one slot block. Every task is TDD: the failing test first,
 - [ ] **M2-T14b Echo sink** · M · desktop · depends on: T3, T3b, T4, T5, T6, T14a.
   Owns the rest of `src/main/capture/echo/*` and the T14b runtime slot. A
   session sink: suppress, trim, emit "segment changed", hold mic lines until the call-audio
-  watermark or stream close (cap 120 s), release on Stop, `settleAll` at startup (wired as T3b's
-  `beforeFirstTick`), unhide, and a `filterStored` entry for re-run lines. Route comes through a
-  `RouteProvider` interface (unknown until T17a wires the monitor; unknown means filter on).
+  watermark or stream close (cap 120 s), release on Stop, `settleAll(launchedAt)` at startup
+  (set in its slot with `deps.uploader.setBeforeFirstTick`; it settles only holds on lines
+  created before `launchedAt`, the setter's doc says why), unhide, and a `filterStored` entry for
+  re-run lines. Suppress, trim and hold answer `false` for a line the uploader is sending (T3b's
+  `markSegmentsSent`) as for an uploaded one: too late, the line stays, and the sink needs no
+  in-flight handling of its own. Route comes through a `RouteProvider` interface (unknown until
+  T17a wires the monitor; unknown means filter on).
 - [ ] **M2-T15 Audio backup and retention** · M · desktop · depends on: T2, T3, T4, T5.
   Owns `src/main/backup/*` (`AudioBackupWriter`, `wav.ts`, `AudioCompressor`,
   `AudioRetentionSweeper`, `audioPaths.ts`, disk guard) and the T15 runtime slot. Header repair at
@@ -508,8 +531,9 @@ plus one slot block. Every task is TDD: the failing test first,
   Owns `src/main/setup/*`, `src/renderer/src/components/setup/*`, `e2e/setup.shots.e2e.ts`,
   `renderer/src/app/slots/m2-setup.ts`, the T19 runtime slot. Rows:
   microphone (status, request, open its pane), system audio (probe with a system sound, `pending`
-  on the first silent probe for this identity, "I allowed it" rebuilds the tap and probes again,
-  open T1's pane), Screen Recording only when the Electron fallback is in use, notifications
+  on the first silent probe for this identity; a probe that ends with an error, `route_changed`
+  included, is no answer: probe again, never spending that first-silent `pending`; "I allowed it"
+  rebuilds the tap and probes again, open T1's pane), Screen Recording only when the Electron fallback is in use, notifications
   (test), signing (T1), API health and STT token check (it fetches a token and opens no vendor
   session: every open is billed and spends the per-minute budget). Shown on first run, when Start
   fails for a permission reason, and from a menu item. Every error names the pane and the switch to
@@ -557,9 +581,10 @@ plus one slot block. Every task is TDD: the failing test first,
   replaces M1's startup `endMeetingsLeftOpen` call (it also ends meetings a quit left open after
   its 5 s `quitStopTimeoutMs`; those end as in M1, `stop_reason` `quit`). Resume or end as in D7
   (T8's relaunch puts `--relaunched` in argv), the gap row, a `resumed_after_crash` capture event, a `recording.heartbeat` app state written
-  every 5 s while recording. A resume passes the meeting's saved `stt_usage` row to T4's resume
-  start, so the cost record carries on instead of restarting at zero; the open allowance starts
-  afresh (D7).
+  every 5 s while recording. A resume calls T4's `capture.start({ resume: { meetingId } })`, which
+  reads the meeting's start and saved `stt_usage` row from the store, so the cost record carries
+  on instead of restarting at zero; the open allowance starts afresh (D7). Holds are settled by
+  T14b's `beforeFirstTick` (only lines created before the uploader's `launchedAt`).
 
 If the day runs short, T16, T17b, T18 and T23 land after the first exit-check calls; the core
 set above gates "no lost or doubled text" (the Wi-Fi cut waits for T16).
@@ -579,7 +604,7 @@ set above gates "no lost or doubled text" (the Wi-Fi cut waits for T16).
 | Every registered vendor, on a manual clock against its fake: pings only while audio flows, a socket that stops answering is declared dead at most 5 s after the last pong whatever the phase of the ping cycle, then one fatal error and a terminated socket (no socket left open); a vendor that never answers pings falls back after 10 s and logs it | `src/main/stt/conformance.test.ts`, `src/main/stt/core/SttConnection.test.ts` |
 | `net.isOnline()` false moves both sources to `offline` within 1 s, terminates their sockets at once and fetches no token while offline; back online, each source reopens with its next chunk through `SttOpenBudget` (no backoff wait); a dead socket goes through the landed `retrying` path; the window from the watermark to the new stream's first audio is one gap row with its reason (`stt_failed`, `offline`, `budget`), a stall with no audio is a capture event instead; the watermark is published per source; `suspendStreams('asleep')` finishes and closes both streams and opens nothing until `resumeStreams()` | `src/main/stt/networkStatus.test.ts`, `src/main/capture/CaptureSession.test.ts` |
 | Converter framing, frame header and capture time, ring overflow counted as dropped | `roger-audio selftest` (in `make check` on a Mac) |
-| The tap follows a switch of the default output within 2 s with a `restarted` event | `roger-audio selftest --route-switch` (`make test-native-route`, opt-in and audible; run in T7b and the exit check) |
+| The tap follows a switch of the default output within 2 s with a `restarted` event | `roger-audio selftest --route-switch` (`make test-native-route`, opt-in and audible; built in T7b, still to be run once by a person on the Mac, and again at the exit check) |
 | Monitor resolves `avconferenced` by path; it says `alive` every poll while nothing changes; parent death while recording prints the relaunch once (`--relaunch-dry-run`) and exits; parent death while not recording just exits | `src/main/native/monitorRelaunch.mac.test.ts` (`pnpm test:mac`) |
 | Helper frames and events parsed and rejected when malformed; a format other than 16 kHz Int16 refuses to start; a helper that hangs (no bytes, no event) is killed at 3 s and restarted, and that counts toward the 5; restart after a crash up to 5 times then a loud error; stop closes stdin, then SIGTERM, then SIGKILL; verified is stored on the first non-zero audio | `src/main/native/HelperProcess.test.ts`, `src/main/audio/system/TapSystemAudio.test.ts` (fake helper script) |
 | Helper missing selects the Electron path; config forces either; packaged builds ignore `ROGER_E2E` | `src/main/audio/system/selectSystemAudio.test.ts`, `src/main/native/helperPath.test.ts` |
