@@ -1,5 +1,5 @@
 import { vocabularyChannels, type VocabularyApi } from '../../src/shared/ipc/vocabulary';
-import { sameTerm, vocabularyProblem } from '../../src/shared/vocabulary';
+import { sameTerm, trimTerm, vocabularyProblem } from '../../src/shared/vocabulary';
 import { fromApi } from '../control';
 import type { FakeHub } from './hub';
 
@@ -45,11 +45,14 @@ export function createVocabularyFake(hub: FakeHub): VocabularyApi {
   };
 }
 
-/** What the API keeps of a list: each term trimmed, the first spelling of a repeat, sorted. */
+/**
+ * What the API keeps of a list: each term trimmed as the API trims (trimTerm), the first spelling
+ * of a repeat, sorted.
+ */
 function storedLikeTheApi(terms: readonly string[]): string[] {
   const kept: string[] = [];
   for (const term of terms) {
-    if (!kept.some((other) => sameTerm(other, term))) kept.push(term.trim());
+    if (!kept.some((other) => sameTerm(other, term))) kept.push(trimTerm(term));
   }
   // The API sorts by Postgres lower(); for the preview's ASCII names this is the same order.
   return kept.sort((a, b) => {

@@ -19,6 +19,13 @@ describe('the preview vocabulary fake', () => {
     await expect(vocabulary.getVocabulary()).resolves.toEqual(stored);
     await expect(vocabulary.setVocabulary([])).resolves.toEqual([]);
     await expect(vocabulary.getVocabulary()).resolves.toEqual([]);
+
+    // Trimmed as the API trims (shared/vocabulary.ts, trimTerm): U+0085 goes, U+FEFF stays.
+    const nextLine = String.fromCharCode(0x85);
+    const byteOrderMark = String.fromCharCode(0xfeff);
+    await expect(
+      vocabulary.setVocabulary([`${nextLine}Granola`, `${byteOrderMark}Zed `]),
+    ).resolves.toEqual(['Granola', `${byteOrderMark}Zed`]);
   });
 
   it('hands out copies, so the page cannot change what the fake stores', async () => {

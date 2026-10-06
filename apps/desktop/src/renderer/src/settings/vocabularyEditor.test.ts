@@ -172,7 +172,16 @@ describe('adding terms', () => {
     const { editor, seen } = await loaded();
     const before = seen.length;
     expect(editor.add('   ')).toEqual({ rest: '', problem: null });
+    // Blank to the API too: it trims U+0085, which trim() keeps.
+    expect(editor.add(String.fromCharCode(0x85))).toEqual({ rest: '', problem: null });
     expect(seen).toHaveLength(before);
+  });
+
+  it('adds a term as the API stores it, without a pasted byte order mark', async () => {
+    const { editor } = await loaded([]);
+    const pasted = `${String.fromCharCode(0xfeff)}Granola${String.fromCharCode(0x85)}`;
+    expect(editor.add(pasted)).toEqual({ rest: '', problem: null });
+    expect(editing(editor).draft).toEqual(['Granola']);
   });
 
   it('skips a term already on the list in another case, naming the spelling kept', async () => {
@@ -396,6 +405,11 @@ describe('listSize', () => {
     expect(listSize(['Linkt', `ab${String.fromCodePoint(0x1f600)}`])).toEqual({
       terms: 2,
       characters: 8,
+    });
+    // The API's trim keeps a byte order mark (shared/vocabulary.ts, trimTerm), so it counts.
+    expect(listSize([`${String.fromCharCode(0xfeff)}Linkt `])).toEqual({
+      terms: 1,
+      characters: 6,
     });
   });
 });

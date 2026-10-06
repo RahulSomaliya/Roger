@@ -1,6 +1,12 @@
 import type { VocabularyApi } from '../../../shared/ipc/vocabulary';
 import type { Unsubscribe } from '../../../shared/ipc/unsubscribe';
-import { sameTerm, termLength, termProblem, VOCABULARY_LIMITS } from '../../../shared/vocabulary';
+import {
+  sameTerm,
+  termLength,
+  termProblem,
+  trimTerm,
+  VOCABULARY_LIMITS,
+} from '../../../shared/vocabulary';
 import { describeError } from '../app/describeError';
 
 /**
@@ -131,7 +137,7 @@ export class VocabularyEditor {
     // leave that term in the box with no reason, under a message naming a term shown nowhere.
     let keptProblem: string | null = null;
     let skippedProblem: string | null = null;
-    for (const term of text.split(SEPARATORS).map((piece) => piece.trim())) {
+    for (const term of text.split(SEPARATORS).map(cleanTerm)) {
       if (term === '') continue;
       const refusal = refuse(term, draft);
       if (refusal === null) {
@@ -220,8 +226,18 @@ export function isChanged(state: VocabularyEditing): boolean {
 export function listSize(terms: readonly string[]): { terms: number; characters: number } {
   return {
     terms: terms.length,
-    characters: terms.reduce((sum, term) => sum + termLength(term.trim()), 0),
+    characters: terms.reduce((sum, term) => sum + termLength(trimTerm(term)), 0),
   };
+}
+
+/**
+ * A typed or pasted piece as a term: trimmed as the API trims it (trimTerm), and first of a byte
+ * order mark, which the API would keep inside the term and send to speech-to-text. Trap: trimTerm
+ * alone keeps a pasted mark; trim() alone keeps U+0085, so a piece of only that would join the
+ * draft as a term the API calls blank, and main would refuse the whole list at Save.
+ */
+function cleanTerm(piece: string): string {
+  return trimTerm(piece.trim());
 }
 
 /** Why `term` cannot join `draft`, and whether the box should keep it to fix; null when it can. */
@@ -247,7 +263,7 @@ function refuse(term: string, draft: readonly string[]): { message: string; keep
       keep: true,
     };
   }
-  const total = listSize(draft).characters + termLength(term);
+  const total = listSize([...draft, term]).characters;
   if (total > maxTotalChars) {
     return {
       message: `${quote(term)} would bring the list to ${total} characters. It can hold ${maxTotalChars} in all.`,

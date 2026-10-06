@@ -37,15 +37,35 @@ export function termLength(term: string): number {
 }
 
 /**
- * Why `term` cannot be on the list, or null. Measured after trimming, as the API measures.
- *
- * JavaScript's `trim()` and Python's `strip()` differ on four separators (U+001C to U+001F) and
- * U+0085, which Python strips and this keeps: here they are control characters, so a term that
- * starts or ends with one is refused where the API would have taken it trimmed. Stricter, never
- * looser, so the editor never sends a term the API refuses.
+ * Unicode's White_Space property: what the API trims from each end of a term. Its schema trims with
+ * Pydantic's `strip_whitespace`, which is Rust's `str::trim`, not Python's `strip()` (that one also
+ * trims U+001C to U+001F, which the API keeps and then refuses as control characters). Listed by
+ * running every code point through the API's schema (pydantic-core 2.46.5).
  */
+const API_WHITESPACE: ReadonlySet<number> = new Set([
+  0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x20, 0x85, 0xa0, 0x1680, 0x2000, 0x2001, 0x2002, 0x2003, 0x2004,
+  0x2005, 0x2006, 0x2007, 0x2008, 0x2009, 0x200a, 0x2028, 0x2029, 0x202f, 0x205f, 0x3000,
+]);
+
+/**
+ * `term` trimmed exactly as the API trims it before it measures and stores it (API_WHITESPACE).
+ *
+ * Trap: never JavaScript's `trim()` for a measure. It also trims U+FEFF, which the API keeps and
+ * counts, so a byte order mark plus 50 letters would pass here and draw the API's 422; and it keeps
+ * U+0085, which the API trims (vocabulary.test.ts lists both differences).
+ */
+export function trimTerm(term: string): string {
+  // Every White_Space character is one UTF-16 unit, so the ends are read unit by unit.
+  let start = 0;
+  let end = term.length;
+  while (start < end && API_WHITESPACE.has(term.charCodeAt(start))) start += 1;
+  while (end > start && API_WHITESPACE.has(term.charCodeAt(end - 1))) end -= 1;
+  return term.slice(start, end);
+}
+
+/** Why `term` cannot be on the list, or null. Measured after trimming, exactly as the API does. */
 export function termProblem(term: string): TermProblem | null {
-  const trimmed = term.trim();
+  const trimmed = trimTerm(term);
   if (trimmed === '') return { kind: 'blank' };
   if (hasControlCharacter(trimmed)) return { kind: 'control-character' };
   const length = termLength(trimmed);
@@ -74,7 +94,7 @@ export function vocabularyProblem(terms: readonly string[]): string | null {
       case 'too-long':
         return `terms[${index}] is ${problem.length} characters long; at most ${maxTermChars}`;
       case undefined:
-        total += termLength(term.trim());
+        total += termLength(trimTerm(term));
     }
   }
   if (total > maxTotalChars) {
@@ -84,7 +104,8 @@ export function vocabularyProblem(terms: readonly string[]): string | null {
 }
 
 /**
- * True when the API would keep only one of the two: the same after trimming, ignoring case.
+ * True when the API would keep only one of the two: the same after its trim (trimTerm), ignoring
+ * case.
  *
  * The API compares with Postgres `lower()`, which differs from `toLowerCase()` on a few non-ASCII
  * letters (a dotted capital I, a final sigma). Where they differ, the editor may call two terms one
@@ -92,7 +113,7 @@ export function vocabularyProblem(terms: readonly string[]): string | null {
  * shows what was kept either way.
  */
 export function sameTerm(a: string, b: string): boolean {
-  return a.trim().toLowerCase() === b.trim().toLowerCase();
+  return trimTerm(a).toLowerCase() === trimTerm(b).toLowerCase();
 }
 
 /** An array of strings: the shape of a jargon list on every wire it crosses. */

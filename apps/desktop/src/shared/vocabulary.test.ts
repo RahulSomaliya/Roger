@@ -5,6 +5,7 @@ import {
   sameTerm,
   termLength,
   termProblem,
+  trimTerm,
   VOCABULARY_LIMITS,
   vocabularyProblem,
 } from './vocabulary';
@@ -33,6 +34,8 @@ function pythonNumber(source: string, name: string): number {
 const tab = String.fromCharCode(9);
 const del = String.fromCharCode(0x7f);
 const nextLine = String.fromCharCode(0x85);
+const byteOrderMark = String.fromCharCode(0xfeff);
+const fileSeparator = String.fromCharCode(0x1c);
 const grinning = String.fromCodePoint(0x1f600);
 
 /** `count` distinct terms of `length` characters each. */
@@ -63,6 +66,23 @@ describe('termLength', () => {
   });
 });
 
+describe('trimTerm', () => {
+  it('trims as the API does, and differs from trim() only where the API does', () => {
+    // The API trims with Pydantic's strip_whitespace (Rust's str::trim: Unicode White_Space). It
+    // also trims U+0085, and keeps U+FEFF, which trim() removes. Every other code point is alike.
+    const differ: number[] = [];
+    for (let code = 0; code <= 0xffff; code += 1) {
+      if (code >= 0xd800 && code <= 0xdfff) continue;
+      const padded = `${String.fromCharCode(code)}a${String.fromCharCode(code)}`;
+      if ((trimTerm(padded) === 'a') !== (padded.trim() === 'a')) differ.push(code);
+    }
+    expect(differ).toEqual([0x85, 0xfeff]);
+    expect(trimTerm(`${nextLine} Linkt `)).toBe('Linkt');
+    expect(trimTerm(`${byteOrderMark}Linkt `)).toBe(`${byteOrderMark}Linkt`);
+    expect(trimTerm(`${fileSeparator}Linkt`)).toBe(`${fileSeparator}Linkt`);
+  });
+});
+
 describe('termProblem', () => {
   it('takes a term of 1 to 50 characters after trimming', () => {
     expect(termProblem('Linkt')).toBeNull();
@@ -81,6 +101,16 @@ describe('termProblem', () => {
     for (const term of [`Ro${tab}ger`, `Ro${del}ger`, `Ro${nextLine}ger`]) {
       expect(termProblem(term)).toEqual({ kind: 'control-character' });
     }
+  });
+
+  it('measures the term the API keeps: a byte order mark counts, U+0085 is trimmed', () => {
+    // Checked against the API's schema: these are its string_too_long and its control characters.
+    expect(termProblem(`${byteOrderMark}${'a'.repeat(50)}`)).toEqual({
+      kind: 'too-long',
+      length: 51,
+    });
+    expect(termProblem(`${nextLine}Linkt${nextLine}`)).toBeNull();
+    expect(termProblem(`${fileSeparator}Linkt`)).toEqual({ kind: 'control-character' });
   });
 });
 
@@ -112,6 +142,15 @@ describe('vocabularyProblem', () => {
     );
   });
 
+  it('adds up the terms as the API trims them, a byte order mark included', () => {
+    // 16 terms of 50 characters to the API (800), one more character breaks the limit.
+    const marked = terms(16, 49).map((term) => `${byteOrderMark}${term}`);
+    expect(vocabularyProblem(marked)).toBeNull();
+    expect(vocabularyProblem([...marked, 'y'])).toBe(
+      'the terms add up to 801 characters; at most 800 in all',
+    );
+  });
+
   it('never repeats a term in its answer: main logs it, and terms name clients', () => {
     const secret = `Acme Secret Client ${'x'.repeat(40)}`;
     expect(vocabularyProblem([secret])).not.toContain('Acme');
@@ -121,7 +160,10 @@ describe('vocabularyProblem', () => {
 describe('sameTerm', () => {
   it('is the API rule for one term: trimmed, ignoring case', () => {
     expect(sameTerm('Linkt', ' LINKT ')).toBe(true);
+    expect(sameTerm('Linkt', `${nextLine}linkt`)).toBe(true);
     expect(sameTerm('Linkt', 'Linked')).toBe(false);
+    // The API's trim keeps a byte order mark, so it stores both apart.
+    expect(sameTerm('Linkt', `${byteOrderMark}Linkt`)).toBe(false);
   });
 });
 
