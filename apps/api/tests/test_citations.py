@@ -140,6 +140,7 @@ def test_q3_is_not_a_bare_number() -> None:
         ("Ships in 2 weeks", "ships in two weeks", ()),
         ("Seats: 250", "two hundred and fifty seats", ()),
         ("Seats: 150", "a hundred and fifty seats", ()),
+        ("The 101st customer", "a hundred and first customer", ()),
         ("Revenue 1,250,000", "revenue one million two hundred fifty thousand", ()),
         ("Revenue 3500", "revenue of three thousand five hundred", ()),
         ("Rate 2.5", "a rate of two point five", ()),

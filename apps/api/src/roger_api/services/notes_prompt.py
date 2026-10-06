@@ -49,6 +49,9 @@ class NotesPrompt:
     user: str
 
 
+# The "Format:" section is the line protocol `notes_protocol.py` parses, and
+# `test_the_format_example_in_the_rules_parses_as_the_protocol` parses the example: change the two
+# together, or the model writes lines the parser drops.
 _SYSTEM_RULES = f"""\
 You write meeting notes for the person who took the rough notes in <my_notes>. In the transcript \
 that person is "Me". "Them" is everyone else on the call, and may be several people. Use a \

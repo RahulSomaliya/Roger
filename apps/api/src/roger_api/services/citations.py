@@ -142,6 +142,7 @@ type CheckedLine = CitedLine | FromNotesLine | DroppedLine
 
 
 def check_line(bullet: Bullet, refs: RefMap) -> CheckedLine:
+    """Keep, move to "From your notes" or drop one parsed bullet (see the module docstring)."""
     if not bullet.refs:
         return DroppedLine(bullet.text, reason="no_refs")
     valid = [ref for ref in bullet.refs if refs.has(ref)]
@@ -161,17 +162,17 @@ def check_line(bullet: Bullet, refs: RefMap) -> CheckedLine:
 
 def check_support(claim: str, sources: Iterable[str]) -> SupportCheck:
     """Does `claim` hold only numbers its `sources` hold, and share a content word with them?"""
-    line = _scan(claim)
+    claimed = _scan(claim)
     found: set[_Fact] = set()
     words: set[str] = set()
     for source in sources:
         scanned = _scan(source)
         found.update(scanned.facts, scanned.loose_numbers)
         words.update(scanned.words)
-    missing = (_format_fact(fact) for fact in line.facts if fact not in found)
+    missing = (_format_fact(fact) for fact in claimed.facts if fact not in found)
     return SupportCheck(
         missing_numbers=tuple(dict.fromkeys(missing)),
-        shares_words=not line.words or not line.words.isdisjoint(words),
+        shares_words=not claimed.words or not claimed.words.isdisjoint(words),
     )
 
 
@@ -213,6 +214,8 @@ _SCALES = {"thousand": 1_000, "million": 1_000_000, "billion": 10**9, "trillion"
 # A scale word after digits multiplies them: "50 thousand", "1.2 million", "2 hundred".
 _DIGIT_SCALES = {"hundred": 100, **_SCALES}
 _AMBIGUOUS_NUMBER_WORDS = frozenset({"one", "first", "second"})
+# What may follow "and" inside a number: "two hundred and fifty", "a hundred and first".
+_AFTER_AND = frozenset([*_UNITS, *_TEENS, *_TENS, *_ORDINAL_UNITS, *_ORDINALS_OF_TEENS_AND_TENS])
 
 _PLAIN_NUMBER = re.compile(r"[0-9]+(?:\.[0-9]+)?")
 # 50k, 1.2m, 3bn (magnitudes); 6th, 21st (ordinals); 3pm (times).
@@ -333,7 +336,12 @@ def _read_spelled_number(tokens: list[str], start: int) -> tuple[Decimal, int, b
         ):
             total += group * _SCALES[word]
             group, state, ceiling = 0, "scale", _SCALES[word]
-        elif word == "and" and state in ("hundred", "scale") and _continues(tokens, index + 1):
+        elif (
+            word == "and"
+            and state in ("hundred", "scale")
+            and index + 1 < len(tokens)
+            and tokens[index + 1] in _AFTER_AND
+        ):
             pass  # "two hundred and fifty"
         elif word == "point" and state != "start" and _is_unit(tokens, index + 1):
             return _read_decimal_part(tokens, index + 1, total + group, ceiling)
@@ -369,16 +377,6 @@ def _is_unit(tokens: list[str], index: int) -> bool:
     return index < len(tokens) and tokens[index] in _UNITS
 
 
-def _continues(tokens: list[str], index: int) -> bool:
-    return index < len(tokens) and (
-        tokens[index] in _UNITS
-        or tokens[index] in _TEENS
-        or tokens[index] in _TENS
-        or tokens[index] in _ORDINAL_UNITS
-        or tokens[index] in _ORDINALS_OF_TEENS_AND_TENS
-    )
-
-
 def _stem(word: str) -> str:
     """A crude stem, so "ships", "shipped" and "shipping" share "ship" and "price" and "pricing"
     share "pric". Both sides go through it; it only has to agree with itself."""
@@ -392,7 +390,8 @@ def _stem(word: str) -> str:
         word, verb = word[:-3], "ing"
     elif word.endswith("ed") and len(word) >= 5:
         word, verb = word[:-2], "ed"
-    # "agree" and "agreed" both become "agre": the final e goes only where no suffix took it.
+    # "agree", "agreed", "agrees" and "agreeing" all become "agre": a final e goes, unless "es" or
+    # "ed" already took it.
     if plural != "es" and verb != "ed" and word.endswith("e") and len(word) >= 4:
         word = word[:-1]
     # "shipp" (from "shipped") becomes "ship"; "call" and "pass" keep their double letters.
