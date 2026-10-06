@@ -88,7 +88,8 @@ export type SttWireTap = (record: SttWireRecord) => void;
  * Dead-socket detection (M2 design, "STT reconnect"). `ws` gets no prompt error when the Mac's
  * network goes down: a half-open socket looks open until TCP gives up, minutes later, while the
  * audio sent into it is lost and nothing says so. So while audio flows the core pings the vendor,
- * and a socket that answered pings and then hears nothing at all (no pong, no message) for
+ * and once the vendor is known to answer pings (this socket's pong, or an earlier stream's:
+ * SttPongRecord), a socket that hears nothing at all (no pong, no message) for
  * deadAfterMs is dead: one fatal error and a terminate, and CaptureSession's landed retry reopens
  * it through the open budget. With the check once per pingIntervalMs, a cut is declared at most
  * deadAfterMs plus one interval after the last thing heard (4 to 5 s), whatever the phase of the
@@ -97,15 +98,29 @@ export type SttWireTap = (record: SttWireRecord) => void;
 export interface SttLiveness {
   /** A WebSocket ping this often while audio flows; the deadline is checked as often. */
   pingIntervalMs: number;
-  /** Once the vendor has answered a ping: no pong and no message this long is a dead socket. */
+  /** Once the vendor is known to answer pings: nothing heard this long is a dead socket. */
   deadAfterMs: number;
   /**
    * No pong this long after the first ping: the vendor ignores pings (RFC 6455 says answer, not
    * every server does). The socket then has no deadline and relies on vendor messages and closes,
    * send errors and main's network poll; declaring it dead would reopen a healthy, billed session
-   * every few seconds for good. Said once in the log.
+   * every few seconds for good. Said once in the log. Never for a vendor whose earlier stream
+   * answered (SttPongRecord), and only until a pong comes: pings go on, and the first pong turns
+   * the deadline on.
    */
   firstPongWithinMs: number;
+}
+
+/**
+ * Whether a vendor answers pings, learnt once for all of one adapter's streams
+ * (WebSocketSpeechToText shares one record). Per stream, a stream whose upstream dropped before
+ * its first pong (Wi-Fi still associated, so the network poll saw nothing) read as a vendor that
+ * ignores pings and lost its dead-socket check, its audio going into a half-open socket for
+ * minutes. Once any stream of the vendor answered, a stream with no pong of its own is dead after
+ * deadAfterMs like any other.
+ */
+export interface SttPongRecord {
+  answered: boolean;
 }
 
 export const STT_LIVENESS: Readonly<SttLiveness> = Object.freeze({
@@ -140,6 +155,8 @@ export interface SttConnectionOptions {
   paceClock: () => number;
   /** The ping cadence and deadlines (STT_LIVENESS in the app; tests shorten the interval). */
   liveness: SttLiveness;
+  /** Shared by the adapter's streams (SttPongRecord). A stream on its own learns alone. */
+  pongRecord?: SttPongRecord;
   /** Sees every message both ways and the query without the token (SttWireRecord). Bench only. */
   wireTap?: SttWireTap | null;
 }
@@ -176,8 +193,12 @@ export class SttConnection implements SttStream {
   private livenessTimer: NodeJS.Timeout | null = null;
   /** paceClock time the vendor last sent anything: a pong, a ping, a message. */
   private heardAtMs = 0;
-  /** Whether the vendor answers pings: unknown until its first pong, or firstPongWithinMs. */
+  /**
+   * Whether this socket answered a ping: unknown until its first pong, or firstPongWithinMs.
+   * `ignored` lasts until a pong comes (answersPings).
+   */
   private pongs: 'unknown' | 'answered' | 'ignored' = 'unknown';
+  private readonly pongRecord: SttPongRecord;
   private firstPingAtMs: number | null = null;
   /** No audio flows, so no ping goes: the deadline starts over when audio does. */
   private pingsIdle = true;
@@ -221,6 +242,7 @@ export class SttConnection implements SttStream {
     this.closeTimeoutMs = options.closeTimeoutMs;
     this.keepAliveForMs = options.keepAliveForMs;
     this.liveness = options.liveness;
+    this.pongRecord = options.pongRecord ?? { answered: false };
     this.pacer = new AudioPacer({ pacing: this.protocol.audioPacing, sampleRate: this.sampleRate });
     this.wireTap = options.wireTap ?? null;
     const stream = this.withCappedKeyterms(options.stream);
@@ -282,7 +304,11 @@ export class SttConnection implements SttStream {
     // Any frame from the vendor is a sign of life (checkLiveness); ws answers its pings itself.
     this.socket.on('pong', () => {
       this.heard();
+      if (this.pongs === 'ignored') {
+        this.logger.info('stt vendor answered a ping after all: dead-socket check on');
+      }
       this.pongs = 'answered';
+      this.pongRecord.answered = true;
     });
     this.socket.on('ping', () => {
       this.heard();
@@ -437,8 +463,10 @@ export class SttConnection implements SttStream {
    * One liveness check (SttLiveness): runs every pingIntervalMs while open. The timer only wakes
    * it; paceClock decides what is due. Pings go only while audio flows, by the keep-alive's rule: a
    * source that sent nothing for keepAliveForMs is stalled (CaptureSession closes it), and while no
-   * ping goes, no pong is owed, so the deadline starts over when audio does. Before the first pong
-   * there is no deadline at all: a vendor that ignores pings is not a dead one.
+   * ping goes, no pong is owed, so the deadline starts over when audio does. Until the vendor is
+   * known to answer pings there is no deadline at all: a vendor that ignores pings is not a dead
+   * one. Pings go on after that fallback, so a late pong (the pings of an upstream blip, answered
+   * once it ends) turns the deadline on; stopping them left such a stream unchecked for good.
    */
   private checkLiveness(): void {
     if (this.currentState !== 'open' || this.socket.readyState !== WebSocket.OPEN) return;
@@ -451,25 +479,30 @@ export class SttConnection implements SttStream {
       this.pingsIdle = false;
       this.heardAtMs = now;
     }
-    if (this.pongs === 'answered') {
+    if (this.answersPings()) {
       const silentMs = now - this.heardAtMs;
       if (silentMs >= this.liveness.deadAfterMs) {
         this.declareDead(silentMs);
         return;
       }
     } else if (
+      this.pongs === 'unknown' &&
       this.firstPingAtMs !== null &&
       now - this.firstPingAtMs >= this.liveness.firstPongWithinMs
     ) {
       this.pongs = 'ignored';
-      this.stopLiveness();
-      this.logger.warn('stt vendor answers no ping: no dead-socket check on this stream', {
-        waitedMs: Math.round(now - this.firstPingAtMs),
-      });
-      return;
+      this.logger.warn(
+        'stt vendor answers no ping: no dead-socket check on this stream until it does',
+        { waitedMs: Math.round(now - this.firstPingAtMs) },
+      );
     }
     this.socket.ping();
     this.firstPingAtMs ??= now;
+  }
+
+  /** This socket answered a ping, or another stream of the same vendor did (SttPongRecord). */
+  private answersPings(): boolean {
+    return this.pongs === 'answered' || this.pongRecord.answered;
   }
 
   /** Audio was sent within the keep-alive window: what keeps pings, and the deadline, going. */

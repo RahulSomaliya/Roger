@@ -2,7 +2,13 @@ import { DEFAULT_COST_GUARDS } from '../../costGuards';
 import type { Logger } from '../../logger';
 import type { OpenStreamOptions, SpeechToText, SttStream } from '../SpeechToText';
 import { sumUsage, type SttUsage } from '../usage';
-import { STT_LIVENESS, SttConnection, type SttLiveness, type SttWireTap } from './SttConnection';
+import {
+  STT_LIVENESS,
+  SttConnection,
+  type SttLiveness,
+  type SttPongRecord,
+  type SttWireTap,
+} from './SttConnection';
 import type { SttProtocol } from './SttProtocol';
 
 export interface WebSocketSttOptions {
@@ -62,6 +68,8 @@ export class WebSocketSpeechToText implements SpeechToText {
    * adapter per meeting, so this is one meeting's sessions: two at Start, plus any reopens.
    */
   private readonly connections: SttConnection[] = [];
+  /** Shared by every stream: once one answered a ping, the vendor does (SttPongRecord). */
+  private readonly pongRecord: SttPongRecord = { answered: false };
 
   constructor(protocol: SttProtocol, options: WebSocketSttOptions) {
     this.provider = protocol.provider;
@@ -92,6 +100,7 @@ export class WebSocketSpeechToText implements SpeechToText {
       clock: this.clock,
       paceClock: this.paceClock,
       liveness: this.liveness,
+      pongRecord: this.pongRecord,
       wireTap: this.wireTap,
     });
     this.connections.push(connection);

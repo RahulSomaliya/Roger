@@ -1116,6 +1116,8 @@ describe('SttConnection', () => {
     }
 
     const said = (message: string): number => lines.filter((l) => l.message === message).length;
+    const NO_PING_CHECK =
+      'stt vendor answers no ping: no dead-socket check on this stream until it does';
 
     it('pings only while audio flows: none before the first chunk, none once it stopped', async () => {
       const clock = manualClock(0);
@@ -1207,20 +1209,71 @@ describe('SttConnection', () => {
       clock.set(9_999);
       await ticks();
       expect(events).toEqual([]);
-      expect(said('stt vendor answers no ping: no dead-socket check on this stream')).toBe(0);
+      expect(said(NO_PING_CHECK)).toBe(0);
 
       clock.set(10_000);
       await ticks();
-      const pings = vendor.last().pings;
       clock.set(60_000);
       connection.send(new Uint8Array(CHUNK_100_MS));
       await ticks();
 
-      expect(vendor.last().pings).toBe(pings);
       expect(events).toEqual([]);
       expect(connection.state).toBe('open');
-      expect(said('stt vendor answers no ping: no dead-socket check on this stream')).toBe(1);
+      expect(said(NO_PING_CHECK)).toBe(1);
       await connection.close();
+    });
+
+    it('turns the deadline on when a pong comes after the fallback, since pings go on', async () => {
+      vendor.answersPings = false;
+      const clock = manualClock(0);
+      const { connection, events } = await open(lively(clock));
+      connection.send(new Uint8Array(CHUNK_100_MS));
+      await waitFor(() => vendor.last().pings > 0);
+      clock.set(10_000);
+      await ticks();
+      expect(said(NO_PING_CHECK)).toBe(1);
+
+      // The pongs of pings sent while the upstream was down come in late: this vendor does
+      // answer. Had the fallback stopped the check for good, the stream would run unchecked.
+      vendor.last().socket.pong();
+      await ticks();
+      clock.set(13_999);
+      await ticks();
+      expect(events).toEqual([]);
+
+      clock.set(14_000);
+      await waitFor(() => events.some((event) => event.type === 'closed'));
+      expect(events[0]).toMatchObject({ type: 'error', fatal: true });
+    });
+
+    it('keeps the deadline on a later stream of a vendor that answered pings, with no pong of its own', async () => {
+      const clock = manualClock(0);
+      const pongRecord = { answered: false };
+      const earlier = await open(lively(clock, { pongRecord }));
+      earlier.connection.send(new Uint8Array(CHUNK_100_MS));
+      await waitFor(() => vendor.last().pings > 0);
+      await ticks(); // its pongs are back
+      await earlier.connection.close();
+      expect(pongRecord.answered).toBe(true);
+
+      // The upstream drops right after this stream became ready, before its first pong (Wi-Fi
+      // still associated): on its own it would read as a vendor that ignores pings, unchecked.
+      vendor.answersPings = false;
+      const { connection, events } = await open(lively(clock, { pongRecord }));
+      connection.send(new Uint8Array(CHUNK_100_MS));
+      await waitFor(() => vendor.last().pings > 0);
+      clock.set(3_999);
+      await ticks();
+      expect(events).toEqual([]);
+
+      clock.set(4_000);
+      await waitFor(() => events.some((event) => event.type === 'closed'));
+      expect(events[0]).toEqual({
+        type: 'error',
+        message: 'Toy stopped answering: nothing received for 4 s',
+        fatal: true,
+      });
+      expect(said(NO_PING_CHECK)).toBe(0);
     });
 
     it('stops pinging once Stop begins', async () => {

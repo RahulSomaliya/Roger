@@ -633,17 +633,37 @@ describe.each(CONFORMANCE_VENDORS)('$provider conforms', (vendor) => {
 
       clock.set(10_000);
       await ticks();
-      const pings = server.last().pings;
       clock.set(20_000);
       stream.send(new Uint8Array(CHUNK_100_MS));
       await ticks();
 
-      expect(server.last().pings).toBe(pings);
       expect(events).toEqual([]);
       expect(log.warnings).toContain(
-        'stt vendor answers no ping: no dead-socket check on this stream',
+        'stt vendor answers no ping: no dead-socket check on this stream until it does',
       );
       await stream.close();
+    });
+
+    it('keeps the check on a later stream of a vendor that answered pings, from its first ping', async () => {
+      const clock = manualClock(0);
+      const adapter = lively(clock);
+      const earlier = await open(adapter);
+      earlier.stream.send(new Uint8Array(CHUNK_100_MS));
+      await waitFor(() => server.last().pings > 0);
+      await ticks(); // its pongs are back
+      await earlier.stream.close();
+
+      // This stream's upstream dropped before its first pong: the adapter knows the vendor answers.
+      server.answersPings = false;
+      const { stream, events } = await open(adapter);
+      stream.send(new Uint8Array(CHUNK_100_MS));
+      await waitFor(() => server.last().pings > 0);
+      clock.set(5_000);
+      await waitFor(() => events.some((event) => event.type === 'closed'));
+
+      expect(events.map((event) => event.type)).toEqual(['error', 'closed']);
+      expect(events[0]).toMatchObject({ type: 'error', fatal: true });
+      await waitFor(() => server.last().closed);
     });
 
     it('terminates at once when the network is gone: no finish sequence, no fatal error', async () => {
