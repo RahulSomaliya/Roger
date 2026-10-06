@@ -128,5 +128,8 @@ is published as one page (an Artifact), never as loose PNG paths.
   `document.elementFromPoint` at its centre; a class or attribute check passes on an element drawn
   under an overlay. `elementFromPoint` skips `pointer-events: none`: check a disabled control's
   state instead.
+- **The app's Content-Security-Policy.** `preview/index.html` carries `src/renderer/index.html`'s
+  policy unchanged (`preview/index.test.ts` fails if they differ), so an image from another host or
+  a fetch that skips main is refused and logged, as in Electron, and `expectNoConsoleErrors` fails.
 - **Every gallery:** both themes, 1440 and 390 wide (`QA_THEMES`, `QA_WIDTHS`), no sideways page
   scroll, no console errors, and realistic data (long names, long lines, empty lists, many rows).

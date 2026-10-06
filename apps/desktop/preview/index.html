@@ -2,12 +2,20 @@
 <!--
   The renderer preview: src/renderer/src/main.tsx in a browser tab with a fake window.roger.
   `data-state` goes loading, then ready once the scenario is drawn (or error, with data-error);
-  qa/driver.ts waits on it. No Content-Security-Policy here, unlike src/renderer/index.html: Vite's
-  dev server injects React Refresh's preamble as an inline script, which `script-src 'self'` blocks.
+  qa/driver.ts waits on it.
 -->
 <html lang="en" data-state="loading">
   <head>
     <meta charset="UTF-8" />
+    <!-- src/renderer/index.html's policy, unchanged (index.test.ts fails if they differ). It keeps
+         the network in main: an image from another host or a fetch to the API is refused here as
+         in Electron, and the refusal is a console error that fails the QA check. Vite's dev server
+         puts React Refresh's inline preamble at the very top of <head>, before this tag, and a
+         meta policy covers only what follows it, so `script-src 'self'` lets the preamble run. -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src 'self' blob:; connect-src 'self' ws://localhost:* ws://127.0.0.1:*; worker-src 'self' blob:"
+    />
     <title>Roger preview</title>
     <!-- No icon request: a browser asks for /favicon.ico (Electron never does), and its 404 is a
          console error that fails every QA check. -->
