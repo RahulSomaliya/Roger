@@ -7,6 +7,8 @@ import {
   useState,
   type ReactNode,
 } from 'react';
+import { flushSync } from 'react-dom';
+import './transcriptNavigator.css';
 
 /**
  * The one way a citation chip (AI notes, chat) takes the user to the transcript lines behind it.
@@ -27,7 +29,10 @@ export interface CitationNavigator {
 export interface TranscriptHandle {
   /** The element that scrolls. Every final line inside it carries `data-segment-id`. */
   container: HTMLElement;
-  /** Stop following live lines and show "Jump to live", so new lines do not pull the view away. */
+  /**
+   * Stop following live lines and show "Jump to live", so new lines do not pull the view away.
+   * The navigator calls it inside `flushSync`: the paused panel is on the page when it returns.
+   */
   pauseFollow(): void;
 }
 
@@ -58,28 +63,179 @@ export function createTranscriptRegistry(): TranscriptRegistry {
   };
 }
 
+/** How long a reveal marks its lines `data-cited` (transcriptNavigator.css draws the mark). */
+export const CITED_HIGHLIGHT_MS = 2000;
+
 /**
- * Finding the lines, pausing follow, scrolling the first to the centre and marking them
- * `data-cited` is M4-T21b, built once M3-T7's `LiveTranscript` registers. Until it lands a
- * registered transcript reveals nothing, so every chip says "Line removed".
+ * Final lines only: an interim carries no id, and a line the echo filter hid is not rendered
+ * unless the reader shows hidden lines, so a reveal of a hidden line is `not_loaded`.
  */
-function revealInTranscript(
-  _transcript: TranscriptHandle,
-  _segmentIds: readonly string[],
-  _showTranscript: () => void,
-): RevealResult {
-  return 'not_loaded';
+const LINE_SELECTOR = '[data-segment-id]';
+const SEGMENT_ID = 'data-segment-id';
+const CITED = 'data-cited';
+
+/** Which rendered lines a reveal shows, as indexes into the rendered ids it was planned from. */
+export interface RevealPlan {
+  /** The line scrolled to the middle of the view: the first wanted one in transcript order. */
+  readonly first: number;
+  /** Every wanted line that is rendered, in transcript order, `first` among them. */
+  readonly cited: readonly number[];
 }
 
-function createCitationNavigator(
-  transcripts: Pick<TranscriptRegistry, 'current'>,
+/**
+ * The pure part of a reveal: of the lines on screen, in transcript order, the ones a chip wants.
+ * A chip's ids come in whatever order its citation lists them; the transcript's order decides
+ * which line the view goes to. Null when none of them is rendered (the reveal is `not_loaded`).
+ */
+export function planReveal(
+  renderedIdsInOrder: readonly string[],
+  wanted: readonly string[],
+): RevealPlan | null {
+  const wantedIds = new Set(wanted);
+  const cited: number[] = [];
+  renderedIdsInOrder.forEach((id, index) => {
+    if (wantedIds.has(id)) cited.push(index);
+  });
+  const first = cited[0];
+  return first === undefined ? null : { first, cited };
+}
+
+/** The part of a transcript line a reveal reads and marks: every Element has it. */
+export interface RevealLine {
+  getAttribute(name: string): string | null;
+  setAttribute(name: string, value: string): void;
+  removeAttribute(name: string): void;
+  getBoundingClientRect(): { readonly top: number; readonly height: number };
+  scrollIntoView(options: ScrollIntoViewOptions): void;
+}
+
+/** The element with keyboard focus, as a reveal reads it: an Element has no box while hidden. */
+export interface RevealFocused {
+  getClientRects(): { readonly length: number };
+}
+
+/** The part of the transcript's scroll container a reveal reads and scrolls: an HTMLElement's. */
+export interface RevealContainer {
+  querySelectorAll(selectors: string): Iterable<RevealLine>;
+  getBoundingClientRect(): { readonly top: number };
+  readonly clientTop: number;
+  readonly clientHeight: number;
+  scrollTop: number;
+  readonly ownerDocument: { readonly activeElement: RevealFocused | null };
+  focus(options: FocusOptions): void;
+}
+
+/** A registered transcript as a reveal uses it: a TranscriptHandle, narrowed so Node can test it. */
+export interface RevealTranscript {
+  container: RevealContainer;
+  pauseFollow(): void;
+}
+
+interface RenderedLine {
+  id: string;
+  line: RevealLine;
+}
+
+/** The lines on screen with their ids, in transcript order (the panel draws them in that order). */
+function renderedLines(container: RevealContainer): RenderedLine[] {
+  return Array.from(container.querySelectorAll(LINE_SELECTOR)).flatMap((line) => {
+    const id = line.getAttribute(SEGMENT_ID);
+    return id === null ? [] : [{ id, line }];
+  });
+}
+
+/**
+ * Scrolls the log so the line's middle sits at the middle of its view, as near as its scroll goes
+ * (the newest line rises only as far as the room below it, transcriptNavigator.css). Only the log
+ * scrolls here: `scrollIntoView` with `block: 'center'` would also centre the line in the window,
+ * moving the whole page.
+ */
+function centreInView(container: RevealContainer, line: RevealLine): void {
+  const view = container.getBoundingClientRect();
+  const box = line.getBoundingClientRect();
+  const viewMiddle = view.top + container.clientTop + container.clientHeight / 2;
+  container.scrollTop += box.top + box.height / 2 - viewMiddle;
+}
+
+/**
+ * The navigator over the newest registered transcript. A reveal finds the lines first and does
+ * nothing more when none is rendered: following goes on, a narrow page keeps showing the notes,
+ * and the chip says "Line removed". Otherwise, in this order:
+ *
+ * 1. Pause following, before anything scrolls: while following, the panel puts the newest line in
+ *    view on every new line, which would pull the view straight back from the cited one. Paused
+ *    (`held`), its own scroll to the bottom does not follow again (liveTranscriptModel.ts). The
+ *    pause renders at once (`flushSync`): paused, the panel shows "Jump to live" over the log's
+ *    bottom, and transcriptNavigator.css gives the log room below its newest line, which the
+ *    scroll in step 3 needs to lift that line clear of the pill. A pause rendered after that
+ *    scroll would bring the room too late and leave the line under the pill.
+ * 2. Show the transcript (the page's `showTranscript`, synchronous), so the lines have a layout.
+ *    A narrow page hides the notes or chat pane for it, and with it the chip a keyboard user just
+ *    pressed: Chromium then drops focus to <body>, the next Tab starts over at the top of the page
+ *    and a screen reader says nothing. So when the element that had focus lost its box, focus
+ *    moves to the log, as the panel's own "Jump to live" does. A chip still in view keeps it.
+ * 3. Scroll the first line in transcript order to the middle of the log, then bring it into the
+ *    window if the page itself scrolls (meeting.css lets a short window scroll the page under a
+ *    region's minimum height). `nearest` leaves the page alone while the line is in the window.
+ * 4. Mark every found line `data-cited` for CITED_HIGHLIGHT_MS. The last reveal's marks and its
+ *    timer go first, so an old timer never takes the new marks off early.
+ *
+ * The mark is an attribute written here, never a prop of the panel's rows: React writes only the
+ * attributes it renders, so the panel's renders leave it alone. A row the echo filter removes
+ * takes its mark with it, and taking the mark off a removed row is harmless.
+ */
+export function createCitationNavigator(
+  transcripts: { current(): RevealTranscript | null },
   showTranscript: () => void,
 ): CitationNavigator {
+  const highlight: { lines: readonly RevealLine[]; timer: ReturnType<typeof setTimeout> | null } = {
+    lines: [],
+    timer: null,
+  };
+  const clearHighlight = (): void => {
+    if (highlight.timer !== null) clearTimeout(highlight.timer);
+    for (const line of highlight.lines) line.removeAttribute(CITED);
+    highlight.lines = [];
+    highlight.timer = null;
+  };
+
   return {
     reveal(segmentIds) {
       const transcript = transcripts.current();
       if (transcript === null) return 'not_loaded';
-      return revealInTranscript(transcript, segmentIds, showTranscript);
+      const lines = renderedLines(transcript.container);
+      const plan = planReveal(
+        lines.map(({ id }) => id),
+        segmentIds,
+      );
+      if (plan === null) return 'not_loaded';
+      const lineAt = (index: number): RevealLine => {
+        const rendered = lines[index];
+        // Never: the plan's indexes point into `lines`, the list it was planned from.
+        if (rendered === undefined) {
+          throw new Error(`The reveal plan names line ${index} of ${lines.length} rendered`);
+        }
+        return rendered.line;
+      };
+      const first = lineAt(plan.first);
+      const focused = transcript.container.ownerDocument.activeElement;
+
+      flushSync(() => {
+        transcript.pauseFollow();
+      });
+      showTranscript();
+      if (focused !== null && focused.getClientRects().length === 0) {
+        // The scroll below places the line; focus must not scroll the log to its own idea.
+        transcript.container.focus({ preventScroll: true });
+      }
+      centreInView(transcript.container, first);
+      first.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+
+      clearHighlight();
+      highlight.lines = plan.cited.map(lineAt);
+      for (const line of highlight.lines) line.setAttribute(CITED, 'true');
+      highlight.timer = setTimeout(clearHighlight, CITED_HIGHLIGHT_MS);
+      return 'shown';
     },
   };
 }

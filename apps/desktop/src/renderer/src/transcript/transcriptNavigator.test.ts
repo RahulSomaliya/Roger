@@ -1,12 +1,20 @@
 import { createElement, type ReactNode } from 'react';
 import { renderToString } from 'react-dom/server';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { cssDeclarations } from '../theme/cssDeclarations';
+import { rendererSource } from '../theme/rendererSources';
 import {
+  CITED_HIGHLIGHT_MS,
   CitationNavigatorProvider,
+  createCitationNavigator,
   createTranscriptRegistry,
+  planReveal,
   useCitationNavigator,
   useRegisterTranscript,
   type CitationNavigator,
+  type RevealContainer,
+  type RevealLine,
+  type RevealTranscript,
   type TranscriptHandle,
 } from './transcriptNavigator';
 
@@ -93,5 +101,280 @@ describe('createTranscriptRegistry', () => {
 
     unregisterLater();
     expect(transcripts.current()).toBe(earlier);
+  });
+});
+
+describe('planReveal', () => {
+  it('picks the first wanted line in transcript order', () => {
+    // Asked for out of order, and with a line the transcript no longer shows.
+    expect(planReveal(['s1', 's2', 's3', 's4'], ['s4', 'removed', 's2'])).toEqual({
+      first: 1,
+      cited: [1, 3],
+    });
+  });
+
+  it('plans nothing when none of the wanted lines is rendered', () => {
+    expect(planReveal(['s1', 's2'], ['removed'])).toBeNull();
+    expect(planReveal([], ['s1'])).toBeNull();
+    expect(planReveal(['s1'], [])).toBeNull();
+  });
+});
+
+/** Each fake line's height, the fake log's view height, and where that view starts on the page. */
+const LINE_PX = 20;
+const VIEW_PX = 100;
+const VIEW_TOP = 50;
+
+/** A transcript line under Node, which has no DOM: its attributes, and its box on the page. */
+class FakeLine implements RevealLine {
+  private readonly attributes: Map<string, string>;
+
+  constructor(
+    readonly id: string,
+    private readonly topOnPage: () => number,
+    private readonly steps: string[],
+  ) {
+    this.attributes = new Map([['data-segment-id', id]]);
+  }
+
+  getAttribute(name: string): string | null {
+    return this.attributes.get(name) ?? null;
+  }
+
+  setAttribute(name: string, value: string): void {
+    this.attributes.set(name, value);
+  }
+
+  removeAttribute(name: string): void {
+    this.attributes.delete(name);
+  }
+
+  getBoundingClientRect(): { top: number; height: number } {
+    return { top: this.topOnPage(), height: LINE_PX };
+  }
+
+  scrollIntoView(options: ScrollIntoViewOptions): void {
+    this.steps.push(`bring ${this.id} into the window (${String(options.block)})`);
+  }
+}
+
+/**
+ * The chip that had keyboard focus when it was pressed, as the page's `activeElement`: it has a
+ * box until the page hides the pane it sits in (a narrow window showing the transcript instead).
+ */
+class FakeChip {
+  shown = true;
+
+  getClientRects(): { length: number } {
+    return { length: this.shown ? 1 : 0 };
+  }
+}
+
+interface FakeLog {
+  transcript: RevealTranscript;
+  container: RevealContainer;
+  /** The element with keyboard focus before the reveal. */
+  chip: FakeChip;
+  /** What the reveal did to the transcript and the page, in order. */
+  steps: string[];
+  /** The ids of the lines marked `data-cited`, in transcript order. */
+  cited(): string[];
+}
+
+/**
+ * A transcript log of `count` lines, `s1` to `s<count>`, LINE_PX each in a view of VIEW_PX, that
+ * scrolls the way a browser does (clamped to its content). Starts scrolled to `scrollTop`.
+ */
+function fakeLog(count: number, scrollTop = 0): FakeLog {
+  const steps: string[] = [];
+  const maxTop = Math.max(0, count * LINE_PX - VIEW_PX);
+  let top = scrollTop;
+  const lines = Array.from(
+    { length: count },
+    (_, index) =>
+      new FakeLine(`s${String(index + 1)}`, () => VIEW_TOP + index * LINE_PX - top, steps),
+  );
+  const chip = new FakeChip();
+  const container: RevealContainer = {
+    querySelectorAll: () => lines,
+    getBoundingClientRect: () => ({ top: VIEW_TOP }),
+    clientTop: 0,
+    clientHeight: VIEW_PX,
+    ownerDocument: { activeElement: chip },
+    focus: (options) => {
+      steps.push(`focus the log (preventScroll ${String(options.preventScroll)})`);
+    },
+    get scrollTop() {
+      return top;
+    },
+    set scrollTop(value: number) {
+      steps.push(`scroll to ${String(value)}`);
+      top = Math.min(maxTop, Math.max(0, value));
+    },
+  };
+  return {
+    transcript: {
+      container,
+      pauseFollow: () => {
+        steps.push('pause follow');
+      },
+    },
+    container,
+    chip,
+    steps,
+    cited: () =>
+      lines.filter((line) => line.getAttribute('data-cited') !== null).map((line) => line.id),
+  };
+}
+
+/**
+ * The navigator over one transcript, with a page that records when it shows the transcript. A
+ * narrow page shows one pane at a time, so showing the transcript hides the chip's pane.
+ */
+function navigatorOver(log: FakeLog, page: 'wide' | 'narrow' = 'wide'): CitationNavigator {
+  return createCitationNavigator({ current: () => log.transcript }, () => {
+    log.steps.push('show transcript');
+    if (page === 'narrow') log.chip.shown = false;
+  });
+}
+
+describe('reveal', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('returns not_loaded when no wanted line is rendered', () => {
+    const log = fakeLog(20);
+
+    expect(navigatorOver(log).reveal(['removed-1', 'removed-2'])).toBe('not_loaded');
+    // Nothing moved: following goes on, a narrow page keeps showing the notes, nothing is marked.
+    expect(log.steps).toEqual([]);
+    expect(log.cited()).toEqual([]);
+  });
+
+  it('pauses follow before it scrolls', () => {
+    // Following live: the view is at the bottom of 20 lines (400 px of lines in a 100 px view).
+    const log = fakeLog(20, 300);
+
+    expect(navigatorOver(log).reveal(['s6'])).toBe('shown');
+    // s6 spans 100-120 px of the log, so its middle (110) sits mid-view at scrollTop 60.
+    expect(log.steps).toEqual([
+      'pause follow',
+      'show transcript',
+      'scroll to 60',
+      'bring s6 into the window (nearest)',
+    ]);
+  });
+
+  it('moves keyboard focus to the log when showing the transcript hid the chip', () => {
+    const log = fakeLog(20, 300);
+
+    expect(navigatorOver(log, 'narrow').reveal(['s6'])).toBe('shown');
+    // Left on a chip in a hidden pane, focus would fall to <body>, and the next Tab would start
+    // over at the top of the page.
+    expect(log.steps).toEqual([
+      'pause follow',
+      'show transcript',
+      'focus the log (preventScroll true)',
+      'scroll to 60',
+      'bring s6 into the window (nearest)',
+    ]);
+  });
+
+  it('leaves keyboard focus on a chip that stays in view', () => {
+    const log = fakeLog(20, 300);
+
+    navigatorOver(log, 'wide').reveal(['s6']);
+    expect(log.steps.filter((step) => step.startsWith('focus'))).toEqual([]);
+  });
+
+  it('centres the first wanted line in transcript order and marks every wanted line', () => {
+    const log = fakeLog(20);
+
+    expect(navigatorOver(log).reveal(['s12', 'removed', 's9'])).toBe('shown');
+    // s9 spans 160-180 px: its middle (170) sits mid-view at scrollTop 120.
+    expect(log.container.scrollTop).toBe(120);
+    expect(log.cited()).toEqual(['s9', 's12']);
+  });
+
+  it('a second reveal clears the first highlight', () => {
+    vi.useFakeTimers();
+    const log = fakeLog(20);
+    const navigator = navigatorOver(log);
+
+    navigator.reveal(['s3']);
+    expect(log.cited()).toEqual(['s3']);
+    vi.advanceTimersByTime(1500);
+
+    navigator.reveal(['s11', 's10']);
+    expect(log.cited()).toEqual(['s10', 's11']);
+    // The first reveal's time is up, and its timer must not take the second reveal's marks.
+    vi.advanceTimersByTime(CITED_HIGHLIGHT_MS - 1);
+    expect(log.cited()).toEqual(['s10', 's11']);
+    vi.advanceTimersByTime(1);
+    expect(log.cited()).toEqual([]);
+  });
+
+  it('marks the lines for 2 s', () => {
+    vi.useFakeTimers();
+    const log = fakeLog(20);
+
+    navigatorOver(log).reveal(['s4']);
+    vi.advanceTimersByTime(1999);
+    expect(log.cited()).toEqual(['s4']);
+    vi.advanceTimersByTime(1);
+    expect(log.cited()).toEqual([]);
+  });
+
+  it('a reveal that finds no line leaves the last highlight and the view as they were', () => {
+    vi.useFakeTimers();
+    const log = fakeLog(20);
+    const navigator = navigatorOver(log);
+    navigator.reveal(['s7']);
+    const steps = log.steps.length;
+
+    expect(navigator.reveal(['removed'])).toBe('not_loaded');
+    expect(log.steps).toHaveLength(steps);
+    expect(log.cited()).toEqual(['s7']);
+  });
+});
+
+/** The declarations of the rule `selector` in `css`, a rule that holds no nested rule. */
+function ruleIn(css: string, selector: string, file: string): Map<string, string> {
+  const text = css.replace(/\/\*[\s\S]*?\*\//g, '');
+  const start = text.indexOf(`${selector} {`);
+  if (start === -1) throw new Error(`${file} has no \`${selector} { }\` rule`);
+  const body = text.slice(start + selector.length + 1, text.indexOf('}', start) + 1);
+  return new Map(cssDeclarations(body).map(({ property, value }) => [property, value]));
+}
+
+/** A length in px: the first one of a shorthand such as `padding: 6px 14px`. */
+function px(rule: Map<string, string>, property: string): number {
+  const value = /^(\d+(?:\.\d+)?)px\b/.exec(rule.get(property) ?? '')?.[1];
+  if (value === undefined) throw new Error(`${property} is not a length in px`);
+  return Number(value);
+}
+
+describe('transcriptNavigator.css', () => {
+  it('leaves room below the newest line for Jump to live while it shows', () => {
+    const pill = ruleIn(
+      rendererSource('src/transcript/transcript.css'),
+      '.jump-to-live',
+      'transcript.css',
+    );
+    const root = ruleIn(rendererSource('src/styles.css'), ':root', 'styles.css');
+    const room = ruleIn(
+      rendererSource('src/transcript/transcriptNavigator.css'),
+      '.live-transcript:has(> .jump-to-live) > .live-transcript-lines',
+      'transcriptNavigator.css',
+    );
+    // The pill's top, up from the log's bottom: its offset, its block padding twice, and its line
+    // (`font: inherit`, so the root's unitless line height times its own font size).
+    const lineHeight = Number(root.get('line-height'));
+    expect(lineHeight).toBeGreaterThan(0);
+    const pillTop =
+      px(pill, 'bottom') + 2 * px(pill, 'padding') + px(pill, 'font-size') * lineHeight;
+    // Scrolled to its end, the log's last line sits the room above its bottom: clear of the pill.
+    expect(px(room, 'padding-bottom') - pillTop).toBeGreaterThanOrEqual(6);
   });
 });
