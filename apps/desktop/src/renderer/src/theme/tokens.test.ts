@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { rendererSource } from './rendererSources';
+import { cssDeclarations } from './cssDeclarations';
+import { rendererSource, rendererSources } from './rendererSources';
 
 /** Every colour token a Phase 2 plan reads (phase-2-build-order.md, section 3.1). */
 const PLANNED_TOKENS = [
@@ -50,6 +51,38 @@ const forcedDark = declarations(/(?:^|\})\s*:root\[data-theme='dark'\]\s*\{([^{}
 const tokensOf = (block: Map<string, string>): string[] =>
   [...block.keys()].filter((property) => property.startsWith('--'));
 
+const THEMES = [
+  ['light', light],
+  ['system dark', systemDark],
+  ['forced dark', forcedDark],
+] as const;
+
+/** WCAG 2 relative luminance of a `#rrggbb` token in one theme's block. */
+function luminance(block: Map<string, string>, token: string): number {
+  const value = block.get(token);
+  const pairs = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(value ?? '')?.slice(1);
+  if (!pairs) throw new Error(`${token} must be a #rrggbb colour (got ${String(value)})`);
+  const [red = 0, green = 0, blue = 0] = pairs.map((pair) => {
+    const channel = parseInt(pair, 16) / 255;
+    return channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4;
+  });
+  return 0.2126 * red + 0.7152 * green + 0.0722 * blue;
+}
+
+/**
+ * The pairs, `[text, background]` token names, whose WCAG contrast in `block` is under 4.5:1
+ * (AA for text under 18.66px bold), as "text on background: ratio".
+ */
+function underAA(block: Map<string, string>, pairs: [string, string][]): string[] {
+  return pairs.flatMap(([text, background]) => {
+    const [lighter, darker] = [text, background]
+      .map((token) => luminance(block, token))
+      .sort((a, b) => b - a);
+    const ratio = ((lighter ?? 0) + 0.05) / ((darker ?? 0) + 0.05);
+    return ratio < 4.5 ? [`${text} on ${background}: ${ratio.toFixed(2)}`] : [];
+  });
+}
+
 describe('the theme tokens', () => {
   it('define every colour the Phase 2 plans name', () => {
     expect(tokensOf(light)).toEqual(expect.arrayContaining(PLANNED_TOKENS));
@@ -78,6 +111,43 @@ describe('the theme tokens', () => {
         'color-scheme',
       ]);
     }
+  });
+
+  // The Start and Stop labels are 16px at weight 650: not large text, so AA asks 4.5:1. A dark
+  // fill that keeps white readable is too dark to read as text on --panel, so one token cannot do
+  // both jobs: --accent and --danger are fills, --accent-ink and --danger-ink are text.
+  it.each(THEMES)(
+    'keep white labels readable on the --accent and --danger fills (%s)',
+    (_, block) => {
+      expect(
+        underAA(block, [
+          ['--on-accent', '--accent'],
+          ['--on-accent', '--danger'],
+        ]),
+      ).toEqual([]);
+    },
+  );
+
+  it.each(THEMES)('keep accent and danger text readable on --panel (%s)', (_, block) => {
+    expect(
+      underAA(block, [
+        ['--accent-ink', '--panel'],
+        ['--danger-ink', '--panel'],
+      ]),
+    ).toEqual([]);
+  });
+
+  it('never colour text with a fill token: text reads --accent-ink and --danger-ink', () => {
+    const css = rendererSources((path) => path.endsWith('.css') && path !== 'src/theme/tokens.css');
+    expect(Object.keys(css)).toContain('src/styles.css');
+    const fillsAsText = Object.entries(css).flatMap(([path, text]) =>
+      cssDeclarations(text)
+        .filter(
+          ({ property, value }) => property === 'color' && /var\(--(?:accent|danger)\)/.test(value),
+        )
+        .map(({ property, value }) => `${path}: ${property}: ${value}`),
+    );
+    expect(fillsAsText).toEqual([]);
   });
 
   it('reach the page through styles.css', () => {

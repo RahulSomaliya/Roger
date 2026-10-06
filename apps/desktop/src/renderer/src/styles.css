@@ -84,7 +84,7 @@ body {
   padding: 10px 12px;
   border-radius: 8px;
   background: var(--danger-bg);
-  color: var(--danger);
+  color: var(--danger-ink);
 }
 
 /* Roger stopped a recording on its own (no speech, the length cap, sleep, quit). */
@@ -126,7 +126,7 @@ body {
 .health-ended dd,
 .health-error dd,
 .save-failed dd {
-  color: var(--danger);
+  color: var(--danger-ink);
 }
 
 .upload-backoff dd {
@@ -167,7 +167,7 @@ body {
 }
 
 .speaker-them .speaker {
-  color: var(--accent);
+  color: var(--accent-ink);
 }
 
 .line.interim {
