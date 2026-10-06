@@ -96,7 +96,7 @@ export class CaptureService {
    * vendor's per-minute limit counts per account, so Start, Stop, Start spends one window.
    */
   private readonly budget: SttOpenBudget;
-  private phase: CapturePhase = 'idle';
+  private currentPhase: CapturePhase = 'idle';
   private session: CaptureSession | null = null;
   /** The meeting's adapter: its usage() is the meter. */
   private stt: SpeechToText | null = null;
@@ -142,9 +142,14 @@ export class CaptureService {
     return this.events.on(event, listener);
   }
 
+  /** The phase alone: cheap, and it never reads the store (getStatus does, for upload counts). */
+  get phase(): CapturePhase {
+    return this.currentPhase;
+  }
+
   getStatus(): CaptureStatus {
     const upload = this.options.uploader.getStatus();
-    if (this.phase === 'idle' && !this.session) {
+    if (this.currentPhase === 'idle' && !this.session) {
       return {
         ...idleCaptureStatus(upload),
         error: this.error,
@@ -153,7 +158,7 @@ export class CaptureService {
       };
     }
     return {
-      phase: this.phase,
+      phase: this.currentPhase,
       meetingId: this.session?.meetingId ?? null,
       startedAt: this.startedAt,
       sttProvider: this.sttProvider,
@@ -171,7 +176,7 @@ export class CaptureService {
 
   start(): Promise<CaptureStatus> {
     if (this.transition) return this.transition;
-    if (this.phase !== 'idle') return Promise.resolve(this.getStatus());
+    if (this.currentPhase !== 'idle') return Promise.resolve(this.getStatus());
     this.transition = this.doStart().finally(() => {
       this.transition = null;
     });
@@ -180,7 +185,7 @@ export class CaptureService {
 
   stop(options: StopOptions = {}): Promise<CaptureStatus> {
     if (this.transition) return this.transition.then(() => this.stop(options));
-    if (this.phase !== 'recording') return Promise.resolve(this.getStatus());
+    if (this.currentPhase !== 'recording') return Promise.resolve(this.getStatus());
     this.transition = this.doStop(options).finally(() => {
       this.transition = null;
     });
@@ -188,7 +193,7 @@ export class CaptureService {
   }
 
   pushAudio(source: AudioSource, pcm: Uint8Array): void {
-    if (this.phase !== 'recording' || !this.session) return;
+    if (this.currentPhase !== 'recording' || !this.session) return;
     const status = this.sources[source];
     const now = this.clock();
     if (status.health === 'stalled') {
@@ -209,7 +214,7 @@ export class CaptureService {
   }
 
   reportSourceState(source: AudioSource, state: AudioSourceState, message: string | null): void {
-    if (this.phase === 'idle') return;
+    if (this.currentPhase === 'idle') return;
     const status = this.sources[source];
     if (state === 'active') {
       // "The track is live" is not "audio flows": only a chunk may clear a stalled source.
@@ -223,7 +228,7 @@ export class CaptureService {
     this.options.logger.warn('audio source problem', { source, state, message, meetingId });
     // Its vendor session would bill silence until Stop: close it now; the other source goes on.
     this.session?.closeSource(source, message ?? `the audio source reported ${state}`);
-    if (state === 'ended' && this.phase === 'recording') {
+    if (state === 'ended' && this.currentPhase === 'recording') {
       // A track that ends mid-call never comes back; only a new session reopens the device.
       this.error = `${AUDIO_SOURCE_LABEL[source]} stopped: ${message ?? 'the audio track ended'}. Press Stop, then Start again.`;
     }
@@ -464,7 +469,7 @@ export class CaptureService {
   }
 
   private setPhase(phase: CapturePhase): void {
-    this.phase = phase;
+    this.currentPhase = phase;
     this.emitStatus();
   }
 
@@ -494,7 +499,7 @@ export class CaptureService {
    * bills silence otherwise, $0.15 an hour on AssemblyAI) and reopens with its next chunk.
    */
   private checkAudioFlow(): void {
-    if (this.phase !== 'recording' || this.recordingSinceMs === null) return;
+    if (this.currentPhase !== 'recording' || this.recordingSinceMs === null) return;
     const now = this.clock();
     for (const source of AUDIO_SOURCES) {
       const status = this.sources[source];
@@ -527,7 +532,7 @@ export class CaptureService {
    * both through the normal stop (last lines saved, sessions finished and closed).
    */
   private checkForgottenStop(): void {
-    if (this.phase !== 'recording' || this.recordingSinceMs === null) return;
+    if (this.currentPhase !== 'recording' || this.recordingSinceMs === null) return;
     const now = this.clock();
     const recordingForMs = now - this.recordingSinceMs;
     const quietForMs = now - (this.lastFinalAtMs ?? this.recordingSinceMs);

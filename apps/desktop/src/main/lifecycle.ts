@@ -1,4 +1,4 @@
-import type { CaptureStatus } from '../shared/capture';
+import type { CapturePhase, CaptureStatus } from '../shared/capture';
 import type { StopOptions } from './capture/CaptureService';
 import type { StopReason } from './capture/stopReasons';
 import { errorMessage, type Logger } from './logger';
@@ -14,7 +14,8 @@ import { withTimeout } from './util/time';
 
 export interface StoppableCapture {
   stop(options: StopOptions): Promise<CaptureStatus>;
-  getStatus(): CaptureStatus;
+  /** Not getStatus(): that reads the store, which the quit's cleanup closes. */
+  readonly phase: CapturePhase;
 }
 
 export interface RecordingLifecycleOptions {
@@ -55,8 +56,11 @@ export class RecordingLifecycle {
 
   /** Stops a recording (or one still starting) through the normal stop, with the reason. */
   stopFor(reason: LifecycleStopReason, detail?: string): void {
+    // A quit stops the recording itself, and its cleanup closes the store before the window
+    // closes; a stop started now would race that cleanup.
+    if (this.quitState !== 'running') return;
     const { capture, logger } = this.options;
-    const phase = capture.getStatus().phase;
+    const phase = capture.phase;
     if (phase !== 'recording' && phase !== 'starting') return;
     logger.warn('stopping the recording', { reason, detail: detail ?? null });
     // No upload flush: the app may be going away, and the uploader resumes on its own.
@@ -71,7 +75,7 @@ export class RecordingLifecycle {
 
   private async stopThenQuit(): Promise<void> {
     const { capture, logger, quitStopTimeoutMs, beforeExit, quit } = this.options;
-    const phase = capture.getStatus().phase;
+    const phase = capture.phase;
     if (phase !== 'idle') logger.warn('stopping the recording', { reason: 'quit', phase });
     try {
       // No upload flush on quit: lines are safe in SQLite and the uploader resumes next launch.

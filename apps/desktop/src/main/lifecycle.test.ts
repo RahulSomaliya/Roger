@@ -1,11 +1,11 @@
 import { EventEmitter } from 'node:events';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { type CaptureStatus, idleCaptureStatus } from '../shared/capture';
+import { type CapturePhase, type CaptureStatus, idleCaptureStatus } from '../shared/capture';
 import type { StopOptions } from './capture/CaptureService';
 import { createLogger } from './logger';
 import { RecordingLifecycle, watchApp, watchWindow } from './lifecycle';
 
-function fakeCapture(phase: CaptureStatus['phase'] = 'recording') {
+function fakeCapture(phase: CapturePhase = 'recording') {
   const status: CaptureStatus = {
     ...idleCaptureStatus({
       state: 'idle',
@@ -23,7 +23,9 @@ function fakeCapture(phase: CaptureStatus['phase'] = 'recording') {
     settles: true,
     /** When false, the phase stays as it was, so every event below still finds a recording. */
     idleAfterStop: true,
-    getStatus: () => status,
+    get phase(): CapturePhase {
+      return status.phase;
+    },
     stop: (options: StopOptions): Promise<CaptureStatus> => {
       capture.stops.push(options);
       return new Promise((resolve) => {
@@ -41,7 +43,7 @@ function fakeCapture(phase: CaptureStatus['phase'] = 'recording') {
   return capture;
 }
 
-function harness(phase: CaptureStatus['phase'] = 'recording') {
+function harness(phase: CapturePhase = 'recording') {
   const capture = fakeCapture(phase);
   const lines: string[] = [];
   const order: string[] = [];
@@ -109,6 +111,18 @@ describe('RecordingLifecycle on quit', () => {
   });
 });
 
+describe('RecordingLifecycle once quitting', () => {
+  it('leaves the other events to the quit: its cleanup has closed the store by then', async () => {
+    const h = harness();
+    h.capture.idleAfterStop = false;
+    h.lifecycle.onQuitRequested();
+    await flush(); // stopped, store closed, app.quit() called: now the window closes
+    h.lifecycle.stopFor('window-closed');
+    h.lifecycle.stopFor('system-sleep');
+    expect(h.capture.stops).toEqual([{ flushUploads: false, reason: 'quit' }]);
+  });
+});
+
 describe('RecordingLifecycle.stopFor', () => {
   it('stops a recording through the normal path with its reason, and logs why', () => {
     const h = harness();
@@ -140,21 +154,21 @@ describe('the Electron events', () => {
     watchApp(h.lifecycle, { app, powerMonitor });
     watchWindow(h.lifecycle, window);
 
-    let prevented = 0;
-    app.emit('before-quit', { preventDefault: () => (prevented += 1) });
-    app.emit('will-quit', { preventDefault: () => (prevented += 1) });
-    expect(prevented).toBe(2);
-
     powerMonitor.emit('suspend');
     window.emit('close');
     window.webContents.emit('render-process-gone', {}, { reason: 'oom' });
     window.webContents.emit('did-start-loading');
+    let prevented = 0;
+    app.emit('before-quit', { preventDefault: () => (prevented += 1) });
+    app.emit('will-quit', { preventDefault: () => (prevented += 1) });
+
+    expect(prevented).toBe(2);
     expect(h.capture.stops.map((stop) => [stop.reason, stop.detail])).toEqual([
-      ['quit', undefined],
       ['system-sleep', undefined],
       ['window-closed', undefined],
       ['renderer-gone', 'oom'],
       ['page-reloaded', undefined],
+      ['quit', undefined],
     ]);
   });
 });
