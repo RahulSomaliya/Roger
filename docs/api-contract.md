@@ -157,7 +157,7 @@ ids (`apps/api/src/roger_api/stt_vendors.py`, `apps/desktop/src/main/stt/registr
 
 | `provider` | `access_token` | `expires_in` | Default `stream.model` | Its `stream.price_per_hour_usd` |
 | --- | --- | --- | --- | --- |
-| `assemblyai` (Roger's vendor since 2026-10-06; `deepgram` is the second adapter) | AssemblyAI temporary streaming token; the desktop sends it as the `token` query parameter | Seconds left to open the stream (1..600). One token opens both streams; a session then runs up to 3 hours. | `universal-streaming-english` | `0.15` |
+| `assemblyai` (Roger's vendor since 2026-10-06; `deepgram` is the second adapter) | AssemblyAI temporary streaming token; the desktop sends it as the `token` query parameter | Seconds left to open the stream (1..600). One token opens both streams; a session then runs up to 3 hours, a cap the API asks for explicitly on every token (`max_session_duration_seconds=10800`), after which AssemblyAI closes it with 3008. | `universal-streaming-english` | `0.15` |
 | `deepgram` | Deepgram grant (JWT); the desktop sends it as `Authorization: Bearer` | Seconds the grant is valid | `nova-3` | `0.462` |
 | `fake` | `""` | `0` | `fake` | `0` |
 

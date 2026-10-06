@@ -68,9 +68,10 @@ ASSEMBLYAI_API_KEY=...   # from the AssemblyAI dashboard
 ```
 
 and leave `STT_MODEL` empty. The issuer asks AssemblyAI for a temporary token
-(`GET https://streaming.assemblyai.com/v3/token?expires_in_seconds=<STT_TOKEN_TTL_SECONDS>`, raw
-key as `Authorization`). The TTL is only the window to open a stream; one token opens both of the
-desktop's streams, and each session can then run for up to 3 hours. A vendor that refuses, fails
+(`GET https://streaming.assemblyai.com/v3/token?expires_in_seconds=<STT_TOKEN_TTL_SECONDS>&max_session_duration_seconds=10800`,
+raw key as `Authorization`). The TTL is only the window to open a stream; one token opens both of
+the desktop's streams, and each session can then run for up to 3 hours, a cap asked for explicitly
+so a change of the vendor's default never lengthens a billed session. A vendor that refuses, fails
 or times out is a `502 stt_provider_error`.
 
 Two vendor rules to know before testing (read 2026-10-06):

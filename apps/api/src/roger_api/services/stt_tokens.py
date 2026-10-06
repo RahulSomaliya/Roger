@@ -8,8 +8,8 @@ and https://www.assemblyai.com/docs/streaming/authenticate-with-a-temporary-toke
 `GET https://streaming.assemblyai.com/v3/token?expires_in_seconds=N` with the raw key as
 `Authorization` (no prefix), answering `{"token", "expires_in_seconds"}`. `expires_in_seconds`
 (1..600) is only the window to open a websocket; one token may open several sessions, which is how
-the desktop opens its mic and system streams with one. Sessions last up to 3 hours
-(`max_session_duration_seconds`, left at the vendor's default and maximum of 10800).
+the desktop opens its mic and system streams with one. `max_session_duration_seconds` (60..10800,
+default 10800) caps every session the token opens; it is a token parameter, not a websocket one.
 """
 
 from collections.abc import Awaitable
@@ -27,6 +27,13 @@ logger = get_logger(__name__)
 
 DEEPGRAM_GRANT_URL = "https://api.deepgram.com/v1/auth/grant"
 ASSEMBLYAI_GRANT_URL = "https://streaming.assemblyai.com/v3/token"
+# Sent explicitly so a change of the vendor's default can never lengthen a session silently. Each
+# open session bills ($0.15 an hour per stream); this cap is the last net for one that nothing
+# else closed: at 3 hours it costs $0.45. The vendor then closes with 3008 after the current turn,
+# and the desktop opens a fresh session if it is still recording (its reopen budget allows it). The
+# desktop's own guards (stall close, idle timeout, 4-hour auto-stop) are in
+# apps/desktop/src/main/costGuards.ts.
+ASSEMBLYAI_MAX_SESSION_SECONDS = 10_800
 VENDOR_TIMEOUT = httpx.Timeout(10.0)
 
 
@@ -131,7 +138,10 @@ class AssemblyAiSttTokenIssuer:
             self._http.get(
                 ASSEMBLYAI_GRANT_URL,
                 headers={"Authorization": self._api_key},
-                params={"expires_in_seconds": self._ttl_seconds},
+                params={
+                    "expires_in_seconds": self._ttl_seconds,
+                    "max_session_duration_seconds": ASSEMBLYAI_MAX_SESSION_SECONDS,
+                },
             ),
             _AssemblyAiToken,
         )

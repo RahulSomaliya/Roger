@@ -221,7 +221,10 @@ async def test_assemblyai_token_request_is_exact() -> None:
     [request] = seen
     assert request.method == "GET"
     assert ASSEMBLYAI_GRANT_URL == "https://streaming.assemblyai.com/v3/token"
-    assert str(request.url) == f"{ASSEMBLYAI_GRANT_URL}?expires_in_seconds=45"
+    # The 3-hour session cap is asked for explicitly, never left to the vendor's default.
+    assert str(request.url) == (
+        f"{ASSEMBLYAI_GRANT_URL}?expires_in_seconds=45&max_session_duration_seconds=10800"
+    )
     # The raw key, no "Bearer" or "Token" prefix, as AssemblyAI documents it.
     assert request.headers["Authorization"] == ASSEMBLYAI_KEY
     assert request.content == b""
