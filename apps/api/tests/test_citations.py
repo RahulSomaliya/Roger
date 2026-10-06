@@ -149,9 +149,18 @@ def test_q3_is_not_a_bare_number() -> None:
         ("Raise $1.2m", "raise 1.2 million", ()),
         ("Raise $1.2m", "raise one point two million", ()),
         ("Raise $3bn", "raise three billion", ()),
+        ("Raise $3B", "raise three billion", ()),
         ("Raise 1.5k", "raise fifteen hundred", ()),
         ("Raise $1.5m", "raise 1.2 million", ("1500000",)),
         ("Budget is $60k", "budget is fifty thousand", ("60000",)),
+        # Halves: "and a half" after number words or digits, "half a" before a scale.
+        ("Budget $2.5m", "two and a half million", ()),
+        ("Budget $2.5m", "2 and a half million", ()),
+        ("Raise $1.5m", "a million and a half", ()),
+        ("Demo 1.5 hours", "one and a half hours", ()),
+        ("Budget $2m", "two and a half million", ("2000000",)),
+        ("Budget $500k", "half a million", ()),
+        ("Budget $1m", "half a million", ("1000000",)),
         # Separators, currency and percent.
         ("Budget €50,000", "budget fifty thousand euros", ()),
         ("Budget \uff15\uff10k", "budget fifty thousand", ()),  # Full-width digits.
@@ -162,16 +171,25 @@ def test_q3_is_not_a_bare_number() -> None:
         ("Launch on October 21st", "October twenty first", ()),
         ("Call at 3pm", "call at three", ()),
         ("Call at 10:30", "call at ten thirty", ()),
+        # A time on the hour leaves no bare 0; other minutes still count.
+        ("Sync at 9:00", "sync at nine", ()),
+        ("Sync at 9:00", "sync at 9", ()),
+        ("Call at 3:00pm", "call at 3pm", ()),
+        ("Call at 3pm", "call at 3:00 pm", ()),
+        ("Call at 10:30", "call at 10", ("30",)),
         # Letters and digits together compare whole.
         ("Plan for Q3", "plan for q3", ()),
         ("Plan for Q3", "plan for quarter 3", ("q3",)),
         ("Ship v2 in 2 weeks", "ship v2 in two weeks", ()),
         ("Ship v2", "ship version 2", ("v2",)),
-        # "one", "first" and "second" alone are as often words as numbers: never required...
+        # "one", "first", "second" and "third" alone are as often words as numbers: never
+        # required...
         ("One open question on pricing", "the open question is pricing", ()),
         ("First release ships Friday", "release ships Friday", ()),
+        ("Use a third-party vendor", "we will use an outside vendor", ()),
         # ...but they still back a digit in the line.
         ("Next 1:1 on Friday", "our next one on one is Friday", ()),
+        ("Launch on the 3rd", "launch on the third", ()),
         ("Two options on pricing", "pricing options", ("2",)),
     ],
 )

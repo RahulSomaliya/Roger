@@ -11,9 +11,10 @@ line (M4 plan, "Lines without support", D4 and D7):
   holds a number that none of its cited lines and blocks hold, or shares no content word with them.
 
 Numbers are normalised on both sides before they are compared: "fifty thousand", "50k", "$50,000"
-and "50 thousand" are all 50000; "12%" is "12 percent"; "6th" and "sixth" are 6. Tokens that mix
-letters and digits (`Q3`, `H1`, `v2`) compare whole, never as bare digits. Raw digit matching
-would flag correct lines and push past the plan's 10% flagged target.
+and "50 thousand" are all 50000; "$2.5m" and "two and a half million" are 2500000; "12%" is "12
+percent"; "6th" and "sixth" are 6; "9:00" is 9. Tokens that mix letters and digits (`Q3`, `H1`,
+`v2`) compare whole, never as bare digits. Raw digit matching would flag correct lines and push
+past the plan's 10% flagged target.
 """
 
 import re
@@ -185,9 +186,9 @@ type _Fact = Decimal | str
 @dataclass(frozen=True, slots=True)
 class _Scanned:
     facts: tuple[_Fact, ...]
-    # "one", "first" and "second" on their own: as often words ("no one", "first, we...", "a
-    # second option") as numbers. A line is never flagged for them, but in a source they still
-    # back a digit ("our next one on one" backs "1:1").
+    # "one", "first", "second" and "third" on their own: as often words ("no one", "first, we...",
+    # "a second option", "third-party") as numbers. A line is never flagged for them, but in a
+    # source they still back a digit ("our next one on one" backs "1:1").
     loose_numbers: tuple[Decimal, ...]
     words: frozenset[str]
 
@@ -213,19 +214,26 @@ _ORDINALS_OF_TEENS_AND_TENS = _numbered(
 _SCALES = {"thousand": 1_000, "million": 1_000_000, "billion": 10**9, "trillion": 10**12}
 # A scale word after digits multiplies them: "50 thousand", "1.2 million", "2 hundred".
 _DIGIT_SCALES = {"hundred": 100, **_SCALES}
-_AMBIGUOUS_NUMBER_WORDS = frozenset({"one", "first", "second"})
+_AMBIGUOUS_NUMBER_WORDS = frozenset({"one", "first", "second", "third"})
 # What may follow "and" inside a number: "two hundred and fifty", "a hundred and first".
 _AFTER_AND = frozenset([*_UNITS, *_TEENS, *_TENS, *_ORDINAL_UNITS, *_ORDINALS_OF_TEENS_AND_TENS])
+# After a number, in words or digits: "two and a half million", "2 and a half hours".
+_AND_A_HALF = ["and", "a", "half"]
+_HALF = Decimal("0.5")
 
 _PLAIN_NUMBER = re.compile(r"[0-9]+(?:\.[0-9]+)?")
-# 50k, 1.2m, 3bn (magnitudes); 6th, 21st (ordinals); 3pm (times).
-_SUFFIXED_NUMBER = re.compile(r"([0-9]+(?:\.[0-9]+)?)(k|m|bn|st|nd|rd|th|am|pm)")
-_SUFFIX_SCALES = {"k": 1_000, "m": 1_000_000, "bn": 10**9}
+# 50k, 1.2m, 3b or 3bn (magnitudes); 6th, 21st (ordinals); 3pm (times).
+_SUFFIXED_NUMBER = re.compile(r"([0-9]+(?:\.[0-9]+)?)(k|m|bn?|st|nd|rd|th|am|pm)")
+_SUFFIX_SCALES = {"k": 1_000, "m": 1_000_000, "b": 10**9, "bn": 10**9}
 _DIGIT = re.compile(r"[0-9]")
 _THOUSANDS = re.compile(r"(?<![0-9.,])[0-9]{1,3}(?:,[0-9]{3})+(?![0-9])")
 _CURRENCY = re.compile(r"[$€£¥]")
+# A time on the hour loses its minutes: "9:00" is 9 and "3:00pm" is 3pm. Kept, the ":00" would be
+# a bare 0 that no source holds ("at nine", "at 9"), and every time on the hour would be flagged.
+_ON_THE_HOUR = re.compile(r"(?<=[0-9]):00(?![0-9])")
 # Letters and digits, joined by inner points or apostrophes ("1.5", "v2.1", "o'brien").
-# Hyphens, slashes and colons split: "twenty-five", "10/6" and "10:30" are two tokens each.
+# Hyphens, slashes and colons split: "twenty-five", "10/6" and "10:30" are two tokens each
+# (`_ON_THE_HOUR` has already taken the ":00" out of "9:00").
 _TOKEN = re.compile(r"[^\W_]+(?:[.'][^\W_]+)*")
 _CONTRACTIONS = [
     (re.compile(r"\bwon't\b"), "will not"),
@@ -265,6 +273,8 @@ def _scan(text: str) -> _Scanned:
         index += 1
         if _PLAIN_NUMBER.fullmatch(token):
             value = Decimal(token)
+            if tokens[index : index + 3] == _AND_A_HALF:
+                value, index = value + _HALF, index + 3
             if index < len(tokens) and tokens[index] in _DIGIT_SCALES:
                 value *= _DIGIT_SCALES[tokens[index]]
                 index += 1
@@ -290,6 +300,7 @@ def _tokens(text: str) -> list[str]:
     )
     for pattern, replacement in _CONTRACTIONS:
         normal = pattern.sub(replacement, normal)
+    normal = _ON_THE_HOUR.sub("", normal)
     normal = _THOUSANDS.sub(lambda match: match.group(0).replace(",", ""), normal)
     normal = _CURRENCY.sub(" ", normal.replace("%", " percent "))
     return _TOKEN.findall(normal)
@@ -302,13 +313,17 @@ def _read_spelled_number(tokens: list[str], start: int) -> tuple[Decimal, int, b
     """The spelled number at `tokens[start]`: (value, index after it, ambiguous), or None.
 
     Reads one number and stops where the words stop combining: "two three" is 2, then 3;
-    "twenty five" is 25; "three thousand five hundred" is 3500; "two point five" is 2.5.
+    "twenty five" is 25; "three thousand five hundred" is 3500; "two point five" and "two and a
+    half" are 2.5; "half a million" is 500000.
     """
     total = Decimal(0)
     group = 0
     state: _NumberWordState = "start"
     ceiling: int | None = None  # The last scale used: "two million three thousand" goes down.
     index = start
+    # "half a million" is read here, before its "a million" could be read as 1000000.
+    if tokens[start : start + 2] == ["half", "a"] and _is_scale(tokens, start + 2):
+        return Decimal(_SCALES[tokens[start + 2]]) / 2, start + 3, False
     if (
         tokens[start] == "a" and start + 1 < len(tokens) and tokens[start + 1] in _DIGIT_SCALES
     ):  # "a hundred", "a million"
@@ -345,6 +360,10 @@ def _read_spelled_number(tokens: list[str], start: int) -> tuple[Decimal, int, b
             pass  # "two hundred and fifty"
         elif word == "point" and state != "start" and _is_unit(tokens, index + 1):
             return _read_decimal_part(tokens, index + 1, total + group, ceiling)
+        elif state != "start" and tokens[index : index + 3] == _AND_A_HALF:
+            if state == "scale" and ceiling is not None:  # "a million and a half"
+                return total + Decimal(ceiling) / 2, index + 3, False
+            return _scaled(tokens, index + 3, total + group + _HALF, ceiling)
         else:
             break
         index += 1
@@ -362,10 +381,18 @@ def _read_decimal_part(
     while _is_unit(tokens, index):
         digits += str(_UNITS[tokens[index]])
         index += 1
-    value = whole + Decimal(f"0.{digits}")
-    if ceiling is None and index < len(tokens) and tokens[index] in _SCALES:
-        value *= _SCALES[tokens[index]]
-        index += 1
+    return _scaled(tokens, index, whole + Decimal(f"0.{digits}"), ceiling)
+
+
+def _scaled(
+    tokens: list[str], index: int, value: Decimal, ceiling: int | None
+) -> tuple[Decimal, int, bool]:
+    """`value` times the scale word at `tokens[index]`, if any: "two and a half million".
+
+    Only when the number has no scale yet: "two million three point five" stops at 3.5.
+    """
+    if ceiling is None and _is_scale(tokens, index):
+        return value * _SCALES[tokens[index]], index + 1, False
     return value, index, False
 
 
@@ -375,6 +402,10 @@ def _alone(tokens: list[str], start: int, last: int) -> bool:
 
 def _is_unit(tokens: list[str], index: int) -> bool:
     return index < len(tokens) and tokens[index] in _UNITS
+
+
+def _is_scale(tokens: list[str], index: int) -> bool:
+    return index < len(tokens) and tokens[index] in _SCALES
 
 
 def _stem(word: str) -> str:
