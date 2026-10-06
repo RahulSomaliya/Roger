@@ -139,7 +139,7 @@ class BenchRun {
     const attempts: RunAttempt[] = [];
     let last: ItemAttempt | null = null;
     for (let number = 1; number <= MAX_ATTEMPTS; number += 1) {
-      if (number > 1) await this.deps.timers.sleep(this.backoffMs(number - 1));
+      if (number > 1) await this.deps.timers.sleep(this.backoffMs(number - 1), this.abort.signal);
       if (this.abort.signal.aborted) break;
       try {
         last = await replayItemAttempt({
@@ -187,7 +187,12 @@ class BenchRun {
     }
   }
 
-  /** Stops every item: attempts end early and close their sessions; no new attempt starts. */
+  /**
+   * Stops every item: a wait for open slots or a backoff ends at once, an item still waiting fetches
+   * no token and opens nothing, an open attempt ends early and closes its sessions, and no new
+   * attempt starts. Each wait gets `abort.signal`: one without it would hold the stop (and a
+   * crash's error) back for up to a minute and then open billed sessions only to close them.
+   */
   private stop(reason: string): void {
     if (this.stopped !== null) return;
     this.stopped = reason;

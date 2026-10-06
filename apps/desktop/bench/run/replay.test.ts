@@ -33,6 +33,7 @@ function setup(
   timers: ManualTimers;
   vendor: FakeVendor;
   api: ScriptedTokenApi;
+  opener: BenchOpener;
   attempt: (
     audio: Map<AudioSource, Int16Array>,
     abort?: AbortController,
@@ -47,6 +48,7 @@ function setup(
     timers,
     vendor,
     api,
+    opener,
     attempt: (audio, abort = new AbortController()) =>
       timers.settle(
         replayItemAttempt({
@@ -317,6 +319,46 @@ describe('replayItemAttempt', () => {
 
     await expect(timers.settle(attempt)).rejects.toThrow(RunStoppedError);
     expect(api.calls).toBe(0);
+  });
+
+  it('asks for no token and opens nothing when the run stops while the item waits for slots', async () => {
+    const abort = new AbortController();
+    const { vendor, api, timers, opener, attempt } = setup();
+    // Another item's four opens fill the minute, so this item waits until T0 + 60 s.
+    await timers.settle(opener.reserve(4, () => Promise.resolve(null)));
+    void timers.sleep(5_000).then(() => {
+      abort.abort('events write failed: ENOSPC');
+    });
+
+    const stopped = attempt(
+      new Map([
+        ['mic', tone(1_000)],
+        ['system', tone(1_000)],
+      ]),
+      abort,
+    );
+
+    await expect(stopped).rejects.toThrow(RunStoppedError);
+    await expect(stopped).rejects.toThrow('run stopped: events write failed: ENOSPC');
+    expect(api.calls).toBe(0);
+    expect(vendor.opens).toBe(0);
+    expect(timers.now()).toBe(T0 + 5_000);
+  });
+
+  it('opens nothing when the run stops while the token is on its way', async () => {
+    const abort = new AbortController();
+    const { vendor, api, attempt } = setup({
+      api: new ScriptedTokenApi((call) => {
+        abort.abort('the API now serves deepgram nova-3');
+        return tokenResponse({ token: `tok-${call + 1}` });
+      }),
+    });
+
+    const stopped = attempt(new Map([['mic', tone(1_000)]]), abort);
+
+    await expect(stopped).rejects.toThrow('run stopped: the API now serves deepgram nova-3');
+    expect(api.calls).toBe(1);
+    expect(vendor.opens).toBe(0);
   });
 
   it('ends early and says so when the run is stopped mid-replay', async () => {

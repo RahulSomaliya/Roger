@@ -215,6 +215,36 @@ describe('runBench', () => {
     expect(lines.at(-1)).toMatch(/stopped: the API now serves deepgram nova-3/);
   });
 
+  it('stops an item waiting for open slots when another item stops the run: no token, no open', async () => {
+    await items(3);
+    // The second token's item stops the run (its connect query leaks the token) while the third
+    // waits a minute for slots: 4 a minute, and the first two items took them all. The leak is
+    // acted on once both connects are done: the 1 s connect lets the third item (its WAV files are
+    // real reads) reach the open budget first, as it would in a real run.
+    const { timers, vendor, api, done } = start(
+      {},
+      {
+        vendor: {
+          connectMs: 1_000,
+          connectQuery: (options) =>
+            options.accessToken === 'tok-2' ? `token=${options.accessToken}` : null,
+        },
+      },
+    );
+
+    const outcome = await done;
+
+    expect(outcome.stopped).toMatch(/holds the access token/);
+    expect(api.calls).toBe(2);
+    expect(vendor.opens).toBe(4);
+    // The stop did not wait out the minute the third item was waiting for.
+    expect(timers.now()).toBeLessThan(T0 + 60_000);
+    const run = await readRun(runPaths(bench, outcome.runId).runJson);
+    // Only the first token's item is listed (stopped mid-replay, or done if its reads beat the
+    // other items'): the leaking one throws, and the one that never opened is left out.
+    expect(run.items).toHaveLength(1);
+  });
+
   it('keeps the list in run.json and sends none with --no-keyterms', async () => {
     await items(1);
     const { vendor, done } = start({ keyterms: false });

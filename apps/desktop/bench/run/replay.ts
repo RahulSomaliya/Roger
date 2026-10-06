@@ -34,7 +34,11 @@ export interface ItemAttemptInput {
   opener: BenchOpener;
   adapters: BenchAdapterFactory;
   timers: BenchTimers;
-  /** Aborted when the run stops: the attempt ends early, closes its sessions and says why. */
+  /**
+   * Aborted when the run stops. An attempt still waiting for open slots or for its token opens
+   * nothing (each open is a billed handshake) and rejects; one already open ends early, closes its
+   * sessions and says why.
+   */
   signal: AbortSignal;
 }
 
@@ -91,7 +95,8 @@ interface SourceRun {
 
 /**
  * Runs one attempt. Resolves with the attempt's record, failed or not (a failure is retried by the
- * caller with a fresh token); rejects with RunStoppedError for a problem every item would hit.
+ * caller with a fresh token); rejects with RunStoppedError for a problem every item would hit, and
+ * when the run stopped before the attempt opened anything (there is then nothing to record).
  */
 export async function replayItemAttempt(input: ItemAttemptInput): Promise<ItemAttempt> {
   const { item, timers, signal } = input;
@@ -108,20 +113,27 @@ export async function replayItemAttempt(input: ItemAttemptInput): Promise<ItemAt
     receivedAtMs: number;
   };
   try {
-    prepared = await input.opener.reserve(item.sources.length, async () => {
-      const requestedAtMs = timers.now();
-      times.requestedAtMs = requestedAtMs;
-      const credentials = await input.credentials.fetch();
-      const receivedAtMs = timers.now();
-      times.receivedAtMs = receivedAtMs;
-      const wire = new ConnectQueries(credentials.accessToken);
-      const stt = adapterFor(input.adapters, credentials.provider, wire.tap);
-      return { credentials, stt, wire, requestedAtMs, receivedAtMs };
-    });
+    prepared = await input.opener.reserve(
+      item.sources.length,
+      async () => {
+        const requestedAtMs = timers.now();
+        times.requestedAtMs = requestedAtMs;
+        const credentials = await input.credentials.fetch();
+        const receivedAtMs = timers.now();
+        times.receivedAtMs = receivedAtMs;
+        const wire = new ConnectQueries(credentials.accessToken);
+        const stt = adapterFor(input.adapters, credentials.provider, wire.tap);
+        return { credentials, stt, wire, requestedAtMs, receivedAtMs };
+      },
+      signal,
+    );
   } catch (error) {
     if (error instanceof RunStoppedError) throw error;
-    // The open budget refused before any token was asked for: every item would hit it too.
-    if (times.requestedAtMs === null) throw new RunStoppedError(errorMessage(error));
+    if (times.requestedAtMs === null) {
+      // No token was asked for: the run stopped while the item waited for open slots, or the open
+      // budget refused, which every item would hit too.
+      throw new RunStoppedError(signal.aborted ? stoppedBy(signal) : errorMessage(error));
+    }
     // The token came, so the failure is not the API's: a bug, which must not pass for a retry.
     if (times.receivedAtMs !== null) throw error;
     return {
@@ -136,6 +148,10 @@ export async function replayItemAttempt(input: ItemAttemptInput): Promise<ItemAt
       adapterQuery: null,
     };
   }
+  // The run stopped while the token was on its way. Nothing opens: each open is a billed handshake,
+  // and an item that never replayed is left out of run.json. The check before the replay below
+  // comes too late for this: by then both sessions are open.
+  throwIfStopped(signal);
   const { credentials, stt, wire } = prepared;
 
   const outcome = new AttemptOutcome();
@@ -204,7 +220,7 @@ export async function replayItemAttempt(input: ItemAttemptInput): Promise<ItemAt
         'stored. Fix queryWithoutToken in src/main/stt/core/SttConnection.ts before any run.',
     );
   }
-  if (signal.aborted) outcome.fail(`run stopped: ${abortReason(signal)}`);
+  if (signal.aborted) outcome.fail(stoppedBy(signal));
 
   const streams: RunStream[] = runs.map((run) => ({
     source: run.source,
@@ -271,9 +287,19 @@ function endOfSession(event: SttEvent): string | null {
   return `the vendor closed the session (${parts.join(', ')})`;
 }
 
-function abortReason(signal: AbortSignal): string {
+/**
+ * A function, not `if (signal.aborted) throw` inline: TypeScript would keep that narrowing past
+ * every later await, and lint would then call the checks after the opens and the replay (where the
+ * signal may well have aborted) always true or always false.
+ */
+function throwIfStopped(signal: AbortSignal): void {
+  if (signal.aborted) throw new RunStoppedError(stoppedBy(signal));
+}
+
+/** `run stopped: <why>`, from the reason the run aborted its signal with. */
+function stoppedBy(signal: AbortSignal): string {
   const reason: unknown = signal.reason;
-  return typeof reason === 'string' ? reason : errorMessage(reason);
+  return `run stopped: ${typeof reason === 'string' ? reason : errorMessage(reason)}`;
 }
 
 /**

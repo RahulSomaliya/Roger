@@ -68,6 +68,35 @@ describe('BenchOpener', () => {
     expect(timers.now()).toBe(T0);
   });
 
+  it('ends the minute wait when the run stops, fetching no token for it or any turn behind it', async () => {
+    const timers = new ManualTimers(T0);
+    const opener = new BenchOpener({ opensPerMinute: 2 }, timers);
+    const abort = new AbortController();
+    const fetched: string[] = [];
+    const turn = (name: string, count: number): Promise<string> =>
+      opener.reserve(
+        count,
+        () => {
+          fetched.push(name);
+          return Promise.resolve(name);
+        },
+        abort.signal,
+      );
+
+    expect(await timers.settle(turn('first', 2))).toBe('first');
+    // Its two slots fill the minute: `waiting` sleeps until T0 + 60 s, `queued` waits behind it.
+    const waiting = turn('waiting', 2);
+    const queued = turn('queued', 1);
+    void timers.sleep(10_000).then(() => {
+      abort.abort('disk full');
+    });
+
+    await expect(timers.settle(waiting)).rejects.toThrow(/run stopped/);
+    await expect(timers.settle(queued)).rejects.toThrow(/run stopped/);
+    expect(fetched).toEqual(['first']);
+    expect(timers.now()).toBe(T0 + 10_000);
+  });
+
   it('refuses an item needing more opens than a minute allows, instead of waiting forever', async () => {
     const opener = new BenchOpener({ opensPerMinute: 1 }, new ManualTimers(T0));
 

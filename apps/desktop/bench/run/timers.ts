@@ -7,7 +7,11 @@
 export interface BenchTimers {
   /** Epoch ms. */
   now(): number;
-  sleep(ms: number): Promise<void>;
+  /**
+   * Resolves after `ms`, or at once when `signal` aborts (the run stopped): the caller checks the
+   * signal after the wait. A stop must never sit out a minute's open-budget wait or a backoff.
+   */
+  sleep(ms: number, signal?: AbortSignal): Promise<void>;
 }
 
 /**
@@ -17,8 +21,20 @@ export interface BenchTimers {
  */
 export const REAL_TIMERS: BenchTimers = {
   now: () => performance.timeOrigin + performance.now(),
-  sleep: (ms) =>
+  sleep: (ms, signal) =>
     new Promise((resolve) => {
-      setTimeout(resolve, Math.max(0, ms));
+      if (signal?.aborted === true) {
+        resolve();
+        return;
+      }
+      // One signal serves every wait of a run, so each wait removes its listener when it ends;
+      // left behind, they would pile up on the signal.
+      const wake = (): void => {
+        clearTimeout(timer);
+        signal?.removeEventListener('abort', wake);
+        resolve();
+      };
+      const timer = setTimeout(wake, Math.max(0, ms));
+      signal?.addEventListener('abort', wake, { once: true });
     }),
 };

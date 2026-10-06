@@ -25,10 +25,28 @@ export class ManualTimers implements BenchTimers {
     return this.current;
   }
 
-  sleep(ms: number): Promise<void> {
-    return new Promise((wake) => {
-      this.sleepers.push({ atMs: this.current + Math.max(0, ms), order: this.nextOrder, wake });
+  /** As REAL_TIMERS: an aborted signal ends the wait at once, with the clock where it is. */
+  sleep(ms: number, signal?: AbortSignal): Promise<void> {
+    return new Promise((resolve) => {
+      if (signal?.aborted === true) {
+        resolve();
+        return;
+      }
+      const sleeper: Sleeper = {
+        atMs: this.current + Math.max(0, ms),
+        order: this.nextOrder,
+        wake: () => {
+          signal?.removeEventListener('abort', stop);
+          resolve();
+        },
+      };
+      const stop = (): void => {
+        this.sleepers = this.sleepers.filter((other) => other !== sleeper);
+        sleeper.wake();
+      };
+      this.sleepers.push(sleeper);
       this.nextOrder += 1;
+      signal?.addEventListener('abort', stop, { once: true });
     });
   }
 
