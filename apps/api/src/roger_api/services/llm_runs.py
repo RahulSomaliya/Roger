@@ -346,6 +346,22 @@ class LlmRuntime:
             await asyncio.wait(set(self._drivers))
 
     async def _drive(self, live: LiveRun) -> None:
+        try:
+            await self._wait_for_work(live)
+            live._ending = True
+            await self._write_outcome(live)
+        except Exception as error:
+            # Nothing could be stored (the database is away). The row stays `running` until the
+            # sweep fails it, which is what a desktop polling the run waits for.
+            _log_failure("llm_run_outcome_not_stored", live, error)
+            live._emit(error_event("internal_error", _CRASHED_MESSAGE))
+        finally:
+            # Always, even when this driver is torn down: `start`, `cancel` and every subscriber
+            # wait for the run to end.
+            live._close()
+            self._runs.pop(live.run_id, None)
+
+    async def _wait_for_work(self, live: LiveRun) -> None:
         beat = asyncio.create_task(self._beat(live), name=f"llm-run-heartbeat-{live.run_id}")
         try:
             await asyncio.wait({live._work})
@@ -354,17 +370,6 @@ class LlmRuntime:
             # A no-op once the work is done; stops it if this driver is itself torn down.
             live._work.cancel()
             await asyncio.wait({beat})
-        live._ending = True
-        try:
-            await self._write_outcome(live)
-        except Exception as error:
-            # Nothing could be stored (the database is away). The row stays `running` until the
-            # sweep fails it, which is what a desktop polling the run waits for.
-            _log_failure("llm_run_outcome_not_stored", live, error)
-            live._emit(error_event("internal_error", _CRASHED_MESSAGE))
-        finally:
-            live._close()
-            self._runs.pop(live.run_id, None)
 
     async def _beat(self, live: LiveRun) -> None:
         """Moves the row's heartbeat, on the database clock, while the work runs.

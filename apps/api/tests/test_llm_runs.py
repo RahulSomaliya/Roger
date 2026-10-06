@@ -598,6 +598,26 @@ async def test_closing_the_runtime_fails_a_run_still_working(
     assert (stored.status, stored.error_code) == ("failed", "internal_error")
 
 
+async def test_a_torn_down_driver_still_ends_the_run_for_whoever_waits(
+    database: Database, meeting: Meeting
+) -> None:
+    never = asyncio.Event()
+    model = ScriptedNotesModel(ModelScript(steps=("Half", never)))
+    async with asyncio.timeout(WAIT_S), running(database, model) as runtime:
+        run = await claim(database, new_run(meeting))
+        live = await runtime.start(run, echo)
+        events = live.subscribe()
+        assert await anext(events) == delta("Half")
+        # What `asyncio.run` does to every task left when the loop shuts down.
+        [driver] = [task for task in asyncio.all_tasks() if task.get_name() == f"llm-run-{run.id}"]
+
+        driver.cancel()
+
+        assert [event async for event in events] == []
+        assert model.open_streams == 0
+        assert runtime.find(meeting.workspace_id, run.id) is None
+
+
 async def test_a_run_ended_elsewhere_stops_at_its_next_heartbeat(
     database: Database, meeting: Meeting
 ) -> None:
