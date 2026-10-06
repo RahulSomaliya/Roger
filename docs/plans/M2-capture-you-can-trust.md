@@ -368,12 +368,17 @@ plus one slot block. Every task is TDD: the failing test first,
   (`config.costGuards` into `createSpeechToText` and `CaptureService`, `config.errors` into the
   startup error, the `RecordingLifecycle` and `watchApp`). No behaviour change (the minute-only
   acquire has no caller until wave 6); every M1 test (G1 to G7 included) stays green.
-- [ ] **M2-T5 Audio timeline** · M · desktop · depends on: T4.
+- [x] **M2-T5 Audio timeline** · M · desktop · depends on: T4.
   Owns `src/main/capture/AudioTimeline.ts`, `CaptureSession.ts`. Runs split by capture-time drift
   over 250 ms, mapping as designed; `CaptureSession` maps finals and words through it. One timeline
   per vendor stream, so a reopened stream (G2, G3) keeps its own time zero; runs replace the
   landed `BUFFER_GAP_MS` drop of held audio. The G1 to G3 tests in `CaptureSession.test.ts` stay
-  green with their meeting-relative offsets.
+  green with their meeting-relative offsets. As built: a span (a line, a word, an interim) maps as
+  one unit through `AudioTimeline.toCapturedSpan`, which cuts a spill of 200 ms or less across a
+  run boundary off at the boundary; a final's span is widened to hold its words (`EchoFilter`
+  reaches call-audio lines by span); offsets are rounded to whole ms (the API's `OffsetMs` is an
+  int). Its tests stand in for the soak at the session level only: the service-level 2-hour soak
+  (`CaptureService.soak.test.ts`, Tests below) had no owner and is M3-T4b's (wave 5).
 - [ ] **M2-T6 STT liveness, offline and gap records** · M · desktop · depends on: T3, T4, T5, M3-T5
   (file order in `stt/core`). A delta on the landed reopen (G2, G3): it adds no wrapper, no
   reconnect loop and no replay (design row "STT reconnect"). Owns: in the shared core, the ping
@@ -426,7 +431,7 @@ plus one slot block. Every task is TDD: the failing test first,
   path. As built, the install also runs the signed helper's `selftest`, and
   `src/main/native/installMac.mac.test.ts` tests the script's two signature functions on real
   unsigned and ad-hoc code.
-- [ ] **M2-T10 System audio through the helper** · M · desktop · depends on: T1, T3, T4, T9.
+- [x] **M2-T10 System audio through the helper** · M · desktop · depends on: T1, T3, T4, T9.
   Owns `src/main/native/HelperProcess.ts` (spawn, frame and stderr parsers, restart up to 5 times,
   the 3 s watchdog with SIGKILL, stdin closed on stop, SIGTERM then SIGKILL after 5 s),
   `src/main/audio/system/*` (`SystemAudioSource`, `TapSystemAudio`, `ElectronSystemAudio`,
@@ -435,8 +440,16 @@ plus one slot block. Every task is TDD: the failing test first,
   in `app_state` against T1's hash on the first non-zero tap audio. A helper that is out of
   restarts reports the system source `error` through the path the renderer uses today
   (`reportSourceState`), so the landed G1 closes its vendor session at once; a helper restart
-  that leaves no chunk for 30 s is paused by G2 like any stall.
-- [ ] **M2-T11 Signal health and loud warnings** · M · desktop · depends on: T2, T3, T4.
+  that leaves no chunk for 30 s is paused by G2 like any stall. As built: a forced `tap` with no
+  helper fails at Start rather than falling back (`auto` falls back to Electron); a failed tap
+  raises no warning of its own, T11's source-ended rule shows it; while a helper restarts it shows
+  `helper-hung` or `source-ended`, then a `helper-restarted` notice. `systemCapture` is `tap` or
+  `electron` from `starting` to `stopping`, null when idle, and the renderer opens Electron's call
+  audio only for `electron` (T12).
+- [x] **M2-T11 Signal health and loud warnings** · M · desktop · depends on: T2, T3, T4.
+  (Code merged; the Mac check below has not run, so the flat-level rule is built and off, the
+  `flatLevelRule` option of the T11 slot. D4's Bluetooth window and the "Switched to <device>"
+  notice are built but had no writer: T17a feeds both, assigned after wave 3.)
   Owns `src/main/capture/SignalMonitor.ts`, `src/main/capture/warnings.ts`,
   `src/main/notify/Notifier.ts`. Rules and thresholds from the design table; ignores the first
   tick after a timer gap over 5 s (the Mac slept, from openwhispr's watchdog). Starts with a Mac
@@ -445,7 +458,7 @@ plus one slot block. Every task is TDD: the failing test first,
   mid-capture does (zeros, track ended, or nothing). Adds the flat-level rule only if the peak is
   above 1 LSB. `SignalMonitor` is a fan-out sink and only warns: it never opens or closes a vendor
   session (G2's stall close and M3-T20's silence gate do that).
-- [ ] **M2-T12 Renderer capture hardening** · M · desktop · depends on: T2, T4.
+- [x] **M2-T12 Renderer capture hardening** · M · desktop · depends on: T2, T4.
   Owns `src/renderer/src/audio/*`, `src/renderer/src/state/useCapture.ts`, `src/main/window.ts`,
   and in wave 3 `src/main/lifecycle.ts` and `src/main/capture/stopReasons.ts` (with their tests).
   Builds on the landed `AudioCaptureController` (devices injected, `followMain` stops capture on
@@ -460,7 +473,12 @@ plus one slot block. Every task is TDD: the failing test first,
   `render-process-gone` reloads the page instead of stopping, a reload while recording no longer
   stops (the reopened mic carries on; G2 closes the mic session if no chunk comes for 30 s), and a
   reload that fails (`did-fail-load`) stops with `renderer-gone`; `page-reloaded` leaves
-  `StopReason` with its notice and tests. Close-hides is M5-T11's.
+  `StopReason` with its notice and tests. Close-hides is M5-T11's. As built: `window.ts` needed
+  no change (the reload lives in `lifecycle.ts`); a page that crashes before it loads, or 3 times
+  in 60 s, stops with `renderer-gone` instead of reloading again; a mic that opens dead 3 times in
+  a row is reported to main as `error`; a reload leaves call audio shut when main gave up on it.
+  The "switched" report reaches main as an `active` source state whose message main drops: the
+  notice comes from T17a's mic device instead.
 - [ ] **M2-T13 Electron smoke test** · M · desktop · depends on: T10, T12.
   Owns `apps/desktop/e2e/harness.ts`, `e2e/capture.e2e.ts`, `src/main/e2eMode.ts` (+ test) and
   `[slot M2-T13]` in `index.ts` (P2-F3 already added `vitest.e2e.config.ts`, the `test:e2e`
@@ -507,7 +525,10 @@ plus one slot block. Every task is TDD: the failing test first,
   helper through `HelperProcess` while Roger runs, sends `recording on` and `recording off`,
   resolves call apps (FaceTime daemons included), feeds the echo filter's `RouteProvider`. Roger's
   own processes never count. Safari's mic use shows as WebKit's GPU process, not as Safari
-  (`Monitor.swift` header).
+  (`Monitor.swift` header). Assigned after wave 3 (T11 built both, nothing fed them): on every
+  `route` event its slot calls `signalMonitor.setMicBluetooth(route.input?.transport ===
+  'bluetooth')` (D4), and a status contributor sets `sources.mic.device` from `route.input.name`,
+  which T11's `SignalMonitor` turns into the "Switched to <device>" notice and capture event.
 - [ ] **M2-T17b Offer and auto-stop** · M · desktop · depends on: T11, T12, T17a, M5-T5,
   M5-T9b (`PromptService.offer`). M5-T11 (close hides) is needed for the exit check, not to build.
   Owns `src/main/detect/CallDetector.ts` (pure), `src/main/detect/CallOffer.ts`, the T17b runtime
@@ -569,7 +590,8 @@ plus one slot block. Every task is TDD: the failing test first,
 - [ ] **M2-T22 Exit check on real calls** · human plus agent · starts after T1 to T15, T3b, T7b
   and T20a (the "no lost or doubled text" set and the three cuts). The kill -9 call and the Wi-Fi
   cut also need T16 (AssemblyAI takes no replay, so that window comes back from the backup), the
-  kill -9 call T23, the lid call T18, the offer calls T17b and its M5 gates; T19 and T20b land
+  kill -9 call T23, the lid call T18, the offer calls T17b and its M5 gates, the AirPods call and
+  the "Switched to <device>" line T17a (D4's flag and the mic device); T19 and T20b land
   before M2 closes. Each call also records its `stt meter at stop` log line (sessions opened,
   connected time, cost) and whether M3-T20's silence gate was on (`sttSilenceCloseSeconds`, on by
   default once wave 6 is installed; with it on, the gated time and gate reopens from the same
@@ -621,7 +643,7 @@ set above gates "no lost or doubled text" (the Wi-Fi cut waits for T16).
 | Suspend finalizes and closes streams and no longer stops the recording; resume after a short sleep restarts the helper and reopens each source with its audio; a sleep of `noSpeechStopMs` or more stops at wake with `system-sleep`; the power save blocker is held only while recording | `src/main/power/PowerCoordinator.test.ts`, `src/main/lifecycle.test.ts` |
 | At launch, a recent open meeting resumes in the same id when a call app holds the mic or the launch came from the relaunch (`--relaunched` in argv), with a gap and a capture event, its saved `stt_usage` carried on; an old one, or one with no call app and no relaunch, is ended as in M1; holds are settled before the uploader's first tick | `src/main/recovery/CrashRecovery.test.ts` |
 | Setup rows for granted, denied, not determined, probe pending then refused, probe heard, notifications failing, ad-hoc build; deep links | `src/main/setup/PermissionService.test.ts` |
-| 2-hour soak: 72,000 chunks per stream through the service with fake STT and clock; memory buffers stay bounded; every line stored; offsets correct at 2 h | `src/main/capture/CaptureService.soak.test.ts` |
+| 2-hour soak: 72,000 chunks per stream through the service with fake STT and clock; memory buffers stay bounded; every line stored; offsets correct at 2 h | `src/main/capture/CaptureService.soak.test.ts` (M3-T4b, wave 5: no M2 task owned it; T5's `CaptureSession.test.ts` covers the session-level 2 hours) |
 | UI: setup screen, warning banner, notices, call card, echo toggle in light and dark at desktop and narrow widths | QA gallery from `e2e/setup.shots.e2e.ts`, `e2e/capture-status.shots.e2e.ts`, `e2e/capture-details.shots.e2e.ts` |
 
 ## Risks

@@ -109,12 +109,12 @@ Supporting checks, run before the real calls:
 | MCP | Add `get_notes(meeting_id?)`: AI notes and the user's notes as Markdown, each AI line ending with its source times like `[00:12:03]`, "From your notes" as its own list. Its text sends the AI to `get_transcript` for quotes. | Leave all MCP work to M7 | Cheap, because the Markdown renderer exists for prompts anyway, and Claude can read notes today. M7 may reshape it. |
 | Editor | TipTap 3: `@tiptap/react`, `@tiptap/pm`, `@tiptap/core`, `@tiptap/starter-kit` (link click-to-open off), `@tiptap/extensions` (Placeholder), plus our own inline `citation` node | Raw ProseMirror (anarlog `packages/editor`) | Roadmap pick; openwhispr runs the same stack (`src/components/ui/RichTextEditorExtensions.ts`). No Markdown extension: the API renders docs to Markdown. |
 | Desktop store | A separate `notes.sqlite` owned by `SqliteNotesStore`, with its own `user_version` migrations: `notes` (per meeting and kind: doc, server version, dirty revision, conflict copy, sync state), `pending_generate` (meeting id, run id made up front, template id or null, reason, created at, last error) and `template_choices` (normalised title, template id, chosen at) | New migrations in `roger.sqlite` | No edits to `SqliteTranscriptStore.MIGRATIONS`, which M2 and M5 also extend. Parallel-safe. |
-| Meetings with notes and no lines | The uploader stays the only code that creates meetings in Postgres. A pending meeting is created when it holds a line, or when it has ended and has notes; a notes-only meeting is created and ended in one pass. Neither the uploader nor `CaptureService` deletes a lineless meeting that has notes (a `hasNotes` check injected into every delete site). `NotesSync` never creates a meeting: while its meeting is pending it waits. | `NotesSync` creates the meeting on `404` | M1's invariant (`TranscriptUploader.ts`, `syncMeeting`): Postgres hears of a meeting only once it has content, or MCP's "latest meeting" is a 0-line one and a meeting the uploader never ends stays "recording". "Ended and has notes" keeps that: no meeting is in Postgres with no line while it is still recording. |
+| Meetings with notes and no lines | The uploader stays the only code that creates meetings in Postgres. A pending meeting is created when it holds a line, or when it has ended and has notes; a notes-only meeting is created and ended in one pass. Neither the uploader nor `CaptureService` deletes a lineless meeting that has notes (the uploader's `hasNotes`, asked at every delete site; as built, `CaptureService` asks the uploader after the open editors saved, M4-T22). `NotesSync` never creates a meeting: while its meeting is pending it waits. | `NotesSync` creates the meeting on `404` | M1's invariant (`TranscriptUploader.ts`, `syncMeeting`): Postgres hears of a meeting only once it has content, or MCP's "latest meeting" is a 0-line one and a meeting the uploader never ends stays "recording". "Ended and has notes" keeps that: no meeting is in Postgres with no line while it is still recording. |
 | When notes generate | After Stop, as a pending intent in `notes.sqlite` with a run id made up front. Main runs it once the meeting's lines and notes are uploaded, exactly once, across reloads and restarts. Template: the one last picked for a meeting with the same title; else title words (standup, daily, stand-up: standup; 1:1, 1-1, one on one: 1:1; client, demo, discovery, proposal, kickoff: client call); else, once M5 lands, any attendee outside the user's email domain: client call; else Roger asks at Stop with the four templates (preference "When Roger cannot tell: ask", or "use General"). A preference turns auto-generate off. | Renderer state after Stop; always General | Renderer state is lost on a reload (M2 reloads after `render-process-gone`), on quit right after Stop, and while the API is offline: the user would get no notes and no message. Every manual start is "Untitled meeting" until M5's titles, so a title rule alone would pick General on every exit-check call. |
 | Generate inputs | Before a run starts, main uploads the meeting's waiting lines (M2-T3's unsynced query, which skips echo-suppressed lines and lines still held) and flushes its dirty user and AI notes through `NotesSync`. If either cannot finish, no run starts: the intent waits and the panel says why. The request carries `user_notes_version` and `ai_base_version`; both go on the run, and a stale one is a `409`. | Generate from whatever Postgres holds | Notes typed in the last seconds of a call, or offline, would be missing from the prompt, and they drive the 2-minute target. |
 | Saving at quit | The editor saves on `pagehide` and `beforeunload` as well as blur and unmount. On quit, main asks each window to flush its editors, waits for each ack or 1 s, then closes `notes.sqlite`. It runs as a quit hook in the landed `RecordingLifecycle` (`main/lifecycle.ts`, which owns `before-quit` since the cost guards landed): P2-F1 turns its quit cleanup into an ordered list of bounded hooks, and this one runs after the recording stops and before the transcript store closes. | Flush on unmount only | React does not unmount on Cmd-Q: up to 400 ms of typing would be lost while the UI says "saved on this Mac". |
 | App shell | M4 owns it as M4-S1 to M4-S4b, in waves 1 to 3 of `phase-2-build-order.md` (the "SHELL" of M2, M3 and M5; M5's SHELL-0 is S1's `app:navigate` plus S2's `PreferencesStore`). Scope is the union of every Phase 2 plan's needs (table below). | Each milestone grows its own screens; SHELL inside M2 | C7: exactly one owner. The meeting page is most of the shell and M4 fills most of it. D6. |
-| Routing | A small router in the shell (`app/router.ts`, with tests) over four routes written as hashes (`#/`, `#/meetings/:id`, `#/settings`, `#/setup`). Built (M4-S1): the route lives in a `RouteStore` and `sessionStorage`, which a reload keeps; the URL hash is read at start (QA loads `index.html#/settings`) and followed when changed from outside, but the shell never writes `location.hash` or calls `history.pushState` or `history.replaceState`, and nav items are buttons, not `<a href="#/...">`. Chromium starts a load on a same-document navigation (a hash change or a `replaceState`), and `lifecycle.ts` stops the recording on any `did-start-loading`; once M2-T12 removes that stop, writing the hash is safe. | `react-router` | Four routes; no new dependency. A route kept in `sessionStorage` survives `file://` in the packaged app and a renderer reload. |
+| Routing | A small router in the shell (`app/router.ts`, with tests) over four routes written as hashes (`#/`, `#/meetings/:id`, `#/settings`, `#/setup`). Built (M4-S1): the route lives in a `RouteStore` and `sessionStorage`, which a reload keeps; the URL hash is read at start (QA loads `index.html#/settings`) and followed when changed from outside, but the shell never writes `location.hash` or calls `history.pushState` or `history.replaceState`, and nav items are buttons, not `<a href="#/...">`. Chromium starts a load on a same-document navigation (a hash change or a `replaceState`), and `lifecycle.ts` stopped the recording on any `did-start-loading`. M2-T12 removed that stop (wave 3), so writing the hash is safe now; the shell keeps its route in `sessionStorage` anyway. | `react-router` | Four routes; no new dependency. A route kept in `sessionStorage` survives `file://` in the packaged app and a renderer reload. |
 | Theme | `renderer/src/theme/tokens.css` holds every colour as a CSS variable, light and dark. Fills (`--accent`, `--danger`) carry `--on-accent` text; text in those hues uses `--accent-ink` and `--danger-ink`, because one value cannot be both (in dark for either hue; in light for danger, 4.46:1 as text on `--bg`) (`tokens.test.ts` checks the contrasts and fails a `color:` read from a fill). Dark follows the system unless the `theme` preference forces one (`data-theme` on `<html>`). A test fails on any literal colour outside `tokens.css`. | Keep the literal colours in `styles.css` | C7 and the global rule: colours only from tokens, both themes. A forced theme also lets QA shoot light on a dark-mode Mac. |
 | Preferences | `PreferencesStore` in main, with M5's SHELL-0 spec: a registry (`register(specs)`; each spec is a key, a default and a `parse`), so each milestone registers its keys from its own file (M5: `shared/calendarPrefs.ts`); typed access comes from `PreferenceValues` in `shared/preferences.ts` extending each milestone's values type (M5's `CalendarPreferenceValues`, done by M4-S2), not from an augmentation, which `tsconfig.web.json` cannot see from main; the preview fake registers every milestone's specs; `get`, and `set` that refuses unknown keys and bad values naming the key; one change event per set; stored in `userData/preferences.json` (temp file then rename; a torn file keeps the last good copy), validated on read (a bad value falls back to its default with a log line); IPC `prefs:get-all`, `prefs:set` and `prefs:changed`, main window only. | `localStorage` in the renderer | Main needs them too (auto-generate after Stop, M5's reminder lead time). `config.json` (M1, M2) stays for capture switches read at start. |
 | Transcript navigator | One implementation of `reveal(segmentIds)` in `renderer/src/transcript/transcriptNavigator.ts` (M4-T21). M3-T7's `LiveTranscript` renders `data-segment-id` on every final line and registers its scroll container and follow control; it does not implement reveal itself. | Each panel scrolls itself; M3-T7 implements reveal | Chips in notes and chat need one thing to call, and reveal must pause live follow or follow-live scrolls straight back. |
@@ -228,7 +228,7 @@ not changed, so M5 can add columns to it without touching this migration.
 | `POST /v1/meetings/{id}/runs/{run_id}/cancel` | Stops a notes or chat run; `200` with the run. A run of another meeting or workspace: `404`. |
 | `GET /v1/meetings/{id}/chat?limit=50` | `{ items: [...] }`, the messages, oldest first |
 | `POST /v1/meetings/{id}/chat` | Body `{ message_id, text }` (1..4000 chars). `text/event-stream`. Meeting over the budget: `422 meeting_too_long`. A re-sent `message_id` never stores a second message: a complete answer is replayed, a streaming one is attached to, a failed one is generated again. A `message_id` stored under another meeting or workspace: `409`. |
-| MCP `get_notes` | Input `{ meeting_id? }`. Text: header, "AI notes", "From your notes" and "My notes" as Markdown. Tool text: "Get the notes for a meeting: the AI-written notes and the user's own rough notes, as Markdown. Each AI line ends with the transcript times it came from, like [00:12:03]. Notes are a summary: to quote what someone said, call get_transcript and use its exact words. If meeting_id is omitted, returns the most recent meeting." |
+| MCP `get_notes` | Input `{ meeting_id? }`. Text: header, "AI notes", "From your notes" and "My notes" as Markdown (as built, M4-T11: the three are level-1 headings and every doc heading sits one level under them; "From your notes" ends at the next heading of its level or higher, so a section the user adds after it stays in "AI notes"). Tool text: "Get the notes for a meeting: the AI-written notes and the user's own rough notes, as Markdown. Each AI line ends with the transcript times it came from, like [00:12:03]. Notes are a summary: to quote what someone said, call get_transcript and use its exact words. If meeting_id is omitted, returns the most recent meeting." |
 
 Notes SSE events: `run {run_id, model, template_id, line_count}`, `section {index, heading}`,
 `item {section, text, citations: [{ref, segment_id, start_ms}], support: "ok" | "weak"}`,
@@ -326,7 +326,14 @@ Stop or Generate ─IPC─▶ NotesGenerator: pending_generate row
 - `NotesGenerator` runs a row when its template is known, the meeting's waiting lines are 0 (M2-T3's
   query: echo-suppressed lines never count, held mic lines are released at Stop), the meeting is
   created in Postgres, and `NotesSync.flushMeeting` succeeded. It re-checks on every uploader and
-  `NotesSync` status change, at launch, and every 30 s.
+  `NotesSync` status change, at launch, and every 30 s. As built (M4-T23): a Generate pressed
+  during a recording waits for Stop (`waiting_for_notes`, cause `meeting`), so the run reads the
+  whole call; a refusal a later try may fix (401, 403, 429, a 5xx, offline) keeps the row and its
+  run id, and only the run's own end or a 404, 409 or 422 ends it; picking another template for a
+  run the API may already hold is refused until it is cancelled; a cancel with no live stream asks
+  the API to stop any run it may hold. The poll after a dropped stream stops after 2 minutes by
+  the wall clock (the run read carried no heartbeat when T23 was built; M4-T8's now has
+  `heartbeat_at`), and the next re-check re-sends the same id.
 - Each attempt re-sends the row's run id, so a retry after a crash attaches to or replays the same
   run, never a second one. The row is deleted on `done`, on `cancelled`, and on an error that is not
   retryable; `llm_provider_error` keeps it for the Retry button, which gives it a new run id (the
@@ -343,7 +350,12 @@ Stop or Generate ─IPC─▶ NotesGenerator: pending_generate row
 - `TranscriptUploader` takes `hasNotes(meetingId)`. Pending rule: create when the meeting holds an
   unsynced line, or when it has ended and has notes; then end it as today. It never discards an
   ended lineless meeting that has notes.
-- `CaptureService` takes the same `hasNotes`, at both delete sites (a failed start and Stop).
+- `CaptureService` asks the uploader's `hasNotes`, at both delete sites (a failed start and Stop),
+  so it is wired once (as built, M4-T22; it has no option of its own). A meeting with no line first
+  waits for `uploader.saveOpenNotes()` (the open editors' save, bounded at 1 s, the same request as
+  the quit flush), or a note still inside the editor's 400 ms debounce would be missed; a failed or
+  slow save, or a notes check that throws, keeps the meeting. A failed start with notes is ended,
+  so the pending rule creates it.
 - The trap comment at each of the three sites names the other two and `NotesSync`, and says why:
   the uploader is the only creator.
 - A notes-only meeting can now be MCP's latest meeting. It has ended and has content, so
@@ -482,13 +494,15 @@ App shell (desktop):
   seeds M1's `StatusPanel` into `app/slots/m2-capture-status.ts` and `TranscriptView` into
   `app/slots/m3-transcript.ts`; M2-T20a and M3-T9 replace them later. The page wraps its regions
   in `CitationNavigatorProvider` and shows the transcript region before a reveal on a narrow window.
-- [ ] **M4-S4b. Meeting reads in main.** S. Depends on: S4, M2-T3b (merges after it in `store/*`).
+- [x] **M4-S4b. Meeting reads in main.** S. Depends on: S4, M2-T3b (merges after it in `store/*`).
   Owns `main/meetings/meetings-ipc.ts` (+ test), `[slot M4-S4b]` in `main/index.ts`, and two read
   methods appended to `main/store/TranscriptStore.ts`, `SqliteTranscriptStore.ts` and
   `InMemoryTranscriptStore.ts`: `listMeetings(limit)` and `listSegments(meetingId)` (skips
   echo-suppressed lines; M2-T3's column exists by then). It answers the contract S4 wrote in
   `shared/meetings.ts` (`MeetingSummary[]`, newest first; `StoredMeeting | null`), validating with
-  its `parseListMeetingsRequest` and `parseGetMeetingRequest`.
+  its `parseListMeetingsRequest` and `parseGetMeetingRequest`. As built: lines the API rejected
+  stay in `listSegments` (only echo-hidden ones are left out); `listMeetings` orders on
+  `started_at` as text, so every writer keeps `startedAt` in `toISOString()` form.
 
 API:
 
@@ -528,20 +542,30 @@ API:
   `claim_run(session, run)` sweeps the meeting's dead runs, inserts the run and raises
   `ConflictError` (409) when a live notes run holds the index; it takes no meeting lock and does
   not commit. Recipe in the module docstring of `services/llm_runs.py`.
-- [ ] **M4-T8. Notes generation and its routes.** M. Depends on: T3, T4, T5, T6, T7.
+- [x] **M4-T8. Notes generation and its routes.** M. Depends on: T3, T4, T5, T6, T7.
   Owns `services/notes_generation.py` (DB-free core `generate_notes`, persistence wrapper, AI doc
   builder), `schemas/notes_runs.py`, `routers/notes_runs.py` (function-scoped claim; generate, get
   run, runs, cancel; P2-F2 already includes the router and added `EmptyMeetingError`), contract
   section for runs, SSE events and their error rows. From here T8 owns the shared
   fixture: its golden test regenerates it from the builder, and a change re-runs T17's schema test.
+  As built: a heading the template lacks starts its own section (sections in the order the model
+  wrote them); a run that keeps nothing writes TipTap's empty doc (one empty paragraph); one new
+  run id sent to two meetings at once is a `409`, not a `500`.
 - [ ] **M4-T9. Long calls: map then reduce.** M. Depends on: T8.
   Owns `services/notes_long.py` and the budget switch in `notes_generation.py`.
-- [ ] **M4-T10. Chat with one meeting.** M. Depends on: T4, T5, T6, T7.
+- [x] **M4-T10. Chat with one meeting.** M. Depends on: T4, T5, T6, T7.
   Owns `services/chat.py`, `services/chat_prompt.py`, `schemas/chat.py`, `routers/chat.py`
   (function-scoped claim of the message and run; P2-F2 already includes the router and added
-  `MeetingTooLongError`), contract section for chat.
-- [ ] **M4-T11. MCP `get_notes`.** S. Depends on: T4, T6.
-  Owns `mcp_server.py` (append tool), contract MCP section.
+  `MeetingTooLongError`), contract section for chat. As built: the budget counts the meeting
+  only (the thread is capped at 10 exchanges and 24,000 characters on its own); a re-asked
+  question reads the thread as it was; a streaming answer another process drives is a `409`; ref
+  groups are found with `notes_protocol`'s pattern, so wrapped groups (`[[L12]]`) are stored as
+  `[L12]`; cancel goes through T8's runs route.
+- [x] **M4-T11. MCP `get_notes`.** S. Depends on: T4, T6.
+  Owns `mcp_server.py` (append tool), contract MCP section. As built it also edited
+  `services/notes_markdown.py` (T4's: a keyword-only `heading_offset`, and "From your notes" ends
+  at the next heading of its level), `tests/test_mcp.py` (M1's tool list) and the MCP section and
+  module map of `apps/api/README.md`.
 - [ ] **M4-T12. Eval harness.** M. Depends on: T3, T8.
   Owns `evals/notes_eval.py` (package), `apps/api/evals/notes/cases/synthetic_standup.json`. P2-F3
   already added the `.gitignore` lines and the `eval-notes` and `eval-notes-fixes` targets.
@@ -570,8 +594,9 @@ Desktop:
   `main/notes/notes-ipc-validation.ts`, `main/notes/notesQuitGuard.ts` (the trusted-sender check
   comes from P2-F1's `main/ipc/trust.ts`), the three `[slot M4-T16 …]` blocks in `main/index.ts`
   (wiring: notes store, sync, generator with S2's
-  `notes.autoGenerate` and `notes.whenUnsure`, `hasNotes` into the uploader and `CaptureService`,
-  `onMeetingMissing` into `NotesSync`, the quit guard as a hook in the lifecycle's quit-hook list,
+  `notes.autoGenerate` and `notes.whenUnsure`, `hasNotes` and `saveOpenNotes` into the uploader
+  (the `new TranscriptUploader` call in `[slot M2-T4 runtime]`; `CaptureService` asks the uploader,
+  so passing it `hasNotes` is a type error, M4-T22), `onMeetingMissing` into `NotesSync`, the quit guard as a hook in the lifecycle's quit-hook list,
   before `[slot M2-T4 quit]`). Other tasks edit other slots of `index.ts`; nobody adds a
   `before-quit` listener of their own (`main/lifecycle.ts` holds the quit). Also the save's base
   revision that T17 needs (build order, section 10, "From wave 2"), if the controller assigns it
@@ -594,18 +619,24 @@ Desktop:
   section), and a QA script on `qa/driver.ts` with its gallery: both themes, 1440 and 390 wide, a long call's notes,
   an empty meeting, a notes-only meeting, a conflict banner, a failed run, the "Which kind of
   call" card, the waiting state, a chat answer with citations, and the reveal check below.
-- [ ] **M4-T21a and M4-T21b. Transcript navigator.** S. T21a is the contract (depends on: none;
+- [x] **M4-T21a and M4-T21b. Transcript navigator.** S. T21a is the contract (depends on: none;
   wave 0); T21b is the behaviour (depends on: M3-T7; wave 3).
   Owns `renderer/src/transcript/transcriptNavigator.ts`, `transcriptNavigator.test.ts`,
-  `transcriptNavigator.css` (the `data-cited` highlight, tokens only).
-- [ ] **M4-T22. Meetings with notes in the uploader and capture.** S. Depends on: none (an
+  `transcriptNavigator.css` (the `data-cited` highlight, tokens only). As built (T21b): a
+  `not_loaded` reveal changes nothing (follow, pane and the last tint stay); on a narrow window a
+  reveal that hides the chip moves focus to the transcript log; while "Jump to live" shows, the log
+  gains bottom room so a revealed newest line is not under it (the CSS selects M3-T7's
+  `.live-transcript`, `.live-transcript-lines` and `.jump-to-live`).
+- [x] **M4-T22. Meetings with notes in the uploader and capture.** S. Depends on: none (an
   injected `hasNotes` with a fake).
   Owns the `hasNotes` option and pending rule in `main/upload/TranscriptUploader.ts`,
   `markMeetingMissing(meetingId)` on the uploader, and the `hasNotes` option at both delete sites
   in `main/capture/CaptureService.ts`, with their tests. Overlaps M2-T4 (owns `CaptureService.ts`)
   and M5-T5 (edits the uploader's create payload): merges after M2-T3b and M2-T4 (wave 3); M5-T5
-  follows in wave 4.
-- [ ] **M4-T23. Generate after Stop, in main.** M. Depends on: T14, T15, M2-T3, M2-T4.
+  follows in wave 4. As built: `CaptureService` has no `hasNotes` option and asks the uploader's
+  `hasNotes`, after the uploader's `saveOpenNotes` (see "Meetings with notes and no lines"); T16
+  wires both into the uploader.
+- [x] **M4-T23. Generate after Stop, in main.** M. Depends on: T14, T15, M2-T3, M2-T4.
   Owns `main/notes/NotesGenerator.ts` (pending rows, preconditions, flush, versions, stream, poll
   after a dropped stream, `applyServerNote` on `done`; preferences come in through an injected
   getter, so it builds before S2 is wired), `shared/suggestTemplate.ts`.

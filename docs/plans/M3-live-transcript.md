@@ -187,7 +187,7 @@ Every other call above is made. These five are the owner's.
 | | Deepgram | AssemblyAI | Soniox (optional) |
 | --- | --- | --- | --- |
 | Live socket | `wss://api.deepgram.com/v1/listen` | `wss://streaming.assemblyai.com/v3/ws` | `wss://stt-rt.soniox.com/transcribe-websocket` |
-| Token from the API | `POST https://api.deepgram.com/v1/auth/grant`, `Authorization: Token <key>`, body `{"ttl_seconds"}`, returns a JWT (built in M1) | `GET https://streaming.assemblyai.com/v3/token?expires_in_seconds=1..600`, optional `max_session_duration_seconds=60..10800` (default 10800), `Authorization: <key>` with no prefix. Returns `{token, expires_in_seconds}`. Reusable within the window. | `POST https://api.soniox.com/v1/auth/temporary-api-key`, `Authorization: Bearer <key>`, body `{"usage_type": "transcribe_websocket", "expires_in_seconds": 1..3600}`. Returns `{api_key, expires_at}`. |
+| Token from the API | `POST https://api.deepgram.com/v1/auth/grant`, `Authorization: Token <key>`, body `{"ttl_seconds"}`, returns a JWT (built in M1) | `GET https://streaming.assemblyai.com/v3/token?expires_in_seconds=1..600`, optional `max_session_duration_seconds=60..10800` (default 10800), `Authorization: <key>` with no prefix. Returns `{token, expires_in_seconds}`. Reusable within the window. | `POST https://api.soniox.com/v1/auth/temporary-api-key`, `Authorization: Bearer <key>`, body `{"usage_type": "transcribe_websocket", "expires_in_seconds": 1..3600}`, plus `single_use` (Roger sends `false`: one key opens both streams) and `max_session_duration_seconds` (1..18000; Roger sends 18000, the maximum, since Soniox applies no cap of its own when it is missing). Returns `201 {api_key, expires_at}`; `expires_at` is on Soniox's clock, so the API reports the TTL it asked for (M3-T14, read 2026-10-07). |
 | How the desktop authenticates | `Authorization: Bearer <jwt>` | `token=<token>` query parameter | `Authorization: Bearer <temporary key>` header |
 | Models | `nova-3` | `universal-3-6-pro` (default), `universal-3-5-pro`, `universal-streaming-english`, `universal-streaming-multilingual` | `stt-rt-v5` |
 | Language | `language=en` | `language_codes` (a list) on Universal-3.5 and 3.6 Pro only | not sent in M3 |
@@ -196,8 +196,8 @@ Every other call above is made. These five are the owner's.
 | Interim and final | `is_final` or `from_finalize` | `Turn` partials, then `end_of_turn`. Pro models format every turn; Universal-Streaming with `format_turns` sends the turn raw, then formatted. U3.6 Pro sends an early partial at about 750 ms, partials on silence, and on long turns a partial about once a second. | tokens with `is_final`; non-final tokens are replaced on every response |
 | Stop | `Finalize`, then `CloseStream`; the vendor closes the socket | `{"type": "Terminate"}`, answered by `Termination` after the last turn (`ForceEndpoint` also exists; Roger does not need it) | `{"type": "finalize"}`, then an empty text frame, answered by `finished: true` |
 | Errors | `Error` message; HTTP status at the handshake | Close codes: 1008 auth or account, 3005 server, 3007 chunk size or faster than real time, 3008 session over its maximum, 3009 too many sessions. The close-codes page says an `Error` text frame comes first; the API reference lists no such type. | `error_code`, `error_type`, `error_message`, then a close |
-| Session limit | none documented | 3 hours by default | 300 minutes |
-| Price per stream hour | $0.288 now ($0.0048 per minute; regular $0.0077, which is $0.462, the price `stt_vendors.py` uses so estimates err high) plus $0.078 for keyterms ($0.0013 per minute). The price with `mip_opt_out` is not published. | U3.6 Pro $0.45, keyterms included. Universal-Streaming English $0.15 plus $0.04 for keyterms (both in `stt_vendors.py`). Billed on session time, not audio time. | $0.12 |
+| Session limit | none documented | 3 hours by default | 300 minutes; at the cap Soniox sends a final `{error_code: 403, error_type: "temp_api_key_session_expired"}` and closes normally (M3-T14's reading: M3-T15 treats it as a reopen, like AssemblyAI's 3008) |
+| Price per stream hour | $0.288 now ($0.0048 per minute; regular $0.0077, which is $0.462, the price `stt_vendors.py` uses so estimates err high) plus $0.078 for keyterms ($0.0013 per minute). The price with `mip_opt_out` is not published. | U3.6 Pro $0.45, keyterms included. Universal-Streaming English $0.15 plus $0.04 for keyterms (both in `stt_vendors.py`). Billed on session time, not audio time. | $0.12 ($0.06 audio plus $0.06 output text, an hour of continuous speech). Context is not included: it is billed as input text tokens at $4.00 per 1M, once per stream opened (Roger's longest list, 800 characters, is about 240 tokens, under $0.001), so `stt_vendors.py` sets the keyterm surcharge to 0.0 (M3-T14, 2026-10-07) |
 | Training | Audio joins the Model Improvement Program unless each request sends `mip_opt_out=true`. A Deepgram staff reply (GitHub discussion #1292, June 2025) says opting out gives up a 50% discount; the pricing page does not say so. | Opt out under Data Controls in the dashboard, free. Streaming keeps no data once opted out. | Never trains on content. |
 
 A meeting has two streams, so cost per meeting hour is twice the stream price.
@@ -260,7 +260,13 @@ CaptureService meter ─▶ stt_usage (local) ─▶ SttUsageUploader ─▶ PUT
   not a list: the desktop's stop reasons change across releases.
   `GET /v1/stt-usage/summary?since=<ISO date>` returns `{meetings, stream_hours, meeting_hours,
   estimated_cost_usd, cost_per_meeting_hour, gated_hours, estimated_saved_usd}`; unknown prices
-  are counted and named, never summed as zero.
+  are counted and named, never summed as zero. As built (T19a): `since` is an optional instant
+  with an offset (a bare date is a `422`; left out, every meeting counts), compared with the
+  meeting's `started_at`, else the row's `created_at`; the summary adds `unpriced_meetings` and
+  `unpriced_meeting_ids` (newest 100); a cost over $1,000,000 is a `422`; counts are whole, and a
+  time with a fraction of a ms is rounded, not refused, so T19b sends the desktop's figures as
+  they are. The `PUT` replaces the row with whatever arrives last: T19b sends one meeting's usage
+  one request at a time.
 
 ### Database
 
@@ -272,8 +278,10 @@ vocabulary_terms (id uuid pk, workspace_id uuid fk not null, term text not null
 stt_usage (workspace_id uuid fk not null, meeting_id uuid not null,   -- no fk to meetings
            provider text not null, sessions_opened int, connected_ms bigint, audio_sent_ms bigint,
            dropped_chunks int, gated_ms bigint default 0, estimated_cost_usd numeric null,
-           by_source jsonb, stop_reason text null, updated_at timestamptz,
+           by_source jsonb, stop_reason text null, created_at timestamptz, updated_at timestamptz,
            primary key (workspace_id, meeting_id))
+           -- as built (T19a): provider and stop_reason checked at 1..64 characters, counts and
+           -- times non-negative; created_at (first upload) is the summary's `since` fallback
 ```
 
 Alembic `0002` (vocabulary, T2) and `0005` (usage, T19a), fixed in `phase-2-build-order.md`.
@@ -410,7 +418,7 @@ reopen), M2-T10 (system audio through the helper), M2-T11 (capture warnings), M2
 | M3-T2 | Workspace jargon list | api | `db/models_vocabulary.py` (`VocabularyTerm`), `migrations/versions/0002_vocabulary_terms.py` (revision `0002`, down `0001`; P2-F2's stub), `services/vocabulary.py`, `schemas/vocabulary.py`, `routers/vocabulary.py` (P2-F2 already includes it in `app.py`), `tests/test_vocabulary.py`, contract Vocabulary section and its Database line, the route check in `tests/test_http_plumbing.py` (read from the contract's headings; `phase-2-build-order.md` section 3.1). The one-head test is P2-F2's | P2-F2 | M |
 | M3-T3 | Keyterms in the STT token response | api | `routers/stt.py` (takes `PrincipalDep`, one query, limit 100), the `keyterms` field in `schemas/stt.py`, the keyterm surcharge per model in `stt_vendors.py` (added to `price_per_hour_usd` when the list is not empty; as built, a required `keyterm_surcharge_per_hour_usd` on every `SttVendor`, and `stream.price_per_hour_usd_without_keyterms` beside it), the keyterm tests in `tests/test_stt_token.py`, contract token section | T1, T2 | S |
 | M3-T4a | Keyterms through the STT core; Deepgram `keyterm`, `mip_opt_out` and the rejected-list signal | desktop | `main/stt/SpeechToText.ts` (`keyterms` on `SttStreamSettings`, optional so the landed settings literals in tests stay valid, missing meaning none; `keytermsRejected` on `SttConnectError`; no `inlineReplay`, no `warning` event), `main/stt/keyterms.ts` (the shared cap) and test, `main/stt/core/SttProtocol.ts` (`keytermsRejected(failure)`, optional because AssemblyAI's protocol is T5's; a conformance case fails a vendor that declares it without its entry's `keyterms`, or the reverse) and `core/SttConnection.ts` (sets the flag on a connect refused while keyterms are non-empty, socket closed; never retries), `main/stt/deepgram/DeepgramSpeechToText.ts` and test (`buildListenUrl` with one `keyterm` per term and always `mip_opt_out=true`; HTTP 400 with keyterms is `keytermsRejected`), the keyterm-refusal case in `stt/conformance.test.ts` with Deepgram's entry in `stt/testing/conformanceVendors.ts` (exactly one handshake, no socket left open), `main/stt/fake/FakeSpeechToText.ts` (takes and ignores keyterms), `main/api/ApiClient.ts` (token type, missing means `[]`) and test, and in `main/capture/CaptureService.ts` only the fake-settings literal (`keyterms: []`) and the `keyterms` line in `resolveStt`; one line in `apps/desktop/README.md` "Add a speech-to-text vendor" (map keyterms and say when they are rejected) | P2-F1, T18 (file order in `stt/core`) | M |
-| M3-T4b | A rejected jargon list in the capture session | desktop | `main/capture/CaptureSession.ts` (a connect rejected with `keytermsRejected` reopens that source once without keyterms, through `SttOpenBudget`, keeps the list off it for the meeting, logs at warn and calls `onWarning`; that source's session is metered at `stream.price_per_hour_usd_without_keyterms`, or `price_per_hour_usd` when an older API omits it, which errs high), `main/capture/CaptureService.ts` (`onWarning` becomes a quiet `keyterms_rejected` capture warning) and their tests | T4a, M2-T5, M2-T6, M2-T11, T6b and M5-T5 (file order) | S |
+| M3-T4b | A rejected jargon list in the capture session | desktop | `main/capture/CaptureSession.ts` (a connect rejected with `keytermsRejected` reopens that source once without keyterms, through `SttOpenBudget`, keeps the list off it for the meeting, logs at warn and calls `onWarning`; that source's session is metered at `stream.price_per_hour_usd_without_keyterms`, or `price_per_hour_usd` when an older API omits it, which errs high), `main/capture/CaptureService.ts` (`onWarning` becomes a quiet `keyterms_rejected` capture warning) and their tests; and M2's 2-hour soak, `main/capture/CaptureService.soak.test.ts` (M2 plan, Tests: no task owned it; assigned after wave 3, `phase-2-build-order.md` section 10) | T4a, M2-T5, M2-T6, M2-T11, T6b and M5-T5 (file order) | S, plus the soak |
 | M3-T5 | AssemblyAI: Pro model, keyterms, wire fixtures (extends the landed protocol; framing, held turns, close codes and Terminate stay as they are) | desktop | `main/stt/assemblyai/*` and tests (`buildStreamingUrl`: `keyterms_prompt`, and `language_codes=["en"]` on `universal-3-*-pro`; `messages.ts`: a Pro `end_of_turn` is final; `keytermsRejected` for a close before `Begin` other than 1008 and 3009, with the matching `keyterms` refusal in its conformance entry; a 1006 drop never reaches it; a warning when `Begin.configuration.model` differs from the model asked for), `main/stt/assemblyai/fixtures/` (the API reference's examples now, recorded wire JSON at close step 0), AssemblyAI's keyterm-refusal entry in `stt/testing/conformanceVendors.ts`, the core's wire tap (`wireTap` in `core/WebSocketSpeechToText.ts`, called from `core/SttConnection.ts` with every message both ways and the query without the token; only the bench passes it) with a conformance case that it never sees the token, `main/stt/streamSettings.ts` (a comment: the encoding is the app's own name) and one case in its test | T4a, T18 | M |
 | M3-T6a | Word latency meter | desktop | `main/stt/LatencyMeter.ts` and test (the pure meter, which T11 needs) | - | S |
 | M3-T6b | Latency hook | desktop | `main/capture/CaptureSession.ts` (one call per event, `stt latency` log at close) and test | T6a, M2-T5, M2-T6 (merges after it in wave 4) | S |
@@ -441,8 +449,8 @@ run on AssemblyAI, opted out in its dashboard, so they no longer wait for T4a.
 
 - [x] M3-T1 · [x] M3-T2 · [x] M3-T3 · [x] M3-T4a · [ ] M3-T4b · [x] M3-T5 · [x] M3-T6a · [ ] M3-T6b
 - [x] M3-T7 · [x] M3-T8 · [ ] M3-T9
-- [x] M3-T10 · [x] M3-T11 · [x] M3-T12 · [ ] M3-T13 · [ ] M3-T14 · [ ] M3-T15 · [ ] M3-T16 · [ ] M3-T17 · [x] M3-T18
-- [ ] M3-T19a · [ ] M3-T19b · [ ] M3-T20
+- [x] M3-T10 · [x] M3-T11 · [x] M3-T12 · [x] M3-T13 · [x] M3-T14 · [ ] M3-T15 · [ ] M3-T16 · [ ] M3-T17 · [x] M3-T18
+- [x] M3-T19a · [ ] M3-T19b · [ ] M3-T20
 
 Notes for the builders:
 
