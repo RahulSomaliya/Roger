@@ -21,7 +21,12 @@ import {
   type HelperRunEnd,
 } from '../../native/HelperProcess';
 import type { JsonObject, TranscriptStore } from '../../store/TranscriptStore';
-import { type HelperAudioFormat, type HelperEvent, parseHelperEvent } from './helperEvents';
+import {
+  type HelperAudioFormat,
+  type HelperEvent,
+  parseHelperEvent,
+  type TapFormat,
+} from './helperEvents';
 import type { SystemAudioSelection } from './selectSystemAudio';
 import type { SystemAudioSource } from './SystemAudioSource';
 import type { SystemAudioVerification } from './systemAudioVerification';
@@ -277,11 +282,7 @@ export class TapSystemAudio implements SystemAudioSource {
     }
   }
 
-  private ready(
-    recording: TapRecording,
-    format: HelperAudioFormat,
-    tapFormat: { sampleRate: number; channels: number },
-  ): void {
+  private ready(recording: TapRecording, format: HelperAudioFormat, tapFormat: TapFormat): void {
     const { logger } = this.options;
     if (
       format.encoding !== PCM_ENCODING ||
