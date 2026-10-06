@@ -23,6 +23,8 @@
 //   no-ready             never send `ready`; frames still flow
 //   crash-after=<n>      after n frames, send an `error` event and exit 1 (every run does)
 //   bad-frame-after=<n>  after n frames, write a frame whose magic is not "RGA1"
+//   hang-after=<n>       after n frames, write nothing more and stay alive (every run does)
+//   route-after=<n>      after n frames, send `restarted {reason: output_device_changed}` once
 //   clock-offset-ms=<n>  date every frame this far from the wall clock
 //   tick-ms=<n>          `stats` (and the monitor's `alive`) every n ms instead of every second
 //   ignore-eof           keep running when stdin ends
@@ -151,6 +153,13 @@ function runTap(args) {
   setInterval(() => {
     if (hung) return;
     if (directives['crash-after'] !== undefined && written >= directives['crash-after']) crash();
+    if (directives['hang-after'] !== undefined && written >= directives['hang-after']) {
+      hung = true;
+      return;
+    }
+    if (written === directives['route-after']) {
+      emit({ event: 'restarted', reason: 'output_device_changed', tapFormat: TAP_FORMAT });
+    }
     const payload = Buffer.alloc(samplesPerFrame * 2);
     const firstSample = written * samplesPerFrame;
     for (let index = 0; index < samplesPerFrame; index += 1) {
