@@ -59,6 +59,15 @@ describe('describeStream', () => {
     expect(describeStream('retrying', 'stalled')).toBe('not connected, reconnects with audio');
     expect(describeStream('retrying', 'pending')).toBe('not connected, reconnects with audio');
   });
+
+  it('says offline apart from a vendor failure, whatever its source sends', () => {
+    expect(describeStream('offline', 'active')).toBe(
+      'offline, reconnects when the network returns',
+    );
+    expect(describeStream('offline', 'stalled')).toBe(
+      'offline, reconnects when the network returns',
+    );
+  });
 });
 
 describe('describeSaved', () => {
@@ -100,6 +109,8 @@ describe('describeSourceConnected', () => {
     expect(describeSourceConnected('closed', 12_000)).toBe('was connected 12s');
     expect(describeSourceConnected('paused', 75_000)).toBe('was connected 1m 15s');
     expect(describeSourceConnected('retrying', 12_000)).toBe('was connected 12s');
+    // Offline terminates the socket at once: nothing is connected while it lasts.
+    expect(describeSourceConnected('offline', 12_000)).toBe('was connected 12s');
   });
 
   it('shows nothing before any session opened, and never "0s"', () => {

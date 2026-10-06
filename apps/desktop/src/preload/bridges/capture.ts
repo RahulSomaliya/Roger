@@ -16,4 +16,10 @@ export const captureBridge: CaptureApi = {
   onCaptureStatus: (listener) => subscribe(captureChannels.CaptureStatusChanged, listener),
   onTranscriptSegment: (listener) => subscribe(captureChannels.TranscriptSegment, listener),
   onTranscriptInterim: (listener) => subscribe(captureChannels.TranscriptInterim, listener),
+  onTranscriptSegmentChanged: (listener) =>
+    subscribe(captureChannels.TranscriptSegmentChanged, listener),
+  getCaptureReport: (request) => invoke(captureChannels.CaptureGetReport, request),
+  rerunGaps: (request) => invoke(captureChannels.CaptureRerunGaps, request),
+  deleteMeetingAudio: (request) => invoke(captureChannels.AudioDeleteMeeting, request),
+  unhideSegment: (request) => invoke(captureChannels.TranscriptUnhideSegment, request),
 };

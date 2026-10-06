@@ -42,6 +42,13 @@ function rogerApi(): CaptureApi {
     onCaptureStatus: () => () => undefined,
     onTranscriptSegment: () => () => undefined,
     onTranscriptInterim: () => () => undefined,
+    // Capture's own members the controller never calls: they are here because the double is a
+    // whole CaptureApi, so each member capture's contract gains needs a line here too.
+    onTranscriptSegmentChanged: () => () => undefined,
+    getCaptureReport: vi.fn(),
+    rerunGaps: vi.fn(),
+    deleteMeetingAudio: vi.fn(),
+    unhideSegment: vi.fn(),
   };
 }
 

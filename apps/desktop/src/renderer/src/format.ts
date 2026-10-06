@@ -52,6 +52,10 @@ export function describeStream(state: SttStreamState, health: SourceHealth): str
       if (health === 'pending' || health === 'stalled')
         return 'not connected, reconnects with audio';
       return 'reconnecting';
+    case 'offline':
+      // Not the vendor's fault, and no reopen is tried until the network is back, so it never
+      // reads as "reconnecting" (M2-T20a rewords the stream text in wave 5).
+      return 'offline, reconnects when the network returns';
     case 'error':
       return 'error';
   }
