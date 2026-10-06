@@ -12,7 +12,11 @@ import {
   assemblyAiProtocol,
   buildStreamingUrl,
 } from './AssemblyAiSpeechToText';
-import { readWireFixture, WIRE_FIXTURE_MODELS } from './fixtures/wireFixtures';
+import {
+  readWireFixture,
+  WIRE_FIXTURE_MODELS,
+  type WireFixtureModel,
+} from './fixtures/wireFixtures';
 
 const logger = createLogger({ level: 'error', format: 'json', sink: () => undefined });
 const settings: SttStreamSettings = {
@@ -703,46 +707,109 @@ describe('AssemblyAiSpeechToText', () => {
  */
 describe.each(WIRE_FIXTURE_MODELS)('the %s wire through the protocol', (model) => {
   it('saves one line per finished turn as it ends, the formatted copy when there is one', () => {
-    vi.useFakeTimers();
-    try {
-      const warnings: string[] = [];
-      const releasedByTimer: TranscriptEvent[] = [];
-      const session = assemblyAiProtocol().session({
-        logger: createLogger({
-          level: 'warn',
-          format: 'json',
-          sink: (line) => warnings.push(line),
-        }),
-        settings: { ...settings, model },
-        audioSentMs: () => 0,
-        emit: (event) => releasedByTimer.push(event),
-      });
-      const lines = readWireFixture(model);
-      const saved: Extract<SttEvent, { type: 'final' }>[] = [];
-      for (const line of lines) {
-        const message = session.read(line);
-        expect(message.kind, line.slice(0, 40)).not.toBe('invalid');
-        if (message.kind === 'transcript' || message.kind === 'finished') {
-          for (const event of message.events) if (event.type === 'final') saved.push(event);
-        }
-      }
-      expect(session.release()).toEqual([]);
-      vi.advanceTimersByTime(60_000);
+    const lines = readWireFixture(model);
+    const { saved, releasedByTimer, warnings } = readThroughProtocol(model, lines);
 
-      // Nothing waited for a copy that never came: the wait timer released nothing, and said so.
-      expect(releasedByTimer).toEqual([]);
-      expect(warnings).toEqual([]);
-      expect(saved.map((event) => event.text)).toEqual(finishedTurnTexts(lines));
-      for (const event of saved) expect(event.words.length).toBeGreaterThan(0);
-    } finally {
-      vi.useRealTimers();
-    }
+    // Nothing waited for a copy that never came: the wait timer released nothing, and said so.
+    expect(releasedByTimer).toEqual([]);
+    expect(warnings).toEqual([]);
+    expect(saved.map((event) => event.text)).toEqual(finishedTurnTexts(lines));
+    for (const event of saved) expect(event.words.length).toBeGreaterThan(0);
+  });
+
+  // A recording may hold either (a short noise can end a turn with no words): the expected lines
+  // must read them as the parser does, or a correct adapter fails on the committed recording.
+  it('expects no line for a turn that ended blank, and a padded one trimmed', () => {
+    const lines = withBlankAndPaddedTurns(readWireFixture(model));
+    const { saved, releasedByTimer, warnings } = readThroughProtocol(model, lines);
+
+    expect(releasedByTimer).toEqual([]);
+    expect(warnings).toEqual([]);
+    expect(saved.map((event) => event.text)).toEqual(finishedTurnTexts(lines));
   });
 });
 
 /**
- * Read straight from the wire, apart from the parser: per turn_order, in order, the transcript of
- * its formatted end of turn when the vendor sent one, else of its first end of turn.
+ * The wire's messages through the protocol's session, as the core hands them over, on fake timers
+ * run well past any wait: the finals each message saved, the lines the wait timer released, and
+ * every warning logged. No message may be unreadable.
+ */
+function readThroughProtocol(
+  model: WireFixtureModel,
+  lines: string[],
+): {
+  saved: Extract<SttEvent, { type: 'final' }>[];
+  releasedByTimer: TranscriptEvent[];
+  warnings: string[];
+} {
+  vi.useFakeTimers();
+  try {
+    const warnings: string[] = [];
+    const releasedByTimer: TranscriptEvent[] = [];
+    const session = assemblyAiProtocol().session({
+      logger: createLogger({
+        level: 'warn',
+        format: 'json',
+        sink: (line) => warnings.push(line),
+      }),
+      settings: { ...settings, model },
+      audioSentMs: () => 0,
+      emit: (event) => releasedByTimer.push(event),
+    });
+    const saved: Extract<SttEvent, { type: 'final' }>[] = [];
+    for (const line of lines) {
+      const message = session.read(line);
+      expect(message.kind, line.slice(0, 40)).not.toBe('invalid');
+      if (message.kind === 'transcript' || message.kind === 'finished') {
+        for (const event of message.events) if (event.type === 'final') saved.push(event);
+      }
+    }
+    expect(session.release()).toEqual([]);
+    vi.advanceTimersByTime(60_000);
+    return { saved, releasedByTimer, warnings };
+  } finally {
+    vi.useRealTimers();
+  }
+}
+
+/**
+ * The wire with two turns added right after its last finished one, each a copy of that turn's
+ * end-of-turn messages so it keeps the model's shape (once on Pro; unformatted, then formatted on
+ * Universal-Streaming): one whose transcript is blank, then one whose transcript is padded.
+ */
+function withBlankAndPaddedTurns(lines: string[]): string[] {
+  let lastEnd = -1;
+  let lastTurn: Record<string, unknown>[] = [];
+  lines.forEach((line, index) => {
+    const message: unknown = JSON.parse(line);
+    if (!isRecord(message) || message.type !== 'Turn' || message.end_of_turn !== true) return;
+    if (message.turn_order !== lastTurn[0]?.turn_order) lastTurn = [];
+    lastTurn.push(message);
+    lastEnd = index;
+  });
+  const order = lastTurn[0]?.turn_order;
+  if (typeof order !== 'number') throw new Error('the wire holds no finished turn');
+  const copy = (offset: number, transcript: (text: string) => string): string[] =>
+    lastTurn.map((message) =>
+      JSON.stringify({
+        ...message,
+        turn_order: order + offset,
+        transcript: transcript(typeof message.transcript === 'string' ? message.transcript : ''),
+      }),
+    );
+  return [
+    ...lines.slice(0, lastEnd + 1),
+    ...copy(1, () => ' '),
+    ...copy(2, (text) => `  ${text} `),
+    ...lines.slice(lastEnd + 1),
+  ];
+}
+
+/**
+ * Read straight from the wire, apart from the parser: per turn_order, in order, the trimmed
+ * transcript of its formatted end of turn when the vendor sent one, else of its first end of turn.
+ * An end of turn whose transcript is blank counts as not sent, as the parser ignores it
+ * (messages.ts, 'Turn(empty)'): kept, a recording with one would fail a correct adapter.
  */
 function finishedTurnTexts(lines: string[]): string[] {
   const turns = new Map<number, { text: string; formatted: boolean }>();
@@ -751,9 +818,11 @@ function finishedTurnTexts(lines: string[]): string[] {
     if (!isRecord(message) || message.type !== 'Turn' || message.end_of_turn !== true) continue;
     const { turn_order: order, transcript, turn_is_formatted: formatted } = message;
     if (typeof order !== 'number' || typeof transcript !== 'string') continue;
+    const text = transcript.trim();
+    if (text === '') continue;
     const seen = turns.get(order);
     if (seen === undefined || (!seen.formatted && formatted === true)) {
-      turns.set(order, { text: transcript, formatted: formatted === true });
+      turns.set(order, { text, formatted: formatted === true });
     }
   }
   return [...turns.values()].map((turn) => turn.text);
