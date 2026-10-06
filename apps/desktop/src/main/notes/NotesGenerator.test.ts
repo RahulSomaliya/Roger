@@ -222,6 +222,8 @@ interface HarnessOptions {
   /** Unsynced lines the meeting holds at the start. */
   waitingLines?: number;
   remoteState?: 'pending' | 'created' | 'ended';
+  /** MEETING is still recording: no end in roger.sqlite, and created (not ended) in Postgres. */
+  recording?: boolean;
 }
 
 function harness(options: HarnessOptions = {}) {
@@ -239,6 +241,10 @@ function harness(options: HarnessOptions = {}) {
       title: options.title ?? 'Acme client call',
       startedAt: '2026-10-06T09:30:00.000Z',
     });
+    if (options.recording === true && meetingId === MEETING) {
+      transcripts.setMeetingRemoteState(meetingId, 'created');
+      continue;
+    }
     transcripts.markMeetingEnded(meetingId, '2026-10-06T09:59:00.000Z');
     transcripts.setMeetingRemoteState(meetingId, options.remoteState ?? 'ended');
   }
@@ -514,6 +520,34 @@ describe('NotesGenerator: preconditions', () => {
     await settle();
 
     expect(h.streams.calls).toHaveLength(1);
+  });
+
+  it('holds a generate pressed during the recording until Stop', async () => {
+    for (const autoGenerate of [true, false]) {
+      const h = harness({ recording: true });
+      h.preferences.autoGenerate = autoGenerate;
+      h.generator.start();
+
+      // Mid-call, every line so far is up between two upload batches: a run now would write up
+      // part of the call, and Stop would keep its row, so nothing would ever cover the rest.
+      expect(h.generator.generate(MEETING, 'standup').status, `auto ${autoGenerate}`).toEqual({
+        phase: 'waiting_for_notes',
+        cause: 'meeting',
+      });
+      h.uploaderStatus();
+      await vi.advanceTimersByTimeAsync(NOTES_RECHECK_MS);
+      expect(h.log, `auto ${autoGenerate}`).toEqual([]);
+
+      // Stop ends the meeting before it tells its listeners: the same row runs on the whole call.
+      h.transcripts.markMeetingEnded(MEETING, new Date(Date.now()).toISOString());
+      h.stop();
+      await settle();
+      expect(
+        h.streams.calls.map((call) => call.request.runId),
+        `auto ${autoGenerate}`,
+      ).toEqual([RUN_1]);
+      h.generator.stop();
+    }
   });
 
   it('waits for the meeting to be created in Postgres', async () => {

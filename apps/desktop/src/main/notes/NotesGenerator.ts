@@ -112,13 +112,14 @@ type ErrorOutcome = 'fail' | 'retry' | 'end';
  * (or none, when Roger must ask); the Generate button and the answer to "Which kind of call was
  * this?" write the same row (`generate`).
  *
- * A row runs once its template is known, the meeting's lines are all uploaded, the meeting is in
- * Postgres, and NotesSync has flushed its notes. It is checked again on every uploader status
- * event and NotesSync change that may unblock it, at launch and every 30 s. The run streams
- * through LlmStreams to the page; `done` goes into notes.sqlite through `applyServerNote`, and a
- * stream lost before `done` or `error` is followed by polling the run, whose saved notes are then
- * loaded (`pullMeeting`). The row is deleted on `done`, on `cancelled` and on an error a retry
- * would only repeat (`errorOutcome`); `llm_provider_error` keeps it, failed, for Retry.
+ * A row runs once its template is known, the meeting has stopped and its lines are all uploaded,
+ * the meeting is in Postgres, and NotesSync has flushed its notes. It is checked again at Stop, on
+ * every uploader status event and NotesSync change that may unblock it, at launch and every 30 s.
+ * The run streams through LlmStreams to the page; `done` goes into notes.sqlite through
+ * `applyServerNote`, and a stream lost before `done` or `error` is followed by polling the run,
+ * whose saved notes are then loaded (`pullMeeting`). The row is deleted on `done`, on `cancelled`
+ * and on an error a retry would only repeat (`errorOutcome`); `llm_provider_error` keeps it,
+ * failed, for Retry.
  *
  * Trap: every attempt re-sends the row's run id. The API attaches a re-sent id to its running run
  * or replays its stored result, so a retry after a crash, a lost stream or an unreachable API
@@ -268,11 +269,12 @@ export class NotesGenerator {
       }
       // Stop threw first, so the meeting may still be open (`ended_at` NULL): CrashRecovery
       // decides at the next launch. Nothing is written up for a meeting that may go on.
-      if (recording.stopFailed || !preferences.autoGenerate()) return;
+      if (recording.stopFailed) return;
       const current = store.getPendingGenerate(meetingId);
       // None, or a failed one (Retry's): a new row. A row that has not failed keeps its run id
-      // (an attempt may have reached the API).
-      if (current?.lastError !== null) {
+      // (an attempt may have reached the API). With auto-generate off, only a row the Generate
+      // button wrote during the recording runs, now that the meeting ended.
+      if (preferences.autoGenerate() && current?.lastError !== null) {
         const row = this.newRow(meetingId, this.templateAtStop(meetingId), 'after_stop');
         store.putPendingGenerate(row);
         this.waiting.delete(meetingId);
@@ -347,15 +349,22 @@ export class NotesGenerator {
   }
 
   /**
-   * Lines first, then the meeting. A meeting roger.sqlite does not know is left to the API, which
-   * answers `404` for one it lacks too (ending the generate).
+   * Lines first, then the meeting: ended (Stop wrote its `ended_at`) and in Postgres. A meeting
+   * roger.sqlite does not know is left to the API, which answers `404` for one it lacks too
+   * (ending the generate).
+   *
+   * Trap: never run while the meeting records (the Generate button during a call). Between two
+   * upload batches no line waits, so the run would write up part of the call; Stop then keeps the
+   * row (its run id may have reached the API), and no run ever covers the rest. Stop ends the
+   * meeting before it tells `recordingEnded`, which checks the row again.
    */
   private waitFor(meetingId: string): Waiting | null {
     const waitingLines = this.waitingLines(meetingId);
     if (waitingLines > 0) {
       return { status: { phase: 'waiting_for_lines', waitingLines }, wakeOn: 'uploads' };
     }
-    if (this.options.transcripts.getMeeting(meetingId)?.remoteState === 'pending') {
+    const meeting = this.options.transcripts.getMeeting(meetingId);
+    if (meeting !== null && (meeting.endedAt === null || meeting.remoteState === 'pending')) {
       return { status: { phase: 'waiting_for_notes', cause: 'meeting' }, wakeOn: 'uploads' };
     }
     return null;
