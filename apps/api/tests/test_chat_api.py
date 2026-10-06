@@ -112,8 +112,7 @@ async def add_meeting(
         )
         for source, speaker, start, text in lines
     ]
-    if segments:
-        await append_segments(client, meeting["id"], *segments)
+    await append_segments(client, meeting["id"], *segments)
     return SeededMeeting(id=meeting["id"], segment_ids=[segment["id"] for segment in segments])
 
 
