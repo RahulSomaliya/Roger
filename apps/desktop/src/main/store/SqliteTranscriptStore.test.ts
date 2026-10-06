@@ -557,6 +557,28 @@ describe.each([
     store.close();
   });
 
+  it('refuses an audio file id another meeting holds: the id is global, so a silent skip loses the file', () => {
+    const { store } = openWithMeeting();
+    store.createMeeting({ id: 'm2', title: 'T', startedAt: '2026-10-06T09:30:00.000Z' });
+    // A per-meeting name used as the id, as the backup fixture once did.
+    store.addAudioFile(audioFile('mic-000000000'));
+    expect(() => {
+      store.addAudioFile(
+        audioFile('mic-000000000', { meetingId: 'm2', path: 'audio/m2/mic-000000000.wav' }),
+      );
+    }).toThrow(/audio file mic-000000000 of meeting m2: .*meeting m1/);
+    expect(store.listAudioFiles('m2')).toEqual([]);
+    expect(store.listAudioFiles('m1').map((f) => f.path)).toEqual(['audio/m1/mic-000000000.wav']);
+    // A file deleted from disk still holds its id.
+    store.markMeetingAudioDeleted('m1', T0);
+    expect(() => {
+      store.addAudioFile(
+        audioFile('mic-000000000', { meetingId: 'm2', path: 'audio/m2/mic-000000000.wav' }),
+      );
+    }).toThrow(/meeting m1/);
+    store.close();
+  });
+
   it('refuses an audio path that is absolute or climbs out of the user data folder', () => {
     const { store } = openWithMeeting();
     expect(() => {

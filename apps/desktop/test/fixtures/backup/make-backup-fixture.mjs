@@ -11,7 +11,8 @@
 // later. Each stream has a 1 s capture gap (2000 to 3000 ms) between its chunks, and call audio
 // has an unrecovered `stt_failed` transcript gap at 3500 to 4500 ms, inside its WAV chunk. The
 // audio is a tone (mic 440 Hz, call audio 660 Hz), so no voice is committed. `audio_files.path` is
-// relative to userData, as the store requires.
+// relative to userData, as the store requires. Every `audio_files.id` is a UUIDv4: the id is one
+// key across all meetings (NewAudioFile.id), so the file name is never the id.
 //
 // Read by src/main/store/backupFixture.test.ts, M2-T15's backup tests and M3-T12's `bench clip`
 // tests. Regenerate on a Mac (it needs /usr/bin/afconvert), from apps/desktop:
@@ -19,6 +20,8 @@
 //   node test/fixtures/backup/make-backup-fixture.mjs
 //
 // A later migration does not require a rerun: the store migrates a copy when it opens one.
+// Open roger.sqlite itself read-only, or open a copy through the store: the store turns on WAL
+// and migrates the file in place, which would rewrite the committed fixture.
 
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
@@ -35,6 +38,13 @@ const STARTED_AT = Date.parse('2026-10-06T09:00:00.000Z');
 const SAMPLE_RATE = 16_000;
 const TONE_HZ = { mic: 440, system: 660 };
 const AFCONVERT = '/usr/bin/afconvert';
+/** Fixed, so a rerun writes the same rows. */
+const AUDIO_FILE_IDS = {
+  'mic-0': '2f6a8c1d-5e3b-4a7f-9c2d-8e1f0a3b4c5d',
+  'mic-3000': '5b7c9d0e-1f2a-4b3c-8d4e-6f7a8b9c0d1e',
+  'system-0': '8c0d1e2f-3a4b-4c5d-9e6f-0a1b2c3d4e5f',
+  'system-3000': 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d',
+};
 
 /** ISO 8601 instant at a meeting offset. */
 function at(offsetMs) {
@@ -88,8 +98,9 @@ for (const source of ['mic', 'system']) {
     [0, 2000, true],
     [3000, 5000, false],
   ]) {
-    const id = `${source}-${String(startMs).padStart(9, '0')}`;
-    const wavPath = `audio/${MEETING_ID}/${id}.wav`;
+    const id = AUDIO_FILE_IDS[`${source}-${startMs}`];
+    const name = `${source}-${String(startMs).padStart(9, '0')}`;
+    const wavPath = `audio/${MEETING_ID}/${name}.wav`;
     writeFileSync(join(FIXTURE_DIR, wavPath), wavOfTone(TONE_HZ[source], endMs - startMs));
     store.addAudioFile({
       id,
@@ -107,7 +118,7 @@ for (const source of ['mic', 'system']) {
     });
     if (!encode) continue;
     // The command the backup's compressor runs (M2 D5: AAC in m4a at 48 kbps).
-    const m4aPath = `audio/${MEETING_ID}/${id}.m4a`;
+    const m4aPath = `audio/${MEETING_ID}/${name}.m4a`;
     execFileSync(AFCONVERT, [
       '-f',
       'm4af',

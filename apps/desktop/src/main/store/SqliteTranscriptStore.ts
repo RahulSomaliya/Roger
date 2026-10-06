@@ -203,6 +203,7 @@ export class SqliteTranscriptStore implements TranscriptStore {
     gapRecovered: StatementSync;
     gapRecoverError: StatementSync;
     insertAudioFile: StatementSync;
+    audioFileMeeting: StatementSync;
     closeAudioFile: StatementSync;
     encodeAudioFile: StatementSync;
     audioFiles: StatementSync;
@@ -360,11 +361,14 @@ export class SqliteTranscriptStore implements TranscriptStore {
       gapRecoverError: this.db.prepare(
         `UPDATE transcript_gaps SET recover_error = ? WHERE id = ? AND recovered_at IS NULL`,
       ),
+      // Not OR IGNORE: only an id clash may be skipped, and addAudioFile checks whose id it was.
       insertAudioFile: this.db.prepare(
-        `INSERT OR IGNORE INTO audio_files
+        `INSERT INTO audio_files
            (id, meeting_id, source, start_ms, path, format, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT (id) DO NOTHING`,
       ),
+      audioFileMeeting: this.db.prepare(`SELECT meeting_id FROM audio_files WHERE id = ?`),
       closeAudioFile: this.db.prepare(
         `UPDATE audio_files SET end_ms = ?, bytes = ?, closed_at = ? WHERE id = ?`,
       ),
@@ -602,8 +606,8 @@ export class SqliteTranscriptStore implements TranscriptStore {
 
   addAudioFile(file: NewAudioFile): void {
     checkAudioPath(file.path);
-    withContext(`audio file ${file.id} of meeting ${file.meetingId}`, () =>
-      this.statements.insertAudioFile.run(
+    withContext(`audio file ${file.id} of meeting ${file.meetingId}`, () => {
+      const inserted = this.statements.insertAudioFile.run(
         file.id,
         file.meetingId,
         file.source,
@@ -611,8 +615,12 @@ export class SqliteTranscriptStore implements TranscriptStore {
         file.path,
         file.format,
         file.createdAt,
-      ),
-    );
+      );
+      if (inserted.changes > 0) return;
+      // A re-send of this meeting's file is a no-op; another meeting's id is a clash (NewAudioFile.id).
+      const holder = optionalText(this.statements.audioFileMeeting.get(file.id), 'meeting_id');
+      if (holder !== file.meetingId) throw new Error(`the id already belongs to meeting ${holder}`);
+    });
   }
 
   closeAudioFile(id: string, closed: { endMs: number; bytes: number; closedAt: string }): void {

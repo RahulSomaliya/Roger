@@ -309,7 +309,15 @@ export class InMemoryTranscriptStore implements TranscriptStore {
   addAudioFile(file: NewAudioFile): void {
     checkAudioPath(file.path);
     this.requireMeeting(file.meetingId, `audio file ${file.id}`);
-    if (this.audioFiles.has(file.id)) return;
+    const held = this.audioFiles.get(file.id);
+    if (held) {
+      // A re-send of this meeting's file is a no-op; another meeting's id is a clash, as in SQLite.
+      if (held.meetingId === file.meetingId) return;
+      throw new Error(
+        `could not write audio file ${file.id} of meeting ${file.meetingId}: ` +
+          `the id already belongs to meeting ${held.meetingId}`,
+      );
+    }
     this.audioFiles.set(file.id, {
       ...file,
       endMs: null,

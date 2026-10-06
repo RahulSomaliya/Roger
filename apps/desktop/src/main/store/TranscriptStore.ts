@@ -104,6 +104,12 @@ export type AudioFileFormat = 'wav' | 'm4a';
 
 /** One chunk of the local audio backup (M2 D5): one stream, one timeline run, 60 s at most. */
 export interface NewAudioFile {
+  /**
+   * UUIDv4 from the desktop, unique across every meeting: `audio_files.id` is one key for all of
+   * them, and `closeAudioFile` and `markAudioFileEncoded` find a row by id alone. Never a
+   * per-meeting name such as `mic-000000000`: the second meeting's row would clash with the first
+   * (`addAudioFile` throws). A descriptive name belongs in `path`.
+   */
   id: string;
   meetingId: string;
   source: AudioSource;
@@ -259,7 +265,11 @@ export interface TranscriptStore {
   markGapRecovered(id: string, recoveredAt: string): void;
   setGapRecoverError(id: string, error: string): void;
 
-  /** Idempotent on `file.id`. Throws on a path that is absolute or climbs with `..`. */
+  /**
+   * Idempotent on `file.id` within its meeting. Throws when another meeting already holds the id
+   * (a silent skip would orphan this meeting's file), or on a path that is absolute or climbs with
+   * `..`.
+   */
   addAudioFile(file: NewAudioFile): void;
   closeAudioFile(id: string, closed: { endMs: number; bytes: number; closedAt: string }): void;
   /** The file was re-encoded (WAV to m4a): its new path, format and size. */
