@@ -4,27 +4,29 @@
  * in `userData/preferences.json` and serves them over IPC (src/shared/ipc/prefs.ts). `config.json`
  * is not this: it holds startup settings read once (src/main/config.ts).
  *
- * This file holds the registry and the keys the app shell and the notes own. Every other
- * milestone keeps its keys in its own file (M5: src/shared/calendarPrefs.ts) and adds them in two
- * places, in the same change:
+ * This file holds the registry, the keys the app shell and the notes own, and the type of every
+ * key in the app. Every other milestone keeps its keys, defaults and checks in its own file (M5:
+ * src/shared/calendarPrefs.ts) and wires them in three places:
  *
- * 1. Typed access: augment PreferenceValues from that file, so `get`, `getPreferences` and the
- *    change events know the new keys' types:
+ * 1. Typed access: PreferenceValues below extends that file's values type, so `get`,
+ *    `getPreferences` and the change events know the keys' types. It is done here, not by
+ *    augmenting the interface from a milestone's file: the page's type check reads only
+ *    src/renderer, src/shared and preview (tsconfig.web.json), so an augmentation in main is
+ *    invisible to it, and M5's one shared file (calendarPrefs.ts, M5-T8) had already landed.
+ * 2. Main: the milestone hands its specs to `PreferencesStore.register` before the window opens,
+ *    from its own slot in src/main/index.ts (M5: `registerCalendarPreferences`, M5-T9a, from
+ *    M5-T9c's slot). A key typed here but never registered in main is missing from
+ *    `getPreferences` at run time, and nothing catches that: until M5-T9c lands, M5's are.
+ * 3. The preview: preview/fakes/prefs.ts registers every milestone's specs, because M4-S2 is
+ *    that file's one writer in Phase 2 (phase-2-build-order.md) and no M5 task may edit it. Its
+ *    spec map is typed with every key, so a key typed here but missing there fails the type check.
  *
- *        declare module './preferences' {
- *          interface PreferenceValues {
- *            'calendar.reminderLeadMinutes': ReminderLeadMinutes;
- *          }
- *        }
- *
- * 2. Registration: hand its specs to `PreferencesStore.register` in main before the window opens
- *    (its slot in src/main/index.ts), and to the preview's fake (preview/fakes/prefs.ts). `register`
- *    takes only specs whose keys are in PreferenceValues, so step 1 cannot be skipped; a key
- *    augmented but never registered is missing from `getPreferences` at run time, and nothing
- *    else catches that.
- *
- * Keep this file free of runtime imports: it is bundled into every process.
+ * A milestone with new keys after Phase 2 does steps 1 and 3 in these two files, in the same
+ * change as its own file. Keep this file free of runtime imports: it is bundled into every
+ * process (a type-only import is erased).
  */
+
+import type { CalendarPreferenceValues } from './calendarPrefs';
 
 /** `system` follows macOS; `light` and `dark` force one (renderer/src/theme/useTheme.ts). */
 export const THEME_PREFERENCES = ['system', 'light', 'dark'] as const;
@@ -37,8 +39,8 @@ export type ThemePreference = (typeof THEME_PREFERENCES)[number];
 export const NOTES_WHEN_UNSURE = ['ask', 'general'] as const;
 export type NotesWhenUnsure = (typeof NOTES_WHEN_UNSURE)[number];
 
-/** Every preference's value type, by key. Other milestones augment it (see the top of the file). */
-export interface PreferenceValues {
+/** Every preference's value type, by key: this file's, and each milestone's (top of the file). */
+export interface PreferenceValues extends CalendarPreferenceValues {
   theme: ThemePreference;
   /** Generate AI notes after Stop (M4-T23, wired by M4-T16). */
   'notes.autoGenerate': boolean;
@@ -137,8 +139,8 @@ export class PreferenceRegistry {
   }
 
   /**
-   * Every registered key's value. Typed as every key of PreferenceValues: a key augmented there
-   * but never registered is missing at run time (see the top of this file).
+   * Every registered key's value. Typed as every key of PreferenceValues: a key typed there but
+   * never registered is missing at run time (see the top of this file).
    */
   snapshot(current: ReadonlyMap<string, unknown>): PreferenceValues {
     const values: Partial<Record<PreferenceKey, PreferenceValues[PreferenceKey]>> = {};

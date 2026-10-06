@@ -1,16 +1,39 @@
 import { describe, expect, it } from 'vitest';
+import { CALENDAR_PREFERENCES } from '../../src/shared/calendarPrefs';
 import { prefsChannels } from '../../src/shared/ipc/prefs';
 import type { PreferenceChange } from '../../src/shared/preferences';
 import { FakeHub } from './hub';
 import { createPrefsFake } from './prefs';
 
 describe('the preview fake of the preferences', () => {
-  it('answers the defaults until something is set', async () => {
+  // Every milestone's keys, M5's included: main gets M5's from M5-T9c's slot, but no M5 task
+  // writes this fake, so it registers them itself. M5's defaults are read from its specs: M5 owns
+  // them and plans to flip app.openAtLogin, which must not break a test it cannot edit.
+  it('answers the defaults of every key in the app until something is set', async () => {
+    const calendarDefaults = Object.fromEntries(
+      Object.values(CALENDAR_PREFERENCES).map((spec) => [spec.key, spec.default]),
+    );
+    expect(Object.keys(calendarDefaults)).toHaveLength(4);
     await expect(createPrefsFake(new FakeHub()).getPreferences()).resolves.toEqual({
       theme: 'system',
       'notes.autoGenerate': true,
       'notes.whenUnsure': 'ask',
+      ...calendarDefaults,
     });
+  });
+
+  it("sets M5's calendar keys and refuses their bad values, as main will", async () => {
+    const hub = new FakeHub();
+    const prefs = createPrefsFake(hub);
+    await prefs.setPreference('calendar.reminderLeadMinutes', 5);
+    hub.emit(prefsChannels.PrefsChanged, { key: 'notice.enabled', value: false });
+    await expect(prefs.getPreferences()).resolves.toMatchObject({
+      'calendar.reminderLeadMinutes': 5,
+      'notice.enabled': false,
+    });
+    await expect(prefs.setPreference('notice.text', ' ')).rejects.toThrow(
+      'notice.text is blank: write the notice, or turn the notice off',
+    );
   });
 
   it('answers a set on the next read and sends it to every listener once', async () => {

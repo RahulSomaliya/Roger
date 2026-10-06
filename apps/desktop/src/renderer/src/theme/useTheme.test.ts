@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { DEFAULT_NOTICE_TEXT } from '../../../shared/calendarPrefs';
 import type { PrefsApi } from '../../../shared/ipc/prefs';
 import type { PreferenceChange, PreferenceValues } from '../../../shared/preferences';
 import { applyTheme, followThemePreference, type ThemeRoot, type ThemeState } from './useTheme';
@@ -7,6 +8,10 @@ const STORED: PreferenceValues = {
   theme: 'dark',
   'notes.autoGenerate': true,
   'notes.whenUnsure': 'ask',
+  'calendar.reminderLeadMinutes': 1,
+  'notice.enabled': true,
+  'notice.text': DEFAULT_NOTICE_TEXT,
+  'app.openAtLogin': 'auto',
 };
 
 /** <html> as far as the theme touches it. Node has no DOM. */
