@@ -31,9 +31,10 @@ migrated it logs `database_not_ready` and exits.
 | --- | --- | --- |
 | `DATABASE_URL` | required | `postgresql+asyncpg://...`. Plain `postgres://` and `postgresql://` URLs are accepted and switched to asyncpg. Alembic reads the same variable. |
 | `ROGER_API_TOKEN` | required | Shared bearer secret for `/v1/*` and `/mcp`. At least 16 characters; startup fails on the `.env.example` placeholder (anything starting with `change-me`). |
-| `STT_PROVIDER` | `fake` | A preset: the vendor and its model together, `assemblyai` (Roger's vendor), `assemblyai-pro`, `deepgram` or `fake` (no vendor). Startup fails on any other value. See [Speech-to-text tokens](#speech-to-text-tokens). |
+| `STT_PROVIDER` | `fake` | A preset: the vendor and its model together, `assemblyai` (Roger's vendor), `assemblyai-pro`, `deepgram`, `soniox` or `fake` (no vendor). Startup fails on any other value. See [Speech-to-text tokens](#speech-to-text-tokens). |
 | `ASSEMBLYAI_API_KEY` | empty | Required with the `assemblyai` and `assemblyai-pro` presets; startup fails without it. Never leaves the API. |
 | `DEEPGRAM_API_KEY` | empty | Required when `STT_PROVIDER=deepgram`; startup fails without it. Never leaves the API. |
+| `SONIOX_API_KEY` | empty | Required when `STT_PROVIDER=soniox`; startup fails without it. Never leaves the API. |
 | `STT_TOKEN_TTL_SECONDS` | `30` | Lifetime of the speech-to-text token handed to the desktop (1..3600; at most 600 with the AssemblyAI presets, the vendor's limit). |
 | `STT_MODEL` | retired | The preset names the model. Startup fails while `STT_MODEL` has a value and names it; delete the line (a blank `STT_MODEL=` still counts as unset). |
 | `STT_PRICE_PER_HOUR_USD` | unset | USD per hour of one open stream, returned to the desktop as `stream.price_per_hour_usd`. Unset means the list price of the preset's model (`src/roger_api/stt_vendors.py`); set it for a negotiated rate. A model with no list price returns `null` and logs `stt_price_unknown` at startup. |
@@ -61,6 +62,7 @@ and one of its models, so switching vendor or model is one line in `.env`, then 
 | `assemblyai` | `assemblyai` | `universal-streaming-english` | 0.15 |
 | `assemblyai-pro` | `assemblyai` | `universal-3-6-pro` | 0.45 |
 | `deepgram` | `deepgram` | `nova-3` | 0.462 |
+| `soniox` | `soniox` | `stt-rt-v5` | 0.12 |
 | `fake` | `fake` | `fake` | 0 |
 
 The token's `provider` is always the vendor, never the preset, so the desktop never sees presets.
@@ -86,6 +88,18 @@ raw key as `Authorization`). The TTL is only the window to open a stream; one to
 the desktop's streams, and each session can then run for up to 3 hours, a cap asked for explicitly
 so a change of the vendor's default never lengthens a billed session. A vendor that refuses, fails
 or times out is a `502 stt_provider_error`.
+
+Soniox (`STT_PROVIDER=soniox`, model `stt-rt-v5`) is the optional third vendor, run D of the M3
+bake-off: its docs say it never trains on customer audio, and it has the lowest live price. The
+issuer asks for a temporary API key (`POST https://api.soniox.com/v1/auth/temporary-api-key`,
+`Authorization: Bearer <key>`, body `{"usage_type": "transcribe_websocket", "expires_in_seconds":
+<STT_TOKEN_TTL_SECONDS>, "single_use": false, "max_session_duration_seconds": 18000}`). As with
+AssemblyAI, the TTL is only the window to open a stream, one key opens both streams, and the
+session cap (5 hours, the vendor's maximum) is asked for explicitly. Soniox bills tokens: the audio
+sent, silence included (about $0.06 an hour), and the text returned (about $0.06 an hour of
+continuous speech), so its $0.12 errs high. The jargon list costs a few input tokens per stream
+opened (under $0.001 for the longest list), so the price is the same with a list. Until the
+desktop's Soniox adapter lands (M3-T15), Start on the Mac refuses `soniox`.
 
 Two vendor rules to know before testing (read 2026-10-06):
 

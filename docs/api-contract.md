@@ -194,21 +194,25 @@ The API holds the speech-to-text vendor key and hands the desktop a short-lived 
 stream settings. The desktop picks its `SpeechToText` adapter from `provider`. Changing vendor or
 model is one config line on the API: `STT_PROVIDER` names a preset, a vendor and one of its models
 (`STT_PRESETS` in `apps/api/src/roger_api/stt_vendors.py`). Two presets can share a vendor, so
-`provider` is always the vendor id, `"assemblyai" | "deepgram" | "fake"`, never the preset. Both
-sides keep a vendor registry with the same provider ids (`STT_VENDORS` in `stt_vendors.py`,
-`apps/desktop/src/main/stt/registry.ts`); the desktop never sees presets.
+`provider` is always the vendor id, `"assemblyai" | "deepgram" | "soniox" | "fake"`, never the
+preset. Both sides keep a vendor registry with the same provider ids (`STT_VENDORS` in
+`stt_vendors.py`, `apps/desktop/src/main/stt/registry.ts`); the desktop never sees presets. The
+API may list a vendor before the desktop has its adapter (`soniox` until M3-T15): Start then
+fails on the Mac with "Unsupported speech-to-text provider".
 
 | `STT_PROVIDER` (preset) | `provider` | `stream.model` | `stream.price_per_hour_usd_without_keyterms`, and `price_per_hour_usd` with no jargon list | `stream.price_per_hour_usd` with a jargon list |
 | --- | --- | --- | --- | --- |
 | `assemblyai` (Roger's vendor since 2026-10-06) | `assemblyai` | `universal-streaming-english` | `0.15` | `0.19` |
 | `assemblyai-pro` | `assemblyai` | `universal-3-6-pro` | `0.45` | `0.45` (keyterms included) |
 | `deepgram` (the second adapter) | `deepgram` | `nova-3` | `0.462` | `0.54` |
+| `soniox` (the optional third vendor) | `soniox` | `stt-rt-v5` | `0.12` | `0.12` (Soniox bills the list as a few input tokens per stream opened, under $0.001, not per hour) |
 | `fake` | `fake` | `fake` | `0` | `0` |
 
 | `provider` | `access_token` | `expires_in` |
 | --- | --- | --- |
 | `assemblyai` | AssemblyAI temporary streaming token; the desktop sends it as the `token` query parameter | Seconds left to open the stream (1..600). One token opens both streams; a session then runs up to 3 hours, a cap the API asks for explicitly on every token (`max_session_duration_seconds=10800`), after which AssemblyAI closes it with 3008. |
 | `deepgram` | Deepgram grant (JWT); the desktop sends it as `Authorization: Bearer` | Seconds the grant is valid |
+| `soniox` | Soniox temporary API key; the desktop sends it as `Authorization: Bearer` | Seconds left to open a stream (1..3600). One key opens both streams (never `single_use`); a stream then runs up to 5 hours, a cap the API asks for explicitly on every key (`max_session_duration_seconds=18000`), after which Soniox ends it with a `temp_api_key_session_expired` error. |
 | `fake` | `""` | `0` |
 
 Response:
@@ -240,8 +244,8 @@ calls it `pcm_s16le`). The desktop refuses to start when `sample_rate` and `enco
 lists it: spelled as stored, sorted ignoring case, at most 100 terms, `[]` when the workspace has
 none. The API reads it on every token request, so a term saved mid-week reaches the next Start,
 and a reopen's fresh token, with no restart; the desktop never caches it. The desktop sends it to
-the vendor (Deepgram `keyterm`, AssemblyAI `keyterms_prompt`). An API older than the jargon list
-sends no `keyterms`; the desktop reads that as `[]`.
+the vendor (Deepgram `keyterm`, AssemblyAI `keyterms_prompt`, Soniox `context.terms`). An API
+older than the jargon list sends no `keyterms`; the desktop reads that as `[]`.
 
 `stream.price_per_hour_usd` is what one open stream of `stream.model` costs per hour in USD. The
 base is the vendor's list price for the preset's model from the API's registry, or

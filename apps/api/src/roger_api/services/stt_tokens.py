@@ -10,6 +10,15 @@ and https://www.assemblyai.com/docs/streaming/authenticate-with-a-temporary-toke
 (1..600) is only the window to open a websocket; one token may open several sessions, which is how
 the desktop opens its mic and system streams with one. `max_session_duration_seconds` (60..10800,
 default 10800) caps every session the token opens; it is a token parameter, not a websocket one.
+
+Soniox temporary API keys, per https://soniox.com/docs/api-reference/auth/create_temporary_api_key
+and https://soniox.com/docs/guides/temporary-api-keys (read 2026-10-07):
+`POST https://api.soniox.com/v1/auth/temporary-api-key` with `Authorization: Bearer <key>` and a
+JSON body `{"usage_type": "transcribe_websocket", "expires_in_seconds": 1..3600}`, answering
+`201 {"api_key", "expires_at"}`. Like AssemblyAI's token, `expires_in_seconds` is only the window to
+open a stream ("It does not terminate streams that are already open"), and a key opens any number
+of streams unless `single_use` is true. `max_session_duration_seconds` (1..18000) caps every stream
+the key opens; without it "no limit is applied" beyond the WebSocket API's 300 minutes of audio.
 """
 
 from collections.abc import Awaitable
@@ -34,6 +43,13 @@ ASSEMBLYAI_GRANT_URL = "https://streaming.assemblyai.com/v3/token"
 # desktop's own guards (stall close, idle timeout, 4-hour auto-stop) are in
 # apps/desktop/src/main/costGuards.ts.
 ASSEMBLYAI_MAX_SESSION_SECONDS = 10_800
+SONIOX_GRANT_URL = "https://api.soniox.com/v1/auth/temporary-api-key"
+# The same rule as AssemblyAI's cap above: the vendor's maximum (300 minutes), asked for on every
+# key, because Soniox applies no limit when the field is missing and a vendor default must never
+# decide how long a billed stream may run. It sits above the desktop's 4-hour recording cap, so it
+# only ends a stream nothing else closed. At it Soniox sends a final `temp_api_key_session_expired`
+# error (403) and closes the websocket normally.
+SONIOX_MAX_SESSION_SECONDS = 18_000
 VENDOR_TIMEOUT = httpx.Timeout(10.0)
 
 
@@ -149,4 +165,41 @@ class AssemblyAiSttTokenIssuer:
             provider="assemblyai",
             access_token=token.token,
             expires_in=token.expires_in_seconds or self._ttl_seconds,
+        )
+
+
+class _SonioxTemporaryKey(BaseModel):
+    # Soniox also answers `expires_at`, an instant on its own clock, which is not read: see issue().
+    api_key: str = Field(min_length=1)
+
+
+class SonioxSttTokenIssuer:
+    """Mints a Soniox temporary API key for the realtime websocket (see the module docstring)."""
+
+    def __init__(self, http: httpx.AsyncClient, *, api_key: str, ttl_seconds: int) -> None:
+        self._http = http
+        self._api_key = api_key
+        self._ttl_seconds = ttl_seconds
+
+    async def issue(self) -> SttCredential:
+        key = await _request_vendor_token(
+            "soniox",
+            self._http.post(
+                SONIOX_GRANT_URL,
+                headers={"Authorization": f"Bearer {self._api_key}"},
+                json={
+                    "usage_type": "transcribe_websocket",
+                    "expires_in_seconds": self._ttl_seconds,
+                    # Sent explicitly: one key opens both of the desktop's streams (mic and system
+                    # audio), and a single-use key would fail the second open.
+                    "single_use": False,
+                    "max_session_duration_seconds": SONIOX_MAX_SESSION_SECONDS,
+                },
+            ),
+            _SonioxTemporaryKey,
+        )
+        # The lifetime asked for, not one computed from `expires_at`: the API's clock may differ
+        # from Soniox's, and a skew would report a key as expired or as living longer than it does.
+        return SttCredential(
+            provider="soniox", access_token=key.api_key, expires_in=self._ttl_seconds
         )
