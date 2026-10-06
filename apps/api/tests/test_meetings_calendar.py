@@ -180,6 +180,40 @@ async def test_blank_optional_ids_and_names_are_stored_as_null(
     assert stored.calendar_recurring_event_id is None
 
 
+async def test_nul_characters_are_dropped_from_the_link(
+    app: FastAPI, client: httpx.AsyncClient
+) -> None:
+    # Postgres `text` cannot hold U+0000: kept, it failed the insert with a 500, and the uploader
+    # retried a create that could never succeed. A hand-built client or a FAKE_CALENDAR_FILE can
+    # send one; Google does not.
+    meeting = await create_meeting(
+        client,
+        calendar_event=calendar_event(
+            event_id="evt\x00-1",
+            ical_uid="uid\x00@google.com",
+            recurring_event_id=" \x00 ",
+            attendees=[
+                attendee("Jane", email="jane\x00@acme.com", display_name="Ja\x00ne"),
+                attendee("Ali", display_name="\x00"),
+            ],
+        ),
+    )
+
+    link = meeting["calendar_event"]
+    assert link["event_id"] == "evt-1"
+    assert link["ical_uid"] == "uid@google.com"
+    # NUL and whitespace only is blank, so null, as in the test above.
+    assert link["recurring_event_id"] is None
+    assert [(guest["email"], guest["display_name"]) for guest in link["attendees"]] == [
+        ("jane@acme.com", "Jane"),
+        ("ali@acme.com", None),
+    ]
+    assert [row.display_name for row in await stored_attendees(app, meeting["id"])] == [
+        "Jane",
+        None,
+    ]
+
+
 def with_attendee(**overrides: object) -> Json:
     return calendar_event(attendees=[attendee("Jane"), attendee("Ali", **overrides)])
 
@@ -198,6 +232,7 @@ def without(field: str) -> Json:
         ({"calendar_event": calendar_event(provider="outlook")}, "body.calendar_event.provider"),
         ({"calendar_event": without("provider")}, "body.calendar_event.provider"),
         ({"calendar_event": calendar_event(event_id="")}, "body.calendar_event.event_id"),
+        ({"calendar_event": calendar_event(event_id="\x00")}, "body.calendar_event.event_id"),
         ({"calendar_event": without("event_id")}, "body.calendar_event.event_id"),
         (
             {"calendar_event": calendar_event(event_id="x" * (MAX_CALENDAR_TEXT_LENGTH + 1))},
@@ -218,6 +253,10 @@ def without(field: str) -> Json:
             "body.calendar_event.attendees[1].response_status",
         ),
         ({"calendar_event": with_attendee(email=" ")}, "body.calendar_event.attendees[1].email"),
+        (
+            {"calendar_event": with_attendee(email="\x00 ")},
+            "body.calendar_event.attendees[1].email",
+        ),
         (
             {"calendar_event": with_attendee(display_name="x" * (MAX_CALENDAR_TEXT_LENGTH + 1))},
             "body.calendar_event.attendees[1].display_name",

@@ -18,7 +18,17 @@ def _title_or_default(value: object) -> object:
     return value
 
 
+def _without_nul(value: object) -> object:
+    # Postgres `text` cannot hold U+0000: kept, it fails the insert with a 500. Dropped, not refused
+    # with a 422: TranscriptUploader.ts retries a refused create as well, so a refusal would keep
+    # the meeting, transcript included, off the server.
+    if isinstance(value, str):
+        return value.replace("\x00", "")
+    return value
+
+
 def _blank_is_none(value: object) -> object:
+    value = _without_nul(value)
     if isinstance(value, str) and not value.strip():
         return None
     return value
@@ -39,10 +49,14 @@ MeetingTitle = Annotated[
     StringConstraints(strip_whitespace=True, max_length=500),
 ]
 CalendarText = Annotated[
-    str, StringConstraints(strip_whitespace=True, min_length=1, max_length=MAX_CALENDAR_TEXT_LENGTH)
+    str,
+    StringConstraints(strip_whitespace=True, min_length=1, max_length=MAX_CALENDAR_TEXT_LENGTH),
+    # After the constraints, never before: written first, it makes pydantic check the lengths
+    # before the trim, so " " passes as "" (test_create_validation_errors pins it).
+    BeforeValidator(_without_nul),
 ]
-# Blank reads as null. M6 matches two teammates' notes of one call by `ical_uid`: stored as "", it
-# would match calls that have nothing to do with each other.
+# Blank, NUL and whitespace only included, reads as null. M6 matches two teammates' notes of one
+# call by `ical_uid`: stored as "", it would match calls that have nothing to do with each other.
 OptionalCalendarText = Annotated[CalendarText | None, BeforeValidator(_blank_is_none)]
 
 

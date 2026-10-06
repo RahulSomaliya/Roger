@@ -139,10 +139,10 @@ Request:
 
 `calendar_event` links the meeting to the calendar event it was started for. Every field of it and
 of its attendees is required except `ical_uid`, `recurring_event_id` and `display_name`, which may
-be left out; any of those three sent blank is stored as `null`. Every text field is 1 to 2048
-characters after trimming. At most 200 attendees, kept in the order sent. `scheduled_start` and
-`scheduled_end` are instants with an offset; their order is not checked, as they copy what the
-calendar said. A bad value is a `422` naming the field (`body.calendar_event.attendees[1].email`).
+be left out; any of those three sent blank is stored as `null`. Every text field loses any U+0000
+(Postgres text cannot hold it), is trimmed, and is then 1 to 2048 characters. At most 200
+attendees, kept in the order sent. `scheduled_start` and `scheduled_end` are instants with an
+offset; their order is not checked, as they copy what the calendar said. A bad value is a `422` naming the field (`body.calendar_event.attendees[1].email`).
 
 Response: `201 Meeting` when created, `200 Meeting` when `id` already exists in this workspace. The
 `200` is the stored meeting as it is: a different `title`, `started_at`, `start_source` or
