@@ -1,11 +1,12 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { parseEnv } from 'node:util';
-import { app, dialog, ipcMain, session, type BrowserWindow } from 'electron';
+import { app, dialog, ipcMain, powerMonitor, session, type BrowserWindow } from 'electron';
 import { ApiClient } from './api/ApiClient';
 import { CaptureService } from './capture/CaptureService';
 import { loadConfig, readConfigFile } from './config';
 import { registerIpcHandlers } from './ipc';
+import { RecordingLifecycle, watchApp, watchWindow } from './lifecycle';
 import { createLogger, errorMessage } from './logger';
 import { ensureMicrophoneAccess } from './permissions';
 import { SqliteTranscriptStore } from './store/SqliteTranscriptStore';
@@ -40,7 +41,8 @@ async function main(): Promise<void> {
   }
 
   const store = new SqliteTranscriptStore(join(userData, 'roger.sqlite'));
-  // No session can be running at startup, so any open meeting was cut off by a crash or force-quit.
+  // No session can be running at startup, so any open meeting was cut off by a crash, a force-quit,
+  // or a quit whose stop outran quitStopTimeoutMs (lifecycle.ts).
   const recovered = store.endMeetingsLeftOpen(new Date().toISOString());
   if (recovered > 0)
     logger.warn('ended meetings left open by a previous run', { count: recovered });
@@ -78,6 +80,24 @@ async function main(): Promise<void> {
     guards: config.costGuards,
   });
 
+  // Quit, sleep, the window closing, crashing or reloading: each stops the recording (lifecycle.ts).
+  const lifecycle = new RecordingLifecycle({
+    capture,
+    logger: logger.child({ component: 'lifecycle' }),
+    quitStopTimeoutMs: config.costGuards.quitStopTimeoutMs,
+    beforeExit: () => {
+      uploader.stop();
+      // A tick still awaiting the API meets the closed store next ('database is not open').
+      // TranscriptUploader.tick logs that and never rejects; a rejection would be unhandled here.
+      // After a stop that timed out, a late final line meets it too; CaptureSession logs that.
+      store.close();
+    },
+    quit: () => {
+      app.quit();
+    },
+  });
+  watchApp(lifecycle, { app, powerMonitor });
+
   let window: BrowserWindow | null = null;
   registerIpcHandlers({
     ipcMain,
@@ -99,6 +119,7 @@ async function main(): Promise<void> {
     page,
     logger.child({ component: 'window' }),
   );
+  watchWindow(lifecycle, window);
   window.on('closed', () => {
     window = null;
   });
@@ -110,26 +131,6 @@ async function main(): Promise<void> {
   });
   logger.info('roger started', { apiUrl: config.apiUrl, userData, packaged: app.isPackaged });
 
-  let quitting = false;
-  app.on('before-quit', (event) => {
-    if (quitting) return;
-    quitting = true;
-    event.preventDefault();
-    void (async () => {
-      try {
-        // No upload flush on quit: lines are safe in SQLite and the uploader resumes next launch.
-        await capture.stop({ flushUploads: false });
-      } catch (error) {
-        logger.error('stop on quit failed', { error: errorMessage(error) });
-      } finally {
-        uploader.stop();
-        // A tick still awaiting the API meets the closed store next ('database is not open').
-        // TranscriptUploader.tick logs that and never rejects; a rejection would be unhandled here.
-        store.close();
-        app.quit();
-      }
-    })();
-  });
   app.on('window-all-closed', () => {
     app.quit();
   });
