@@ -30,7 +30,7 @@ import argparse
 import asyncio
 import sys
 import time
-from collections.abc import AsyncGenerator, AsyncIterator, Callable, Mapping, Sequence
+from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from contextlib import AsyncExitStack, aclosing, asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -70,11 +70,14 @@ from roger_api.evals.notes_report import (
 from roger_api.evals.notes_score import CaseScores, Share, lines_kept, score_notes
 from roger_api.log import configure_logging, get_logger
 from roger_api.services.citations import CitedLine
-from roger_api.services.llm_runs import RunEvent
+
+# The run registry's metering of one model stream (a `ModelDone`'s usage, or a cut-off's), so an
+# eval's cost compares with `llm_runs.cost_usd` as `notes_report.add_usage` does. Imported, never
+# copied: a copy keeps the old rule after the registry's rule changes, with every test still green.
+from roger_api.services.llm_runs import RunEvent, _metered, _StreamUsage
 from roger_api.services.notes_generation import GeneratedNotes, NotesSources, generate_notes
 from roger_api.services.notes_model import (
     ModelCutOffError,
-    ModelDone,
     ModelEvent,
     ModelRequest,
     ModelUsage,
@@ -103,11 +106,6 @@ class OptionError(ValueError):
 # --- Metering ----------------------------------------------------------------------------------
 
 
-@dataclass(slots=True)
-class _Seen:
-    usage: ModelUsage | None = None
-
-
 class UsageMeter:
     """`model.stream`, with every call's usage added up as the run registry meters a run
     (`llm_runs.RunContext.stream`): a `ModelDone`'s usage, or a cut-off's, which was billed."""
@@ -124,25 +122,12 @@ class UsageMeter:
     @asynccontextmanager
     async def stream(self, request: ModelRequest) -> AsyncIterator[AsyncIterator[ModelEvent]]:
         async with self._model.stream(request) as events:
-            seen = _Seen()
-            async with aclosing(_watched(events, seen)) as watched:
+            seen = _StreamUsage()
+            async with aclosing(_metered(events, seen)) as metered:
                 try:
-                    yield watched
+                    yield metered
                 finally:
                     self._usages.append(seen.usage)
-
-
-async def _watched(
-    events: AsyncIterator[ModelEvent], seen: _Seen
-) -> AsyncGenerator[ModelEvent, None]:
-    try:
-        async for event in events:
-            if isinstance(event, ModelDone):
-                seen.usage = event.usage
-            yield event
-    except ModelCutOffError as error:
-        seen.usage = error.usage
-        raise
 
 
 @dataclass(slots=True)
