@@ -277,6 +277,28 @@ describe('NoteDocument', () => {
     expect(document.getState().docProblem).toBeNull();
   });
 
+  it("drops the doc problem once this editor's own save is the doc again", async () => {
+    const { main, document } = open();
+    await main.answerLoad({ user: note({ doc: docSaying('mine'), revisionId: 'rev-0' }) });
+    main.emit(
+      note({
+        doc: {
+          type: 'doc',
+          content: [{ type: 'bulletList', content: [{ type: 'listItem', content: [] }] }],
+        },
+      }),
+    );
+    expect(document.getState().docProblem).toMatch(/listItem/);
+    // The editor held typing it had not sent, and sends it as it unmounts: main stores it.
+    const saving = document.save(docSaying('mine, typed'));
+    const saved = note({ doc: docSaying('mine, typed'), revisionId: 'rev-1' });
+    main.emit(saved);
+    main.saves.shift()?.resolve(saved);
+    await saving;
+    // The editor made that doc, so it can show it: "cannot show these notes" would be false.
+    expect(document.getState()).toEqual(expect.objectContaining({ note: saved, docProblem: null }));
+  });
+
   it('ignores changes to other meetings and to the other kind', async () => {
     const { main, document } = open('user');
     await main.answerLoad({ user: note() });

@@ -167,7 +167,10 @@ export class NoteDocument {
     const doc = JSON.stringify(note.doc);
     const status = this.state.status === 'failed' ? 'ready' : this.state.status;
     if (own || doc === this.shownDoc) {
-      this.set({ ...this.state, status, error: null, note });
+      // An own save is a doc the editor made, so it can show it: a problem with the doc it
+      // replaced (sent over one as the editor unmounted) must not keep the editor closed.
+      const docProblem = own ? null : this.state.docProblem;
+      this.set({ ...this.state, status, error: null, note, docProblem });
       return;
     }
     this.shownDoc = doc;
