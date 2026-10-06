@@ -1617,7 +1617,8 @@ describe('CaptureService meetings with notes (M4)', () => {
     const { meetingId } = await h.service.start();
     await h.service.stop();
 
-    expect(h.store.getMeeting(meetingId!)?.endedAt).not.toBeNull();
+    // A string, not just "not null": a deleted meeting reads undefined, which passes not.toBeNull().
+    expect(h.store.getMeeting(meetingId!)?.endedAt).toEqual(expect.any(String));
     expect(ended).toEqual([{ meetingId, reason: 'user', discarded: false, stopFailed: false }]);
     // Stop's upload flush creates it and ends it in one pass, with no line.
     expect(h.api.createMeeting).toHaveBeenCalledTimes(1);
@@ -1636,7 +1637,7 @@ describe('CaptureService meetings with notes (M4)', () => {
     const kept = [...h.store.meetings.values()];
     expect(kept).toHaveLength(1);
     // Ended, so the uploader's pending rule creates it rather than wait for an end that never comes.
-    expect(kept[0]?.endedAt).not.toBeNull();
+    expect(kept[0]?.endedAt).toEqual(expect.any(String));
     await h.uploader.flush();
     expect(h.api.createMeeting).toHaveBeenCalledTimes(1);
     expect(h.api.endMeeting).toHaveBeenCalledTimes(1);
@@ -1655,7 +1656,7 @@ describe('CaptureService meetings with notes (M4)', () => {
 
     // The Stop itself went through: the uploader asks again on every tick and says so there.
     expect(stopped).toMatchObject({ phase: 'idle', error: null });
-    expect(h.store.getMeeting(meetingId!)?.endedAt).not.toBeNull();
+    expect(h.store.getMeeting(meetingId!)?.endedAt).toEqual(expect.any(String));
     expect(
       lines.some(
         (line) =>
@@ -1663,5 +1664,32 @@ describe('CaptureService meetings with notes (M4)', () => {
           line.includes(`could not read the notes of meeting ${meetingId!}: database is locked`),
       ),
     ).toBe(true);
+  });
+
+  it('a failed start keeps and ends a meeting whose notes cannot be read, and logs why', async () => {
+    const log = jsonLog('error');
+    const h = harness({
+      hasNotes: () => {
+        throw new Error('database is locked');
+      },
+      logger: log.logger,
+    });
+    h.stt.failWith = new SttConnectError('rejected with HTTP 401', 401);
+    const status = await h.service.start();
+    expect(status).toMatchObject({ phase: 'idle' });
+    expect(status.error).toContain('401');
+
+    // Kept, as at Stop: deleted, a meeting whose notes exist would strand them for good.
+    const kept = [...h.store.meetings.values()];
+    expect(kept).toHaveLength(1);
+    const meetingId = kept[0]?.id;
+    expect(kept[0]?.endedAt).toEqual(expect.any(String));
+    expect(log.lines).toContainEqual(
+      expect.objectContaining({
+        message: 'kept a meeting whose notes could not be read',
+        meetingId,
+        error: `could not read the notes of meeting ${meetingId}: database is locked`,
+      }),
+    );
   });
 });
