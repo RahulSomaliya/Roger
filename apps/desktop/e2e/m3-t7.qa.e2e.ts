@@ -369,8 +369,11 @@ describe.each(qa.QA_THEMES.flatMap((theme) => qa.QA_WIDTHS.map((width) => ({ the
           showHidden: false,
           live: true,
         };
-        await renderPanel(page, props, LIVE_CALL.title);
+        // First drawn as not live, as a page does before main's capture status arrives: the
+        // panel must follow once it learns the meeting is recording.
+        await renderPanel(page, { ...props, live: false }, LIVE_CALL.title);
         await waitForRows(page, FIRST_LINES);
+        await renderPanel(page, props, LIVE_CALL.title);
 
         // Live: three new finals (one with a long link), then both speakers mid-sentence.
         const [n1, n2, n3, ...later] = call.slice(FIRST_LINES);

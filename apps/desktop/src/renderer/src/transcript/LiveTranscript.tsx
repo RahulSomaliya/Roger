@@ -46,6 +46,14 @@ function TranscriptPanel({ meetingId, storedLines, showHidden, live }: LiveTrans
     setContainer(element);
   }, []);
   const [follow, setFollow] = useState(() => startFollow(live));
+  // A page learns that its meeting records after its first render (main's capture status comes
+  // later), and a resumed meeting records again: either way the panel follows from then on.
+  // State that follows a prop, set while rendering, so the first live frame already follows.
+  const [wasLive, setWasLive] = useState(live);
+  if (wasLive !== live) {
+    setWasLive(live);
+    if (live) setFollow(jumpToLive);
+  }
   const following = isFollowing(follow);
 
   // Citation chips find lines through the navigator (M4-T21), which pauses following before it
