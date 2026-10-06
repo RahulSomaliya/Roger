@@ -5,6 +5,7 @@ import {
   fitMeetingTitle,
   idleCaptureStatus,
   NO_AUDIO_WARNING_MS,
+  storedMeetingText,
   type AudioSourceState,
   type CapturePhase,
   type CaptureStatus,
@@ -653,7 +654,10 @@ export class CaptureService {
       this.sttProvider = provider;
       this.startedAt = new Date(startedAtMs).toISOString();
       if (resume === undefined) {
-        const title = request.title?.trim() ?? '';
+        // Kept as the API stores it, and blank as the start check reads it: U+0000 dropped before
+        // the trim. With JavaScript's trim() a title of U+0000 and spaces stayed an invisible
+        // title here while the server named the meeting "Untitled meeting".
+        const title = storedMeetingText(request.title ?? '');
         this.title = title === '' ? defaultMeetingTitle(new Date(startedAtMs)) : title;
         store.createMeeting({
           id: meetingId,

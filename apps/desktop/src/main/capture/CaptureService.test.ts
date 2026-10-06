@@ -1891,6 +1891,22 @@ describe('CaptureService start requests (M5)', () => {
     const blank = await h.service.start({ source: 'home', title: '  ' });
     expect(blank.title).toBe(defaultMeetingTitle(new Date(h.now())));
     expect(lastMeeting(h)).toMatchObject({ startSource: 'home', calendarEvent: null });
+    await h.service.stop();
+
+    // Blank as the API and the start check read it: U+0000 is dropped before the trim.
+    h.advance(60_000);
+    const nul = await h.service.start({ title: '\u0000  ' });
+    expect(nul.title).toBe(defaultMeetingTitle(new Date(h.now())));
+    expect(lastMeeting(h)?.title).toBe(defaultMeetingTitle(new Date(h.now())));
+  });
+
+  // The uploader sends the stored title, so the local title is the one the server keeps.
+  it('stores the title as the API stores it: U+0000 dropped, then trimmed as the API trims', async () => {
+    const h = harness();
+    const nextLine = String.fromCharCode(0x85);
+    const started = await h.service.start({ title: `${nextLine} Weekly\u0000 sync ` });
+    expect(started.title).toBe('Weekly sync');
+    expect(lastMeeting(h)?.title).toBe('Weekly sync');
   });
 
   it("refuses a request from main's own code that the API would refuse, in the status, before any token", async () => {

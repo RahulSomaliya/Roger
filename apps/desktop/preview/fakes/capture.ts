@@ -3,6 +3,7 @@ import {
   type CaptureStatus,
   idleCaptureStatus,
   type StartCaptureRequest,
+  storedMeetingText,
   type TranscriptSegmentChange,
 } from '../../src/shared/capture';
 import { captureChannels, type CaptureApi } from '../../src/shared/ipc/capture';
@@ -75,7 +76,7 @@ export function createCaptureFake(hub: FakeHub): CaptureApi {
   return {
     startCapture: (request) =>
       hub.request(captureChannels.CaptureStart, () => {
-        const title = request?.title?.trim() ?? '';
+        const title = storedMeetingText(request?.title ?? '');
         return publish({
           ...idleCaptureStatus(status.upload),
           phase: 'recording',

@@ -149,6 +149,10 @@ describe('the preview capture fake and start requests (M5)', () => {
     await expect(capture.stopCapture()).resolves.toMatchObject({ phase: 'idle', title: null });
     const plain: CaptureStatus = await capture.startCapture();
     expect(plain.title).toEqual(expect.any(String));
+    await capture.stopCapture();
+    // Blank as main reads it (storedMeetingText): U+0000 and spaces name nothing.
+    const blank = await capture.startCapture({ title: '\u0000  ' });
+    expect(blank.title).toBe('New meeting');
   });
 
   // As main's requestStart: the page hears the nudge and takes the request, once.
