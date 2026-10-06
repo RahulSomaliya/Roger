@@ -191,6 +191,8 @@ export class SttConnection implements SttStream {
   private readonly liveness: SttLiveness;
   /** Pings and checks the deadline while open (checkLiveness). */
   private livenessTimer: NodeJS.Timeout | null = null;
+  /** The deadline passed: one more poll before the verdict (lookAgain). */
+  private secondLook: NodeJS.Immediate | null = null;
   /** paceClock time the vendor last sent anything: a pong, a ping, a message. */
   private heardAtMs = 0;
   /**
@@ -480,9 +482,8 @@ export class SttConnection implements SttStream {
       this.heardAtMs = now;
     }
     if (this.answersPings()) {
-      const silentMs = now - this.heardAtMs;
-      if (silentMs >= this.liveness.deadAfterMs) {
-        this.declareDead(silentMs);
+      if (now - this.heardAtMs >= this.liveness.deadAfterMs) {
+        this.lookAgain();
         return;
       }
     } else if (
@@ -498,6 +499,25 @@ export class SttConnection implements SttStream {
     }
     this.socket.ping();
     this.firstPingAtMs ??= now;
+  }
+
+  /**
+   * The deadline passed, but main may be the one that was stuck. A synchronous SQLite write waiting
+   * on a lock (busy_timeout, 5 s) inside a socket callback (CaptureSession saving a line) blocks
+   * main, and libuv then runs this timer before it reads the sockets again: the pongs that arrived
+   * meanwhile sit unread, and both healthy sockets were declared dead at once (two billed reopens,
+   * two false stt_failed gaps for M2-T16 to re-run). So one more poll first (setImmediate runs
+   * right after it): a frame read there moves heardAtMs, and only a socket still silent is dead.
+   * HelperProcess.watchdogFired guards the audio helper from the same trap.
+   */
+  private lookAgain(): void {
+    if (this.secondLook !== null) return;
+    this.secondLook = setImmediate(() => {
+      this.secondLook = null;
+      if (this.currentState !== 'open') return;
+      const silentMs = this.paceClock() - this.heardAtMs;
+      if (silentMs >= this.liveness.deadAfterMs) this.declareDead(silentMs);
+    });
   }
 
   /** This socket answered a ping, or another stream of the same vendor did (SttPongRecord). */
@@ -916,6 +936,8 @@ export class SttConnection implements SttStream {
   private stopLiveness(): void {
     if (this.livenessTimer !== null) clearInterval(this.livenessTimer);
     this.livenessTimer = null;
+    if (this.secondLook !== null) clearImmediate(this.secondLook);
+    this.secondLook = null;
   }
 
   private clearPaceTimer(): void {

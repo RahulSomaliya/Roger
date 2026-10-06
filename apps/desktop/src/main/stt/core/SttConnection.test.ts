@@ -1276,6 +1276,34 @@ describe('SttConnection', () => {
       expect(said(NO_PING_CHECK)).toBe(0);
     });
 
+    /** Stops this process's event loop, as a synchronous SQLite write waiting on a lock does. */
+    function blockMain(ms: number): void {
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+    }
+
+    it('reads what waits in the socket before it declares a socket dead after main was blocked', async () => {
+      const clock = manualClock(0);
+      const { connection, events } = await answering(clock);
+      vendor.last().answersPings = false; // no pong in flight but the one sent below
+      await ticks();
+      // A line's synchronous save waits on a SQLite lock (busy_timeout, 5 s) inside a socket
+      // callback: main is stuck while the vendor's pong lands, and libuv then runs the liveness
+      // timer before it reads the socket again. Played here inside the fake's own I/O callback.
+      vendor.script.onBinary = (served) => {
+        clock.set(4_000);
+        served.socket.pong();
+        blockMain(TICK_MS * 6);
+      };
+      connection.send(new Uint8Array(CHUNK_100_MS));
+      await waitFor(() => vendor.last().binaryFrames.length === 2);
+      await ticks();
+
+      // Not dead: a reopen here bills a session and writes a false stt_failed gap, on both streams.
+      expect(events).toEqual([]);
+      expect(connection.state).toBe('open');
+      await connection.close();
+    });
+
     it('stops pinging once Stop begins', async () => {
       vendor.script.onText = () => undefined; // never answers Finish: Stop waits for its deadline
       const clock = manualClock(0);
