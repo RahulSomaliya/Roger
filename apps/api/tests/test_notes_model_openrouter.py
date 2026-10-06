@@ -102,7 +102,11 @@ def chunk(
 
 def sse(*events: Json | str) -> bytes:
     """SSE as OpenRouter frames it: a dict is a `data:` event, a str is sent as the line itself."""
-    lines = [event if isinstance(event, str) else f"data: {json.dumps(event)}" for event in events]
+    # Raw UTF-8, as OpenRouter sends it: `json.dumps` would escape every non-ASCII character.
+    lines = [
+        event if isinstance(event, str) else f"data: {json.dumps(event, ensure_ascii=False)}"
+        for event in events
+    ]
     return "".join(f"{line}\n\n" for line in lines).encode()
 
 
@@ -317,6 +321,14 @@ async def test_reasoning_deltas_are_not_note_text() -> None:
     assert "think" not in repr(events)
 
 
+def _splits_a_character(piece: bytes) -> bool:
+    try:
+        piece.decode("utf-8")
+    except UnicodeDecodeError:
+        return True
+    return False
+
+
 async def test_text_deltas_arrive_in_order_across_chunk_boundaries() -> None:
     contents = [
         "## Pricing\n",
@@ -328,6 +340,7 @@ async def test_text_deltas_arrive_in_order_across_chunk_boundaries() -> None:
     # Seven bytes at a time splits lines, `data:` prefixes, JSON strings and the two-byte and
     # three-byte characters above.
     pieces = [body[start : start + 7] for start in range(0, len(body), 7)]
+    assert any(_splits_a_character(piece) for piece in pieces)
     vendor = Vendor(lambda request: streaming(RecordingStream(pieces)))
 
     events = await read_all(model_for(vendor))
