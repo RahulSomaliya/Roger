@@ -37,9 +37,10 @@ class SttStreamSettings(BaseModel):
 
 def _price_per_hour_usd(settings: Settings, *, with_keyterms: bool) -> float | None:
     # The base is STT_PRICE_PER_HOUR_USD when set, else the model's list price; the vendor bills
-    # keyterms on top of either (stt_vendors.py). An unknown base or surcharge makes the whole
-    # price unknown: the surcharge alone, or the base alone, would read as the full price and the
-    # desktop's meter would under-count every meeting with a list.
+    # keyterms on top of either (stt_vendors.py), so the override is a rate without keyterms, never
+    # an all-in one, or every stream with a list counts the surcharge twice. An unknown base or
+    # surcharge makes the whole price unknown: the surcharge alone, or the base alone, would read
+    # as the full price and the desktop's meter would under-count every meeting with a list.
     base = settings.stt_stream_price_per_hour_usd
     if base is None or not with_keyterms:
         return base

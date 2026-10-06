@@ -215,7 +215,8 @@ sends no `keyterms`; the desktop reads that as `[]`.
 base is the vendor's list price for the preset's model from the API's registry, or
 `STT_PRICE_PER_HOUR_USD` when set. When `stream.keyterms` is not empty, the vendor's keyterm
 surcharge for that model is added to the base, the override included (the table above; `0` where
-the model's price includes keyterms). It is `null` when the API knows no base price for that model
+the model's price includes keyterms), so the override is a rate without keyterms: an all-in rate
+counts the surcharge twice. It is `null` when the API knows no base price for that model
 (it then logs `stt_price_unknown` at startup), and also when the list is not empty and the API
 knows no keyterm surcharge for it. It is per stream and per hour the stream is open: a meeting
 opens two streams, and AssemblyAI bills the open time, silent or not. The desktop uses it to
