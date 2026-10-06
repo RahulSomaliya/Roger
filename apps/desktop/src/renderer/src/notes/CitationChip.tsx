@@ -1,4 +1,9 @@
-import { NodeViewWrapper, type ReactNodeViewProps } from '@tiptap/react';
+import {
+  type NodeViewRenderer,
+  NodeViewWrapper,
+  ReactNodeViewRenderer,
+  type ReactNodeViewProps,
+} from '@tiptap/react';
 import { useState } from 'react';
 import type { CitationAttrs } from '../../../shared/notes';
 import { useCitationNavigator } from '../transcript/transcriptNavigator';
@@ -68,4 +73,20 @@ export function CitationChip({ node }: ReactNodeViewProps) {
       )}
     </NodeViewWrapper>
   );
+}
+
+/**
+ * The chip's node view for the editor (noteExtensions' `citationView`). Every event inside the chip
+ * stays with the chip: TipTap leaves an event to ProseMirror unless its target is the button
+ * itself, and a click lands on the time inside it, so ProseMirror would also node-select the chip.
+ * That selection is resolved before ProseMirror focuses the editor, and the focus transaction can
+ * change the doc (StarterKit's trailing paragraph), so the click threw "Selection passed to
+ * setSelection must point at the current document" (M4-T17 browser QA). A click reveals; it never
+ * selects. NoteEditor also lets the trailing paragraph land at load, for every other atom.
+ */
+export function citationChipView(): NodeViewRenderer {
+  return ReactNodeViewRenderer(CitationChip, {
+    stopEvent: ({ event }) =>
+      event.target instanceof Element && event.target.closest('.citation-chip') !== null,
+  });
 }

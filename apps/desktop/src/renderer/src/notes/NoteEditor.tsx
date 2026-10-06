@@ -1,7 +1,7 @@
-import { EditorContent, type EditorEvents, ReactNodeViewRenderer, useEditor } from '@tiptap/react';
+import { EditorContent, type EditorEvents, useEditor } from '@tiptap/react';
 import { useEffect, useState } from 'react';
 import { isNoteDoc, type NoteDoc, noteDocProblem, type NoteKind } from '../../../shared/notes';
-import { CitationChip } from './CitationChip';
+import { citationChipView } from './CitationChip';
 import { noteExtensions } from './citationNode';
 import { ConflictBanner } from './ConflictBanner';
 import { DebouncedSaver, notesFlushResponder, type SaverState } from './debouncedSaver';
@@ -116,7 +116,7 @@ function LoadedNoteEditor({
     options: {
       extensions: noteExtensions({
         placeholder,
-        citationView: ReactNodeViewRenderer(CitationChip),
+        citationView: citationChipView(),
       }),
       content: state.note?.doc ?? null,
       editable: !readOnly,
@@ -151,6 +151,13 @@ function LoadedNoteEditor({
     };
     editor.on('update', onUpdate);
     editor.on('blur', onBlur);
+    // A doc given as `content` meets no transaction, so StarterKit's trailing paragraph (added
+    // after a doc that ends in a list) waits for the first one, the focus of the first click. A
+    // click on an atom (a horizontal rule) resolves its selection before that focus and then
+    // throws "Selection passed to setSelection must point at the current document". One empty
+    // transaction now lets the paragraph land at load: no `update` (the doc as main has it did not
+    // change), and out of the undo history. CitationChip.tsx keeps chip clicks from ProseMirror.
+    editor.chain().setMeta('addToHistory', false).run();
 
     let shown = setup.generation;
     const showNewDoc = (): void => {
