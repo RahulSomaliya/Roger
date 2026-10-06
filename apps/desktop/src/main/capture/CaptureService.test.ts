@@ -15,7 +15,15 @@ import {
 } from '../stt/SpeechToText';
 import { sumUsage, type SttUsage } from '../stt/usage';
 import { TranscriptUploader } from '../upload/TranscriptUploader';
-import { CaptureService, defaultMeetingTitle } from './CaptureService';
+import type { AudioSink } from './AudioFanout';
+import {
+  CaptureService,
+  defaultMeetingTitle,
+  type RecordingEnded,
+  type RecordingStarted,
+} from './CaptureService';
+import { CaptureSession } from './CaptureSession';
+import { SttOpenBudget } from './SttOpenBudget';
 
 const logger = createLogger({ level: 'error', format: 'json', sink: () => undefined });
 
@@ -122,6 +130,8 @@ function harness(
     logger?: Logger;
     store?: InMemoryTranscriptStore;
     guards?: Partial<CostGuards>;
+    /** Built on the harness clock: `(clock) => new SttOpenBudget(limits, clock)`. */
+    budget?: (clock: () => number) => SttOpenBudget;
   } = {},
 ) {
   const store = overrides.store ?? new InMemoryTranscriptStore();
@@ -153,6 +163,7 @@ function harness(
   let now = 1_000_000;
   const stt = new ScriptedSpeechToText(() => now);
   const uploader = new TranscriptUploader({ store, api, logger });
+  const budget = overrides.budget?.(() => now);
   const service = new CaptureService({
     store,
     api,
@@ -164,6 +175,7 @@ function harness(
     startupError: overrides.startupError ?? null,
     guards: { ...DEFAULT_COST_GUARDS, ...overrides.guards },
     clock: () => now,
+    ...(budget === undefined ? {} : { budget }),
   });
   const statuses: CaptureStatus[] = [];
   const segments: TranscriptSegment[] = [];
@@ -177,6 +189,9 @@ function harness(
     service,
     statuses,
     segments,
+    /** The budget injected through `overrides.budget`, if any. */
+    budget,
+    now: () => now,
     advance: (ms: number) => (now += ms),
     /** Fake timers only: let `ms` pass in `stepMs` steps, calling `each` after every step. */
     elapse: async (ms: number, each: () => void = () => undefined, stepMs = 100) => {
@@ -1036,6 +1051,524 @@ describe('CaptureService forgotten Stop', () => {
     expect(h.service.getStatus().notice).toBeNull();
     await h.service.stop();
     expect(h.service.getStatus().notice).toBeNull();
+  });
+});
+
+function jsonLog(level: 'info' | 'warn' | 'error' = 'info') {
+  const lines: Record<string, unknown>[] = [];
+  const jsonLogger = createLogger({
+    level,
+    format: 'json',
+    sink: (line) => lines.push(JSON.parse(line) as Record<string, unknown>),
+  });
+  return { lines, logger: jsonLogger };
+}
+
+describe('CaptureService open budget', () => {
+  it('opens through an injected budget, the one the runtime shares with the gap re-run', async () => {
+    const h = harness({
+      budget: (clock) => new SttOpenBudget({ perMinute: 4, perMeeting: 30 }, clock),
+    });
+    const { budget } = h;
+    if (budget === undefined) throw new Error('the harness built no budget');
+
+    await h.service.start();
+    expect(budget.openedThisMeeting).toBe(2); // Start's two opens came from it
+    await h.service.stop();
+
+    // A re-run's opens fill the same minute window, so the next Start must wait for it.
+    expect(budget.acquire(2, 'minute')).toEqual({ ok: true });
+    const refused = await h.service.start();
+    expect(refused.phase).toBe('idle');
+    expect(refused.error).toContain("Roger's limit is 4, sttOpensPerMinute");
+    expect(h.stt.opened).toHaveLength(2);
+  });
+});
+
+describe('CaptureService audio fan-out', () => {
+  const chunk = (fill = 0) => new Uint8Array(3200).fill(fill);
+
+  function collector(): AudioSink & { got: [string, Uint8Array, number][] } {
+    const got: [string, Uint8Array, number][] = [];
+    return {
+      got,
+      onChunk: (source, pcm, capturedAtMs) => {
+        got.push([source, pcm, capturedAtMs]);
+      },
+    };
+  }
+
+  it('hands each chunk to every sink and to the session once, with its capture time', async () => {
+    const h = harness();
+    const sink = collector();
+    h.service.addAudioSink('test', sink);
+    await h.service.start();
+    const pcm = chunk(1);
+    h.service.pushAudio('mic', pcm, h.now() - 140);
+
+    expect(sink.got).toEqual([['mic', pcm, 1_000_000 - 140]]);
+    expect(h.stt.streams.get('mic')?.sent).toEqual([pcm]);
+    expect(h.service.getStatus().sources.mic).toMatchObject({ chunks: 1, lastChunkAt: h.now() });
+    await h.service.stop();
+  });
+
+  it('dates a chunk sent with no capture time from its arrival: its first sample is one chunk older', async () => {
+    const h = harness();
+    const sink = collector();
+    h.service.addAudioSink('test', sink);
+    await h.service.start();
+    h.advance(2_000);
+    h.service.pushAudio('system', chunk(), null);
+    h.service.pushAudio('system', new Uint8Array(1600));
+    // 3200 bytes of 16 kHz Int16 is 100 ms; 1600 bytes is 50 ms.
+    expect(sink.got.map(([, , at]) => at)).toEqual([1_002_000 - 100, 1_002_000 - 50]);
+    await h.service.stop();
+  });
+
+  it('gives sinks no audio outside a recording, and stops a removed sink', async () => {
+    const h = harness();
+    const sink = collector();
+    const remove = h.service.addAudioSink('test', sink);
+    h.service.pushAudio('mic', chunk(), null);
+    await h.service.start();
+    h.service.pushAudio('mic', chunk(), null);
+    await h.service.stop();
+    h.service.pushAudio('mic', chunk(), null);
+    expect(sink.got).toHaveLength(1);
+
+    remove();
+    await h.service.start();
+    h.service.pushAudio('mic', chunk(), null);
+    expect(sink.got).toHaveLength(1);
+    await h.service.stop();
+  });
+
+  it('still sends audio to the vendor when a sink throws, and logs the sink', async () => {
+    const log = jsonLog('error');
+    const h = harness({ logger: log.logger });
+    h.service.addAudioSink('backup', {
+      onChunk: () => {
+        throw new Error('disk full');
+      },
+    });
+    await h.service.start();
+    h.service.pushAudio('system', chunk(2), null);
+    expect(h.stt.streams.get('system')?.sent).toHaveLength(1);
+    expect(log.lines).toContainEqual(
+      expect.objectContaining({ message: 'audio sink failed', sink: 'backup', error: 'disk full' }),
+    );
+    await h.service.stop();
+  });
+});
+
+describe('CaptureService recording listeners', () => {
+  function listener() {
+    const calls: (
+      ['started', RecordingStarted, CaptureStatus['phase']] | ['ended', RecordingEnded]
+    )[] = [];
+    return { calls };
+  }
+
+  it('hands the live session over once both streams are open, before any audio', async () => {
+    const h = harness();
+    const { calls } = listener();
+    h.service.onRecording({
+      started: (recording) => {
+        calls.push(['started', recording, h.service.phase]);
+      },
+      ended: (recording) => {
+        calls.push(['ended', recording]);
+      },
+    });
+    const { meetingId } = await h.service.start();
+
+    expect(calls).toHaveLength(1);
+    const [kind, started, phase] = calls[0] as ['started', RecordingStarted, string];
+    expect(kind).toBe('started');
+    expect(phase).toBe('recording');
+    expect(started).toMatchObject({ meetingId, meetingStartedAtMs: 1_000_000, resumed: false });
+    expect(started.session).toBeInstanceOf(CaptureSession);
+    expect(started.session.meetingId).toBe(meetingId);
+    expect(h.stt.streams.get('mic')?.sent).toEqual([]);
+
+    sayFinal(h, 'mic', 'hello');
+    await h.service.stop({ reason: 'no-speech' });
+    expect(calls.slice(1)).toEqual([
+      ['ended', { meetingId, reason: 'no-speech', discarded: false }],
+    ]);
+  });
+
+  it('says when Stop discarded a meeting with no line, and tells nothing of a Start that failed', async () => {
+    const h = harness();
+    const { calls } = listener();
+    h.service.onRecording({ ended: (recording) => calls.push(['ended', recording]) });
+    const { meetingId } = await h.service.start();
+    await h.service.stop();
+    expect(calls).toEqual([['ended', { meetingId, reason: 'user', discarded: true }]]);
+
+    h.stt.failWith = new SttConnectError('rejected with HTTP 401', 401);
+    await h.service.start();
+    expect(calls).toHaveLength(1);
+  });
+
+  it('tells a listener added mid-recording about it at once, and a removed one nothing', async () => {
+    const h = harness();
+    const { meetingId } = await h.service.start();
+    const late = vi.fn<(recording: RecordingStarted) => void>();
+    const remove = h.service.onRecording({ started: late });
+    expect(late).toHaveBeenCalledTimes(1);
+    expect(late.mock.calls[0]?.[0].meetingId).toBe(meetingId);
+
+    remove();
+    await h.service.stop();
+    await h.service.start();
+    expect(late).toHaveBeenCalledTimes(1);
+    await h.service.stop();
+  });
+
+  it('logs a listener that throws, and the others, Start and Stop still run', async () => {
+    const log = jsonLog('error');
+    const h = harness({ logger: log.logger });
+    h.service.onRecording({
+      started: () => {
+        throw new Error('power save blocker refused');
+      },
+      ended: () => {
+        throw new Error('upload queue closed');
+      },
+    });
+    const after = vi.fn();
+    h.service.onRecording({ started: after, ended: after });
+
+    expect((await h.service.start()).phase).toBe('recording');
+    expect((await h.service.stop()).phase).toBe('idle');
+    expect(after).toHaveBeenCalledTimes(2);
+    expect(log.lines).toContainEqual(
+      expect.objectContaining({
+        message: 'recording listener failed',
+        event: 'started',
+        error: 'power save blocker refused',
+      }),
+    );
+    expect(log.lines).toContainEqual(
+      expect.objectContaining({ message: 'recording listener failed', event: 'ended' }),
+    );
+  });
+});
+
+describe('CaptureService status contributors', () => {
+  const warning = (message: string) => ({
+    kind: 'mic-dead' as const,
+    source: 'mic' as const,
+    since: '2026-10-06T10:00:00.000Z',
+    message,
+    loud: true,
+  });
+
+  it("adds each feature's fields to the status, idle and recording, and joins warnings and notices", async () => {
+    const h = harness();
+    h.service.addStatusContributor('signal', ({ phase }) =>
+      phase === 'recording'
+        ? {
+            warnings: [warning('Mic is silent')],
+            sources: { mic: { signal: 'dead', levelDb: null, device: 'MacBook Pro Microphone' } },
+          }
+        : {},
+    );
+    h.service.addStatusContributor('backup', () => ({
+      warnings: [warning('Backup paused')],
+      backup: { state: 'off', bytes: 0, keepUntil: null, keptForRerun: false, message: null },
+      sources: { mic: { device: 'AirPods' } },
+    }));
+
+    expect(h.service.getStatus()).toMatchObject({
+      phase: 'idle',
+      warnings: [{ message: 'Backup paused' }],
+      backup: { state: 'off' },
+      sources: { mic: { health: 'pending', device: 'AirPods' } },
+    });
+
+    await h.service.start();
+    const status = h.service.getStatus();
+    expect(status.warnings?.map((w) => w.message)).toEqual(['Mic is silent', 'Backup paused']);
+    // A field is merged into the landed source status; a later contributor's value wins.
+    expect(status.sources.mic).toMatchObject({
+      health: 'pending',
+      chunks: 0,
+      signal: 'dead',
+      device: 'AirPods',
+    });
+    expect(status.sources.system).toEqual({
+      health: 'pending',
+      chunks: 0,
+      lastChunkAt: null,
+      message: null,
+    });
+    await h.service.stop();
+  });
+
+  it('copies only the M2 fields: a contributor never changes the landed ones', async () => {
+    const h = harness();
+    // Not a literal, so the type check lets the extra fields through, as a careless feature might.
+    const part = { phase: 'idle', error: 'not mine', paused: 'asleep' as const };
+    h.service.addStatusContributor('power', () => part);
+    await h.service.start();
+    expect(h.service.getStatus()).toMatchObject({
+      phase: 'recording',
+      error: null,
+      paused: 'asleep',
+    });
+    await h.service.stop();
+  });
+
+  it('pushes a fresh status when a feature says its part changed', async () => {
+    const h = harness();
+    let paused: 'asleep' | null = null;
+    h.service.addStatusContributor('power', () => ({ paused }));
+    await h.service.start();
+    paused = 'asleep';
+    h.service.refreshStatus();
+    expect(h.statuses.at(-1)?.paused).toBe('asleep');
+    await h.service.stop();
+  });
+
+  it('leaves out the part of a contributor that throws, logs it once per spell, and stops a removed one', async () => {
+    const log = jsonLog('error');
+    const h = harness({ logger: log.logger });
+    let fail = true;
+    const remove = h.service.addStatusContributor('echo', () => {
+      if (fail) throw new Error('store closed');
+      return { echo: { hidden: 1, trimmed: 0, held: 0 } };
+    });
+    h.service.addStatusContributor('route', () => ({ route: null }));
+
+    await h.service.start();
+    h.service.getStatus();
+    const status = h.service.getStatus();
+    expect(status.phase).toBe('recording');
+    expect(status.route).toBeNull();
+    expect(status).not.toHaveProperty('echo');
+    expect(log.lines.filter((line) => line.message === 'status contributor failed')).toEqual([
+      expect.objectContaining({ contributor: 'echo', error: 'store closed' }),
+    ]);
+
+    fail = false;
+    expect(h.service.getStatus().echo).toEqual({ hidden: 1, trimmed: 0, held: 0 });
+    remove();
+    expect(h.service.getStatus()).not.toHaveProperty('echo');
+    await h.service.stop();
+  });
+});
+
+describe('CaptureService resume', () => {
+  const MINUTE = 60_000;
+  /** The meeting a killed run left open: started 10 minutes before the harness clock. */
+  const startedAtMs = 1_000_000 - 10 * MINUTE;
+  const saved = (source: number): SttUsage => ({
+    sessionsOpened: 15 * source,
+    connectedMs: 300_000 * source,
+    audioSentMs: 250_000 * source,
+    droppedChunks: source,
+    estimatedCostUsd: 0.0125 * source,
+  });
+
+  function leftOpen(h: Harness, meetingId = '6f1d2b7e-8a4c-4f0e-9b1a-2c3d4e5f6a7b') {
+    h.store.createMeeting({
+      id: meetingId,
+      title: 'Weekly sync',
+      startedAt: new Date(startedAtMs).toISOString(),
+    });
+    h.store.appendSegment({
+      id: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
+      meetingId,
+      source: 'mic',
+      speaker: 'me',
+      startMs: 1_000,
+      endMs: 2_000,
+      text: 'before the crash',
+      confidence: 1,
+      words: [],
+      createdAt: new Date(startedAtMs + 2_000).toISOString(),
+    });
+    h.store.saveSttUsage({
+      meetingId,
+      provider: 'scripted',
+      total: saved(2),
+      bySource: { mic: saved(1), system: saved(1) },
+      stopReason: null,
+      updatedAt: new Date(startedAtMs + 5 * MINUTE).toISOString(),
+    });
+    return meetingId;
+  }
+
+  it('records into the same meeting, with offsets from its first start', async () => {
+    const h = harness();
+    const meetingId = leftOpen(h);
+    const started = vi.fn<(recording: RecordingStarted) => void>();
+    h.service.onRecording({ started });
+
+    const status = await h.service.start({ resume: { meetingId } });
+    expect(status).toMatchObject({
+      phase: 'recording',
+      meetingId,
+      startedAt: new Date(startedAtMs).toISOString(),
+    });
+    expect(h.store.meetings.size).toBe(1);
+    expect(started.mock.calls[0]?.[0]).toMatchObject({
+      meetingId,
+      meetingStartedAtMs: startedAtMs,
+      resumed: true,
+    });
+
+    h.advance(2_000);
+    h.service.pushAudio('mic', new Uint8Array(3200));
+    sayFinal(h, 'mic', 'after the crash');
+    // The chunk arrived 10 min 2 s after the first start; its audio began 100 ms earlier.
+    expect(h.segments.at(-1)).toMatchObject({ meetingId, startMs: 10 * MINUTE + 1_900 });
+
+    await h.service.stop();
+    expect(h.store.countSegments(meetingId)).toBe(2);
+    expect(h.store.getMeeting(meetingId)?.endedAt).not.toBeNull();
+  });
+
+  it('adds this run to the saved speech-to-text use, on screen and in the saved row', async () => {
+    const h = harness();
+    const meetingId = leftOpen(h);
+    await h.service.start({ resume: { meetingId } });
+    h.advance(MINUTE);
+
+    // Two sessions open a minute each at $0.15 an hour: $0.005, on top of the saved $0.025.
+    expect(h.service.getStatus().meter).toEqual({
+      vendorName: 'Scripted',
+      total: {
+        sessionsOpened: 32,
+        connectedMs: 720_000,
+        audioSentMs: 500_000,
+        estimatedCostUsd: 0.03,
+      },
+      sources: {
+        mic: {
+          sessionsOpened: 16,
+          connectedMs: 360_000,
+          audioSentMs: 250_000,
+          estimatedCostUsd: 0.015,
+        },
+        system: {
+          sessionsOpened: 16,
+          connectedMs: 360_000,
+          audioSentMs: 250_000,
+          estimatedCostUsd: 0.015,
+        },
+      },
+    });
+
+    await h.service.stop();
+    expect(h.store.getSttUsage(meetingId)).toMatchObject({
+      total: { sessionsOpened: 32, connectedMs: 720_000, droppedChunks: 2, estimatedCostUsd: 0.03 },
+      bySource: { mic: { sessionsOpened: 16 }, system: { connectedMs: 360_000 } },
+      stopReason: 'user',
+    });
+    expect(h.service.getStatus().meter?.total.sessionsOpened).toBe(32); // kept after Stop
+  });
+
+  it("starts the meeting's open allowance afresh, whatever the saved row counted", async () => {
+    // The saved row says 30 opens, the whole default allowance: gate reopens and re-runs count
+    // there too, so seeding the allowance from it would refuse the resume's own Start.
+    const h = harness({ guards: { sttOpensPerMeeting: 30 } });
+    const meetingId = leftOpen(h);
+    const status = await h.service.start({ resume: { meetingId } });
+    expect(status.phase).toBe('recording');
+    expect(h.stt.opened).toHaveLength(2);
+    await h.service.stop();
+  });
+
+  it('adds nothing up when the saved price was unknown: the cost stays unknown', async () => {
+    const h = harness();
+    const meetingId = leftOpen(h);
+    const row = h.store.getSttUsage(meetingId);
+    if (row === null) throw new Error('no saved row');
+    h.store.saveSttUsage({ ...row, total: { ...row.total, estimatedCostUsd: null } });
+    await h.service.start({ resume: { meetingId } });
+    h.advance(MINUTE);
+    expect(h.service.getStatus().meter?.total.estimatedCostUsd).toBeNull();
+    await h.service.stop();
+  });
+
+  it('keeps the meeting when the resume cannot connect, and refuses one that is unknown or ended', async () => {
+    const h = harness();
+    const meetingId = leftOpen(h);
+    h.stt.failWith = new SttConnectError('rejected with HTTP 401', 401);
+    const failed = await h.service.start({ resume: { meetingId } });
+    expect(failed.phase).toBe('idle');
+    expect(failed.error).toContain('401');
+    expect(h.store.getMeeting(meetingId)?.endedAt).toBeNull(); // CrashRecovery decides what next
+    h.stt.failWith = null;
+
+    const unknown = await h.service.start({
+      resume: { meetingId: '0e9d8c7b-6a5f-4e3d-8c1b-0a9f8e7d6c5b' },
+    });
+    expect(unknown.error).toContain('not in the local store');
+    h.store.markMeetingEnded(meetingId, new Date().toISOString());
+    const ended = await h.service.start({ resume: { meetingId } });
+    expect(ended.error).toContain('already ended');
+    expect(h.stt.opened).toHaveLength(2); // the failed connect's two; nothing since
+    expect(h.store.meetings.size).toBe(1);
+  });
+
+  it("caps the resumed recording's length from the meeting's first start", async () => {
+    vi.useFakeTimers();
+    try {
+      const h = harness({ guards: { maxRecordingMs: 15 * MINUTE } });
+      const meetingId = leftOpen(h);
+      await h.service.start({ resume: { meetingId } });
+      const talk = () => {
+        h.service.pushAudio('mic', new Uint8Array(3200));
+        h.service.pushAudio('system', new Uint8Array(3200));
+        sayFinal(h, 'mic', 'still talking');
+      };
+      await h.elapse(4 * MINUTE + 50_000, talk, 1_000);
+      expect(h.service.getStatus().phase).toBe('recording');
+      await h.elapse(15_000, talk, 1_000);
+      expect(h.service.getStatus().phase).toBe('idle');
+      expect(h.store.getMeetingStopReason(meetingId)).toBe('max-duration');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe('CaptureService stop reason', () => {
+  it("writes the stop's reason to the meeting before closing its streams", async () => {
+    const h = harness();
+    const { meetingId } = await h.service.start();
+    sayFinal(h, 'system', 'hello');
+    const mic = h.stt.streams.get('mic')!;
+    let reasonAtClose: string | null = null;
+    const close = mic.close.bind(mic);
+    // A quit whose stop outruns its bound must still leave its reason, not `crash`.
+    mic.close = () => {
+      reasonAtClose = h.store.getMeetingStopReason(meetingId!);
+      return close();
+    };
+    await h.service.stop({ reason: 'quit', flushUploads: false });
+    expect(reasonAtClose).toBe('quit');
+    expect(h.store.getMeetingStopReason(meetingId!)).toBe('quit');
+  });
+
+  it('closes the streams even when the reason cannot be written', async () => {
+    const store = new InMemoryTranscriptStore();
+    const log = jsonLog('error');
+    const h = harness({ store, logger: log.logger });
+    await h.service.start();
+    store.setMeetingStopReason = () => {
+      throw new Error('database is not open');
+    };
+    await h.service.stop();
+    expect(h.stt.streams.get('mic')?.closed).toBe(true);
+    expect(h.stt.streams.get('system')?.closed).toBe(true);
+    expect(log.lines).toContainEqual(
+      expect.objectContaining({ message: 'stop reason not saved', error: 'database is not open' }),
+    );
   });
 });
 
