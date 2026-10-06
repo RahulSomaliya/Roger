@@ -18,6 +18,17 @@ describe('streamSettingsMismatch', () => {
     expect(streamSettingsMismatch(settings({}))).toBeNull();
   });
 
+  it('accepts what the API returns for AssemblyAI (it maps linear16 to pcm_s16le itself)', () => {
+    expect(
+      streamSettingsMismatch({
+        model: 'universal-streaming-english',
+        language: 'en',
+        sampleRate: 16_000,
+        encoding: 'linear16',
+      }),
+    ).toBeNull();
+  });
+
   it('names both values when the API asks for another sample rate', () => {
     const message = streamSettingsMismatch(settings({ sampleRate: 48_000 }));
     expect(message).toContain('48000 Hz');

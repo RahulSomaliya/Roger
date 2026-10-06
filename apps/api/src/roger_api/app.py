@@ -61,6 +61,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     version=settings.app_version,
                     app_env=settings.app_env,
                     stt_provider=settings.stt_provider,
+                    stt_model=settings.stt_stream_model,
                 )
                 yield
         finally:

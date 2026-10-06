@@ -21,7 +21,23 @@ MIN_API_TOKEN_LENGTH = 16
 # behind a token anyone can read. Keep the example value starting with this prefix.
 ENV_EXAMPLE_PLACEHOLDER_PREFIX = "change-me"
 
-type SttProvider = Literal["fake", "deepgram"]
+type SttProvider = Literal["fake", "deepgram", "assemblyai"]
+
+# The streaming model each provider uses when STT_MODEL is unset: its English streaming model.
+# AssemblyAI's is Universal-Streaming English, the $0.15/hour model the owner chose on 2026-10-06.
+# Its docs default to universal-3-6-pro instead: $0.45/hour, and it does not take `format_turns`
+# (the desktop adapter sends that only to universal-streaming-* models).
+DEFAULT_STT_MODELS: dict[SttProvider, str] = {
+    "fake": "fake",
+    "deepgram": "nova-3",
+    "assemblyai": "universal-streaming-english",
+}
+# Model-name prefixes only one vendor uses. `.env.example` shipped `STT_MODEL=nova-3` until
+# AssemblyAI became the default, so a copied `.env` switched to assemblyai would hand AssemblyAI a
+# Deepgram model, and fail only when someone pressed Start on the Mac.
+VENDOR_MODEL_PREFIXES: dict[SttProvider, str] = {"deepgram": "nova-", "assemblyai": "universal-"}
+# AssemblyAI's temporary token endpoint accepts `expires_in_seconds` from 1 to 600.
+ASSEMBLYAI_MAX_TOKEN_TTL_SECONDS = 600
 
 
 class DatabaseSettings(BaseSettings):
@@ -53,8 +69,10 @@ class Settings(DatabaseSettings):
     roger_api_token: SecretStr
     stt_provider: SttProvider = "fake"
     deepgram_api_key: SecretStr | None = None
+    assemblyai_api_key: SecretStr | None = None
     stt_token_ttl_seconds: int = Field(default=30, ge=1, le=3600)
-    stt_model: str = "nova-3"
+    # None means the provider's default (DEFAULT_STT_MODELS); read `stt_stream_model`, not this.
+    stt_model: str | None = None
     stt_language: str = "en"
     stt_sample_rate: int = Field(default=16000, gt=0)
     stt_encoding: str = "linear16"
@@ -81,6 +99,14 @@ class Settings(DatabaseSettings):
             )
         return value
 
+    @field_validator("stt_model", mode="before")
+    @classmethod
+    def _blank_model_is_unset(cls, value: object) -> object:
+        """`STT_MODEL=` in a `.env` arrives as an empty string."""
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
     @field_validator("mcp_allowed_hosts", mode="before")
     @classmethod
     def _split_hosts(cls, value: object) -> object:
@@ -89,12 +115,44 @@ class Settings(DatabaseSettings):
         return value
 
     @model_validator(mode="after")
-    def _vendor_key_present(self) -> Self:
-        if self.stt_provider == "deepgram" and not (
-            self.deepgram_api_key and self.deepgram_api_key.get_secret_value()
+    def _vendor_settings_fit(self) -> Self:
+        provider = self.stt_provider
+        if provider == "fake":
+            return self
+        key = self.stt_vendor_key
+        if not (key and key.get_secret_value()):
+            raise ValueError(f"{provider.upper()}_API_KEY is required when STT_PROVIDER={provider}")
+        if (
+            provider == "assemblyai"
+            and self.stt_token_ttl_seconds > ASSEMBLYAI_MAX_TOKEN_TTL_SECONDS
         ):
-            raise ValueError("DEEPGRAM_API_KEY is required when STT_PROVIDER=deepgram")
+            raise ValueError(
+                f"STT_TOKEN_TTL_SECONDS must be at most {ASSEMBLYAI_MAX_TOKEN_TTL_SECONDS} when "
+                "STT_PROVIDER=assemblyai (the vendor's limit for a temporary token)"
+            )
+        for owner, prefix in VENDOR_MODEL_PREFIXES.items():
+            if owner != provider and self.stt_model and self.stt_model.startswith(prefix):
+                raise ValueError(
+                    f"STT_MODEL={self.stt_model} is a {owner} model; remove STT_MODEL to use "
+                    f"{DEFAULT_STT_MODELS[provider]} with STT_PROVIDER={provider}"
+                )
         return self
+
+    @property
+    def stt_vendor_key(self) -> SecretStr | None:
+        """The API key of the `stt_provider` vendor. None for the fake provider."""
+        match self.stt_provider:
+            case "deepgram":
+                return self.deepgram_api_key
+            case "assemblyai":
+                return self.assemblyai_api_key
+            case "fake":
+                return None
+
+    @property
+    def stt_stream_model(self) -> str:
+        """The model the desktop asks the vendor for: STT_MODEL, else the provider's default."""
+        return self.stt_model or DEFAULT_STT_MODELS[self.stt_provider]
 
     @property
     def app_version(self) -> str:

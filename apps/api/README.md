@@ -31,10 +31,11 @@ migrated it logs `database_not_ready` and exits.
 | --- | --- | --- |
 | `DATABASE_URL` | required | `postgresql+asyncpg://...`. Plain `postgres://` and `postgresql://` URLs are accepted and switched to asyncpg. Alembic reads the same variable. |
 | `ROGER_API_TOKEN` | required | Shared bearer secret for `/v1/*` and `/mcp`. At least 16 characters; startup fails on the `.env.example` placeholder (anything starting with `change-me`). |
-| `STT_PROVIDER` | `fake` | `fake` or `deepgram`. |
+| `STT_PROVIDER` | `fake` | `assemblyai` (Roger's vendor), `deepgram` (second adapter) or `fake` (no vendor). See [Speech-to-text tokens](#speech-to-text-tokens). |
+| `ASSEMBLYAI_API_KEY` | empty | Required when `STT_PROVIDER=assemblyai`; startup fails without it. Never leaves the API. |
 | `DEEPGRAM_API_KEY` | empty | Required when `STT_PROVIDER=deepgram`; startup fails without it. Never leaves the API. |
-| `STT_TOKEN_TTL_SECONDS` | `30` | Lifetime of the speech-to-text token handed to the desktop (1..3600). |
-| `STT_MODEL` / `STT_LANGUAGE` | `nova-3` / `en` | Returned to the desktop as stream settings. |
+| `STT_TOKEN_TTL_SECONDS` | `30` | Lifetime of the speech-to-text token handed to the desktop (1..3600; at most 600 with `assemblyai`, the vendor's limit). |
+| `STT_MODEL` / `STT_LANGUAGE` | unset / `en` | Returned to the desktop as stream settings. Unset `STT_MODEL` means the provider's English streaming model: `universal-streaming-english` (assemblyai), `nova-3` (deepgram), `fake`. Startup fails on the other vendor's model (`nova-*` with assemblyai, `universal-*` with deepgram). |
 | `STT_SAMPLE_RATE` / `STT_ENCODING` | `16000` / `linear16` | Returned to the desktop as stream settings. |
 | `DEFAULT_WORKSPACE_ID` | `805dd994-ff52-405c-a3cc-58f09b32a2dd` | The one workspace every M1 request resolves to. |
 | `DEFAULT_WORKSPACE_NAME` | `Linkt` | Used only when the workspace row is first created. |
@@ -44,6 +45,28 @@ migrated it logs `database_not_ready` and exits.
 | `TEST_DATABASE_URL` | `postgresql+asyncpg://postgres:postgres@localhost:5432/roger_test` | Test suite only. |
 
 The version reported by `/health` comes from the package metadata (`pyproject.toml`).
+
+## Speech-to-text tokens
+
+`POST /v1/stt/token` hands the desktop a short-lived vendor credential plus stream settings; the
+vendor key never leaves the API. Each vendor is one `SttTokenIssuer` in
+`src/roger_api/services/stt_tokens.py`, picked by `STT_PROVIDER`.
+
+AssemblyAI is Roger's vendor (owner decision, 2026-10-06: AssemblyAI lists Granola as a customer,
+live text costs about $0.15 per audio hour per stream, and it has generous free hours). The model
+is Universal-Streaming English. Deepgram stays as the second adapter for the M3 bake-off. To
+switch from the fake provider, set in `.env`:
+
+```bash
+STT_PROVIDER=assemblyai
+ASSEMBLYAI_API_KEY=...   # from the AssemblyAI dashboard
+```
+
+and leave `STT_MODEL` empty. The issuer asks AssemblyAI for a temporary token
+(`GET https://streaming.assemblyai.com/v3/token?expires_in_seconds=<STT_TOKEN_TTL_SECONDS>`, raw
+key as `Authorization`). The TTL is only the window to open a stream; one token opens both of the
+desktop's streams, and each session can then run for up to 3 hours. A vendor that refuses, fails
+or times out is a `502 stt_provider_error`.
 
 ## Errors
 

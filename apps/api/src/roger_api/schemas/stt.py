@@ -14,7 +14,7 @@ class SttStreamSettings(BaseModel):
     @classmethod
     def from_settings(cls, settings: Settings) -> Self:
         return cls(
-            model=settings.stt_model,
+            model=settings.stt_stream_model,
             language=settings.stt_language,
             sample_rate=settings.stt_sample_rate,
             encoding=settings.stt_encoding,
