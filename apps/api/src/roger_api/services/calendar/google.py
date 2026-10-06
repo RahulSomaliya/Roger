@@ -14,6 +14,7 @@ body holds tokens too, so an unreadable one is logged by error location only, ne
 """
 
 import base64
+import json
 from collections.abc import Awaitable
 from datetime import datetime
 from urllib.parse import urlencode
@@ -352,8 +353,10 @@ def _id_token_email(id_token: str | None) -> str:
         if len(parts) != 3:
             raise ValueError("an ID token has three parts")
         payload = parts[1] + "=" * (-len(parts[1]) % 4)
-        return _IdTokenClaims.model_validate_json(base64.urlsafe_b64decode(payload)).email
-    except ValueError as exc:  # binascii.Error and ValidationError are both ValueErrors.
+        claims = json.loads(base64.urlsafe_b64decode(payload))
+        return _IdTokenClaims.model_validate(claims).email
+    # binascii.Error, JSONDecodeError, UnicodeDecodeError and ValidationError are ValueErrors.
+    except ValueError as exc:
         # The reason without the token: an ID token is a credential too.
         logger.warning("calendar_google_unreadable", operation="exchange", missing="email")
         raise CalendarProviderError("Google sent no readable account email") from exc
