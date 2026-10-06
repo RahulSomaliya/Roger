@@ -95,24 +95,38 @@ interface SourceRun {
  */
 export async function replayItemAttempt(input: ItemAttemptInput): Promise<ItemAttempt> {
   const { item, timers, signal } = input;
+  // For a failed attempt's record: set inside the open budget's turn, read when it throws.
   const times: { requestedAtMs: number | null; receivedAtMs: number | null } = {
     requestedAtMs: null,
     receivedAtMs: null,
   };
-  let prepared: { credentials: BenchCredentials; stt: SpeechToText; wire: ConnectQueries };
+  let prepared: {
+    credentials: BenchCredentials;
+    stt: SpeechToText;
+    wire: ConnectQueries;
+    requestedAtMs: number;
+    receivedAtMs: number;
+  };
   try {
     prepared = await input.opener.reserve(item.sources.length, async () => {
-      times.requestedAtMs = timers.now();
+      const requestedAtMs = timers.now();
+      times.requestedAtMs = requestedAtMs;
       const credentials = await input.credentials.fetch();
-      times.receivedAtMs = timers.now();
+      const receivedAtMs = timers.now();
+      times.receivedAtMs = receivedAtMs;
       const wire = new ConnectQueries(credentials.accessToken);
-      return { credentials, stt: adapterFor(input.adapters, credentials.provider, wire.tap), wire };
+      const stt = adapterFor(input.adapters, credentials.provider, wire.tap);
+      return { credentials, stt, wire, requestedAtMs, receivedAtMs };
     });
   } catch (error) {
     if (error instanceof RunStoppedError) throw error;
+    // The open budget refused before any token was asked for: every item would hit it too.
+    if (times.requestedAtMs === null) throw new RunStoppedError(errorMessage(error));
+    // The token came, so the failure is not the API's: a bug, which must not pass for a retry.
+    if (times.receivedAtMs !== null) throw error;
     return {
       record: {
-        tokenRequestedAtMs: times.requestedAtMs ?? timers.now(),
+        tokenRequestedAtMs: times.requestedAtMs,
         tokenReceivedAtMs: times.receivedAtMs,
         pricePerHourUsd: null,
         error: `token request failed: ${errorMessage(error)}`,
@@ -210,8 +224,8 @@ export async function replayItemAttempt(input: ItemAttemptInput): Promise<ItemAt
   }));
   return {
     record: {
-      tokenRequestedAtMs: times.requestedAtMs ?? openedAtMs,
-      tokenReceivedAtMs: times.receivedAtMs,
+      tokenRequestedAtMs: prepared.requestedAtMs,
+      tokenReceivedAtMs: prepared.receivedAtMs,
       pricePerHourUsd: credentials.settings.pricePerHourUsd,
       error: outcome.failure,
       streams,

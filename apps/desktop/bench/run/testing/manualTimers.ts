@@ -32,11 +32,6 @@ export class ManualTimers implements BenchTimers {
     });
   }
 
-  /** Moves the clock without waking anyone: a step of work that takes time (a vendor's connect). */
-  advance(ms: number): void {
-    this.current += ms;
-  }
-
   async settle<T>(work: Promise<T>): Promise<T> {
     // Only says that `work` ended; its result or its rejection reaches the caller as `work`.
     const ended = work.then(

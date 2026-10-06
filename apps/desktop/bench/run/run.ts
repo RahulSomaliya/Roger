@@ -66,6 +66,9 @@ export interface RunOutcome {
 
 export async function runBench(options: RunOptions, deps: RunDeps): Promise<RunOutcome> {
   const items = await listItems(deps.benchDir, options.itemIds);
+  // Every clip is decoded once before the first session opens: a WAV in the wrong format stops
+  // the run here, naming the file, instead of halfway through with sessions billed.
+  for (const item of items) await readItemAudio(item);
   const runId = await freeRunId(deps.benchDir, deps.timers.now());
   return new BenchRun(runId, items, options, deps).run();
 }

@@ -298,6 +298,27 @@ describe('replayItemAttempt', () => {
     await expect(timers.settle(attempt)).rejects.toThrow(RunStoppedError);
   });
 
+  it('stops the run when the open budget can never fit an item, before asking for a token', async () => {
+    const timers = new ManualTimers(T0);
+    const api = new ScriptedTokenApi(tokenResponse());
+
+    const attempt = replayItemAttempt({
+      item: item(['mic', 'system']),
+      audio: new Map([
+        ['mic', tone(100)],
+        ['system', tone(100)],
+      ]),
+      credentials: new BenchCredentialSource(api, { keyterms: true }),
+      opener: new BenchOpener({ opensPerMinute: 1 }, timers),
+      adapters: new FakeVendor(timers).adapters,
+      timers,
+      signal: new AbortController().signal,
+    });
+
+    await expect(timers.settle(attempt)).rejects.toThrow(RunStoppedError);
+    expect(api.calls).toBe(0);
+  });
+
   it('ends early and says so when the run is stopped mid-replay', async () => {
     const abort = new AbortController();
     const { vendor, attempt } = setup({

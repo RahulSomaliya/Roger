@@ -1,4 +1,4 @@
-import { mkdtemp, readdir, rm, stat } from 'node:fs/promises';
+import { mkdtemp, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -239,6 +239,16 @@ describe('runBench', () => {
     const run = await readRun(runPaths(bench, first.runId).runJson);
     expect(run.items.map((item) => item.itemId)).toEqual(['item-2']);
     expect(await readdir(join(bench, 'runs'))).toEqual(['20261006-100000', '20261006-100000-2']);
+  });
+
+  it('refuses a clip in the wrong format before any session opens', async () => {
+    await items(1);
+    await writeFile(join(bench, 'items', 'item-1', 'system.wav'), 'not a wav');
+    const { vendor, api, done } = start();
+
+    await expect(done).rejects.toThrow(/system\.wav: not a WAV file/);
+    expect(api.calls).toBe(0);
+    expect(vendor.opens).toBe(0);
   });
 
   it('writes nothing when no item ever got a token', async () => {

@@ -8,7 +8,7 @@ import { basename, dirname, isAbsolute, join } from 'node:path';
  * command resolves the folder through resolveBenchDir before it reads or writes anything there.
  */
 
-export const DEFAULT_BENCH_DIR_NAME = 'Roger-bench';
+const DEFAULT_BENCH_DIR_NAME = 'Roger-bench';
 
 /** A bench folder the bench will not use. The message says what to set instead. */
 export class BenchDirError extends Error {
