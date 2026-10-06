@@ -695,4 +695,125 @@ describe('CaptureSession', () => {
       await s.close();
     });
   });
+
+  describe('word latency', () => {
+    /** The `stt latency` lines logged so far. */
+    const latencyLines = (messages: Record<string, unknown>[]) =>
+      messages.filter((m) => m.message === 'stt latency');
+
+    it('logs each source once at close, every word timed from when it was captured', async () => {
+      const log = recordingLogger();
+      const { s, mic, system, at } = await recording({ logger: log.logger });
+      // The audio starts 2 s into the meeting: timed on the vendor's own clock, every word would
+      // read 2 s slower than it showed.
+      pushContiguous(s, 'mic', 12_000, 20); // stream 0-2 s, captured 12-14 s
+      pushContiguous(s, 'system', 12_040, 20); // captured out of phase with the mic
+      at(13_300);
+      mic.emitter.emit({ type: 'interim', text: 'hello', startMs: 0, endMs: 1_000 });
+      at(13_640);
+      final(system, 'hi', 0, 1_000, [[0, 1_000]]);
+      at(14_200);
+      final(mic, 'hello there', 0, 1_800, [
+        [0, 1_000],
+        [1_000, 1_800],
+      ]);
+      expect(latencyLines(log.messages)).toEqual([]);
+
+      await s.close();
+      // A failed Start closes twice (open(), then CaptureService): still one line per session.
+      await s.close();
+      const lines = latencyLines(log.messages);
+      expect(lines).toHaveLength(1);
+      // "hello" showed with the interim 300 ms after it was said, "there" with the final 400 ms
+      // after; the final that holds "hello" came 1 200 ms after it.
+      expect(lines[0]?.mic).toEqual({
+        words: 2,
+        displayP50Ms: 300,
+        displayP95Ms: 400,
+        finalP50Ms: 400,
+        finalP95Ms: 1_200,
+        longestWaitMs: 400,
+        clampedWords: 0,
+        repeatedWords: 0,
+      });
+      expect(lines[0]?.system).toEqual({
+        words: 1,
+        displayP50Ms: 600,
+        displayP95Ms: 600,
+        finalP50Ms: 600,
+        finalP95Ms: 600,
+        longestWaitMs: 600,
+        clampedWords: 0,
+        repeatedWords: 0,
+      });
+    });
+
+    it('times a word the vendor ends just past a stall from before it, where its line is dated', async () => {
+      const log = recordingLogger();
+      const { l, s, mic, at } = await recording({ logger: log.logger });
+      pushContiguous(s, 'mic', 10_000, 10); // stream 0-1 s, captured 10-11 s
+      // The mic stalls 20 s, under the 30 s that would pause the session: the stream stays open.
+      pushContiguous(s, 'mic', 31_000, 10); // stream 1-2 s, captured 31-32 s
+      at(10_900);
+      mic.emitter.emit({ type: 'interim', text: 'yes', startMs: 400, endMs: 700 });
+      // The vendor ends "exactly" 10 ms past the splice: the line is dated before the stall.
+      at(31_400);
+      final(mic, 'yes exactly', 400, 1_010, [
+        [400, 700],
+        [700, 1_010],
+      ]);
+      expect(l.segments[0]).toMatchObject({ startMs: 400, endMs: 1_000 });
+
+      await s.close();
+      // "exactly" was said by 11 s and first showed at 31.4 s. Timed from its end mapped alone,
+      // on the far side of the gap (31 010), it would read 390 ms: the stall would be invisible.
+      expect(latencyLines(log.messages)[0]?.mic).toMatchObject({
+        words: 2,
+        displayP50Ms: 200,
+        longestWaitMs: 20_400,
+      });
+    });
+
+    it('times a reopened stream and a late line from the stream it replaced, each on its own clock', async () => {
+      const log = recordingLogger();
+      const { stt, s, system, at } = await recording({ logger: log.logger });
+      pushContiguous(s, 'system', 10_000, 50); // stream 0-5 s, captured 10-15 s
+      at(15_000);
+      system.emitter.emit({ type: 'closed', code: 1011, reason: 'timeout' });
+      at(20_350);
+      s.pushAudio('system', new Uint8Array(3200), 20_000); // the backoff is over: it reopens
+      await flush();
+      const reopened = stt.succeed('system');
+      await flush();
+
+      at(20_400);
+      final(reopened, 'new stream', 0, 100, [[0, 100]]); // captured by 20.1 s
+      // The dead stream's last line lands late; its word was captured by 14.5 s. One meter across
+      // both streams would count it as already measured and never time it.
+      at(21_500);
+      final(system, 'old stream', 4_000, 4_500, [[4_000, 4_500]]);
+
+      await s.close();
+      expect(latencyLines(log.messages)[0]?.system).toMatchObject({
+        words: 2,
+        displayP50Ms: 300,
+        longestWaitMs: 7_000,
+        repeatedWords: 0,
+      });
+    });
+
+    it('measures a line only once it is saved and shown, so the meter can never cost one', async () => {
+      const { l, s, store, mic } = await recording();
+      pushContiguous(s, 'mic', 12_000, 10);
+      // The adapters' parsers drop vendor times that are not numbers, so only a bug gets here; the
+      // meter refuses such a time with a RangeError, which the STT core reports as "stt listener
+      // failed" (SttConnection.deliver). By then the line must already be kept.
+      expect(() => {
+        final(mic, 'kept anyway', Number.NaN, Number.NaN);
+      }).toThrow(RangeError);
+      expect(l.shown).toEqual(['kept anyway']);
+      expect(store.countSegments('m1')).toBe(1);
+      await s.close();
+    });
+  });
 });

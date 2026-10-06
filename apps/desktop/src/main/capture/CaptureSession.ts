@@ -11,6 +11,7 @@ import {
 } from '../../shared/transcript';
 import { errorMessage, type Logger } from '../logger';
 import type { TranscriptStore } from '../store/TranscriptStore';
+import { LatencyMeter } from '../stt/LatencyMeter';
 import type { SpeechToText, SttEvent, SttStream, SttStreamSettings } from '../stt/SpeechToText';
 import { AudioTimeline } from './AudioTimeline';
 import type { SttOpenBudget, SttOpenDecision } from './SttOpenBudget';
@@ -91,6 +92,12 @@ interface StreamHandle {
    * replaced still counts on its own clock.
    */
   readonly timeline: AudioTimeline;
+  /**
+   * How long this stream's words took to show (M3-T6b). Per stream like the timeline, pooled per
+   * source at close: a late line from a stream already replaced is timed with its own stream's
+   * events, where one meter across both would count its words as already measured.
+   */
+  readonly latency: LatencyMeter;
   /** Set once the stream was asked to close; settles when it has. */
   closing: Promise<void> | null;
   readonly openedAtMs: number;
@@ -147,6 +154,8 @@ export class CaptureSession {
   private readonly handles = new Set<StreamHandle>();
   /** Reopens in flight: close() waits for them, so a late stream cannot outlive Stop. */
   private readonly reopening = new Set<Promise<void>>();
+  /** Every stream's latency meter, closed ones too, by source: close() logs them pooled. */
+  private readonly latencyMeters: Record<AudioSource, LatencyMeter[]> = { mic: [], system: [] };
   private readonly clock: () => number;
   /** Samples per second of the audio both sources send; every stream's timeline counts in it. */
   private readonly sampleRate: number;
@@ -277,6 +286,8 @@ export class CaptureSession {
   }
 
   async close(): Promise<void> {
+    // A failed Start closes twice (open() itself, then CaptureService): one latency line a session.
+    const firstClose = !this.closing;
     this.closing = true;
     for (const link of Object.values(this.links)) {
       link.attempt += 1;
@@ -288,6 +299,14 @@ export class CaptureSession {
     // is bounded by the API client's timeout and the adapter's connect timeout (10 s each).
     await Promise.all([...this.reopening]);
     await Promise.all([...this.handles].map((handle) => this.retire(handle)));
+    // Logged once every stream has closed, so the lines each close flushed are timed too. M3's exit
+    // check reads this line from a real call: word display p95 for mic and for system.
+    if (firstClose) {
+      this.options.logger.info('stt latency', {
+        mic: LatencyMeter.pool(this.latencyMeters.mic),
+        system: LatencyMeter.pool(this.latencyMeters.system),
+      });
+    }
   }
 
   private async openStream(source: AudioSource): Promise<void> {
@@ -461,10 +480,14 @@ export class CaptureSession {
       stream,
       source,
       timeline: new AudioTimeline(this.sampleRate),
+      // Its events come already dated as meeting offsets (measureLatency), so its clock is the
+      // meeting's.
+      latency: new LatencyMeter((meetingMs) => this.options.meetingStartedAtMs + meetingMs),
       closing: null,
       openedAtMs: this.clock(),
     };
     this.handles.add(handle);
+    this.latencyMeters[source].push(handle.latency);
     stream.on((event) => {
       this.handleEvent(source, handle, event);
     });
@@ -592,16 +615,20 @@ export class CaptureSession {
           listeners.onSaveFailure(source, reason);
         }
         listeners.onSegment(segment);
-        return;
-      }
-      case 'interim':
-        listeners.onInterim({
-          meetingId: this.meetingId,
-          source,
-          text: event.text,
-          ...this.meetingSpan(handle, event),
+        this.measureLatency(handle, {
+          ...event,
+          startMs: segment.startMs,
+          endMs: segment.endMs,
+          words,
         });
         return;
+      }
+      case 'interim': {
+        const span = this.meetingSpan(handle, event);
+        listeners.onInterim({ meetingId: this.meetingId, source, text: event.text, ...span });
+        this.measureLatency(handle, { ...event, ...span });
+        return;
+      }
       case 'error':
         logger.error('speech-to-text error', {
           source,
@@ -617,6 +644,21 @@ export class CaptureSession {
         this.streamFailed(source, handle, `connection closed (${reason})`);
       }
     }
+  }
+
+  /**
+   * One meter call per transcript event (M3-T6b), with the event dated as the transcript dates it:
+   * meeting offsets, through the stream's timeline and its span cut (meetingSpan, lineSpan). Never
+   * give the meter the vendor's own times with the timeline's toCapturedAtMs as its clock instead:
+   * it maps a word's end alone, so a word the vendor ends just past a stall would be timed from the
+   * far side of the gap, its wait read short by the whole stall while its line is dated before it.
+   *
+   * Called after the line is saved and shown, never before: the meter throws a RangeError on a time
+   * that is not a number (the adapters' parsers already drop those), which SttConnection.deliver
+   * reports as "stt listener failed", and that must never cost a line (house rule 1).
+   */
+  private measureLatency(handle: StreamHandle, event: SttEvent): void {
+    handle.latency.record(event, this.clock());
   }
 
   /**
