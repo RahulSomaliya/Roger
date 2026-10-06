@@ -377,7 +377,7 @@ export function isStartSource(value: unknown): value is StartSource {
 /**
  * The longest meeting title the API stores, in characters (code points, as Python counts) of its
  * storedMeetingText: `MeetingTitle` in apps/api/src/roger_api/schemas/meetings.py. Change the two
- * together.
+ * together; ipc-validation.test.ts reads the API's source and fails when they differ.
  */
 export const MAX_MEETING_TITLE_LENGTH = 500;
 

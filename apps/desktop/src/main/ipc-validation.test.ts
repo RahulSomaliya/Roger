@@ -1,12 +1,17 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import type { CalendarAttendee, MeetingCalendarEvent } from '../shared/calendar';
-import { START_SOURCES } from '../shared/capture';
+import {
+  type CalendarAttendee,
+  MAX_MEETING_ATTENDEES,
+  type MeetingCalendarEvent,
+} from '../shared/calendar';
+import { MAX_MEETING_TITLE_LENGTH, START_SOURCES } from '../shared/capture';
 import { SETTINGS_PANE_IDS } from '../shared/ipc/setup';
 import {
   isUuidV4,
   isSourceStateMessage,
   MAX_AUDIO_CHUNK_BYTES,
+  MAX_CALENDAR_TEXT_LENGTH,
   MAX_CAPTURE_TIME_SKEW_MS,
   parseAudioChunk,
   parseMeetingRequest,
@@ -272,6 +277,31 @@ describe('parseStartCaptureRequest', () => {
     expect(line.split(' | ').map((name) => JSON.parse(name) as unknown)).toEqual([
       ...START_SOURCES,
     ]);
+  });
+
+  // The checks below exist so the create never draws a 422: a limit changed on one side only fails
+  // here. The API's MeetingTitle and MAX_CALENDAR_TEXT_LENGTH do not point back at the desktop.
+  it("uses the API schema's limits for the title, calendar text and attendees", () => {
+    const schema = readFileSync(
+      new URL('../../../api/src/roger_api/schemas/meetings.py', import.meta.url),
+      'utf8',
+    );
+    const limit = (pattern: RegExp): number => {
+      const value = pattern.exec(schema)?.[1];
+      if (value === undefined) throw new Error(`no ${pattern.source} in schemas/meetings.py`);
+      return Number(value);
+    };
+    expect({
+      title: limit(
+        /^MeetingTitle = Annotated\[\s+str,\s+StringConstraints\([^)]*max_length=(\d+)/m,
+      ),
+      calendarText: limit(/^MAX_CALENDAR_TEXT_LENGTH = (\d+)$/m),
+      attendees: limit(/^MAX_MEETING_ATTENDEES = (\d+)$/m),
+    }).toEqual({
+      title: MAX_MEETING_TITLE_LENGTH,
+      calendarText: MAX_CALENDAR_TEXT_LENGTH,
+      attendees: MAX_MEETING_ATTENDEES,
+    });
   });
 
   // The API stores at most 500 characters of a title once trimmed (MeetingTitle) and refuses the

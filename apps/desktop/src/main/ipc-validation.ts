@@ -126,7 +126,8 @@ export function parseSettingsPaneRequest(payload: unknown): SettingsPaneRequest 
 
 /**
  * The longest text field of a meeting's calendar link the API stores, in characters once trimmed:
- * `MAX_CALENDAR_TEXT_LENGTH` in apps/api/src/roger_api/schemas/meetings.py. Change the two together.
+ * `MAX_CALENDAR_TEXT_LENGTH` in apps/api/src/roger_api/schemas/meetings.py. Change the two together;
+ * ipc-validation.test.ts reads the API's source and fails when they differ.
  */
 export const MAX_CALENDAR_TEXT_LENGTH = 2048;
 
