@@ -2,6 +2,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { noteSaveBase } from '../../shared/ipc/notes';
 import type { Note, NoteDoc, NoteKind } from '../../shared/notes';
 import { ApiError } from '../api/http';
 import type { NotesSyncApi, PutNoteRequest, ServerNotes } from '../api/notesClient';
@@ -277,6 +278,29 @@ describe('NotesSync: uploads', () => {
     await vi.advanceTimersByTimeAsync(1_500);
     expect(api.note(MEETING, 'user')).toMatchObject({ version: 3, doc: paragraphs('Mine') });
     expect(store.getNote(MEETING, 'user')).toMatchObject({ sync: 'synced', baseVersion: 3 });
+    sync.stop();
+  });
+
+  it("keeps typing built on the doc a 409 replaced as the conflict copy, never over the server's", async () => {
+    const { api, store, sync } = harness();
+    const loaded = store.applyServerNote(MEETING, serverNote('user', 1, paragraphs('Base')));
+    api.seed(MEETING, serverNote('user', 2, paragraphs('Theirs')));
+    sync.start();
+    sync.save(MEETING, 'user', paragraphs('Mine'), noteSaveBase(loaded));
+    await vi.advanceTimersByTimeAsync(1_500);
+    expect(store.getNote(MEETING, 'user')?.sync).toBe('conflict');
+
+    // The editor typed on before it showed the server's doc: its save still builds on version 1.
+    const kept = sync.save(MEETING, 'user', paragraphs('Mine', 'more'), noteSaveBase(loaded));
+    await vi.advanceTimersByTimeAsync(60_000);
+
+    expect(kept).toMatchObject({
+      doc: paragraphs('Theirs'),
+      conflictCopy: paragraphs('Mine', 'more'),
+      sync: 'conflict',
+    });
+    expect(api.note(MEETING, 'user')).toMatchObject({ version: 2, doc: paragraphs('Theirs') });
+    expect(api.puts()).toHaveLength(1);
     sync.stop();
   });
 

@@ -1,3 +1,4 @@
+import type { NoteSaveBase } from '../../shared/ipc/notes';
 import type {
   GenerateReason,
   LocalNote,
@@ -54,8 +55,17 @@ export interface NotesStore {
    * not change why the note cannot upload. A conflict copy stays until it is resolved. Throws,
    * storing nothing, on a doc `noteDocProblem` refuses: the API would refuse it with a `422`, and
    * it would stay dirty and be re-sent forever.
+   *
+   * `base` is the note the edits build on, as the editor last took it (SaveNoteRequest). A save on
+   * a doc main has replaced since (a `409`'s or a pull's server doc, a run's AI notes, "Use mine")
+   * would store the edits over that doc, and the server's version would then be kept nowhere: it
+   * becomes the conflict copy instead, and the doc stays; the answer then holds the other doc, not
+   * this save's. It replaces a copy only of that editor's own earlier typing: a copy of other text
+   * (a conflict from before, or a previous launch) is the only place that text lives, so such a
+   * save throws until the user picks a version. Saves an editor sends before an earlier one
+   * answered carry the same base, and are taken. Left out, the save builds on the doc main holds.
    */
-  saveLocal(meetingId: string, kind: NoteKind, doc: NoteDoc): LocalNote;
+  saveLocal(meetingId: string, kind: NoteKind, doc: NoteDoc, base?: NoteSaveBase | null): LocalNote;
   /**
    * Take the server's note (a load, a `409`, a run's `done`), so notes.sqlite never holds an
    * older doc than Postgres:

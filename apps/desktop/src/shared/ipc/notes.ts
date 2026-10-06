@@ -40,6 +40,33 @@ export interface SaveNoteRequest {
   doc: NoteDoc;
 }
 
+/**
+ * The stored note a save's edits build on: the note as the editor last took it from main (its
+ * load, or a change that was not its own save), never a save of its own, whose answer may still be
+ * on its way. Null when main held no note of that kind then.
+ */
+export interface NoteSaveBase {
+  /** The note's `revisionId`: the local save that wrote its doc, null for a server doc. */
+  revisionId: string | null;
+  /** The note's `baseVersion`: with no revision, the server version the doc came as. */
+  version: number;
+}
+
+/** The base of the saves an editor makes after it took `note` from main (null: none). */
+export function noteSaveBase(note: LocalNote | null): NoteSaveBase | null {
+  return note === null ? null : { revisionId: note.revisionId, version: note.baseVersion };
+}
+
+/**
+ * Names the doc a base stands for: two bases with the same key build on the same doc. A local
+ * revision names its doc whatever the version (an upload moves the version, not the doc); a
+ * server doc is named by its version.
+ */
+export function saveBaseKey(base: NoteSaveBase | null): string {
+  if (base === null) return 'none';
+  return base.revisionId === null ? `version ${base.version}` : `revision ${base.revisionId}`;
+}
+
 export interface ResolveNoteConflictRequest {
   meetingId: string;
   kind: NoteKind;

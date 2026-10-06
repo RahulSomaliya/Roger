@@ -1,3 +1,4 @@
+import type { NoteSaveBase } from '../../shared/ipc/notes';
 import type { LocalNote, MeetingNotes, NoteDoc, NoteKind } from '../../shared/notes';
 import { ApiError } from '../api/http';
 import type { NotesSyncApi, ServerNotes } from '../api/notesClient';
@@ -159,9 +160,13 @@ export class NotesSync {
     this.unsubscribe = null;
   }
 
-  /** The page's save (`notes.save`): on disk before it returns, uploaded 1.5 s after the last. */
-  save(meetingId: string, kind: NoteKind, doc: NoteDoc): LocalNote {
-    const note = this.options.store.saveLocal(meetingId, kind, doc);
+  /**
+   * The page's save (`notes.save`): on disk before it returns, uploaded 1.5 s after the last. A
+   * save on a doc main has replaced since (`base`, NotesStore.saveLocal) is kept as the conflict
+   * copy instead, which does not upload until the user picks.
+   */
+  save(meetingId: string, kind: NoteKind, doc: NoteDoc, base?: NoteSaveBase | null): LocalNote {
+    const note = this.options.store.saveLocal(meetingId, kind, doc, base);
     this.afterSave();
     return note;
   }
