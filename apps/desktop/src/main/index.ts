@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { parseEnv } from 'node:util';
 import { app, dialog, ipcMain, powerMonitor, session, type BrowserWindow } from 'electron';
+import { APP_PREFERENCES } from '../shared/preferences';
 import { ApiClient } from './api/ApiClient';
 import type { ApiConnection } from './api/http';
 import { CaptureService } from './capture/CaptureService';
@@ -10,6 +11,8 @@ import { registerIpcHandlers } from './ipc';
 import { RecordingLifecycle, watchApp, watchWindow } from './lifecycle';
 import { createLogger, errorMessage } from './logger';
 import { ensureMicrophoneAccess } from './permissions';
+import { PreferencesStore } from './preferences/PreferencesStore';
+import { registerPreferencesIpc } from './preferences/preferences-ipc';
 import { SqliteTranscriptStore } from './store/SqliteTranscriptStore';
 import { createSpeechToText } from './stt/createSpeechToText';
 import { TranscriptUploader } from './upload/TranscriptUploader';
@@ -58,6 +61,20 @@ async function main(): Promise<void> {
   const apiConnection: ApiConnection = { baseUrl: config.apiUrl, token: config.apiToken ?? '' };
 
   // [slot M4-S2] the preferences store
+
+  // Before every other feature: M4-T16's notes generator and M5's reminders read it, and each
+  // milestone registers its own keys in its slot (src/shared/preferences.ts says how).
+  const preferences = new PreferencesStore({
+    path: join(userData, 'preferences.json'),
+    logger: logger.child({ component: 'preferences' }),
+  });
+  preferences.register(APP_PREFERENCES);
+  registerPreferencesIpc({
+    ipcMain,
+    store: preferences,
+    getWindow: () => window,
+    logger: logger.child({ component: 'ipc' }),
+  });
 
   // [slot M2-T4 store] the transcript store
 
