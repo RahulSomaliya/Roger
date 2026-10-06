@@ -643,6 +643,10 @@ const CHAT_EVENTS: EventMap<ChatStreamEvent, ChatMessage> = new Map<
   (data: Fields) => Step<ChatStreamEvent, ChatMessage>
 >([
   [
+    // `run {run_id, model}`, both required by ChatStreamEvent (shared/notes.ts). Section 10 of
+    // docs/plans/phase-2-build-order.md tells M4-T10 to send both: a chat `run` without `model`
+    // drops every answer as `invalid_event` before its run id is read, so the caller reloads the
+    // thread at once and a cancel never reaches the API.
     'run',
     (data) => {
       const runId = data.text('run_id');

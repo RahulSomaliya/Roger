@@ -1001,6 +1001,20 @@ From wave 1 (14 tasks merged 2026-10-06; their boxes in the milestone plans are 
 - **M4-T16, M4-T23:** read `notes.autoGenerate` and `notes.whenUnsure` (`ask` or `general`) from the
   `preferences` const of `[slot M4-S2]` (T23 through an injected getter). Template ids are
   `general`, `standup`, `client_call` and `one_on_one`. Retry after a failed run takes a new run id.
+- **M4-T10:** chat's `run` event is `run {run_id, model}`, both required, before the first `delta`
+  (the desktop reads it as `ChatStreamEvent`'s `{type: 'run', runId, model}`, M4-T13). Without
+  `model`, `LlmStreams` (M4-T15) drops every answer as `invalid_event` before it learns the run id:
+  no delta reaches the page, the thread reloads on every question, and a cancel never reaches the
+  API. Pin both fields in the contract's "Chat" section.
+- **M4-T8, M4-T14:** the cancel route answers the run after marking it `cancelled`; a run that
+  finished first answers as it is (`succeeded`, `failed`). `notesClient`'s cancel call resolves that
+  run (`LlmRun`; `LlmStreams` reads only its `status`). A stream ends `cancelled` only on a
+  `cancelled` answer; any other, `running` included, ends it `dropped` and the caller polls the run.
+- **M4-T16, M4-T23:** after `cancelNotes` or `cancelChat`, a stream can still end `done`, or
+  `dropped` with cause `cancel_unconfirmed`: the run beat the cancel (or the cancel request failed)
+  and may have saved its output. Handle them as any `done` or drop (`applyServerNote`, or poll the
+  run), never as `cancelled`, or notes.sqlite keeps an older AI doc than Postgres. The page already
+  got a `cancelled` event; that load corrects it.
 - **M4-T17:** name the node with `CITATION_NODE_TYPE`; ack a flush once, after every open editor
   saved. By `jsonProblem` (`shared/notes.ts`), list depth d puts an item's text node at level
   2d + 3, its `marks` list at 2d + 4, a mark at 2d + 5 (a link's attrs at 2d + 6) and a citation's
