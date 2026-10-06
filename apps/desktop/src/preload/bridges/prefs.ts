@@ -1,8 +1,9 @@
-// Stub from P2-F1; owned by M4-S2.
-import type { PrefsApi } from '../../shared/ipc/prefs';
+import { prefsChannels, type PrefsApi } from '../../shared/ipc/prefs';
+import { invoke, subscribe } from '../bridge';
 
-/**
- * The preferences feature's part of `window.roger`, built from the helpers in ../bridge.ts. It
- * implements src/shared/ipc/prefs.ts: a member added there fails the type check until it is here.
- */
-export const prefsBridge: PrefsApi = {};
+/** The preferences' part of `window.roger`. Main checks every set (preferences-ipc.ts). */
+export const prefsBridge: PrefsApi = {
+  getPreferences: () => invoke(prefsChannels.PrefsGetAll),
+  setPreference: (key, value) => invoke(prefsChannels.PrefsSet, { key, value }),
+  onPreferenceChanged: (listener) => subscribe(prefsChannels.PrefsChanged, listener),
+};
