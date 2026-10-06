@@ -15,6 +15,7 @@ import {
   type CaptureSessionListeners,
   type CaptureSessionOptions,
 } from './CaptureSession';
+import { SttOpenBudget } from './SttOpenBudget';
 
 const logger = createLogger({ level: 'error', format: 'json', sink: () => undefined });
 const settings = {
@@ -90,12 +91,12 @@ class FailingStore extends InMemoryTranscriptStore {
 }
 
 function listeners(): CaptureSessionListeners & {
-  failures: [AudioSource, string][];
+  failures: [AudioSource, string, number | null][];
   saveFailures: [AudioSource, string][];
   shown: string[];
   states: string[];
 } {
-  const failures: [AudioSource, string][] = [];
+  const failures: [AudioSource, string, number | null][] = [];
   const saveFailures: [AudioSource, string][] = [];
   const shown: string[] = [];
   const states: string[] = [];
@@ -114,8 +115,8 @@ function listeners(): CaptureSessionListeners & {
     onStreamState: (source, state) => {
       states.push(`${source}:${state}`);
     },
-    onStreamFailure: (source, reason) => {
-      failures.push([source, reason]);
+    onStreamFailure: (source, reason, retryAtMs) => {
+      failures.push([source, reason, retryAtMs]);
     },
   };
 }
@@ -135,12 +136,21 @@ function session(
     settings,
     refreshCredentials: () => Promise.resolve({ accessToken: 'fresh', settings }),
     reopenBufferMs: 3_000,
+    budget: openBudget(clock),
+    reopenBackoffMs: 2_000,
+    reopenBackoffMaxMs: 60_000,
     store,
     logger,
     listeners: l,
     clock,
     ...overrides,
   });
+}
+
+function openBudget(clock: () => number): SttOpenBudget {
+  const budget = new SttOpenBudget({ perMinute: 100, perMeeting: 100 }, clock);
+  budget.beginMeeting();
+  return budget;
 }
 
 /** Lets every pending promise callback run. */
@@ -178,8 +188,9 @@ describe('CaptureSession', () => {
     await opening;
 
     system.emitter.emit({ type: 'closed', code: 1011, reason: 'timeout' });
-    expect(l.failures).toEqual([['system', 'connection closed (code 1011: timeout)']]);
-    expect(l.states.at(-1)).toBe('system:error');
+    // Reopens with its next chunk after the first backoff (2 s on this session's clock).
+    expect(l.failures).toEqual([['system', 'connection closed (code 1011: timeout)', 12_000]]);
+    expect(l.states.at(-1)).toBe('system:retrying');
     expect(system.closed).toBe(true); // the dead stream is closed, not only forgotten
 
     s.pushAudio('mic', new Uint8Array(3200));
@@ -306,14 +317,26 @@ describe('CaptureSession', () => {
       await s.close();
     });
 
-    it('shows a failed reopen as an error with the reason', async () => {
-      const { l, s } = await paused({
-        refreshCredentials: () => Promise.reject(new Error('API unreachable')),
+    it('shows a failed reopen with the reason, and tries again only after the backoff', async () => {
+      let tokenRequests = 0;
+      const { l, s, at } = await paused({
+        refreshCredentials: () => {
+          tokenRequests += 1;
+          return Promise.reject(new Error('API unreachable'));
+        },
       });
       s.pushAudio('system', new Uint8Array(3200));
       await flush();
-      expect(l.states.at(-1)).toBe('system:error');
-      expect(l.failures.at(-1)?.[1]).toContain('API unreachable');
+      expect(l.states.at(-1)).toBe('system:retrying');
+      expect(l.failures.at(-1)).toEqual(['system', 'could not reconnect: API unreachable', 42_000]);
+      at(41_900);
+      s.pushAudio('system', new Uint8Array(3200));
+      await flush();
+      expect(tokenRequests).toBe(1); // ten chunks a second must not mean ten token requests
+      at(42_000);
+      s.pushAudio('system', new Uint8Array(3200));
+      await flush();
+      expect(tokenRequests).toBe(2);
       await s.close();
     });
   });
@@ -377,6 +400,9 @@ describe('CaptureSession', () => {
       settings,
       refreshCredentials: () => Promise.resolve({ accessToken: 'fresh', settings }),
       reopenBufferMs: 3_000,
+      budget: openBudget(() => now),
+      reopenBackoffMs: 2_000,
+      reopenBackoffMaxMs: 60_000,
       store,
       logger,
       listeners: { ...l, onSegment: (segment) => segments.push(segment.startMs) },

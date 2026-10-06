@@ -40,6 +40,8 @@ export function describeStream(state: SttStreamState): string {
       return 'transcribing';
     case 'paused':
       return 'paused, no audio';
+    case 'retrying':
+      return 'reconnecting';
     case 'error':
       return 'error';
   }

@@ -12,14 +12,19 @@ import {
 import { errorMessage, type Logger } from '../logger';
 import type { TranscriptStore } from '../store/TranscriptStore';
 import type { SpeechToText, SttEvent, SttStream, SttStreamSettings } from '../stt/SpeechToText';
+import type { SttOpenBudget, SttOpenDecision } from './SttOpenBudget';
 
 export interface CaptureSessionListeners {
   onSegment(segment: TranscriptSegment): void;
   onInterim(interim: InterimTranscript): void;
   /** A source's vendor session changed state; `message` says why it is not open, or null. */
   onStreamState(source: AudioSource, state: SttStreamState, message: string | null): void;
-  /** A stream died while the session was still recording. The session keeps the other stream. */
-  onStreamFailure(source: AudioSource, reason: string): void;
+  /**
+   * A source's stream died, or could not reopen, while recording. `retryAtMs` is when it may reopen
+   * (with its next chunk from then on), or null when it will not reopen this meeting. The session
+   * keeps the other stream either way.
+   */
+  onStreamFailure(source: AudioSource, reason: string, retryAtMs: number | null): void;
   /** A final line could not be written to the local store. onSegment still gets it right after. */
   onSaveFailure(source: AudioSource, reason: string): void;
 }
@@ -38,6 +43,14 @@ export interface CaptureSessionOptions {
   refreshCredentials: () => Promise<StreamCredentials>;
   /** Audio held while a source reopens (costGuards: sttReopenBufferMs). */
   reopenBufferMs: number;
+  /**
+   * The gate every vendor session open passes, Start's included (SttOpenBudget). Shared by both
+   * sources; CaptureService keeps it across meetings because the vendor counts per account.
+   */
+  budget: SttOpenBudget;
+  /** First wait before reopening after a failure, doubling per failure in a row, up to the max. */
+  reopenBackoffMs: number;
+  reopenBackoffMaxMs: number;
   store: TranscriptStore;
   logger: Logger;
   listeners: CaptureSessionListeners;
@@ -55,6 +68,12 @@ export interface StreamCredentials {
  */
 const BUFFER_GAP_MS = 1_000;
 
+/**
+ * A stream that stayed open this long before failing counts as healthy: its failure starts the
+ * backoff over instead of doubling it. A minute is the open budget's window.
+ */
+const HEALTHY_STREAM_MS = 60_000;
+
 interface HeldChunk {
   pcm: Uint8Array;
   /** Clock time it arrived, which dates it once it is sent. */
@@ -71,6 +90,7 @@ interface StreamHandle {
   offsetMs: number | null;
   /** Set once the stream was asked to close; settles when it has. */
   closing: Promise<void> | null;
+  readonly openedAtMs: number;
 }
 
 /** What one audio source has with the vendor right now. */
@@ -85,6 +105,10 @@ interface SourceLink {
   heldMs: number;
   /** Chunks dropped from `held` (over the bound, or before a gap) since the last flush. */
   heldDropped: number;
+  /** No reopen starts before this clock time (backoff, or the budget's minute). */
+  notBeforeMs: number;
+  /** Failures in a row, for the backoff. */
+  failures: number;
 }
 
 /**
@@ -97,6 +121,11 @@ interface SourceLink {
  * source keeps going either way. A paused source reopens on its next chunk with a fresh token; the
  * chunks that arrive meanwhile are held (bounded) and sent in order once it is open, so the chunk
  * that woke it is not lost and each stream's clock starts at its own first byte.
+ *
+ * A stream the vendor ends mid-call (an error, a close, AssemblyAI's 3-hour cap) reopens the same
+ * way after a backoff that doubles per failure in a row. Every open, Start's two included, passes
+ * the shared SttOpenBudget first; when it says no, the source waits for the minute to pass or, with
+ * the meeting's opens spent, stays closed with an error saying why. Nothing reopens without audio.
  *
  * Every stream this class ever opened is tracked until its close settles, and close() waits for
  * all of them, and for reopens still connecting.
@@ -122,12 +151,14 @@ export class CaptureSession {
   }
 
   /**
-   * Open every stream. If any fails, the ones that opened are closed and the first error is
-   * rethrown. Each open starts one vendor session per source, and vendors meter sessions started
-   * (AssemblyAI: 5 a minute on a free account), so a retry or reconnect loop around this spends
-   * that budget fast.
+   * Start: open every stream. If any fails, the ones that opened are closed and the first error is
+   * rethrown. The opens are taken from the budget together first (AssemblyAI starts 5 sessions a
+   * minute on a free account, and each Start opens two); a refusal throws before any socket.
    */
   async open(): Promise<void> {
+    // Both or neither: a Start with one source would look like a working meeting.
+    const grant = this.options.budget.acquire(AUDIO_SOURCES.length);
+    if (!grant.ok) throw new Error(`Speech-to-text was not started: ${grant.message}`);
     const results = await Promise.allSettled(
       AUDIO_SOURCES.map((source) => this.openStream(source)),
     );
@@ -150,8 +181,9 @@ export class CaptureSession {
         this.hold(link, pcm, now);
         return;
       case 'paused':
+      case 'retrying':
         this.hold(link, pcm, now);
-        this.startReopen(source);
+        if (now >= link.notBeforeMs) this.startReopen(source);
         return;
       case 'closed':
       case 'error':
@@ -169,6 +201,7 @@ export class CaptureSession {
     if (this.closing) return;
     const link = this.links[source];
     if (link.state !== 'open' && link.state !== 'connecting') return;
+    link.notBeforeMs = 0;
     link.attempt += 1;
     const handle = link.current;
     link.current = null;
@@ -246,18 +279,32 @@ export class CaptureSession {
     const link = this.links[source];
     const attempt = (link.attempt += 1);
     const stale = (): boolean => this.closing || link.attempt !== attempt;
+    // Asked before the token too, so a spent budget costs no API call.
+    const ahead = this.options.budget.check();
+    if (!ahead.ok) {
+      this.budgetRefused(source, ahead);
+      return;
+    }
     this.setState(source, 'connecting', null);
     let handle: StreamHandle;
     try {
       const { accessToken, settings } = await this.options.refreshCredentials();
       if (stale()) return;
+      // Taken right before the open, the only place an open happens: an adapter never opens one.
+      const grant = this.options.budget.acquire();
+      if (!grant.ok) {
+        this.budgetRefused(source, grant);
+        return;
+      }
       handle = this.track(
         source,
         await this.options.stt.openStream({ accessToken, settings, label: source }),
       );
     } catch (error) {
       if (stale()) return;
-      this.reopenFailed(source, errorMessage(error));
+      const reason = `could not reconnect: ${errorMessage(error)}`;
+      this.options.logger.warn('speech-to-text stream did not reopen', { source, reason });
+      this.scheduleRetry(source, reason, null);
       return;
     }
     if (stale()) {
@@ -268,13 +315,51 @@ export class CaptureSession {
     this.options.logger.info('speech-to-text stream reopened', { source });
   }
 
-  private reopenFailed(source: AudioSource, reason: string): void {
+  /**
+   * After a failure: reopen with the next chunk once the backoff has passed, unless the meeting's
+   * opens are spent. A vendor that fails on every open would otherwise reopen, and bill a
+   * handshake, as fast as chunks arrive (ten a second).
+   */
+  private scheduleRetry(source: AudioSource, reason: string, openedForMs: number | null): void {
     const link = this.links[source];
-    this.dropHeld(link);
-    const message = `could not reconnect: ${reason}`;
-    this.options.logger.warn('speech-to-text stream did not reopen', { source, reason });
+    link.failures =
+      openedForMs !== null && openedForMs >= HEALTHY_STREAM_MS ? 1 : link.failures + 1;
+    const budget = this.options.budget.check();
+    if (!budget.ok && budget.kind === 'per-meeting') {
+      this.giveUp(source, `${reason}; not reconnecting: ${budget.message}`);
+      return;
+    }
+    const { reopenBackoffMs, reopenBackoffMaxMs } = this.options;
+    const waitMs = Math.min(reopenBackoffMaxMs, reopenBackoffMs * 2 ** (link.failures - 1));
+    link.notBeforeMs = this.clock() + waitMs;
+    this.setState(source, 'retrying', reason);
+    this.options.listeners.onStreamFailure(source, reason, link.notBeforeMs);
+  }
+
+  /** The budget said no to a reopen: wait for the minute to pass, or stop for this meeting. */
+  private budgetRefused(
+    source: AudioSource,
+    decision: Exclude<SttOpenDecision, { ok: true }>,
+  ): void {
+    this.options.logger.warn('speech-to-text reopen refused by the open budget', {
+      source,
+      limit: decision.kind,
+    });
+    if (decision.kind === 'per-meeting') {
+      this.giveUp(source, `not reconnecting: ${decision.message}`);
+      return;
+    }
+    const link = this.links[source];
+    link.notBeforeMs = decision.retryAtMs;
+    const message = `waiting to reconnect: ${decision.message}`;
+    this.setState(source, 'retrying', message);
+    this.options.listeners.onStreamFailure(source, message, decision.retryAtMs);
+  }
+
+  private giveUp(source: AudioSource, message: string): void {
+    this.dropHeld(this.links[source]);
     this.setState(source, 'error', message);
-    this.options.listeners.onStreamFailure(source, message);
+    this.options.listeners.onStreamFailure(source, message, null);
   }
 
   /** The stream now carries the source: send what was held while it connected, in order. */
@@ -327,7 +412,12 @@ export class CaptureSession {
 
   /** Every stream is tracked from the moment it exists, so close() can never miss one. */
   private track(source: AudioSource, stream: SttStream): StreamHandle {
-    const handle: StreamHandle = { stream, offsetMs: null, closing: null };
+    const handle: StreamHandle = {
+      stream,
+      offsetMs: null,
+      closing: null,
+      openedAtMs: this.clock(),
+    };
     this.handles.add(handle);
     stream.on((event) => {
       this.handleEvent(source, handle, event);
@@ -442,13 +532,21 @@ export class CaptureSession {
     link.current = null;
     link.attempt += 1;
     void this.retire(handle);
-    this.setState(source, 'error', reason);
-    this.options.listeners.onStreamFailure(source, reason);
+    this.scheduleRetry(source, reason, this.clock() - handle.openedAtMs);
   }
 }
 
 function newLink(): SourceLink {
-  return { state: 'closed', current: null, attempt: 0, held: [], heldMs: 0, heldDropped: 0 };
+  return {
+    state: 'closed',
+    current: null,
+    attempt: 0,
+    held: [],
+    heldMs: 0,
+    heldDropped: 0,
+    notBeforeMs: 0,
+    failures: 0,
+  };
 }
 
 function describeClose(code: number | null, reason: string | null): string {

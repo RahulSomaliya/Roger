@@ -35,9 +35,10 @@ export interface SourceStatus {
  * A source's speech-to-text session. Only `connecting` and `open` hold a socket the vendor bills.
  * - closed: none (before Start, after Stop, or the source failed or ended)
  * - paused: closed because the source sent no audio for the stall window; its next chunk reopens it
- * - error: ended and not reopened; `streamMessages` says why
+ * - retrying: the vendor ended it, or the open budget is full; reopens with audio after a wait
+ * - error: ended and will not reopen this meeting; `streamMessages` says why
  */
-export type SttStreamState = 'closed' | 'connecting' | 'open' | 'paused' | 'error';
+export type SttStreamState = 'closed' | 'connecting' | 'open' | 'paused' | 'retrying' | 'error';
 
 export interface UploadStatus {
   state: 'idle' | 'uploading' | 'backoff';

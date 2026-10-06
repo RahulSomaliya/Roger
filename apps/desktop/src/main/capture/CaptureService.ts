@@ -30,6 +30,7 @@ import type { TranscriptUploader } from '../upload/TranscriptUploader';
 import { Emitter } from '../util/emitter';
 import { withTimeout } from '../util/time';
 import { CaptureSession, type StreamCredentials } from './CaptureSession';
+import { SttOpenBudget } from './SttOpenBudget';
 
 export interface CaptureServiceOptions {
   store: TranscriptStore;
@@ -82,6 +83,11 @@ export class CaptureService {
   private readonly events = new Emitter<CaptureEvents>();
   private readonly clock: () => number;
   private readonly guards: CostGuards;
+  /**
+   * Every vendor session open passes here (cost guard G3). It outlives meetings on purpose: the
+   * vendor's per-minute limit counts per account, so Start, Stop, Start spends one window.
+   */
+  private readonly budget: SttOpenBudget;
   private phase: CapturePhase = 'idle';
   private session: CaptureSession | null = null;
   private sttProvider: string | null = null;
@@ -92,6 +98,8 @@ export class CaptureService {
   };
   private streams: Record<AudioSource, SttStreamState> = { mic: 'closed', system: 'closed' };
   private streamMessages: Record<AudioSource, string | null> = { mic: null, system: null };
+  /** The error text each source's last failure set, so its recovery can clear exactly that. */
+  private streamErrors: Record<AudioSource, string | null> = { mic: null, system: null };
   private error: string | null = null;
   private segmentsUnsaved = 0;
   private transition: Promise<CaptureStatus> | null = null;
@@ -102,6 +110,10 @@ export class CaptureService {
   constructor(private readonly options: CaptureServiceOptions) {
     this.clock = options.clock ?? (() => Date.now());
     this.guards = options.guards ?? DEFAULT_COST_GUARDS;
+    this.budget = new SttOpenBudget(
+      { perMinute: this.guards.sttOpensPerMinute, perMeeting: this.guards.sttOpensPerMeeting },
+      this.clock,
+    );
     this.error = options.startupError;
     options.uploader.onStatus(() => {
       this.emitStatus();
@@ -204,6 +216,7 @@ export class CaptureService {
     const { logger, store } = this.options;
     this.error = null;
     this.resetSessionState();
+    this.budget.beginMeeting();
     this.setPhase('starting');
     const startedAtMs = this.clock();
     const meetingId = randomUUID();
@@ -236,6 +249,9 @@ export class CaptureService {
         settings,
         refreshCredentials: () => this.freshCredentials(provider),
         reopenBufferMs: this.guards.sttReopenBufferMs,
+        budget: this.budget,
+        reopenBackoffMs: this.guards.sttReopenBackoffMs,
+        reopenBackoffMaxMs: this.guards.sttReopenBackoffMaxMs,
         store,
         logger: logger.child({ meetingId }),
         clock: this.clock,
@@ -250,12 +266,29 @@ export class CaptureService {
           onStreamState: (source, state, message) => {
             this.streams[source] = state;
             this.streamMessages[source] = message;
+            if (
+              state === 'open' &&
+              this.error !== null &&
+              this.error === this.streamErrors[source]
+            ) {
+              // Back again: the error that said it stopped is no longer true.
+              this.error = null;
+            }
             this.emitStatus();
           },
-          onStreamFailure: (source, reason) => {
-            this.streams[source] = 'error';
-            this.error = `Transcription of ${SPEAKER_TITLE[source]} (${SPEAKER_FOR_SOURCE[source]}) stopped: ${reason}. Press Stop, then Start again.`;
-            logger.error('speech-to-text stream failed mid-call', { meetingId, source, reason });
+          onStreamFailure: (source, reason, retryAtMs) => {
+            const next =
+              retryAtMs === null
+                ? 'Press Stop, then Start again.'
+                : `Reconnecting when its audio flows, in ${Math.max(0, Math.ceil((retryAtMs - this.clock()) / 1000))} s.`;
+            this.error = `Transcription of ${SPEAKER_TITLE[source]} (${SPEAKER_FOR_SOURCE[source]}) stopped: ${reason}. ${next}`;
+            this.streamErrors[source] = this.error;
+            logger.error('speech-to-text stream failed mid-call', {
+              meetingId,
+              source,
+              reason,
+              reopens: retryAtMs !== null,
+            });
             this.emitStatus();
           },
           onSaveFailure: (source, reason) => {
@@ -380,6 +413,7 @@ export class CaptureService {
     this.sources = { mic: emptySourceStatus(), system: emptySourceStatus() };
     this.streams = { mic: 'closed', system: 'closed' };
     this.streamMessages = { mic: null, system: null };
+    this.streamErrors = { mic: null, system: null };
     this.sttProvider = null;
     this.startedAt = null;
     this.recordingSinceMs = null;

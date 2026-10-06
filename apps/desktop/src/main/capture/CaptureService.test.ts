@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CaptureStatus } from '../../shared/capture';
 import type { AudioSource, TranscriptSegment } from '../../shared/transcript';
 import type { MeetingDto, SttTokenApi, UploadApi } from '../api/ApiClient';
+import { type CostGuards, DEFAULT_COST_GUARDS } from '../costGuards';
 import { createLogger, type Logger } from '../logger';
 import { InMemoryTranscriptStore } from '../store/InMemoryTranscriptStore';
 import {
@@ -100,6 +101,7 @@ function harness(
     mic?: 'granted' | 'denied';
     logger?: Logger;
     store?: InMemoryTranscriptStore;
+    guards?: Partial<CostGuards>;
   } = {},
 ) {
   const store = overrides.store ?? new InMemoryTranscriptStore();
@@ -139,6 +141,7 @@ function harness(
     logger: overrides.logger ?? logger,
     sttProviderOverride: overrides.override ?? null,
     startupError: overrides.startupError ?? null,
+    guards: { ...DEFAULT_COST_GUARDS, ...overrides.guards },
     clock: () => now,
   });
   const statuses: CaptureStatus[] = [];
@@ -271,9 +274,10 @@ describe('CaptureService', () => {
     h.stt.streams.get('system')!.emitter.emit({ type: 'closed', code: 1011, reason: 'timeout' });
     const status = h.service.getStatus();
     expect(status.phase).toBe('recording');
-    expect(status.streams.system).toBe('error');
+    expect(status.streams.system).toBe('retrying');
     expect(status.error).toContain('Transcription of Them (them) stopped');
     expect(status.error).toContain('code 1011');
+    expect(status.error).toContain('Reconnecting when its audio flows, in 2 s');
     await h.service.stop();
   });
 
@@ -670,6 +674,129 @@ describe('CaptureService stall close', () => {
     expect(h.stt.opened).toHaveLength(2);
     expect(h.api.getSttToken).toHaveBeenCalledTimes(1);
     await h.service.stop();
+  });
+});
+
+describe('CaptureService reopen budget', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const chunk = () => new Uint8Array(3200);
+  const bothTalk = (h: Harness) => () => {
+    h.service.pushAudio('mic', chunk());
+    h.service.pushAudio('system', chunk());
+  };
+  const vendorCloses = (h: Harness, source: AudioSource, code = 1011, reason = 'server error') => {
+    h.stt.streams.get(source)!.emitter.emit({ type: 'closed', code, reason });
+  };
+
+  it('reopens a session the vendor ended mid-call after a backoff, with a fresh token, when audio flows', async () => {
+    const h = harness();
+    await h.service.start();
+    const first = h.stt.streams.get('system')!;
+    await h.elapse(1_000, bothTalk(h));
+
+    // The vendor's 3-hour cap: AssemblyAI closes with 3008. Recording goes on, so a fresh one opens.
+    vendorCloses(h, 'system', 3008, 'Session Expired: Maximum session duration exceeded');
+    expect(first.closeCalls).toBe(1);
+    expect(h.service.getStatus().streams.system).toBe('retrying');
+    await h.elapse(1_900, bothTalk(h));
+    expect(h.stt.opened).toHaveLength(2); // still inside the 2 s backoff: nothing opened
+
+    await h.elapse(200, bothTalk(h));
+    expect(h.stt.opened).toHaveLength(3);
+    expect(h.api.getSttToken).toHaveBeenCalledTimes(2);
+    const status = h.service.getStatus();
+    expect(status.streams.system).toBe('open');
+    expect(status.error).toBeNull();
+    expect(h.stt.streams.get('system')!.sent.length).toBeGreaterThan(0);
+    await h.service.stop();
+  });
+
+  it('doubles the backoff for failures in a row, and starts over after a stream stayed up a minute', async () => {
+    const h = harness({ guards: { sttOpensPerMinute: 100 } });
+    await h.service.start();
+    const opensAfter = async (ms: number) => {
+      await h.elapse(ms, bothTalk(h));
+      return h.stt.opened.length;
+    };
+    vendorCloses(h, 'system');
+    expect(await opensAfter(2_100)).toBe(3); // 2 s
+    vendorCloses(h, 'system');
+    expect(await opensAfter(3_500)).toBe(3);
+    expect(await opensAfter(700)).toBe(4); // 4 s
+    vendorCloses(h, 'system');
+    expect(await opensAfter(7_500)).toBe(4);
+    expect(await opensAfter(700)).toBe(5); // 8 s
+
+    await h.elapse(60_000, bothTalk(h)); // up for a minute: healthy again
+    vendorCloses(h, 'system');
+    expect(await opensAfter(2_100)).toBe(6); // 2 s again
+    await h.service.stop();
+  });
+
+  it('counts every open of both sources against one budget, and waits when the minute is spent', async () => {
+    const h = harness();
+    await h.service.start(); // opens 1 and 2
+    vendorCloses(h, 'system');
+    await h.elapse(2_100, bothTalk(h)); // 3
+    vendorCloses(h, 'mic');
+    await h.elapse(2_100, bothTalk(h)); // 4
+    expect(h.stt.opened).toHaveLength(4);
+
+    vendorCloses(h, 'system');
+    await h.elapse(10_000, bothTalk(h));
+    // A 5th open in the minute would trip AssemblyAI's free-tier limit: Roger waits instead.
+    expect(h.stt.opened).toHaveLength(4);
+    let status = h.service.getStatus();
+    expect(status.streams.system).toBe('retrying');
+    expect(status.streamMessages.system).toContain("Roger's limit is 4, sttOpensPerMinute");
+    expect(status.error).toContain('Transcription of Them (them)');
+
+    await h.elapse(46_000, bothTalk(h)); // Start's opens leave the window at 60 s
+    expect(h.stt.opened).toHaveLength(5);
+    status = h.service.getStatus();
+    expect(status.streams.system).toBe('open');
+    await h.service.stop();
+  });
+
+  it("stays closed with a visible error once the meeting's opens are spent", async () => {
+    const h = harness({ guards: { sttOpensPerMeeting: 3 } });
+    await h.service.start();
+    vendorCloses(h, 'system');
+    await h.elapse(2_100, bothTalk(h));
+    expect(h.stt.opened).toHaveLength(3);
+
+    vendorCloses(h, 'system');
+    await h.elapse(120_000, bothTalk(h));
+    expect(h.stt.opened).toHaveLength(3);
+    const status = h.service.getStatus();
+    expect(status.streams).toEqual({ mic: 'open', system: 'error' });
+    expect(status.streamMessages.system).toContain("Roger's limit is 3, sttOpensPerMeeting");
+    expect(status.error).toContain('Transcription of Them (them) stopped');
+    expect(status.error).toContain('Press Stop, then Start again');
+    await h.service.stop();
+  });
+
+  it('refuses a Start when the minute is spent, says when to try, and opens nothing', async () => {
+    const h = harness();
+    await h.service.start();
+    await h.service.stop();
+    h.advance(5_000);
+    await h.service.start();
+    await h.service.stop();
+    h.advance(5_000);
+
+    const refused = await h.service.start();
+    expect(refused.phase).toBe('idle');
+    expect(refused.error).toContain("Roger's limit is 4, sttOpensPerMinute");
+    expect(refused.error).toContain('the next may open in 50 s');
+    expect(h.stt.opened).toHaveLength(4);
+    expect(h.store.meetings.size).toBe(0);
   });
 });
 
