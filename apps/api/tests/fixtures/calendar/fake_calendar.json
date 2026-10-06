@@ -1,0 +1,49 @@
+{
+  "kind": "calendar#events",
+  "summary": "A FAKE_CALENDAR_FILE: an events.list page in Google's own JSON, with absolute times",
+  "items": [
+    {
+      "id": "file-board-meeting",
+      "status": "confirmed",
+      "summary": "Board meeting with a very long title that has to wrap on the prompt card",
+      "start": { "dateTime": "2026-10-06T15:00:00+05:30" },
+      "end": { "dateTime": "2026-10-06T16:00:00+05:30" },
+      "organizer": { "email": "chair@example.com", "displayName": "Board Chair" },
+      "attendees": [
+        {
+          "email": "chair@example.com",
+          "displayName": "Board Chair",
+          "organizer": true,
+          "responseStatus": "accepted"
+        },
+        { "email": "you@example.com", "self": true, "responseStatus": "accepted" },
+        { "email": "cfo@example.com", "displayName": "CFO", "responseStatus": "tentative" }
+      ],
+      "location": "https://example.zoom.us/j/81234567890?pwd=board"
+    },
+    {
+      "id": "file-holiday",
+      "status": "confirmed",
+      "summary": "Diwali",
+      "start": { "date": "2026-11-08" },
+      "end": { "date": "2026-11-09" }
+    },
+    {
+      "id": "file-cancelled",
+      "status": "cancelled"
+    },
+    {
+      "id": "file-retro",
+      "status": "confirmed",
+      "summary": "Retro",
+      "start": { "dateTime": "2026-10-06T08:00:00Z" },
+      "end": { "dateTime": "2026-10-06T08:30:00Z" },
+      "organizer": { "email": "you@example.com", "self": true },
+      "attendees": [
+        { "email": "you@example.com", "self": true, "organizer": true, "responseStatus": "accepted" },
+        { "email": "jane@example.com", "responseStatus": "accepted" }
+      ],
+      "description": "Teams: https://teams.microsoft.com/meet/2345678901234?p=AbCdEf"
+    }
+  ]
+}
