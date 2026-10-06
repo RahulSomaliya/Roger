@@ -23,6 +23,9 @@ export type VocabularyEditorActions = Pick<
  * and saves it whole on Save (vocabularyEditor.ts, which refuses a save before a read).
  */
 export function VocabularySettings() {
+  // One editor per mount: leaving Settings drops it with any save still out, and coming back reads
+  // at once. Main answers that read only after the save (main/vocabulary/vocabularyIpc.ts), or the
+  // page would show the list from before it as saved and the next Save would undo the change.
   const [editor] = useState(() => new VocabularyEditor(window.roger));
   const state = useSyncExternalStore(editor.subscribe, editor.getSnapshot);
   useEffect(() => {

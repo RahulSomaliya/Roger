@@ -165,6 +165,68 @@ describe('vocabulary:set', () => {
   });
 });
 
+describe('a read sent while a save is out', () => {
+  // The page's editor lives only while Settings is open: leaving during a save and coming back
+  // reads at once. Answered from before the save, the page would show the old list as saved, and
+  // its next Save would write that list back over the change.
+  function savingHarness() {
+    const saves: { resolve: (terms: string[]) => void; reject: (error: Error) => void }[] = [];
+    const h = harness({
+      replaceVocabulary: () =>
+        new Promise<string[]>((resolve, reject) => {
+          saves.push({ resolve, reject });
+        }),
+    });
+    return { ...h, saves };
+  }
+
+  /** Lets every promise already settled run on, as main would before the next message. */
+  const drain = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
+
+  it('goes to the API only once the save has answered, so it reads the saved list', async () => {
+    const h = savingHarness();
+    const save = h.invoke(vocabularyChannels.VocabularySet, { terms: ['Linkt', 'Initech'] });
+    const read = h.invoke(vocabularyChannels.VocabularyGet);
+    await drain();
+    expect(h.saves).toHaveLength(1);
+    expect(h.routes.getVocabulary).not.toHaveBeenCalled();
+
+    h.saves[0]!.resolve(['Initech', 'Linkt']);
+    await expect(save).resolves.toEqual(['Initech', 'Linkt']);
+    await expect(read).resolves.toEqual(['Linkt', SECRET]);
+    expect(h.routes.getVocabulary).toHaveBeenCalledTimes(1);
+  });
+
+  it('waits for a save that fails as well, then reads', async () => {
+    const h = savingHarness();
+    const save = h.invoke(vocabularyChannels.VocabularySet, { terms: ['Linkt'] });
+    const read = h.invoke(vocabularyChannels.VocabularyGet);
+    await drain();
+    expect(h.routes.getVocabulary).not.toHaveBeenCalled();
+
+    h.saves[0]!.reject(new ApiError(0, 'network_error', 'PUT /v1/vocabulary failed: timeout'));
+    await expect(save).rejects.toThrow('PUT /v1/vocabulary failed: timeout');
+    await expect(read).resolves.toEqual(['Linkt', SECRET]);
+  });
+
+  it('waits for every save sent before it, not only the last', async () => {
+    const h = savingHarness();
+    const first = h.invoke(vocabularyChannels.VocabularySet, { terms: ['Linkt'] });
+    const second = h.invoke(vocabularyChannels.VocabularySet, { terms: ['Roger'] });
+    const read = h.invoke(vocabularyChannels.VocabularyGet);
+    await drain();
+    h.saves[1]!.resolve(['Roger']);
+    await second;
+    await drain();
+    expect(h.routes.getVocabulary).not.toHaveBeenCalled();
+
+    h.saves[0]!.resolve(['Linkt']);
+    await first;
+    await read;
+    expect(h.routes.getVocabulary).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('the vocabulary channels', () => {
   it('answer only the main window: the prompt panel never reads or replaces the list', async () => {
     const h = harness();

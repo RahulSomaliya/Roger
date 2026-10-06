@@ -15,7 +15,15 @@ export interface VocabularyIpcDeps {
 /**
  * Wires the jargon list's channels (src/shared/ipc/vocabulary.ts) to the Roger API, for the main
  * window's page only (ipc/trust.ts). Nothing is cached: every read asks the API, so the editor
- * never shows, and then saves, a stale copy over a list changed elsewhere.
+ * starts from the list as stored now. Two Macs saving at once can still overwrite each other: a
+ * save replaces the whole list with no version check (M3 plan, "Jargon list storage").
+ *
+ * Trap: a read waits for every save this Mac sent before it. The page's editor lives only while
+ * Settings is open (renderer/src/settings/VocabularySettings.tsx), so leaving during a save and
+ * coming back reads again at once; answered before the save commits, that read shows the old list
+ * as saved and the next Save writes it back over the change. Keep the wait here, in main, which
+ * outlives every page: an editor kept outside the component would not survive a page reload. A
+ * save that times out (api/http.ts, 10 s) ends the wait while the API may still commit it.
  *
  * Log lines carry counts and the API's error, never a term: terms name clients and colleagues.
  * The API's 422 messages name positions (`body.terms[3]`), not values, so they are safe to log.
@@ -27,8 +35,11 @@ export function registerVocabularyIpc({
   logger,
 }: VocabularyIpcDeps): void {
   const trust: IpcTrust = { ipcMain, getWindow, logger };
+  /** Settles once every save sent so far has answered, either way. */
+  let savesAnswered: Promise<void> = Promise.resolve();
 
   handleTrusted(trust, vocabularyChannels.VocabularyGet, async () => {
+    await savesAnswered;
     try {
       return await client.getVocabulary();
     } catch (error) {
@@ -40,8 +51,12 @@ export function registerVocabularyIpc({
 
   handleTrusted(trust, vocabularyChannels.VocabularySet, async (payload) => {
     const terms = parseSetRequest(payload, logger);
+    const save = client.replaceVocabulary(terms);
+    // Set before the first await, so a read that arrives next already waits for this save. Its
+    // outcome reaches the page through `await save` below; the reads wait only for it to end.
+    savesAnswered = Promise.allSettled([savesAnswered, save]).then(() => undefined);
     try {
-      const stored = await client.replaceVocabulary(terms);
+      const stored = await save;
       logger.info('jargon list saved', { sent: terms.length, stored: stored.length });
       return stored;
     } catch (error) {
