@@ -1237,18 +1237,20 @@ describe.each([
   it('finds the newest local meeting of each event asked for, and nothing for the rest', () => {
     const store = open();
     const instance = (eventId: string): MeetingCalendarEvent => ({ ...STANDUP, eventId });
+    // Stopped and started again for the same call: Home opens the newer note. Written newest
+    // first, under ids that sort the other way, so only the start time puts them in order: neither
+    // the insert order (SQLite's rowid, the Map's order) nor the id does.
     store.createMeeting({
-      id: 'first-try',
+      id: 'a-retry',
       title: 'Standup',
-      startedAt: '2026-10-07T09:31:00.000Z',
+      startedAt: '2026-10-07T09:33:00.000Z',
       startSource: 'notification',
       calendarEvent: instance('standup_1'),
     });
-    // Stopped and started again for the same call: Home opens the newer note.
     store.createMeeting({
-      id: 'second-try',
+      id: 'z-first',
       title: 'Standup',
-      startedAt: '2026-10-07T09:33:00.000Z',
+      startedAt: '2026-10-07T09:31:00.000Z',
       startSource: 'notification',
       calendarEvent: instance('standup_1'),
     });
@@ -1263,7 +1265,7 @@ describe.each([
 
     expect(store.findMeetingIdsByEventIds(['standup_1', 'review_1', 'tomorrow_1'])).toEqual(
       new Map([
-        ['standup_1', 'second-try'],
+        ['standup_1', 'a-retry'],
         ['review_1', 'review'],
       ]),
     );
