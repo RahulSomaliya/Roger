@@ -261,7 +261,12 @@ describe('draft', () => {
 
     const result = await draft(benchDir, ['r1', 'r2']);
 
-    expect(result).toEqual({ drafted: ['meet', 'standup'], withReference: ['fixed'], failed: [] });
+    expect(result).toEqual({
+      drafted: ['meet', 'standup'],
+      withReference: ['fixed'],
+      withDraft: [],
+      failed: [],
+    });
     expect(await readFile(itemPaths(benchDir, 'standup').draft, 'utf8')).toBe(
       [
         '[00:00] Me: morning all',
@@ -296,8 +301,38 @@ describe('draft', () => {
     expect(result).toEqual({
       drafted: ['ok-item'],
       withReference: [],
+      withDraft: [],
       failed: [{ itemId: 'lost', reason: 'run r2 has no finished attempt for it' }],
     });
+  });
+
+  it('never rewrites a draft that is there, so fixes made in it survive a second draft', async () => {
+    await writeItem(benchDir, item('started', { streams: ['system'] }));
+    await writeItem(benchDir, item('later', { streams: ['system'] }));
+    await saveRun('r1', [runItem('started'), runItem('later')]);
+    await saveRun('r2', [runItem('started')]);
+    for (const runId of ['r1', 'r2']) {
+      await saveFinals(runId, 'started', 'system', [[0, 'morning all']]);
+      await saveFinals(runId, 'later', 'system', [[0, 'see you']]);
+    }
+    expect((await draft(benchDir, ['r1', 'r2'])).drafted).toEqual(['started']);
+    // The owner starts fixing the draft in place, then r2 gets the item it missed.
+    const handFixed = '[00:00] Me: morning, all\n';
+    await writeFile(itemPaths(benchDir, 'started').draft, handFixed);
+    await saveRun('r2', [runItem('started'), runItem('later')]);
+
+    const result = await draft(benchDir, ['r2', 'r1']);
+
+    expect(result).toEqual({
+      drafted: ['later'],
+      withReference: [],
+      withDraft: ['started'],
+      failed: [],
+    });
+    expect(await readFile(itemPaths(benchDir, 'started').draft, 'utf8')).toBe(handFixed);
+    // item.json still names the runs the kept draft came from.
+    expect((await readItem(benchDir, 'started')).draftRuns).toEqual(['r1', 'r2']);
+    expect((await readItem(benchDir, 'later')).draftRuns).toEqual(['r2', 'r1']);
   });
 
   it('refuses one run twice, and names a run that is not there', async () => {

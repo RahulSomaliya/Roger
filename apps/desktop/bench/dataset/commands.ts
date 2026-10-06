@@ -156,6 +156,12 @@ function printDraft(result: DraftResult, runIds: readonly string[], context: Dat
       `left ${plural(result.withReference.length, 'item')} with a reference.txt as they are`,
     );
   }
+  if (result.withDraft.length > 0) {
+    context.print(
+      `left ${plural(result.withDraft.length, 'item')} with a reference.draft.txt as they are; ` +
+        "delete an item's draft to draft it again",
+    );
+  }
   for (const { itemId, reason } of result.failed) {
     context.print(`could not draft ${itemId}: ${reason}`);
   }

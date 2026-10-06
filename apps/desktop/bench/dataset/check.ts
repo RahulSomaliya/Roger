@@ -63,6 +63,8 @@ async function itemProblems(benchDir: string, itemId: string): Promise<string[]>
     text = await readFile(paths.reference, 'utf8');
   } catch (error) {
     if (!isMissingFile(error)) throw error;
+    // Fixing the draft in place is safe only because `bench draft` never rewrites a draft that is
+    // there (draft.ts); a draft that did would wipe the owner's fixes on its next run.
     problems.push(
       existsSync(paths.draft)
         ? 'no reference.txt yet: fix reference.draft.txt and save it as reference.txt'

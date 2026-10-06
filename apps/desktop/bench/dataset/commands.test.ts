@@ -217,6 +217,33 @@ describe('dataset commands', () => {
       expect(printed.join('\n')).not.toContain('private');
     });
 
+    it('says which drafts it left alone, and how to draft one again', async () => {
+      await writeItem(benchDir, item('a'));
+      await writeFile(itemPaths(benchDir, 'a').draft, '[00:00] Them: fixed in place\n');
+      for (const runId of ['r1', 'r2']) {
+        await writeRun(runPaths(benchDir, runId).runJson, {
+          schemaVersion: RUN_SCHEMA_VERSION,
+          runId,
+          startedAt: '2026-10-06T10:00:00.000Z',
+          finishedAt: null,
+          provider: 'fake',
+          model: 'fake',
+          adapterQuery: null,
+          keyterms: { enabled: false, terms: [] },
+          normaliserVersion: 1,
+          echoFilterVersion: 1,
+          gate: false,
+          items: [],
+        });
+      }
+
+      expect(await DATASET_COMMANDS.draft(['--runs', 'r1,r2'], context())).toBe(0);
+      expect(printed).toEqual([
+        'drafted 0 items from runs r1 and r2; braces read {r1 | r2}',
+        "left 1 item with a reference.draft.txt as they are; delete an item's draft to draft it again",
+      ]);
+    });
+
     it('needs two runs', async () => {
       await expect(DATASET_COMMANDS.draft(['--runs', 'r1'], context())).rejects.toThrow(
         'draft takes two different runs: --runs <a>,<b>',

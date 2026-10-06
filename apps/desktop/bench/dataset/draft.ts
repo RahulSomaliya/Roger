@@ -26,10 +26,10 @@ import {
 } from './item';
 
 /**
- * `bench draft --runs <a>,<b>`: a first reference for every item that has no `reference.txt` yet,
- * from two vendors' runs, so the owner's attention goes where they disagree (M3 design, "Fixing
- * text by hand"). Where the runs agree the text is almost always right; a draft from one vendor
- * alone would lean the reference toward it.
+ * `bench draft --runs <a>,<b>`: a first reference for every item that has neither a
+ * `reference.txt` nor a `reference.draft.txt` yet, from two vendors' runs, so the owner's attention
+ * goes where they disagree (M3 design, "Fixing text by hand"). Where the runs agree the text is
+ * almost always right; a draft from one vendor alone would lean the reference toward it.
  *
  * The lines are run <a>'s finals, at their start, Me (mic) and Them (system) in time order. Each
  * stream's words are aligned across the two runs on normalised words (`core/align.ts`); a stretch
@@ -37,6 +37,11 @@ import {
  * sides read the same after the normaliser ("$5" and "five dollars"), which scoring would not tell
  * apart either. `bench check` refuses a reference while any brace is left, and `item.json` records
  * the two runs.
+ *
+ * A draft that is there is never rewritten: the owner may be fixing it in place (`check` says to
+ * fix it and save it as reference.txt), and a second `draft` for the items the first could not do
+ * would wipe that work and change the runs item.json names for it. Deleting an item's draft drafts
+ * it again.
  */
 
 export interface TimedFinal {
@@ -57,11 +62,13 @@ export interface DraftResult {
   drafted: string[];
   /** Items left alone because their reference is already fixed by hand. */
   withReference: string[];
+  /** Items left alone because they have a draft, which the owner may be fixing in place. */
+  withDraft: string[];
   /** Items with no draft, and why (never text from the runs). */
   failed: { itemId: string; reason: string }[];
 }
 
-/** Writes `reference.draft.txt` for every item without a `reference.txt`. */
+/** Writes `reference.draft.txt` for every item with neither a `reference.txt` nor a draft. */
 export async function draft(benchDir: string, runIds: readonly string[]): Promise<DraftResult> {
   const [aId, bId] = runIds;
   if (runIds.length !== 2 || aId === undefined || bId === undefined || aId === bId) {
@@ -70,13 +77,18 @@ export async function draft(benchDir: string, runIds: readonly string[]): Promis
   const runA = await loadRun(benchDir, aId);
   const runB = await loadRun(benchDir, bId);
 
-  const result: DraftResult = { drafted: [], withReference: [], failed: [] };
+  const result: DraftResult = { drafted: [], withReference: [], withDraft: [], failed: [] };
   for (const itemId of await listItemIds(benchDir)) {
     try {
       const item = await readItem(benchDir, itemId);
       const paths = itemPaths(benchDir, itemId);
       if (existsSync(paths.reference)) {
         result.withReference.push(itemId);
+        continue;
+      }
+      // Never rewritten, whatever runs are asked for: check.ts tells the owner to fix it in place.
+      if (existsSync(paths.draft)) {
+        result.withDraft.push(itemId);
         continue;
       }
       // Both runs are checked before any events are read, so the reason names the run at fault.
