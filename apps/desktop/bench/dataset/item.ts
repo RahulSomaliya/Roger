@@ -188,6 +188,18 @@ export function isMissingFile(error: unknown): boolean {
   return isRecord(error) && error.code === 'ENOENT';
 }
 
+/**
+ * Why an item could not be used, for a report line. A missing item.json is a clip that did not
+ * finish (clip writes it last). The errors this module and core/events throw name files and
+ * fields, never what a person said.
+ */
+export function describeItemError(error: unknown): string {
+  if (isMissingFile(error) && isRecord(error) && String(error.path).endsWith('item.json')) {
+    return 'no item.json: a clip that did not finish; delete the folder and clip again';
+  }
+  return error instanceof Error ? error.message : String(error);
+}
+
 /** Typed reads from one JSON object, each naming its field's path when it refuses. */
 class Fields {
   private readonly value: Record<string, unknown>;
