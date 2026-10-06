@@ -88,8 +88,9 @@ export async function readSigningIdentity(
 }
 
 /**
- * Anything else (Apple Development, the App Store, Apple's own code) is not a way Roger is built,
- * so it is refused with the requirement in the message rather than guessed into a kind.
+ * The kind of a signed requirement: ad hoc, Developer ID or a pinned self-signed leaf. Any other
+ * requirement (Apple Development, the App Store, Apple's own code) is not a way Roger is built, so
+ * it is refused with the requirement in the message rather than guessed into a kind.
  */
 function signingKind(
   requirement: string,
