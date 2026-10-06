@@ -29,7 +29,8 @@ export interface MeetingsIpcDeps {
  *
  * Log lines carry the channel and the meeting id, never a payload, a title or a line: titles
  * become calendar invite titles with M5, and lines are what people said. A store failure is
- * logged with its message: the store words its own errors and never quotes a row (its parseWords).
+ * logged with its message: the store words its own errors, quoting only CHECK-bound columns,
+ * never a segment's free text (its rowToSegment and parseWords).
  */
 export function registerMeetingsIpc({ ipcMain, store, getWindow, logger }: MeetingsIpcDeps): void {
   const trust: IpcTrust = { ipcMain, getWindow, logger };

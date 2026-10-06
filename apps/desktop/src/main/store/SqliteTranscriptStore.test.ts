@@ -1034,4 +1034,21 @@ describe('SqliteTranscriptStore reading a corrupt row', () => {
     expect(read).not.toThrow(/Acme/);
     store.close();
   });
+
+  it('names a bad speaker without quoting it: the column has no CHECK, so it can hold any text', () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'roger-store-')), 'roger.sqlite');
+    const store = new SqliteTranscriptStore(path);
+    store.createMeeting({ id: 'm1', title: 'T', startedAt: '2026-10-06T09:00:00.000Z' });
+    store.appendSegment(segment(1));
+    const raw = new DatabaseSync(path);
+    raw
+      .prepare(`UPDATE segments SET speaker = 'Acme renewal is at risk' WHERE id = ?`)
+      .run('seg-1');
+    raw.close();
+
+    const read = (): unknown => store.listSegments('m1');
+    expect(read).toThrow('corrupt segment row seg-1: speaker is not me or them');
+    expect(read).not.toThrow(/Acme/);
+    store.close();
+  });
 });

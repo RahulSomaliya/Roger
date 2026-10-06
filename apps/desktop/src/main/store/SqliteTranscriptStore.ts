@@ -798,8 +798,10 @@ function rowToSegment(row: Row): TranscriptSegment {
   const source = row.source;
   if (!isAudioSource(source)) throw new Error(`corrupt segment row: source=${String(source)}`);
   const speaker = text(row, 'speaker');
+  // Not the value: unlike source, speaker has no CHECK in the schema, so a bad row can hold any
+  // text, and every reader logs a failed read's message (the uploader's tick, meetings-ipc.ts).
   if (speaker !== 'me' && speaker !== 'them')
-    throw new Error(`corrupt segment row: speaker=${speaker}`);
+    throw new Error(`corrupt segment row ${String(row.id)}: speaker is not me or them`);
   return {
     id: text(row, 'id'),
     meetingId: text(row, 'meeting_id'),
