@@ -396,6 +396,22 @@ export function storedMeetingText(value: string): string {
 }
 
 /**
+ * `title` as the API stores it (storedMeetingText), cut to MAX_MEETING_TITLE_LENGTH characters. A
+ * calendar event's title has no length limit (a pasted agenda), while a start request with a
+ * longer title is refused, so a request built from one is cut with this first: main cuts its own
+ * (CaptureService.requestStart, the enricher's answer), and a page that starts a note from an
+ * event (Home, M5-T12) cuts its title before it sends the request.
+ */
+export function fitMeetingTitle(title: string): string {
+  const stored = storedMeetingText(title);
+  const characters = Array.from(stored);
+  if (characters.length <= MAX_MEETING_TITLE_LENGTH) return stored;
+  // Cut by code points, so no emoji is cut in half; trimmed again, so a cut just after a space
+  // leaves none at the end.
+  return trimTerm(characters.slice(0, MAX_MEETING_TITLE_LENGTH).join(''));
+}
+
+/**
  * What a Start asks for beyond "record" (M5): how it was started, the title and the calendar event
  * the note is for. Every field is optional; an empty request is a plain manual Start. Main checks a
  * request field by field before it runs (main/ipc-validation.ts, parseStartCaptureRequest), the
@@ -407,8 +423,9 @@ export interface StartCaptureRequest {
   /** Default `manual`. */
   source?: StartSource;
   /**
-   * At most MAX_MEETING_TITLE_LENGTH characters once trimmed, or the start is refused: a request
-   * built from a calendar event's title, which has no such limit, cuts it to fit first. Blank or
+   * At most MAX_MEETING_TITLE_LENGTH characters of its storedMeetingText, or the window's start is
+   * refused. A calendar event's title has no such limit: main cuts the title of its own requests to
+   * fit (fitMeetingTitle), and a page that builds a request from an event cuts it first. Blank or
    * left out, main names the meeting after its start, "Meeting 6 Oct 2026 09:30"
    * (defaultMeetingTitle in main/capture/CaptureService.ts).
    */

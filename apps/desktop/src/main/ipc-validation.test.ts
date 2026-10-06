@@ -5,7 +5,7 @@ import {
   MAX_MEETING_ATTENDEES,
   type MeetingCalendarEvent,
 } from '../shared/calendar';
-import { MAX_MEETING_TITLE_LENGTH, START_SOURCES } from '../shared/capture';
+import { fitMeetingTitle, MAX_MEETING_TITLE_LENGTH, START_SOURCES } from '../shared/capture';
 import { SETTINGS_PANE_IDS } from '../shared/ipc/setup';
 import {
   isUuidV4,
@@ -318,6 +318,21 @@ describe('parseStartCaptureRequest', () => {
     expect(() => parseStartCaptureRequest({ title: 42 })).toThrow(
       'invalid start request: title is not text',
     );
+  });
+
+  // Main cuts the calendar titles of its own requests with fitMeetingTitle instead of refusing them.
+  it('passes any title cut to fit', () => {
+    const nextLine = String.fromCharCode(0x85);
+    const byteOrderMark = String.fromCharCode(0xfeff);
+    for (const long of [
+      'x'.repeat(10_000),
+      `${byteOrderMark}${'a'.repeat(600)}`,
+      `${nextLine}${'\u{1F600}'.repeat(600)}`,
+      `${'a'.repeat(499)} ${'b'.repeat(100)}`,
+    ]) {
+      const title = fitMeetingTitle(long);
+      expect(parseStartCaptureRequest({ title })).toEqual({ title });
+    }
   });
 
   // The API trims with pydantic's strip_whitespace, not JavaScript's trim() (storedMeetingText):

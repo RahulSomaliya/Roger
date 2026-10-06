@@ -16,7 +16,9 @@ export interface CaptureView {
   busy: boolean;
   /**
    * Starts a recording, and its audio capture once main records. `request` says how it was
-   * started, its title and its calendar event (M5); left out, a plain manual Start.
+   * started, its title and its calendar event (M5); left out, a plain manual Start. A title taken
+   * from a calendar event is cut with fitMeetingTitle first: an event's title has no length limit,
+   * and main refuses a request whose title is longer than the API stores.
    */
   start: (request?: StartCaptureRequest) => Promise<void>;
   stop: () => Promise<void>;

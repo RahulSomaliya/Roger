@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import {
   AUDIO_SOURCE_LABEL,
   emptySourceStatus,
+  fitMeetingTitle,
   idleCaptureStatus,
   NO_AUDIO_WARNING_MS,
   type AudioSourceState,
@@ -94,10 +95,11 @@ export interface StartOptions extends StartCaptureRequest {
  * Completes what a start request leaves out, before its meeting is made: M5-T9c's links a start
  * made near exactly one calendar event to it (M5 design, "Manual start near a meeting"). It sees
  * every start that makes a meeting, whatever its source, a prompt's included (which carries its
- * event already), and answers the request to start with. Its answer is checked as the window's
- * request is; an enricher that throws or answers a request main would refuse is logged, and the
- * start goes on with the request as it came: a note without its event beats no note. Its error's
- * message goes to the log, so it never quotes an event's title or attendees.
+ * event already), and answers the request to start with. Main cuts its answer's title to fit
+ * (fitMeetingTitle), so it may pass an event's title as it is, then checks the answer as the
+ * window's request is; an enricher that throws or answers a request main would refuse is logged,
+ * and the start goes on with the request as it came: a note without its event beats no note. Its
+ * error's message goes to the log, so it never quotes an event's title or attendees.
  */
 export type StartRequestEnricher = (request: StartCaptureRequest) => StartCaptureRequest;
 
@@ -511,10 +513,11 @@ export class CaptureService {
    * the renderer, so main cannot start one alone. The request waits here until the window takes
    * it (takePendingStart, on the `start-requested` event or as its page loads) and starts with it,
    * through start() and the open budget like any Start. A later request replaces a waiting one.
-   * Throws, naming the field, on a request the window's start would refuse.
+   * Its title is cut to fit (fitMeetingTitle), so a caller may pass an event's title as it is;
+   * throws, naming the field, on anything else the window's start would refuse.
    */
   requestStart(request: StartCaptureRequest): void {
-    const checked = parseStartCaptureRequest(request);
+    const checked = parseStartCaptureRequest(withTitleCutToFit(request));
     this.pendingStart = { request: checked, atMs: this.clock() };
     this.options.logger.info('start requested', {
       source: checked.source ?? 'manual',
@@ -917,15 +920,15 @@ export class CaptureService {
   }
 
   /**
-   * The request as the enricher completes it, checked as the window's is (StartRequestEnricher).
-   * A failure is logged with the request's source, never its title or event (calendar content),
-   * and the request goes on as it came.
+   * The request as the enricher completes it, its title cut to fit and then checked as the
+   * window's is (StartRequestEnricher). A failure is logged with the request's source, never its
+   * title or event (calendar content), and the request goes on as it came.
    */
   private enrich(request: StartCaptureRequest): StartCaptureRequest {
     const enricher = this.enricher;
     if (enricher === null) return request;
     try {
-      return parseStartCaptureRequest(enricher(request));
+      return parseStartCaptureRequest(withTitleCutToFit(enricher(request)));
     } catch (error) {
       this.options.logger.error('start request enricher failed', {
         source: request.source ?? 'manual',
@@ -1226,6 +1229,18 @@ function toMeter({
   estimatedCostUsd,
 }: SttUsage): SttMeter {
   return { sessionsOpened, connectedMs, audioSentMs, estimatedCostUsd };
+}
+
+/**
+ * `request` with its title cut to what the API stores (fitMeetingTitle). Main's own requests carry
+ * calendar titles, which have no length limit: refused for the title alone, a prompt's Take notes
+ * would fail every time for that event, and the enricher's answer would lose its event link too.
+ * The window's requests are not cut: an over-long one is refused at the IPC, naming the field.
+ */
+function withTitleCutToFit(request: StartCaptureRequest): StartCaptureRequest {
+  return request.title === undefined
+    ? request
+    : { ...request, title: fitMeetingTitle(request.title) };
 }
 
 /**

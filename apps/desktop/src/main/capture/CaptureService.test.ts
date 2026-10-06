@@ -1945,8 +1945,8 @@ describe('CaptureService start requests (M5)', () => {
     });
     await h.service.stop();
     h.advance(60_000);
-    // A calendar title longer than the API stores would keep the meeting off the server.
-    answer = () => ({ source: 'tray', title: 'x'.repeat(501), calendarEvent: STANDUP });
+    // An event link the API would refuse would keep the meeting off the server.
+    answer = () => ({ source: 'tray', calendarEvent: { ...STANDUP, eventId: ' ' } });
     await h.service.start({ source: 'tray', title: 'Mine' });
     expect(lastMeeting(h)).toMatchObject({ title: 'Mine', calendarEvent: null });
 
@@ -1954,9 +1954,30 @@ describe('CaptureService start requests (M5)', () => {
       expect.objectContaining({ source: 'tray', error: 'calendar.sqlite is locked' }),
       expect.objectContaining({
         source: 'tray',
-        error: 'invalid start request: title is over 500 characters',
+        error: 'invalid start request: calendarEvent.eventId is blank',
       }),
     ]);
+  });
+
+  // A calendar title has no length limit (a pasted agenda): refused for its title alone, the
+  // enricher's answer would lose its event link too, on every manual start near that meeting.
+  it("cuts the enricher's calendar title to what the API stores, and keeps its event link", async () => {
+    const log = jsonLog('error');
+    const h = harness({ logger: log.logger });
+    h.service.setStartRequestEnricher((request) => ({
+      ...request,
+      title: 'x'.repeat(600),
+      calendarEvent: STANDUP,
+    }));
+
+    const started = await h.service.start({ source: 'tray' });
+    expect(started).toMatchObject({ phase: 'recording', title: 'x'.repeat(500) });
+    expect(lastMeeting(h)).toMatchObject({
+      title: 'x'.repeat(500),
+      startSource: 'tray',
+      calendarEvent: STANDUP,
+    });
+    expect(log.lines).toEqual([]);
   });
 
   it('resumes a meeting with its stored title and event, and asks no enricher', async () => {
@@ -2022,10 +2043,33 @@ describe('CaptureService start requests (M5)', () => {
     const told = vi.fn();
     h.service.on('start-requested', told);
     expect(() => {
-      h.service.requestStart({ title: 'x'.repeat(501) });
-    }).toThrow('invalid start request: title is over 500 characters');
+      h.service.requestStart({
+        source: 'notification',
+        calendarEvent: { ...STANDUP, eventId: '' },
+      });
+    }).toThrow('invalid start request: calendarEvent.eventId is blank');
     expect(told).not.toHaveBeenCalled();
     expect(h.service.takePendingStart()).toBeNull();
+  });
+
+  // A prompt's Take notes carries the invite's title, which has no length limit: refused, it would
+  // fail every time for that event.
+  it("cuts a requested start's calendar title to what the API stores, and the window's start takes it", async () => {
+    const h = harness();
+    h.service.requestStart({
+      source: 'notification',
+      title: 'x'.repeat(600),
+      calendarEvent: STANDUP,
+    });
+    const request = h.service.takePendingStart();
+    expect(request).toEqual({
+      source: 'notification',
+      title: 'x'.repeat(500),
+      calendarEvent: STANDUP,
+    });
+    const started = await h.service.start(request ?? {});
+    expect(started).toMatchObject({ phase: 'recording', title: 'x'.repeat(500) });
+    expect(lastMeeting(h)).toMatchObject({ title: 'x'.repeat(500), calendarEvent: STANDUP });
   });
 
   // A start request is a Start like any other: it never opens past the budget (cost guard G3).
