@@ -18,7 +18,7 @@ import {
   type FollowState,
   type LiveTranscriptState,
   type ScrollMetrics,
-} from './liveTranscript';
+} from './liveTranscriptModel';
 
 const MEETING = '9b2e6f10-7c4d-4a5b-8e3f-61a0c2d9e874';
 const OTHER_MEETING = '5c1d7a4e-2f3b-4c8a-9e61-0d2b7f4a9c13';

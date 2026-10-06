@@ -3,7 +3,7 @@ import { renderToString } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
 import type { TranscriptSegmentChange } from '../../../shared/capture';
 import type { InterimTranscript, TranscriptSegment } from '../../../shared/transcript';
-import { openMeeting, type TranscriptAction, type TranscriptItem } from './liveTranscript';
+import { openMeeting, type TranscriptAction, type TranscriptItem } from './liveTranscriptModel';
 import {
   FrameBatcher,
   type FrameScheduler,

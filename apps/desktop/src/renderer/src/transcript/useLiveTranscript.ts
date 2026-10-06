@@ -10,7 +10,7 @@ import {
   type TranscriptAction,
   type TranscriptItem,
   transcriptItems,
-} from './liveTranscript';
+} from './liveTranscriptModel';
 
 /** The part of `window.roger` the panel listens to. */
 export type TranscriptEvents = Pick<

@@ -24,6 +24,11 @@ import {
  *   come before its line (main holds mic lines for the echo check), so it waits for the line.
  * - Every event names its meeting, and an event for another meeting is ignored: the panel of a
  *   past meeting must never show the lines of the one recording now.
+ *
+ * Not named `liveTranscript.ts` (the plan's first name): the Mac's disk ignores case, so beside
+ * LiveTranscript.tsx an import of './LiveTranscript' loads that `.ts` file instead of the
+ * component (TS1261), and `LiveTranscript.test.ts` overwrites `liveTranscript.test.ts`. Keep every
+ * file name in this folder distinct ignoring case.
  */
 
 export interface FinalLine {
