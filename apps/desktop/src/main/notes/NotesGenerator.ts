@@ -325,9 +325,9 @@ export class NotesGenerator {
       // decides at the next launch. Nothing is written up for a meeting that may go on.
       if (recording.stopFailed) return;
       const current = store.getPendingGenerate(meetingId);
-      // None, or a failed one (Retry's): a new row. A row that has not failed keeps its run id
-      // (an attempt may have reached the API). With auto-generate off, only a row the Generate
-      // button wrote during the recording runs, now that the meeting ended.
+      // None, or a failed one (Retry's): a new row. Any other keeps its template and run id: the
+      // Generate button pressed during the recording, which `waitFor` held until now. With
+      // auto-generate off, only that row runs.
       if (preferences.autoGenerate() && current?.lastError !== null) {
         const row = this.newRow(meetingId, this.templateAtStop(meetingId), 'after_stop');
         store.putPendingGenerate(row);
