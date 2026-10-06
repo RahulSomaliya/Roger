@@ -3,6 +3,7 @@ import { renderToString } from 'react-dom/server';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { type CaptureStatus, idleCaptureStatus } from '../../../shared/capture';
 import type { MeetingSummary } from '../../../shared/meetings';
+import type { TranscriptSegment } from '../../../shared/transcript';
 import type { Read } from '../meeting/useMeeting';
 import type * as UseMeeting from '../meeting/useMeeting';
 import { RecentMeetings } from './RecentMeetings';
@@ -13,6 +14,8 @@ import type { Shell } from './ShellContext';
 const fakes = vi.hoisted(() => ({
   shell: null as Shell | null,
   recent: null as Read<MeetingSummary[]> | null,
+  /** The refreshKey each render passed: what decides when the list reads again. */
+  keys: [] as string[],
 }));
 vi.mock('./ShellContext', () => ({
   useShell: () => {
@@ -22,8 +25,9 @@ vi.mock('./ShellContext', () => ({
 }));
 vi.mock('../meeting/useMeeting', async (importOriginal) => ({
   ...(await importOriginal<typeof UseMeeting>()),
-  useRecentMeetings: () => {
+  useRecentMeetings: (refreshKey: string) => {
     if (fakes.recent === null) throw new Error('set fakes.recent first');
+    fakes.keys.push(refreshKey);
     return fakes.recent;
   },
 }));
@@ -52,13 +56,18 @@ const MEETINGS: MeetingSummary[] = [
   },
 ];
 
-function shell(route: Route, status: CaptureStatus | null = IDLE, recordingId?: string): Shell {
+function shell(
+  route: Route,
+  status: CaptureStatus | null = IDLE,
+  recordingId?: string,
+  segments: TranscriptSegment[] = [],
+): Shell {
   return {
     route,
     navigate: vi.fn(),
     capture: {
       status,
-      segments: [],
+      segments,
       interim: { mic: null, system: null },
       localError: null,
       busy: false,
@@ -87,9 +96,20 @@ function buttons(html: string): { title: string; current: boolean }[] {
   }));
 }
 
+/** The refreshKey RecentMeetings passes for this shell. */
+function keyFor(fake: Shell): string {
+  fakes.shell = fake;
+  fakes.keys = [];
+  render();
+  const [key] = fakes.keys;
+  if (key === undefined) throw new Error('RecentMeetings never asked for the list');
+  return key;
+}
+
 beforeEach(() => {
   fakes.shell = shell({ name: 'home' });
   fakes.recent = recent(undefined);
+  fakes.keys = [];
 });
 
 describe('RecentMeetings', () => {
@@ -130,4 +150,35 @@ describe('RecentMeetings', () => {
     expect(buttons(html)).toHaveLength(2);
     expect(html).not.toContain('No meetings yet');
   });
+
+  it('reads the list again when a recording starts or stops, never on the idle heartbeat', () => {
+    // Main sends an idle status after every uploader pass, every 2 s, each a new object.
+    fakes.recent = recent(MEETINGS);
+    const home = { name: 'home' } as const;
+    const idle = keyFor(shell(home, { ...IDLE }));
+    expect(keyFor(shell(home, { ...IDLE, upload: { ...IDLE.upload, pending: 4 } }))).toBe(idle);
+    const recording = keyFor(
+      shell(home, { ...IDLE, phase: 'recording', meetingId: RENEWAL, startedAt: null }, RENEWAL),
+    );
+    expect(recording).not.toBe(idle);
+    const stopped = keyFor(shell(home, { ...IDLE }, RENEWAL, [said(RENEWAL)]));
+    expect(stopped).not.toBe(recording);
+    expect(stopped).not.toBe(idle);
+  });
 });
+
+/** A line said in meeting `meetingId`, as useCapture keeps it. */
+function said(meetingId: string): TranscriptSegment {
+  return {
+    id: `${meetingId}-1`,
+    meetingId,
+    source: 'system',
+    speaker: 'them',
+    startMs: 1200,
+    endMs: 3000,
+    text: 'Can we talk about the renewal?',
+    confidence: 0.9,
+    words: null,
+    createdAt: '2026-10-06T14:00:03.000Z',
+  };
+}

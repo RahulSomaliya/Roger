@@ -1,5 +1,6 @@
 import '../meeting/recentMeetings.css';
 import { recentMeetingLabel } from '../meeting/meetingTimes';
+import { recentMeetingsKey } from '../meeting/recentMeetingsKey';
 import { useRecentMeetings } from '../meeting/useMeeting';
 import { meetingPhase } from './captureMeeting';
 import { useShell } from './ShellContext';
@@ -14,15 +15,9 @@ export function RecentMeetings() {
   const { route, navigate, capture, captureMeeting } = useShell();
   const livePhase = meetingPhase(captureMeeting, capture.status);
   const liveId = livePhase !== 'idle' ? (captureMeeting?.id ?? null) : null;
-  // Read again on every status main sends outside a recording: a start adds a meeting, a Stop
-  // ends it or deletes it when nobody spoke. Not only when the phase this page sees changes: React
-  // renders a burst of statuses once (the preview's scenarios send `recording` then `idle` in one
-  // task), so a key built from the phases it saw can miss a whole recording. While one records,
-  // main sends a status with every line, so a recording reads once, at its start.
-  const status = capture.status;
-  const recent = useRecentMeetings(
-    status?.phase === 'recording' ? `recording ${status.meetingId ?? ''}` : status,
-  );
+  // Read again when a recording starts or stops, never on main's idle heartbeat: the key is a
+  // string built from what changes the list (recentMeetingsKey), never the status object.
+  const recent = useRecentMeetings(recentMeetingsKey(capture.status, capture.segments));
   const meetings = recent.value ?? [];
   const now = new Date();
   return (

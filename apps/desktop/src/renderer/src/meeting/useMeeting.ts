@@ -19,12 +19,12 @@ import { LatestRead, type ReadState } from './latestRead';
 export type Read<T> = ReadState<T> & { readonly refresh: () => void };
 
 /**
- * Shows `reader`'s answer, and reads again now and whenever `refreshKey` changes (compared as
- * React compares dependencies, so an object key changes with each new object), keeping the last
+ * Shows `reader`'s answer, and reads again now and whenever `refreshKey` changes, keeping the last
  * answer on screen meanwhile (LatestRead). The key is what tells the page main's answer may have
- * changed.
+ * changed. A string on purpose: an object key changes with every new object, and the capture
+ * status is a new object every 2 s (recentMeetingsKey).
  */
-function useLatestRead<T>(reader: LatestRead<T>, refreshKey: unknown): Read<T> {
+function useLatestRead<T>(reader: LatestRead<T>, refreshKey: string): Read<T> {
   // The server snapshot is the empty state: renderToString (the shell tests) never reads.
   const state = useSyncExternalStore(reader.subscribe, reader.getSnapshot, reader.getSnapshot);
   useEffect(() => {
@@ -57,10 +57,10 @@ export function useMeeting(meetingId: string, refreshKey: string): Read<StoredMe
 }
 
 /**
- * The newest meetings on this Mac (`meetings:list`). Pass what changes the list as `refreshKey`:
- * a recording that starts adds one, and Stop ends it, or deletes it when nobody spoke.
+ * The newest meetings on this Mac (`meetings:list`). Pass recentMeetingsKey as `refreshKey`: it
+ * changes when a recording starts or stops, and never on the status main sends every 2 s.
  */
-export function useRecentMeetings(refreshKey: unknown): Read<MeetingSummary[]> {
+export function useRecentMeetings(refreshKey: string): Read<MeetingSummary[]> {
   const [reader] = useState(
     () =>
       new LatestRead(
