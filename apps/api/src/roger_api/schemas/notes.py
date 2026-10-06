@@ -56,11 +56,17 @@ def note_doc_problem(doc: object) -> str | None:
     if not isinstance(doc, dict) or doc.get("type") != "doc":
         return "not a TipTap doc"
     stack: list[tuple[object, int]] = [(doc, 1)]
+    padded_exponents = 0
     while stack:
         value, level = stack.pop()
         if value is None or isinstance(value, str | int):  # bool is an int
             continue
         if isinstance(value, float) and math.isfinite(value):
+            # `json.dumps` writes a one-digit exponent with a zero (1e-07), JSON.stringify without
+            # (1e-7): a byte the desktop never counted. For 1e-5 and 1e-6, which JSON.stringify
+            # writes longer (0.00001), not counting it only leaves the measure more lenient.
+            if "e-0" in repr(value):
+                padded_exponents += 1
             continue
         # NaN and Infinity end up here: Python's JSON parser reads them, but JSON itself, the
         # desktop and jsonb never carry them.
@@ -84,12 +90,12 @@ def note_doc_problem(doc: object) -> str | None:
         for key, child in value.items():
             free = key == "content" and isinstance(child, list)
             stack.append((child, level if free else level + 1))
-    # `JSON.stringify`'s length for everything a doc holds (strings, whole numbers, booleans):
-    # compact separators, and characters as they are, not as \u escapes. An unpaired surrogate,
-    # which plain UTF-8 cannot encode, counts 3 bytes, as the U+FFFD stored for it
-    # (`storable_doc`); JSON.stringify writes it as a 6-byte escape, so this stays more lenient.
+    # `JSON.stringify`'s length or less: compact separators, characters as they are, not as \u
+    # escapes, and floats less their padded exponents (above). An unpaired surrogate, which plain
+    # UTF-8 cannot encode, counts 3 bytes, as the U+FFFD stored for it (`storable_doc`);
+    # JSON.stringify writes it as a 6-byte escape, so this stays more lenient.
     text = json.dumps(doc, ensure_ascii=False, separators=(",", ":"))
-    size = len(text.encode("utf-8", "surrogatepass"))
+    size = len(text.encode("utf-8", "surrogatepass")) - padded_exponents
     if size > MAX_NOTE_DOC_BYTES:
         return f"larger than {MAX_NOTE_DOC_BYTES} bytes"
     return None

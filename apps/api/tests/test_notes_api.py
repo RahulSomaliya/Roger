@@ -636,6 +636,27 @@ def test_an_unpaired_surrogate_is_measured_no_larger_than_the_desktop_measures_i
     assert note_doc_problem(doc_saying(lone)) is None
 
 
+def test_a_small_float_is_measured_as_json_stringify_writes_it() -> None:
+    # Python writes a one-digit exponent with a zero (1e-07) where JSON.stringify does not (1e-7):
+    # counted as Python writes it, a doc the desktop measured at the limit was a 422.
+    def floats_saying(text: str) -> Json:
+        doc = doc_saying(text)
+        doc["content"][0]["attrs"] = {"x": 1e-7, "y": -2.5e-9}
+        return doc
+
+    as_stringified = (
+        '{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":""}],'
+        '"attrs":{"x":1e-7,"y":-2.5e-9}}]}'
+    )
+    assert json.loads(as_stringified) == floats_saying("")
+    at_the_limit = "a" * (MAX_NOTE_DOC_BYTES - len(as_stringified))
+
+    assert note_doc_problem(floats_saying(at_the_limit)) is None
+    assert note_doc_problem(floats_saying(at_the_limit + "a")) == (
+        f"larger than {MAX_NOTE_DOC_BYTES} bytes"
+    )
+
+
 def test_values_json_cannot_carry_are_refused() -> None:
     for value in (float("nan"), float("inf"), float("-inf")):
         doc = {"type": "doc", "content": [{"type": "paragraph", "attrs": {"value": value}}]}

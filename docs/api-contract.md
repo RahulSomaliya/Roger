@@ -353,8 +353,9 @@ Limits on `doc`. Breaking one is a `422 validation_error` whose message names `b
 rule, never the doc's text, and nothing is stored:
 
 - a JSON object whose `type` is `"doc"`;
-- at most 512 KiB (524,288 bytes) as compact JSON in UTF-8: no spaces after `,` and `:`, and
-  characters as they are, not as `\u` escapes;
+- at most 512 KiB (524,288 bytes) as compact JSON in UTF-8: no spaces after `,` and `:`,
+  characters as they are, not as `\u` escapes, and numbers as `JSON.stringify` writes them
+  (`1e-7`, not `1e-07`);
 - at most 32 levels deep. The doc is level 1, and every object or array is one level below its
   parent, except an array under a `content` key, which stays on the level of the object holding
   it. So each node is one level below the node holding it, and a bullet list tabbed 13 deep with
