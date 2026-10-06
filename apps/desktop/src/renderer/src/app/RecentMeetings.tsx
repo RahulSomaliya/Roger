@@ -1,53 +1,70 @@
+import '../meeting/recentMeetings.css';
+import { recentMeetingLabel } from '../meeting/meetingTimes';
+import { recentMeetingsKey } from '../meeting/recentMeetingsKey';
+import { useRecentMeetings } from '../meeting/useMeeting';
 import { meetingPhase } from './captureMeeting';
-import { formatClockTime, UNTITLED_MEETING } from './labels';
 import { useShell } from './ShellContext';
 
 /**
- * Placeholder from M4-S1; M4-S4 owns this file afterwards and lists the meetings stored on this
- * Mac (meetings:list). Until then: the meeting this window recorded last, so its transcript is one
- * click away after Stop. Takes no props, so S4 rewrites it without touching the sidebar.
+ * The sidebar's recent meetings: the newest stored on this Mac (`meetings:list`), the one Roger
+ * records marked live, the one shown marked current. Each opens its meeting page. On a narrow
+ * window the sidebar is a bar across the top and this list scrolls sideways in its own strip
+ * (meeting/recentMeetings.css). Takes no props: the sidebar mounts it as it is.
  */
 export function RecentMeetings() {
   const { route, navigate, capture, captureMeeting } = useShell();
-  const recording = meetingPhase(captureMeeting, capture.status) !== 'idle';
+  const livePhase = meetingPhase(captureMeeting, capture.status);
+  const liveId = livePhase !== 'idle' ? (captureMeeting?.id ?? null) : null;
+  // Read again when a recording starts or stops, never on main's idle heartbeat: the key is a
+  // string built from what changes the list (recentMeetingsKey), never the status object.
+  const recent = useRecentMeetings(recentMeetingsKey(capture.status, capture.segments));
+  const meetings = recent.value ?? [];
+  const now = new Date();
   return (
-    <section className="sidebar-section" aria-labelledby="recent-meetings">
+    <section className="sidebar-section recent-meetings" aria-labelledby="recent-meetings">
       <h2 id="recent-meetings" className="sidebar-heading">
         Recent
       </h2>
-      {captureMeeting === null ? (
-        <p className="sidebar-empty">No meetings yet</p>
-      ) : (
-        <ul className="sidebar-list">
-          <li>
-            <button
-              type="button"
-              className="sidebar-link"
-              aria-current={
-                route.name === 'meeting' && route.meetingId === captureMeeting.id
-                  ? 'page'
-                  : undefined
-              }
-              onClick={() => {
-                navigate({ name: 'meeting', meetingId: captureMeeting.id });
-              }}
-            >
-              {recording ? (
-                <>
-                  <span className="recording-dot" aria-hidden="true" />
-                  <span className="visually-hidden">Recording: </span>
-                </>
-              ) : null}
-              <span className="sidebar-link-text">{UNTITLED_MEETING}</span>
-              {captureMeeting.startedAt !== null ? (
+      {recent.error !== null ? (
+        <div role="alert" className="recent-meetings-error">
+          <span>{recent.error}</span>
+          <button type="button" className="recent-meetings-retry" onClick={recent.refresh}>
+            Try again
+          </button>
+        </div>
+      ) : null}
+      {recent.value?.length === 0 ? <p className="sidebar-empty">No meetings yet</p> : null}
+      {meetings.length > 0 ? (
+        <ul className="sidebar-list recent-meetings-list">
+          {meetings.map((meeting) => (
+            <li key={meeting.id}>
+              <button
+                type="button"
+                className="sidebar-link"
+                // The whole title, for one the sidebar cuts short.
+                title={meeting.title}
+                aria-current={
+                  route.name === 'meeting' && route.meetingId === meeting.id ? 'page' : undefined
+                }
+                onClick={() => {
+                  navigate({ name: 'meeting', meetingId: meeting.id });
+                }}
+              >
+                {meeting.id === liveId ? (
+                  <>
+                    <span className="recording-dot" aria-hidden="true" />
+                    <span className="visually-hidden">Recording: </span>
+                  </>
+                ) : null}
+                <span className="sidebar-link-text">{meeting.title}</span>
                 <span className="sidebar-link-meta">
-                  {formatClockTime(captureMeeting.startedAt)}
+                  {recentMeetingLabel(meeting.startedAt, now)}
                 </span>
-              ) : null}
-            </button>
-          </li>
+              </button>
+            </li>
+          ))}
         </ul>
-      )}
+      ) : null}
     </section>
   );
 }

@@ -1,9 +1,8 @@
-// Stub from P2-F1; owned by M4-S4.
-import type { MeetingsApi } from '../../shared/ipc/meetings';
+import { meetingsChannels, type MeetingsApi } from '../../shared/ipc/meetings';
+import { invoke } from '../bridge';
 
-/**
- * The meetings feature's part of `window.roger`, built from the helpers in ../bridge.ts. It
- * implements src/shared/ipc/meetings.ts: a member added there fails the type check until it is
- * here.
- */
-export const meetingsBridge: MeetingsApi = {};
+/** The meetings feature's part of `window.roger`: reads of main's local store. */
+export const meetingsBridge: MeetingsApi = {
+  listMeetings: (request) => invoke(meetingsChannels.MeetingsList, request),
+  getMeeting: (request) => invoke(meetingsChannels.MeetingsGet, request),
+};
