@@ -36,15 +36,28 @@ interface VendorScript {
 
 describe('buildStreamingUrl', () => {
   it('asks for the v3 stream with our PCM under AssemblyAI names, token as the auth', () => {
-    const url = new URL(buildStreamingUrl('wss://streaming.assemblyai.com', settings, 'tok/en+1'));
+    const url = new URL(
+      buildStreamingUrl('wss://streaming.assemblyai.com', settings, 'tok/en+1', 120_000),
+    );
     expect(url.pathname).toBe('/v3/ws');
     expect(Object.fromEntries(url.searchParams)).toEqual({
       speech_model: 'universal-streaming-english',
       sample_rate: '16000',
       encoding: 'pcm_s16le',
       format_turns: 'true',
+      inactivity_timeout: '120',
       token: 'tok/en+1',
     });
+  });
+
+  it('keeps the inactivity timeout inside the 5 to 3600 s AssemblyAI takes', () => {
+    const timeout = (ms: number) =>
+      new URL(buildStreamingUrl('wss://x', settings, 't', ms)).searchParams.get(
+        'inactivity_timeout',
+      );
+    expect(timeout(45_400)).toBe('45');
+    expect(timeout(1_000)).toBe('5');
+    expect(timeout(7_200_000)).toBe('3600');
   });
 
   it('leaves format_turns off for models that always format (Universal-3 Pro)', () => {
@@ -53,6 +66,7 @@ describe('buildStreamingUrl', () => {
         'wss://streaming.assemblyai.com',
         { ...settings, model: 'universal-3-6-pro' },
         't',
+        120_000,
       ),
     );
     expect(url.searchParams.get('speech_model')).toBe('universal-3-6-pro');
@@ -60,7 +74,7 @@ describe('buildStreamingUrl', () => {
   });
 
   it('refuses an encoding it has no AssemblyAI name for', () => {
-    expect(() => buildStreamingUrl('wss://x', { ...settings, encoding: 'opus' }, 't')).toThrow(
+    expect(() => buildStreamingUrl('wss://x', { ...settings, encoding: 'opus' }, 't', 1)).toThrow(
       SttConnectError,
     );
   });
@@ -128,6 +142,12 @@ describe('AssemblyAiSpeechToText', () => {
     return { stream, events };
   }
 
+  it('asks the vendor for the configured inactivity timeout', async () => {
+    const { stream } = await open({ vendorIdleTimeoutMs: 300_000 });
+    expect(new URL(log.url, 'ws://x').searchParams.get('inactivity_timeout')).toBe('300');
+    await stream.close();
+  });
+
   it('authenticates with the token, streams audio, keeps one formatted final per turn, and terminates', async () => {
     script.onAudio = (socket, frame) => {
       if (frame !== 1) return;
@@ -141,6 +161,8 @@ describe('AssemblyAiSpeechToText', () => {
     const query = new URL(log.url, 'ws://x').searchParams;
     expect(query.get('token')).toBe('temp-token');
     expect(query.get('encoding')).toBe('pcm_s16le');
+    // Explicit, never left unset: the default cost guard (costGuards.sttVendorIdleTimeoutMs).
+    expect(query.get('inactivity_timeout')).toBe('120');
 
     stream.send(new Uint8Array(CHUNK_100_MS));
     await waitFor(() => events.some((e) => e.type === 'final'));

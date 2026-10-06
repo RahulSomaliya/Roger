@@ -69,7 +69,8 @@ async function main(): Promise<void> {
     store,
     api,
     uploader,
-    createSpeechToText: (provider) => createSpeechToText(provider, { logger }),
+    createSpeechToText: (provider) =>
+      createSpeechToText(provider, { logger, guards: config.costGuards }),
     ensureMicrophoneAccess: () => ensureMicrophoneAccess(),
     logger: logger.child({ component: 'capture' }),
     sttProviderOverride: config.sttProviderOverride,

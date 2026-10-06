@@ -7,6 +7,12 @@ import type { SpeechToText } from './SpeechToText';
 export interface SttVendorOptions extends WebSocketSttOptions {
   /** The vendor's websocket origin. Tests point it at a local fake vendor. */
   baseUrl?: string;
+  /**
+   * Asks the vendor to close a session that receives nothing for this long, where it can
+   * (AssemblyAI's `inactivity_timeout`; Deepgram has no such parameter and closes a quiet socket
+   * after about 10 s on its own). The net for when Roger cannot close the session itself.
+   */
+  vendorIdleTimeoutMs?: number;
 }
 
 export type SttVendorFactory = (options: SttVendorOptions) => SpeechToText;

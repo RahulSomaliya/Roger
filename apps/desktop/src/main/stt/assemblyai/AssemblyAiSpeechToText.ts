@@ -1,4 +1,5 @@
 import { PCM_ENCODING } from '../../../shared/ipc';
+import { DEFAULT_COST_GUARDS } from '../../costGuards';
 import {
   describeCloseWith,
   type SttProtocol,
@@ -15,7 +16,8 @@ import { ASSEMBLYAI_TERMINATE, parseAssemblyAiMessage } from './messages';
 /**
  * AssemblyAI Universal-Streaming (v3) adapter. Docs relied on, read 2026-10-06:
  * - https://www.assemblyai.com/docs/streaming/api-spec/streaming-websocket (URL, query
- *   parameters, messages; 50 to 1000 ms of audio per message; sessions capped at 3 hours)
+ *   parameters, messages; 50 to 1000 ms of audio per message; sessions capped at 3 hours;
+ *   `inactivity_timeout` 5 to 3600 s, unset meaning none)
  * - https://www.assemblyai.com/docs/streaming/authenticate-with-a-temporary-token (the `token`
  *   query parameter; one token may open several sessions, so mic and system share one)
  * - https://www.assemblyai.com/docs/streaming/message-sequence (format_turns sends a turn twice)
@@ -31,8 +33,8 @@ import { ASSEMBLYAI_TERMINATE, parseAssemblyAiMessage } from './messages';
  * This file only describes the protocol: the token in the query string, Begin as the ready signal,
  * binary PCM in 50 to 1000 ms frames, Terminate on stop answered by Termination (after the last
  * turn), and one saved line per turn. The socket lifecycle, its timeouts and the forced close are
- * SttConnection's (core/SttConnection.ts). A vendor close or error mid-call becomes a visible error
- * event; nothing reconnects (M2).
+ * SttConnection's (core/SttConnection.ts). A vendor close or error mid-call becomes a fatal error
+ * event; CaptureSession decides whether to reopen, through its open budget.
  */
 
 export const ASSEMBLYAI_DEFAULT_BASE_URL = 'wss://streaming.assemblyai.com';
@@ -61,6 +63,8 @@ const ASSEMBLYAI_CLOSE_MEANINGS: Readonly<Record<number, string>> = {
 
 export interface AssemblyAiProtocolOptions {
   baseUrl?: string;
+  /** Sent as `inactivity_timeout`. Default: costGuards.sttVendorIdleTimeoutMs (120 s). */
+  vendorIdleTimeoutMs?: number;
   /**
    * How long a finished turn waits for its formatted copy. The docs say it follows "immediately";
    * the bound keeps a lost copy from holding a line back for the rest of the call.
@@ -70,11 +74,16 @@ export interface AssemblyAiProtocolOptions {
 
 export type AssemblyAiOptions = WebSocketSttOptions & AssemblyAiProtocolOptions;
 
+/** AssemblyAI's accepted range for `inactivity_timeout`, in seconds. */
+const MIN_INACTIVITY_TIMEOUT_S = 5;
+const MAX_INACTIVITY_TIMEOUT_S = 3600;
+
 /** The websocket URL for one stream. It carries the token: never log it. */
 export function buildStreamingUrl(
   baseUrl: string,
   settings: SttStreamSettings,
   token: string,
+  inactivityTimeoutMs: number,
 ): string {
   if (settings.encoding !== PCM_ENCODING) {
     throw new SttConnectError(
@@ -93,11 +102,18 @@ export function buildStreamingUrl(
   // M3: the jargon list plugs in here as `keyterms_prompt`.
   // M9: streaming speaker labels plug in here as `speaker_labels=true` (then see messages.ts).
   // Not sent: `settings.language` (the English model takes only English; `language_codes` is for
-  // the multilingual one), and `inactivity_timeout`, whose absence means the vendor never closes
-  // a quiet session, as Deepgram's KeepAlive keeps one open. AssemblyAI bills the time a session
-  // is open, not the audio in it, so a silent or dead system stream costs as much as a live one
-  // until Stop. An inactivity timeout would not change that: it counts messages, and the renderer
-  // sends silent chunks too.
+  // the multilingual one).
+  // The vendor-side safety net. AssemblyAI bills the time a session is open, not the audio in it,
+  // and with no `inactivity_timeout` it never closes a quiet session: one Roger cannot close (the
+  // Mac slept with the socket half-open, main hung) bills to the 3-hour cap, $0.45 a stream. The
+  // timeout counts messages, so silent chunks keep a live stream open; it is set above the
+  // capture's own stall close (30 s), so it only fires when Roger could not act. The 3-hour cap
+  // itself is set on the token by the API (`max_session_duration_seconds`).
+  const timeoutS = Math.round(inactivityTimeoutMs / 1000);
+  url.searchParams.set(
+    'inactivity_timeout',
+    String(Math.min(MAX_INACTIVITY_TIMEOUT_S, Math.max(MIN_INACTIVITY_TIMEOUT_S, timeoutS))),
+  );
   // A temporary token goes in the query string. The master key would go in an Authorization
   // header, but it never reaches the desktop (house rule 3).
   url.searchParams.set('token', token);
@@ -107,11 +123,13 @@ export function buildStreamingUrl(
 export function assemblyAiProtocol(options: AssemblyAiProtocolOptions = {}): SttProtocol {
   const baseUrl = options.baseUrl ?? ASSEMBLYAI_DEFAULT_BASE_URL;
   const formattedTurnWaitMs = options.formattedTurnWaitMs ?? 2_000;
+  const inactivityTimeoutMs =
+    options.vendorIdleTimeoutMs ?? DEFAULT_COST_GUARDS.sttVendorIdleTimeoutMs;
   return {
     provider: 'assemblyai',
     vendorName: 'AssemblyAI',
     target: ({ accessToken, settings }) => ({
-      url: buildStreamingUrl(baseUrl, settings, accessToken),
+      url: buildStreamingUrl(baseUrl, settings, accessToken, inactivityTimeoutMs),
       headers: {},
     }),
     // Begin. The core listens from socket creation, so a Begin that lands in the same read as the
