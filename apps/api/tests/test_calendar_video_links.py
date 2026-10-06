@@ -186,3 +186,35 @@ def test_find_join_link_reads_an_html_description() -> None:
         url="https://teams.microsoft.com/l/meetup-join/19%3ameeting_abc%40thread.v2/0"
         "?context=%7b%7d&btype=a",
     )
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        # A query parameter whose name starts with a legacy HTML entity name (`reg`, `not`,
+        # `para`, `times`, `amp`): Python's `html.unescape` decodes those even with no `;`.
+        "https://us02web.zoom.us/j/123?pwd=abc&region=us",
+        "https://zoom.us/j/1?pwd=x&notify=1",
+        "https://teams.microsoft.com/meet/123?p=a&param=1",
+        "https://zoom.us/j/1?pwd=x&times=1",
+        "https://zoom.us/j/1?pwd=x&amp=1",
+        # A decoded `<` would end the link and drop the password after it.
+        "https://zoom.us/j/1?uname=a&lt=2&pwd=abc",
+        # Not an entity: a legacy name followed by more letters and `;` stays as typed.
+        "https://zoom.us/j/1?pwd=x&region;=1",
+    ],
+)
+def test_find_join_link_keeps_a_plain_text_query_as_typed(url: str) -> None:
+    # A location is plain text; so are descriptions written by the Zoom add-in or an API.
+    link = find_join_link(f"Zoom: {url} ")
+
+    assert link is not None
+    assert link.url == url
+
+
+def test_find_join_link_decodes_an_html_entity_once() -> None:
+    # `&amp;region` in an href is `&region`; decoding twice would turn `&reg` into a sign.
+    text = '<a href="https://zoom.us/j/1?pwd=x&amp;region=us&#38;a=1">Join</a>'
+    assert find_join_link(text) == JoinLink(
+        provider="zoom", url="https://zoom.us/j/1?pwd=x&region=us&a=1"
+    )

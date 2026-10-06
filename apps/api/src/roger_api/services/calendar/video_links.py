@@ -24,6 +24,7 @@ import html
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
+from html.entities import html5
 from typing import Literal
 from urllib.parse import urlsplit
 
@@ -83,6 +84,8 @@ _HTTPS_DEFAULT_PORT = 443
 _URL_IN_TEXT = re.compile(r"https?://[^\s<>\"'`]+", re.IGNORECASE)
 # Sentence punctuation and closing brackets after a link are not part of it.
 _TRAILING_PUNCTUATION = ".,;:!?)]}*"
+# A character reference that ends in `;`: a name, a decimal or a hex number.
+_CHARACTER_REFERENCE = re.compile(r"&(?:[A-Za-z][A-Za-z0-9]*|#[0-9]+|#[xX][0-9A-Fa-f]+);")
 
 
 def parse_join_link(raw: str) -> JoinLink | None:
@@ -116,11 +119,30 @@ def parse_join_link(raw: str) -> JoinLink | None:
 def find_join_link(text: str) -> JoinLink | None:
     """The first allowlisted join link in free text: an event's location or description.
 
-    Descriptions written in Google's editor are HTML, so entities are decoded first: an href's
-    `&amp;` would otherwise stay in the link the desktop opens.
+    Descriptions written in Google's editor are HTML, so character references are decoded first:
+    an href's `&amp;` would otherwise stay in the link the desktop opens.
     """
-    for match in _URL_IN_TEXT.finditer(html.unescape(text)):
+    for match in _URL_IN_TEXT.finditer(_decode_references(text)):
         link = parse_join_link(match.group().rstrip(_TRAILING_PUNCTUATION))
         if link is not None:
             return link
     return None
+
+
+def _decode_references(text: str) -> str:
+    """`text` with each complete character reference (`&amp;`, `&#38;`) decoded, once.
+
+    Not `html.unescape`: it also decodes legacy names with no `;`, and a location or a plain-text
+    description holds raw queries. `&region=us` came back as a registered sign and `ion=us`, and
+    `&lt=2` as `<=2`, which ends the link before the password that follows. A browser leaves both
+    alone inside an href.
+    """
+
+    def decode(match: re.Match[str]) -> str:
+        reference = match.group()
+        if reference.startswith("&#"):
+            return html.unescape(reference)
+        # The name in full or nothing: `html.unescape("&region;")` is a decoded `&reg` + "ion;".
+        return html5.get(reference[1:], reference)
+
+    return _CHARACTER_REFERENCE.sub(decode, text)
