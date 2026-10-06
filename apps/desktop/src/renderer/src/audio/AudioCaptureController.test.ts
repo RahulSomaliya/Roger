@@ -1,5 +1,10 @@
 import { describe, expect, expectTypeOf, it, vi } from 'vitest';
-import { idleCaptureStatus } from '../../../shared/capture';
+import {
+  type CaptureStatus,
+  emptySourceStatus,
+  idleCaptureStatus,
+  type SourceHealth,
+} from '../../../shared/capture';
 import type {
   AudioChunkMessage,
   AudioSourceStateMessage,
@@ -47,19 +52,40 @@ class FakeCapture implements SourceCapture<FakeStream> {
   }
 }
 
-function rogerApi() {
-  const status = idleCaptureStatus({
+const MEETING = '0b6f6f0e-5a8e-4c41-9a3e-6f1c2f6c1a01';
+const NEXT_MEETING = '7d1d3c55-2f0b-4e7e-8a51-0c9e3f2b6d02';
+
+function idle(): CaptureStatus {
+  return idleCaptureStatus({
     state: 'idle',
     pending: 0,
     rejected: 0,
     lastError: null,
     nextAttemptAt: null,
   });
+}
+
+/** Main's status while it records; `mic` sets the mic source's health as main sees it. */
+function recording(
+  overrides: Partial<CaptureStatus> = {},
+  mic: SourceHealth = 'active',
+): CaptureStatus {
+  return {
+    ...idle(),
+    phase: 'recording',
+    meetingId: MEETING,
+    sources: { mic: { ...emptySourceStatus(), health: mic }, system: emptySourceStatus() },
+    ...overrides,
+  };
+}
+
+function rogerApi() {
+  const status = idle();
   const api = {
     startCapture: () => Promise.resolve(status),
     stopCapture: () => Promise.resolve(status),
     getCaptureStatus: () => Promise.resolve(status),
-    getSystemAudioSourceId: () => Promise.resolve('screen:1'),
+    getSystemAudioSourceId: vi.fn(() => Promise.resolve<string | null>('screen:1')),
     sendAudioChunk: vi.fn<(message: AudioChunkMessage) => void>(),
     reportAudioSourceState: vi.fn<(message: AudioSourceStateMessage) => void>(),
     onCaptureStatus: () => () => undefined,
@@ -79,10 +105,11 @@ function rogerApi() {
 function harness() {
   const captures: FakeCapture[] = [];
   /** What the next getUserMedia for the mic opens, or how it fails, once the test says so. */
-  const mic: { input: FakeInput; error: Error | null; ready: () => void } = {
+  const mic: { input: FakeInput; error: Error | null; ready: () => void; opens: number } = {
     input: USB_MIC,
     error: null,
     ready: () => undefined,
+    opens: 0,
   };
   const mediaDevices = new FakeMediaDevices(USB_MIC, BUILT_IN);
   const openSystemAudio = vi.fn(() => Promise.resolve(new FakeStream()));
@@ -91,6 +118,7 @@ function harness() {
     // The mic waits for the test: getUserMedia and the worklet setup take hundreds of ms.
     openMicrophone: () =>
       new Promise((resolve, reject) => {
+        mic.opens += 1;
         mic.ready = () => {
           if (mic.error === null) resolve(micStream(mic.input));
           else reject(mic.error);
@@ -122,8 +150,8 @@ function harness() {
 }
 
 /** Starts both sources the way a Start does, the mic answering at once. */
-async function started(h: ReturnType<typeof harness>): Promise<void> {
-  const starting = h.controller.start();
+async function started(h: ReturnType<typeof harness>, status = recording()): Promise<void> {
+  const starting = h.controller.start(status);
   await settle();
   h.micReady();
   await starting;
@@ -146,11 +174,11 @@ describe('AudioCaptureController', () => {
 
   it('stops a source still starting when main goes idle, and starts no other', async () => {
     const h = harness();
-    const starting = h.controller.start();
+    const starting = h.controller.start(recording());
     await settle();
     // Main stopped on its own (the Mac went to sleep) before the mic was up: nothing runs yet.
     expect(h.controller.running).toBe(false);
-    h.controller.followMain('idle');
+    h.controller.followMain(idle());
 
     h.micReady();
     await starting;
@@ -163,16 +191,14 @@ describe('AudioCaptureController', () => {
 
   it('stops every running source when main goes idle, and nothing while it records', async () => {
     const h = harness();
-    const starting = h.controller.start();
-    await settle();
-    h.micReady();
-    await starting;
+    await started(h);
     expect(h.live('mic')).toHaveLength(1);
     expect(h.live('system')).toHaveLength(1);
 
-    h.controller.followMain('recording');
+    h.controller.followMain(recording());
     expect(h.controller.running).toBe(true);
-    h.controller.followMain('idle');
+    expect(h.mic.opens).toBe(1);
+    h.controller.followMain(idle());
     await settle();
 
     expect(h.live('mic')).toEqual([]);
@@ -180,22 +206,17 @@ describe('AudioCaptureController', () => {
     expect(h.controller.running).toBe(false);
   });
 
-  it('never starts on top of a running capture', async () => {
+  it('never starts on top of a running capture: a second start keeps it', async () => {
     const h = harness();
-    const first = h.controller.start();
-    await settle();
-    h.micReady();
-    await first;
+    await started(h);
+    await h.controller.start(recording());
 
-    const second = h.controller.start();
-    await settle();
-    h.micReady();
-    await second;
-
-    // One capture per source: two would send main the same audio twice.
+    // One capture per source: two would send main the same audio twice. Restarting it would cut
+    // the mic for nothing.
     expect(h.live('mic')).toHaveLength(1);
     expect(h.live('system')).toHaveLength(1);
-    expect(h.captures.filter((capture) => capture.stopped)).toHaveLength(2);
+    expect(h.captures).toHaveLength(2);
+    expect(h.mic.opens).toBe(1);
   });
 
   it('sends each chunk with the wall clock of its first sample, as the capture dated it', async () => {
@@ -276,5 +297,99 @@ describe('AudioCaptureController', () => {
     // Call audio goes on: only the mic's session closes (G1).
     expect(h.live('system')).toHaveLength(1);
     await h.controller.stop();
+  });
+
+  it('opens the mic when main records and nothing captures: a reload, a wake, a resume', async () => {
+    // A page loaded mid-recording: a new controller, and main already recording.
+    const h = harness();
+    h.controller.followMain(recording());
+    await settle();
+    h.micReady();
+    await settle();
+
+    expect(h.live('mic')).toHaveLength(1);
+    expect(h.live('system')).toHaveLength(1);
+    h.controller.followMain(idle());
+    await settle();
+    expect(h.controller.running).toBe(false);
+  });
+
+  it('opens it once: statuses during that start, and a Start pressed meanwhile, join it', async () => {
+    const h = harness();
+    h.controller.followMain(recording());
+    h.controller.followMain(recording());
+    const pressed = h.controller.start(recording());
+    h.controller.followMain(recording());
+    await settle();
+    h.micReady();
+    await pressed;
+
+    expect(h.mic.opens).toBe(1);
+    expect(h.live('mic')).toHaveLength(1);
+    expect(h.live('system')).toHaveLength(1);
+  });
+
+  it('tells main when a mic opened for it fails, and does not retry it every status', async () => {
+    const h = harness();
+    h.mic.error = new DOMException('Permission denied', 'NotAllowedError');
+    h.controller.followMain(recording());
+    await settle();
+    h.micReady();
+    await settle();
+
+    expect(h.roger.reportAudioSourceState).toHaveBeenLastCalledWith({
+      source: 'mic',
+      state: 'error',
+      message: describeMediaError(h.mic.error),
+    });
+    // Main sends a status every second while it records; each would open the mic again.
+    h.controller.followMain(recording());
+    h.controller.followMain(recording());
+    await settle();
+    expect(h.mic.opens).toBe(1);
+  });
+
+  it('leaves the mic shut when main gave up on it for this meeting, not for the next', async () => {
+    const h = harness();
+    // Main closed the mic's session for good (G1): a failed or ended source never reopens.
+    h.controller.followMain(recording({}, 'error'));
+    h.controller.followMain(recording({}, 'ended'));
+    await settle();
+    expect(h.mic.opens).toBe(0);
+
+    h.controller.followMain(recording({ meetingId: NEXT_MEETING }));
+    await settle();
+    expect(h.mic.opens).toBe(1);
+  });
+
+  it("opens call audio only on Electron's path: the helper's tap runs in main", async () => {
+    const opensCallAudio = async (status: CaptureStatus): Promise<boolean> => {
+      const h = harness();
+      await started(h, status);
+      return h.roger.getSystemAudioSourceId.mock.calls.length > 0 && h.live('system').length > 0;
+    };
+    expect(await opensCallAudio(recording({ systemCapture: 'electron' }))).toBe(true);
+    expect(await opensCallAudio(recording({ systemCapture: 'tap' }))).toBe(false);
+    // No field: a main from before the helper (M2-T10), where Electron's path is the only one.
+    expect(await opensCallAudio(recording())).toBe(true);
+    // Null: main has not said. Opening ours could put a second call audio stream beside the tap.
+    expect(await opensCallAudio(recording({ systemCapture: null }))).toBe(false);
+  });
+
+  it('does not reopen the mic between a Stop and main going idle', async () => {
+    const h = harness();
+    await started(h);
+    // The person pressed Stop: capture here stops first, then main finishes its sessions, and
+    // its status tick meanwhile still says recording.
+    await h.controller.stop();
+    h.controller.followMain(recording());
+    await settle();
+    expect(h.mic.opens).toBe(1);
+    expect(h.controller.running).toBe(false);
+
+    h.controller.followMain(idle());
+    h.controller.followMain(recording({ meetingId: NEXT_MEETING }));
+    await settle();
+    expect(h.mic.opens).toBe(2);
   });
 });

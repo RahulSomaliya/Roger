@@ -1,4 +1,4 @@
-import type { CapturePhase } from '../../../shared/capture';
+import type { CaptureStatus } from '../../../shared/capture';
 import { PCM_SAMPLE_RATE } from '../../../shared/ipc';
 import type { CaptureApi } from '../../../shared/ipc/capture';
 import type { AudioSource } from '../../../shared/transcript';
@@ -49,16 +49,45 @@ export function browserCaptureDevices(): CaptureDevices<MediaStream> {
   };
 }
 
+/** What capture here follows of main's status. */
+export type MainCapture = Pick<CaptureStatus, 'phase' | 'meetingId' | 'sources' | 'systemCapture'>;
+
+/**
+ * Whether this page opens call audio: only on Electron's path. From M2-T10 the helper's tap runs
+ * in main, and a second call audio stream beside it would send main the call twice. No field is a
+ * main from before M2-T10, where Electron's path is the only one; null is a main that has not
+ * said, and a guess could double the call.
+ */
+function opensCallAudio(status: MainCapture): boolean {
+  return status.systemCapture === undefined || status.systemCapture === 'electron';
+}
+
 /** Runs both renderer-side captures and ships their chunks to main through the IPC contract. */
 export class AudioCaptureController<S extends CaptureStream = MediaStream> {
   private readonly captures = new Map<AudioSource, SourceCapture<S>>();
   /** Follows the mic through device changes while it captures. */
   private micRecovery: MicRecovery<S> | null = null;
   /**
-   * Bumped by stop(), so a start still in flight when main stopped (sleep, no speech) stops the
-   * source it was opening and starts no other, instead of running on with main idle.
+   * Bumped by every stop, so a start still in flight when main stopped (sleep, no speech) stops
+   * the source it was opening and starts no other, instead of running on with main idle.
    */
   private generation = 0;
+  /** The start in flight: a second start joins it, or the mic would be opened twice. */
+  private starting: Promise<AudioStartResult> | null = null;
+  /** Every stop still finishing: a start waits, or an old capture's last chunk would follow. */
+  private stopping: Promise<void> = Promise.resolve();
+  /** What the running capture's start answered, for a start that finds it running. */
+  private lastStart: AudioStartResult = { systemAudioError: null };
+  /** The meeting the capture runs for, as main named it when it started. */
+  private meetingId: string | null = null;
+  /** The meeting whose mic failed here: followMain leaves it shut, since main has the error. */
+  private micFailedFor: { meetingId: string | null } | null = null;
+  /**
+   * Set by stop(), the person's Stop (or a failed Start) that main is about to follow: until main
+   * says idle, its status still says recording (a stop takes seconds to finish the sessions), and
+   * followMain must not open the mic again in between.
+   */
+  private stoppedUntilIdle = false;
 
   constructor(
     // Capture's part only, not RogerApi: typed against every feature's part, this file and its test
@@ -79,18 +108,106 @@ export class AudioCaptureController<S extends CaptureStream = MediaStream> {
    * kept the device on; the next Start then put a second mic capture beside it, main sent the
    * vendor the mic at twice real time (AssemblyAI closes with 3007) and each reopen spent the
    * meeting's open budget. A stop with nothing running costs nothing.
+   *
+   * And while main records, the mic captures (M2-T12): a page loaded mid-recording (a reload, the
+   * reload after a renderer crash, a resume at launch) or a mic stopped since opens it again here.
+   * Until its chunks come, main's stall close shuts the mic's vendor session after 30 s (G2), and
+   * the first chunk reopens it.
    */
-  followMain(phase: CapturePhase): void {
-    if (phase === 'idle') void this.stop();
+  followMain(status: MainCapture): void {
+    if (status.phase === 'idle') {
+      this.stoppedUntilIdle = false;
+      void this.stopCaptures();
+      return;
+    }
+    if (status.phase !== 'recording' || !this.shouldOpenMic(status)) return;
+    this.start(status).catch((error: unknown) => {
+      // Main shows it as the mic's error and closes the mic's session (G1); call audio goes on.
+      this.roger.reportAudioSourceState({
+        source: 'mic',
+        state: 'error',
+        message: describeMediaError(error),
+      });
+    });
   }
 
-  async start(): Promise<AudioStartResult> {
-    // Never on top of a capture: two on one source would send main the same audio twice. stop()
-    // bumps the generation before it awaits, so this start is the current one from here on.
-    const leftovers = this.stop();
+  /**
+   * Starts capture for the recording `status` describes: the mic (its failure throws) and, on
+   * Electron's path, call audio. Never on top of a capture, since two on one source would send
+   * main the same audio twice: it joins a start in flight and keeps a running capture.
+   */
+  start(status: MainCapture): Promise<AudioStartResult> {
+    this.stoppedUntilIdle = false;
+    if (this.starting !== null) return this.starting;
+    if (this.captures.has('mic')) return Promise.resolve(this.lastStart);
+    // The stop takes whatever ran without its mic, and bumps the generation before it awaits, so
+    // this start is the current one from here on.
+    const leftovers = this.stopCaptures();
     const generation = this.generation;
+    const starting = this.open(status, generation, leftovers).finally(() => {
+      if (this.starting === starting) this.starting = null;
+    });
+    this.starting = starting;
+    return starting;
+  }
+
+  /** The person's Stop, or a Start that failed: main stops next, and nothing reopens until then. */
+  stop(): Promise<void> {
+    this.stoppedUntilIdle = true;
+    return this.stopCaptures();
+  }
+
+  private stopCaptures(): Promise<void> {
+    this.generation += 1;
+    this.starting = null;
+    this.micRecovery?.stop();
+    this.micRecovery = null;
+    const captures = [...this.captures.values()];
+    this.captures.clear();
+    const stopping = Promise.allSettled([
+      this.stopping,
+      ...captures.map((capture) => capture.stop()),
+    ]).then(() => undefined);
+    this.stopping = stopping;
+    return stopping;
+  }
+
+  /**
+   * Main records and the mic does not capture. Not while a start runs (statuses join it), not
+   * between the person's Stop and main going idle (stoppedUntilIdle), not for a mic main gave up
+   * on this meeting (G1: a failed or ended source never reopens, so its audio would go nowhere),
+   * and not again for one that failed here: main sends a status every second while it records,
+   * and each would open the mic again.
+   */
+  private shouldOpenMic(status: MainCapture): boolean {
+    if (this.stoppedUntilIdle || this.captures.has('mic') || this.starting !== null) return false;
+    const { health } = status.sources.mic;
+    if (health === 'error' || health === 'ended') return false;
+    return this.micFailedFor?.meetingId !== status.meetingId;
+  }
+
+  private async open(
+    status: MainCapture,
+    generation: number,
+    leftovers: Promise<void>,
+  ): Promise<AudioStartResult> {
     await leftovers;
-    if (!(await this.startMic(generation))) return { systemAudioError: STOPPED_WHILE_STARTING };
+    this.meetingId = status.meetingId;
+    try {
+      if (!(await this.startMic(generation))) return { systemAudioError: STOPPED_WHILE_STARTING };
+    } catch (error) {
+      this.micFailedFor = { meetingId: status.meetingId };
+      throw error;
+    }
+    const result = opensCallAudio(status)
+      ? await this.startCallAudio(generation)
+      : { systemAudioError: null };
+    this.lastStart = result;
+    return result;
+  }
+
+  /** Call audio on Electron's path; a failure is reported to main, and the mic goes on. */
+  private async startCallAudio(generation: number): Promise<AudioStartResult> {
     const sourceId = await this.roger.getSystemAudioSourceId();
     if (generation !== this.generation) return { systemAudioError: STOPPED_WHILE_STARTING };
     let systemAudioError: string | null = null;
@@ -114,15 +231,6 @@ export class AudioCaptureController<S extends CaptureStream = MediaStream> {
       });
     }
     return { systemAudioError };
-  }
-
-  async stop(): Promise<void> {
-    this.generation += 1;
-    this.micRecovery?.stop();
-    this.micRecovery = null;
-    const captures = [...this.captures.values()];
-    this.captures.clear();
-    await Promise.allSettled(captures.map((capture) => capture.stop()));
   }
 
   /**
@@ -167,13 +275,14 @@ export class AudioCaptureController<S extends CaptureStream = MediaStream> {
     if (this.captures.get('mic') !== capture) return;
     this.captures.delete('mic');
     this.micRecovery = null;
+    this.micFailedFor = { meetingId: this.meetingId };
     this.roger.reportAudioSourceState({
       source: 'mic',
       state: 'error',
       message: describeMediaError(error),
     });
-    // As in stop(): the device is let go of either way, and nothing waits on it.
-    void Promise.allSettled([capture.stop()]);
+    // As in stop(): the device is let go of either way, and the next start waits for it.
+    this.stopping = Promise.allSettled([this.stopping, capture.stop()]).then(() => undefined);
   }
 
   /** The capture once the source captures; null when main stopped while it was starting. */

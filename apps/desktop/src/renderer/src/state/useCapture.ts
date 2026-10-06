@@ -20,9 +20,8 @@ const NO_INTERIM: Record<AudioSource, InterimTranscript | null> = { mic: null, s
 /** Binds the UI to main's capture state machine and runs the renderer-side audio capture. */
 export function useCapture(): CaptureView {
   const roger = window.roger;
-  const controller = useRef<AudioCaptureController>(
-    new AudioCaptureController(roger, browserCaptureDevices()),
-  );
+  // Made once: it holds the running capture, and a render must never make a second.
+  const [controller] = useState(() => new AudioCaptureController(roger, browserCaptureDevices()));
   const [status, setStatus] = useState<CaptureStatus | null>(null);
   const [segments, setSegments] = useState<TranscriptSegment[]>([]);
   const [interim, setInterim] = useState(NO_INTERIM);
@@ -31,19 +30,21 @@ export function useCapture(): CaptureView {
   const meetingId = useRef<string | null>(null);
 
   useEffect(() => {
+    const follow = (next: CaptureStatus): void => {
+      if (next.meetingId !== null && next.meetingId !== meetingId.current) {
+        meetingId.current = next.meetingId;
+        setSegments([]);
+        setInterim(NO_INTERIM);
+      }
+      setStatus(next);
+      // Main stopped on its own (no speech, the length cap, sleep): stop capturing too, a source
+      // still starting included, or the microphone stays on with nothing listening. Never gate
+      // this on `running`: it is false while the mic starts (see followMain). And while main
+      // records, the mic captures: a page loaded mid-recording opens it here.
+      controller.followMain(next);
+    };
     const unsubscribe = [
-      roger.onCaptureStatus((next) => {
-        if (next.meetingId !== null && next.meetingId !== meetingId.current) {
-          meetingId.current = next.meetingId;
-          setSegments([]);
-          setInterim(NO_INTERIM);
-        }
-        setStatus(next);
-        // Main stopped on its own (no speech, the length cap, sleep, a reload): stop capturing too,
-        // a source still starting included, or the microphone stays on with nothing listening.
-        // Never gate this on `running`: it is false while the mic starts (see followMain).
-        controller.current.followMain(next.phase);
-      }),
+      roger.onCaptureStatus(follow),
       roger.onTranscriptSegment((segment) => {
         setSegments((previous) =>
           previous.some((s) => s.id === segment.id) ? previous : [...previous, segment],
@@ -54,17 +55,19 @@ export function useCapture(): CaptureView {
         setInterim((previous) => ({ ...previous, [next.source]: next }));
       }),
     ];
-    void roger.getCaptureStatus().then(setStatus);
+    // Followed, not only shown: a page loaded mid-recording (a reload, the reload after a renderer
+    // crash, a resume at launch) opens the mic at once, not at main's next status a second later.
+    void roger.getCaptureStatus().then(follow);
     // A notice about a recording Roger stopped while the window was away is shown on next focus.
     const refresh = (): void => {
-      void roger.getCaptureStatus().then(setStatus);
+      void roger.getCaptureStatus().then(follow);
     };
     window.addEventListener('focus', refresh);
     return () => {
       for (const off of unsubscribe) off();
       window.removeEventListener('focus', refresh);
     };
-  }, [roger]);
+  }, [roger, controller]);
 
   const start = useCallback(async () => {
     setBusy(true);
@@ -74,27 +77,28 @@ export function useCapture(): CaptureView {
       setStatus(started);
       if (started.phase !== 'recording') return;
       try {
-        await controller.current.start();
+        // Joins the start main's own status may have begun already (followMain).
+        await controller.start(started);
       } catch (error) {
         setLocalError(`Microphone: ${describeMediaError(error)}`);
-        await controller.current.stop();
+        await controller.stop();
         setStatus(await roger.stopCapture());
       }
     } finally {
       setBusy(false);
     }
-  }, [roger]);
+  }, [roger, controller]);
 
   const stop = useCallback(async () => {
     setBusy(true);
     try {
-      await controller.current.stop();
+      await controller.stop();
       setStatus(await roger.stopCapture());
       setInterim(NO_INTERIM);
     } finally {
       setBusy(false);
     }
-  }, [roger]);
+  }, [roger, controller]);
 
   return { status, segments, interim, localError, busy, start, stop };
 }
