@@ -964,4 +964,30 @@ describe('TranscriptUploader: meetings with notes (M4)', () => {
     expect(store.getMeeting('gone')).toBeNull();
     expect(store.listMeetingsNeedingSync()).toEqual([]);
   });
+
+  it('saveOpenNotes runs the injected save, and names what it was doing when that fails', async () => {
+    const store = new InMemoryTranscriptStore();
+    // Not wired (before M4-T16): no editor can hold notes, so there is nothing to wait for.
+    const unwired = new TranscriptUploader({ store, api: fakeApi(), logger });
+    await expect(unwired.saveOpenNotes()).resolves.toBeUndefined();
+
+    const save = vi.fn(() => Promise.resolve());
+    await new TranscriptUploader({
+      store,
+      api: fakeApi(),
+      logger,
+      saveOpenNotes: save,
+    }).saveOpenNotes();
+    expect(save).toHaveBeenCalledTimes(1);
+
+    const failing = new TranscriptUploader({
+      store,
+      api: fakeApi(),
+      logger,
+      saveOpenNotes: () => Promise.reject(new Error('the window is gone')),
+    });
+    await expect(failing.saveOpenNotes()).rejects.toThrow(
+      'could not save the notes open in an editor: the window is gone',
+    );
+  });
 });

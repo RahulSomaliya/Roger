@@ -32,6 +32,15 @@ export interface TranscriptUploaderOptions {
    * one check and none can be wired without the others.
    */
   hasNotes?: (meetingId: string) => boolean;
+  /**
+   * Has every window save the notes its editors still hold, and resolves once they have landed in
+   * notes.sqlite: M4-T16's `notes:flush-request` to each window, the same flush its quit hook
+   * runs, bounded per window. CaptureService awaits it before both of its delete sites ask
+   * `hasNotes` (CaptureService.keepsForNotes says why). M4-T16 wires it here with `hasNotes`:
+   * wired alone, `hasNotes` misses a note typed in the editor's last 400 ms before a Stop. Left
+   * out, nothing is waited for.
+   */
+  saveOpenNotes?: () => Promise<void>;
 }
 
 interface UploaderEvents extends Record<string, unknown> {
@@ -166,6 +175,26 @@ export class TranscriptUploader {
   }
 
   /**
+   * Has the windows save the notes still in their editors (`saveOpenNotes`), so a `hasNotes` asked
+   * next sees them. CaptureService awaits it before each of its delete sites asks. The pending rule
+   * in syncMeeting does not: it decides only meetings that have ended, after Stop or a failed Start
+   * waited for this, or after a crash, which the first tick at launch normally decides before a
+   * window opens. Resolves at once when not wired; rejects, saying what it was doing, when the
+   * save fails.
+   */
+  async saveOpenNotes(): Promise<void> {
+    const save = this.options.saveOpenNotes;
+    if (save === undefined) return;
+    try {
+      await save();
+    } catch (error) {
+      throw new Error(`could not save the notes open in an editor: ${errorMessage(error)}`, {
+        cause: error,
+      });
+    }
+  }
+
+  /**
    * Postgres does not know a meeting this Mac thinks it sent (a notes `PUT` answered `404`; a reset
    * dev database): take it back to pending and forget that its lines went up, so the next tick
    * creates it again by the pending rule, re-sends every line and ends it again. Everything it
@@ -284,9 +313,10 @@ export class TranscriptUploader {
       // Trap: this is the only code that creates meetings in Postgres, and three sites must agree
       // with it on which lineless meetings to keep: this one, and CaptureService's two
       // deleteMeetingIfEmpty calls (after a failed Start, and at Stop), which delete a meeting no
-      // one spoke in outright. All three ask `this.hasNotes` first. A site that deletes a meeting
-      // with notes leaves them stranded: NotesSync never creates a meeting (its class comment) and
-      // waits for this rule, and markMeetingMissing cannot take back a meeting that is gone.
+      // one spoke in outright. All three ask `this.hasNotes` first (CaptureService's once the
+      // editors have saved, `saveOpenNotes`). A site that deletes a meeting with notes leaves them
+      // stranded: NotesSync never creates a meeting (its class comment) and waits for this rule,
+      // and markMeetingMissing cannot take back a meeting that is gone.
       if (store.listUnsyncedSegments(meeting.id, 1).length === 0) {
         // Still recording: nothing to create it for, notes or not. notes.sqlite is read only past
         // this point, not on every tick of every meeting being recorded.
