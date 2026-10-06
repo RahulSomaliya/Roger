@@ -21,6 +21,7 @@ import type { IpcMainLike, SenderEvent } from '../ipc/trust';
 import { createLogger } from '../logger';
 import type { StreamEnd, StreamWindow } from './LlmStreams';
 import {
+  CHAT_RUN_POLL_FAST_MS,
   CHAT_RUN_POLL_LIMIT_MS,
   registerNotesIpc,
   type NotesIpcDeps,
@@ -34,6 +35,7 @@ const PROMPT_PANEL = 9;
 const MEETING = '0b8e1f2a-3c4d-4e5f-8a9b-0c1d2e3f4a5b';
 const RUN = '7f3c9d1e-2a4b-4c6d-8e0f-1a2b3c4d5e6f';
 const MESSAGE = '9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d';
+const REPLY = '3c2b1a0f-9e8d-4c7b-8a6f-5e4d3c2b1a0f';
 const REQUEST = '00000000-0000-4000-8000-000000000001';
 
 type Handler = (event: SenderEvent, payload: unknown) => unknown;
@@ -119,6 +121,30 @@ function deferredEnd() {
   return { promise, settle };
 }
 
+/** The thread after the question, with its answer `streaming` (half written) or `complete`. */
+function threadWithAnswer(status: 'streaming' | 'complete'): ChatThread {
+  return {
+    meetingId: MEETING,
+    messages: [
+      chatMessage(),
+      chatMessage({
+        id: REPLY,
+        role: 'assistant',
+        text: status === 'complete' ? 'Forty thousand.' : 'Forty',
+        replyTo: MESSAGE,
+        runId: RUN,
+        status,
+      }),
+    ],
+  };
+}
+
+const CANCELLED_EVENT = {
+  meetingId: MEETING,
+  messageId: MESSAGE,
+  event: { type: 'error', code: 'cancelled', message: 'The answer was cancelled.' },
+};
+
 class FakeServer implements NotesSyncApi {
   notes: ServerNotes = { user: null, ai: null };
   down = false;
@@ -203,7 +229,11 @@ function harness() {
     },
   };
   const runStatuses: (LlmRunStatus | ApiError)[] = [];
+  /** The API's answers to run cancels, in order; `cancelled` once they run out. */
+  const cancelAnswers: (LlmRunStatus | ApiError)[] = [];
   let thread: ChatThread = { meetingId: MEETING, messages: [chatMessage()] };
+  /** While set, a thread read answers only once it resolves. */
+  let threadGate: Promise<void> | null = null;
   const api: NotesIpcDeps['api'] = {
     listTemplates: () => {
       calls.push('list templates');
@@ -215,9 +245,17 @@ function harness() {
       if (next instanceof ApiError) return Promise.reject(next);
       return Promise.resolve({ ...run(next), meetingId });
     },
-    getChatThread: (meetingId) => {
+    getChatThread: async (meetingId) => {
       calls.push(`get thread ${meetingId}`);
-      return Promise.resolve(thread);
+      // The thread as it stands when the API answers.
+      if (threadGate !== null) await threadGate;
+      return thread;
+    },
+    cancelRun: (meetingId, runId) => {
+      calls.push(`cancel run ${runId}`);
+      const answer = cancelAnswers.shift() ?? 'cancelled';
+      if (answer instanceof ApiError) return Promise.reject(answer);
+      return Promise.resolve({ ...run(answer), meetingId });
     },
   };
   const acks: string[] = [];
@@ -263,8 +301,12 @@ function harness() {
     acks,
     chatEnds,
     runStatuses,
+    cancelAnswers,
     setThread: (next: ChatThread) => {
       thread = next;
+    },
+    gateThread: (gate: Promise<void> | null) => {
+      threadGate = gate;
     },
     pendingChanged: (change: PendingGenerateChange) => {
       for (const listener of pendingListeners) listener(change);
@@ -533,16 +575,172 @@ describe('the notes and chat IPC', () => {
     expect(h.sentOn(chatChannels.ChatThreadChanged)).toHaveLength(1);
   });
 
-  it('a lost answer whose run was never named reloads the thread at once', async () => {
+  it('a lost answer whose run was never named, and is not being written, reloads the thread at once', async () => {
     const h = harness();
     await h.invoke(chatChannels.ChatSend, MAIN_PAGE, {
       meetingId: MEETING,
       messageId: MESSAGE,
       text: 'Why?',
     });
+    h.setThread(threadWithAnswer('complete'));
     h.chatEnds[0]?.settle({ kind: 'dropped', runId: null, cause: 'invalid_event' });
     await vi.advanceTimersByTimeAsync(0);
     expect(h.calls.slice(1)).toEqual([`get thread ${MEETING}`]);
+    expect(h.sentOn(chatChannels.ChatThreadChanged)).toEqual([threadWithAnswer('complete')]);
+  });
+
+  it('a lost answer whose run was never named follows the run its answer names, then reloads', async () => {
+    const h = harness();
+    await h.invoke(chatChannels.ChatSend, MAIN_PAGE, {
+      meetingId: MEETING,
+      messageId: MESSAGE,
+      text: 'Why?',
+    });
+    // Lost before its `run` event: the API had already stored the answer `streaming`, with its run.
+    h.setThread(threadWithAnswer('streaming'));
+    h.runStatuses.push('running', 'succeeded');
+    h.chatEnds[0]?.settle({ kind: 'dropped', runId: null, cause: 'network_error' });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.calls.slice(1)).toEqual([`get thread ${MEETING}`, `get run ${RUN}`]);
+    // A half-written answer is not sent: nothing would replace it once the run ends.
+    expect(h.sentOn(chatChannels.ChatThreadChanged)).toEqual([]);
+
+    h.setThread(threadWithAnswer('complete'));
+    await vi.advanceTimersByTimeAsync(2_000);
+
+    expect(h.calls.slice(1)).toEqual([
+      `get thread ${MEETING}`,
+      `get run ${RUN}`,
+      `get run ${RUN}`,
+      `get thread ${MEETING}`,
+    ]);
+    expect(h.sentOn(chatChannels.ChatThreadChanged)).toEqual([threadWithAnswer('complete')]);
+  });
+
+  it('a cancel while a lost answer is polled stops its run, and the page hears `cancelled`', async () => {
+    const h = harness();
+    await h.invoke(chatChannels.ChatSend, MAIN_PAGE, {
+      meetingId: MEETING,
+      messageId: MESSAGE,
+      text: 'Why?',
+    });
+    h.runStatuses.push('running', 'cancelled');
+    h.chatEnds[0]?.settle({ kind: 'dropped', runId: RUN, cause: 'network_error' });
+    await vi.advanceTimersByTimeAsync(0);
+    // A cancel that names another meeting is not this answer's.
+    const otherMeeting = '1b8e1f2a-3c4d-4e5f-8a9b-0c1d2e3f4a5b';
+    await h.invoke(chatChannels.ChatCancel, MAIN_PAGE, {
+      meetingId: otherMeeting,
+      messageId: MESSAGE,
+    });
+    expect(h.calls.slice(1)).toEqual([`get run ${RUN}`]);
+    expect(h.sentOn(chatChannels.ChatEvent)).toEqual([]);
+
+    await h.invoke(chatChannels.ChatCancel, MAIN_PAGE, { meetingId: MEETING, messageId: MESSAGE });
+    expect(h.sentOn(chatChannels.ChatEvent)).toEqual([CANCELLED_EVENT]);
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(CHAT_RUN_POLL_LIMIT_MS);
+
+    // The poll reads what the cancel did at once, and ends with the run: no thread follows.
+    expect(h.calls.slice(1)).toEqual([`get run ${RUN}`, `cancel run ${RUN}`, `get run ${RUN}`]);
+    expect(h.sentOn(chatChannels.ChatThreadChanged)).toEqual([]);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('an answer that beat a cancel made during its poll reaches the page as the thread', async () => {
+    const h = harness();
+    await h.invoke(chatChannels.ChatSend, MAIN_PAGE, {
+      meetingId: MEETING,
+      messageId: MESSAGE,
+      text: 'Why?',
+    });
+    h.runStatuses.push('running', 'succeeded');
+    h.cancelAnswers.push('succeeded');
+    h.setThread(threadWithAnswer('complete'));
+    h.chatEnds[0]?.settle({ kind: 'dropped', runId: RUN, cause: 'network_error' });
+    await vi.advanceTimersByTimeAsync(0);
+
+    await h.invoke(chatChannels.ChatCancel, MAIN_PAGE, { meetingId: MEETING, messageId: MESSAGE });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(h.sentOn(chatChannels.ChatEvent)).toEqual([CANCELLED_EVENT]);
+    expect(h.calls.slice(1)).toEqual([
+      `get run ${RUN}`,
+      `cancel run ${RUN}`,
+      `get run ${RUN}`,
+      `get thread ${MEETING}`,
+    ]);
+    expect(h.sentOn(chatChannels.ChatThreadChanged)).toEqual([threadWithAnswer('complete')]);
+  });
+
+  it('a cancel during the poll the API could not take rejects, and the poll goes on', async () => {
+    const h = harness();
+    await h.invoke(chatChannels.ChatSend, MAIN_PAGE, {
+      meetingId: MEETING,
+      messageId: MESSAGE,
+      text: 'Why?',
+    });
+    h.runStatuses.push('running', 'running', 'succeeded');
+    h.cancelAnswers.push(new ApiError(0, 'network_error', 'POST run cancel failed'));
+    h.chatEnds[0]?.settle({ kind: 'dropped', runId: RUN, cause: 'network_error' });
+    await vi.advanceTimersByTimeAsync(0);
+
+    await expect(
+      h.invoke(chatChannels.ChatCancel, MAIN_PAGE, { meetingId: MEETING, messageId: MESSAGE }),
+    ).rejects.toThrow('POST run cancel failed');
+    await vi.advanceTimersByTimeAsync(2_000);
+
+    expect(h.calls.slice(1)).toEqual([
+      `get run ${RUN}`,
+      `cancel run ${RUN}`,
+      `get run ${RUN}`,
+      `get run ${RUN}`,
+      `get thread ${MEETING}`,
+    ]);
+    expect(h.sentOn(chatChannels.ChatThreadChanged)).toHaveLength(1);
+  });
+
+  it('a cancel while the thread is read for the run of a lost answer stops that run', async () => {
+    const h = harness();
+    await h.invoke(chatChannels.ChatSend, MAIN_PAGE, {
+      meetingId: MEETING,
+      messageId: MESSAGE,
+      text: 'Why?',
+    });
+    h.setThread(threadWithAnswer('streaming'));
+    let answerRead!: () => void;
+    h.gateThread(
+      new Promise((resolve) => {
+        answerRead = resolve;
+      }),
+    );
+    h.runStatuses.push('running', 'cancelled');
+    h.chatEnds[0]?.settle({ kind: 'dropped', runId: null, cause: 'network_error' });
+    await vi.advanceTimersByTimeAsync(0);
+
+    let cancelSettled = false;
+    const cancelling = h
+      .invoke(chatChannels.ChatCancel, MAIN_PAGE, { meetingId: MEETING, messageId: MESSAGE })
+      .then(() => {
+        cancelSettled = true;
+      });
+    await vi.advanceTimersByTimeAsync(0);
+    // Told at once; the cancel goes out once the thread names the run.
+    expect(h.sentOn(chatChannels.ChatEvent)).toEqual([CANCELLED_EVENT]);
+    expect(cancelSettled).toBe(false);
+
+    h.gateThread(null);
+    answerRead();
+    await cancelling;
+    await vi.advanceTimersByTimeAsync(CHAT_RUN_POLL_FAST_MS);
+
+    expect(h.calls.slice(1)).toEqual([
+      `get thread ${MEETING}`,
+      `get run ${RUN}`,
+      `cancel run ${RUN}`,
+      `get run ${RUN}`,
+    ]);
+    expect(h.sentOn(chatChannels.ChatThreadChanged)).toEqual([]);
   });
 
   it('polls a run the API cannot be reached for until it can, and stops at the limit', async () => {

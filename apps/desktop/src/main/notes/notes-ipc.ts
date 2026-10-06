@@ -1,6 +1,17 @@
-import { chatChannels, type SendChatMessageRequest } from '../../shared/ipc/chat';
+import {
+  chatChannels,
+  type ChatAnswerRequest,
+  type ChatStreamMessage,
+  type SendChatMessageRequest,
+} from '../../shared/ipc/chat';
 import { notesChannels } from '../../shared/ipc/notes';
-import type { ChatMessage, ChatThread, LocalNote, MeetingNotes } from '../../shared/notes';
+import type {
+  ChatMessage,
+  ChatThread,
+  LlmRunStatus,
+  LocalNote,
+  MeetingNotes,
+} from '../../shared/notes';
 import { ApiError } from '../api/http';
 import type { NotesClient } from '../api/notesClient';
 import { handleTrusted, onTrusted, type IpcMainLike, type IpcTrust } from '../ipc/trust';
@@ -27,7 +38,7 @@ import {
  * the cadence of NotesGenerator's poll after a lost notes stream (RUN_POLL_* there): keep the two
  * in step.
  */
-const CHAT_RUN_POLL_FAST_MS = 2_000;
+export const CHAT_RUN_POLL_FAST_MS = 2_000;
 const CHAT_RUN_POLL_FAST_FOR_MS = 10_000;
 const CHAT_RUN_POLL_SLOW_MS = 5_000;
 /**
@@ -37,6 +48,29 @@ const CHAT_RUN_POLL_SLOW_MS = 5_000;
  * RUN_POLL_LIMIT_MS says the same).
  */
 export const CHAT_RUN_POLL_LIMIT_MS = 120_000;
+
+/** What the page is told of a cancelled answer: the text LlmStreams sends for one it streams. */
+const CHAT_CANCELLED_MESSAGE = 'The answer was cancelled.';
+
+/** A lost answer main follows in the API (answerEnded), for a cancel made meanwhile. */
+class FollowedAnswer {
+  private found: (runId: string | null) => void = () => undefined;
+  /** Settles with the run the follow polls once it knows it, or null once there is none. */
+  readonly run = new Promise<string | null>((resolve) => {
+    this.found = resolve;
+  });
+  /** The page's cancel during the follow, once sent: settles when the API answered it. */
+  cancel: Promise<void> | null = null;
+  /** Ends the poll's wait early, so it reads at once what the cancel did; null while none. */
+  wake: (() => void) | null = null;
+
+  constructor(readonly meetingId: string) {}
+
+  /** Only the first call counts, as with any promise. */
+  runFound(runId: string | null): void {
+    this.found(runId);
+  }
+}
 
 /** The main window as this needs it; a BrowserWindow is one (its webContents is one object). */
 export interface NotesWindow {
@@ -52,7 +86,8 @@ export interface NotesIpcDeps {
   sync: Pick<NotesSync, 'save' | 'resolveConflict' | 'pullMeeting'>;
   generator: Pick<NotesGenerator, 'generate' | 'cancel' | 'getPending' | 'onPendingChanged'>;
   streams: Pick<LlmStreams, 'streamChat' | 'cancelChat'>;
-  api: Pick<NotesClient, 'listTemplates' | 'getRun' | 'getChatThread'>;
+  /** `cancelRun` stops a lost answer's run, which no stream holds any more. */
+  api: Pick<NotesClient, 'listTemplates' | 'getRun' | 'getChatThread' | 'cancelRun'>;
   /** Takes the page's answer to main's flush request (`notes:flush-ack`). */
   flush: Pick<NotesQuitGuard, 'ack'>;
   logger: Logger;
@@ -68,7 +103,8 @@ export interface NotesIpcDeps {
  *
  * A chat answer whose stream was lost (no `done` or `error`, or a cancel the API did not confirm)
  * goes on in the API, which stores it: its run is polled until it ends, then the thread is read
- * again and sent as `chat:thread-changed`. Notes runs are NotesGenerator's to follow.
+ * again and sent as `chat:thread-changed`. A cancel meanwhile stops that run, as one during the
+ * stream would. Notes runs are NotesGenerator's to follow.
  *
  * Log lines carry channels, ids, codes and rules, never a payload: notes and questions are what
  * the user typed. Returns what the quit stops before notes.sqlite closes (the polls, the events).
@@ -86,6 +122,8 @@ class NotesIpc {
   private readonly answering = new Set<string>();
   /** Questions the page cancelled while their answer streamed (see answerEnded). */
   private readonly cancelled = new Set<string>();
+  /** Lost answers being followed in the API, by question (answerEnded). */
+  private readonly following = new Map<string, FollowedAnswer>();
   /** Meetings whose server notes are being pulled: two editors opening ask once. */
   private readonly pulling = new Set<string>();
   /** The polls' waits; stop() ends them. */
@@ -140,8 +178,14 @@ class NotesIpc {
     });
     // As notes:cancel-generate: settles once the API holds the run; never block the page on it.
     this.handle(chatChannels.ChatCancel, parseChatAnswerRequest, async (request) => {
-      if (this.answering.has(request.messageId)) this.cancelled.add(request.messageId);
-      await streams.cancelChat(request);
+      if (this.answering.has(request.messageId)) {
+        this.cancelled.add(request.messageId);
+        await streams.cancelChat(request);
+        return;
+      }
+      // Trap: a lost answer has no stream left to cancel (LlmStreams answers false), and its run
+      // goes on in the API, paid, while the page still shows it coming. Its follow stops it.
+      await this.cancelFollowed(request);
     });
 
     this.unsubscribes.push(
@@ -283,74 +327,186 @@ class NotesIpc {
   ): Promise<void> {
     const cancelled = this.cancelled.delete(request.messageId);
     if (end.kind === 'error' || (end.kind === 'done' && !cancelled)) return;
-    const { meetingId } = request;
-    if (end.kind === 'dropped' && end.runId !== null) await this.pollRun(meetingId, end.runId);
-    if (this.isStopped()) return;
-    let thread: ChatThread;
+    const follow = new FollowedAnswer(request.meetingId);
+    this.following.set(request.messageId, follow);
     try {
-      thread = await this.deps.api.getChatThread(meetingId);
-    } catch (error) {
-      // The page keeps what it streamed, and reads the thread again when it opens the meeting.
-      this.deps.logger.warn('chat thread not reloaded after a lost answer', {
-        meetingId,
-        messageId: request.messageId,
-        error: errorMessage(error),
-      });
-      return;
+      await this.followAnswer(request, end, follow);
+    } finally {
+      // A cancel still waiting for the run learns there is none left to stop.
+      follow.runFound(null);
+      if (this.following.get(request.messageId) === follow) {
+        this.following.delete(request.messageId);
+      }
     }
-    if (this.isStopped()) return;
+  }
+
+  /** Polls the lost answer's run to its end, then sends the thread, unless the page cancelled it. */
+  private async followAnswer(
+    request: SendChatMessageRequest,
+    end: StreamEnd<ChatMessage>,
+    follow: FollowedAnswer,
+  ): Promise<void> {
+    if (end.kind === 'dropped' && end.runId !== null) {
+      if (await this.pollRun(follow, end.runId)) return;
+    }
+    let thread = await this.readThread(request);
+    if (thread === null) return;
+    // Trap: a stream lost before its `run` event names no run, but the API stored the answer
+    // `streaming`, with its run, before it answered the request. Sent now, the thread shows the
+    // answer half written and nothing reads it again once the run ends: follow the run the answer
+    // names, as if the stream had named it, then read again.
+    const writing =
+      end.kind === 'dropped' && end.runId === null ? runWriting(thread, request) : null;
+    if (writing !== null) {
+      if (await this.pollRun(follow, writing)) return;
+      thread = await this.readThread(request);
+      if (thread === null) return;
+    }
     this.toPage(chatChannels.ChatThreadChanged, thread);
   }
 
-  /** Reads the run until it is no longer `running`, the API forgets it, or the limit passes. */
-  private async pollRun(meetingId: string, runId: string): Promise<void> {
-    const started = Date.now();
-    const log = this.deps.logger.child({ meetingId, runId });
-    for (;;) {
-      if (await this.runEnded(meetingId, runId, log)) return;
-      const elapsed = Date.now() - started;
-      if (elapsed >= CHAT_RUN_POLL_LIMIT_MS) {
-        log.warn('chat run still running when its poll stopped', { elapsedMs: elapsed });
-        return;
-      }
-      const wait =
-        elapsed < CHAT_RUN_POLL_FAST_FOR_MS ? CHAT_RUN_POLL_FAST_MS : CHAT_RUN_POLL_SLOW_MS;
-      if (!(await this.sleep(wait))) return;
+  /**
+   * The meeting's thread as the API holds it, or null once the quit came or when it could not be
+   * read (logged).
+   */
+  private async readThread(request: SendChatMessageRequest): Promise<ChatThread | null> {
+    if (this.isStopped()) return null;
+    let thread: ChatThread;
+    try {
+      thread = await this.deps.api.getChatThread(request.meetingId);
+    } catch (error) {
+      // The page keeps what it streamed, and reads the thread again when it opens the meeting.
+      this.deps.logger.warn('chat thread not reloaded after a lost answer', {
+        meetingId: request.meetingId,
+        messageId: request.messageId,
+        error: errorMessage(error),
+      });
+      return null;
+    }
+    return this.isStopped() ? null : thread;
+  }
+
+  /**
+   * The page's cancel of a lost answer main follows: the page is told `cancelled` at once, as
+   * LlmStreams tells it for a stream, and the run is asked to stop once the follow knows it.
+   * Settles when the API answered, and rejects when that request failed (the follow goes on, and
+   * a second cancel asks again). A question with no follow, or of another meeting, does nothing.
+   */
+  private cancelFollowed(request: ChatAnswerRequest): Promise<void> {
+    const follow = this.following.get(request.messageId);
+    if (follow?.meetingId !== request.meetingId) return Promise.resolve();
+    if (follow.cancel === null) {
+      const cancelled: ChatStreamMessage = {
+        meetingId: request.meetingId,
+        messageId: request.messageId,
+        event: { type: 'error', code: 'cancelled', message: CHAT_CANCELLED_MESSAGE },
+      };
+      this.toPage(chatChannels.ChatEvent, cancelled);
+      follow.cancel = this.stopFollowedRun(follow).catch((error: unknown) => {
+        follow.cancel = null;
+        throw error;
+      });
+    }
+    return follow.cancel;
+  }
+
+  private async stopFollowedRun(follow: FollowedAnswer): Promise<void> {
+    const runId = await follow.run;
+    // No run to stop: the answer ended before, and the thread the follow sends holds it.
+    if (runId === null) return;
+    try {
+      const run = await this.deps.api.cancelRun(follow.meetingId, runId);
+      this.deps.logger.info('chat run cancel answered', {
+        meetingId: follow.meetingId,
+        runId,
+        runStatus: run.status,
+      });
+    } finally {
+      // The poll reads at once what the cancel did: stopped, or beaten by the answer.
+      follow.wake?.();
     }
   }
 
-  /** One read of the run: true once there is nothing more to wait for. */
-  private async runEnded(meetingId: string, runId: string, log: Logger): Promise<boolean> {
-    if (this.isStopped()) return true;
+  /**
+   * Reads the run until it is no longer `running`, the API forgets it, or the limit passes. True
+   * when the page's cancel stopped it: the follow then ends with no thread, as a stream's
+   * confirmed cancel does.
+   */
+  private async pollRun(follow: FollowedAnswer, runId: string): Promise<boolean> {
+    follow.runFound(runId);
+    const started = Date.now();
+    const log = this.deps.logger.child({ meetingId: follow.meetingId, runId });
+    for (;;) {
+      const status = await this.runStatus(follow.meetingId, runId, log);
+      if (status === 'cancelled' && follow.cancel !== null) return true;
+      if (status !== 'running' && status !== 'unread') return false;
+      const elapsed = Date.now() - started;
+      if (elapsed >= CHAT_RUN_POLL_LIMIT_MS) {
+        log.warn('chat run still running when its poll stopped', { elapsedMs: elapsed });
+        return false;
+      }
+      const wait =
+        elapsed < CHAT_RUN_POLL_FAST_FOR_MS ? CHAT_RUN_POLL_FAST_MS : CHAT_RUN_POLL_SLOW_MS;
+      if (!(await this.sleep(wait, follow))) return false;
+    }
+  }
+
+  /**
+   * One read of the run: its status, `ended` when there is nothing more to wait for (the quit
+   * came, or the API does not hold it), `unread` when it could not be read this turn.
+   */
+  private async runStatus(
+    meetingId: string,
+    runId: string,
+    log: Logger,
+  ): Promise<LlmRunStatus | 'ended' | 'unread'> {
+    if (this.isStopped()) return 'ended';
     try {
       const run = await this.deps.api.getRun(meetingId, runId);
-      return run.status !== 'running';
+      return run.status;
     } catch (error) {
       if (!(error instanceof ApiError)) throw error;
       // The API does not hold the run (another workspace's id, a reset database): the thread
       // says what there is.
-      if (error.isNotFound) return true;
+      if (error.isNotFound) return 'ended';
       // Away or failing: read again at the next turn, up to the limit.
       log.info('chat run not read', { code: error.code, status: error.status });
-      return false;
+      return 'unread';
     }
   }
 
-  /** Waits `ms`; false when stop() ended the wait. */
-  private sleep(ms: number): Promise<boolean> {
+  /**
+   * Waits `ms`, or until a cancel of the followed answer was answered; false when stop() ended
+   * the wait.
+   */
+  private sleep(ms: number, follow: FollowedAnswer): Promise<boolean> {
     return new Promise((resolve) => {
-      const wake = (): void => {
+      const end = (goOn: boolean): void => {
         clearTimeout(timer);
-        this.sleeps.delete(wake);
-        resolve(false);
+        this.sleeps.delete(stop);
+        follow.wake = null;
+        resolve(goOn);
+      };
+      const stop = (): void => {
+        end(false);
       };
       const timer = setTimeout(() => {
-        this.sleeps.delete(wake);
-        resolve(!this.stopped);
+        end(!this.isStopped());
       }, ms);
-      this.sleeps.add(wake);
+      this.sleeps.add(stop);
+      follow.wake = () => {
+        end(true);
+      };
     });
   }
+}
+
+/** The run still writing the answer to `request`'s question in `thread`, or null. */
+function runWriting(thread: ChatThread, request: SendChatMessageRequest): string | null {
+  const answer = thread.messages.find(
+    (message) => message.replyTo === request.messageId && message.status === 'streaming',
+  );
+  return answer?.runId ?? null;
 }
 
 /** A request that takes no payload: whatever the page sent is ignored. */
