@@ -9,18 +9,16 @@ bind parameters of the statements here. Two traps would put them in the logs:
 - A failed statement renders its bind parameters into the error's text, which middleware.py logs
   with the traceback. db/engine.py creates the engine with `hide_parameters=True` for that; it
   points back here. Never turn it off.
-- In production a traceback is JSON with every frame's local variables (structlog's
-  dict_tracebacks, log.py). Under a failed statement, SQLAlchemy's and asyncpg's frames hold the
-  parameters in clear, and FastAPI's hold the request body with the sign-in code and verifier.
-  Only structlog's 80-character cut of each local hides the token and the key today, because two
-  UUIDs open the parameter tuple: luck, not a guard. So a failed statement here never reaches
+- Under a failed statement, SQLAlchemy's and asyncpg's frames hold the parameters in clear, and
+  FastAPI's hold the request body with the sign-in code and verifier. log.py renders no frame's
+  locals (tests/test_log.py), but structlog's default renders them all, so that is one setting
+  away from logging the token and the key. So a failed statement here never reaches
   middleware.py as an unhandled error: `_store_failed` logs one `calendar_store_failed` line
   (operation, error class, SQLSTATE) and raises `CalendarStoreError`, a handled 500, `from None`,
   so no traceback is rendered at all. The guard covers the commit too and catches every
   `_STORE_ERRORS`, not only a driver's `DBAPIError`: a lost or busy database fails with errors
   that are not DBAPIErrors, and connect()'s own frame holds the sign-in code and the verifier in
-  full. Any other unhandled error under connect() (a bug in the provider, say) still logs them
-  in production until log.py stops rendering locals.
+  full.
 Both log formats are tested: tests/test_calendar_api.py::test_db_error_never_leaks_token_or_key
 and test_lost_database_never_leaks_the_sign_in_code.
 """

@@ -9,6 +9,7 @@ import sys
 from typing import TYPE_CHECKING
 
 import structlog
+from structlog.tracebacks import ExceptionDictTransformer
 from structlog.typing import EventDict, Processor, WrappedLogger
 
 if TYPE_CHECKING:
@@ -33,10 +34,18 @@ def configure_logging(settings: "Settings") -> None:
         _drop_color_message,
         structlog.processors.TimeStamper(fmt="iso", utc=True),
     ]
+    # A traceback names each frame and the error, never a frame's locals: they hold request bodies
+    # (segment text, a calendar sign-in code) and SQL bind parameters, which `hide_parameters`
+    # keeps out of the error's text only. structlog shows them by default: its dict traceback
+    # (`dict_tracebacks`), and the console's rich formatter, which it picks once rich is installed.
+    # tests/test_log.py renders an error under both.
     renderer: list[Processor] = (
-        [structlog.processors.dict_tracebacks, structlog.processors.JSONRenderer()]
+        [
+            structlog.processors.ExceptionRenderer(ExceptionDictTransformer(show_locals=False)),
+            structlog.processors.JSONRenderer(),
+        ]
         if settings.is_production
-        else [structlog.dev.ConsoleRenderer()]
+        else [structlog.dev.ConsoleRenderer(exception_formatter=structlog.dev.plain_traceback)]
     )
 
     structlog.configure(
