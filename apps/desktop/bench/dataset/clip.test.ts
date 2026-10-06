@@ -264,6 +264,40 @@ describe('clip', () => {
     ).rejects.toThrow('--to (00:04) must be after --from (00:04)');
   });
 
+  // An open row (end_ms null) is one the app is still writing, or one a crash left for the next
+  // launch to close; its audio ends where its decoded samples do.
+  it('refuses a window past the end of an open row, reading its end from the decode', async () => {
+    const userData = await fixtureCopy(
+      `UPDATE audio_files SET end_ms = NULL WHERE source = 'mic' AND start_ms = 3000`,
+    );
+
+    await expect(
+      clip(options({ userDataDir: userData, fromMs: 3000, toMs: 8000 }), {
+        assertFileVault: fileVaultOn,
+        decode,
+      }),
+    ).rejects.toThrow(
+      `the backup of meeting ${FIXTURE_MEETING} ends at 00:05; --to 00:08 is past it`,
+    );
+    expect(existsSync(join(benchDir, 'items', 'tone-1'))).toBe(false);
+  });
+
+  it('cuts a window inside an open row', async () => {
+    const userData = await fixtureCopy(
+      `UPDATE audio_files SET end_ms = NULL WHERE source = 'mic' AND start_ms = 3000`,
+    );
+
+    const item = await clip(options({ userDataDir: userData, fromMs: 3000, toMs: 5000 }), {
+      assertFileVault: fileVaultOn,
+      decode,
+    });
+
+    expect(item.gaps).toEqual([]);
+    const mic = await readWav(join(benchDir, 'items', 'tone-1', 'mic.wav'));
+    expect(mic).toHaveLength(2 * 16_000);
+    expect(mic[31_999]).toBe(fixtureToneSample(FIXTURE_TONE_HZ.mic, 31_999));
+  });
+
   it('refuses an item that exists, leaving it as it was', async () => {
     const itemDir = join(benchDir, 'items', 'tone-1');
     await mkdir(itemDir, { recursive: true, mode: 0o700 });

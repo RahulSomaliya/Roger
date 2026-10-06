@@ -80,13 +80,12 @@ export async function clip(
         'than the retention window (7 days by default). Clip a meeting within the week.',
     );
   }
-  const audioEndMs = Math.max(...meeting.chunks.map((chunk) => chunk.endMs ?? Infinity));
-  if (toMs > audioEndMs) {
-    throw new Error(
-      `the backup of meeting ${meetingId} ends at ${formatClock(audioEndMs)}; ` +
-        `--to ${formatClock(toMs)} is past it`,
-    );
-  }
+  // Before anything is written, from the rows' ends. An open row (end_ms null: the app is still
+  // writing it, or a crash left it for the next launch to close) has no end until it is decoded,
+  // so it passes here as endless and the cut checks again below; without that second check one
+  // open row on either stream would let a mistyped --to through as minutes of silence.
+  const rowsEndMs = Math.max(...meeting.chunks.map((chunk) => chunk.endMs ?? Infinity));
+  if (toMs > rowsEndMs) throw pastTheEnd(meetingId, rowsEndMs, toMs);
 
   await ensurePrivateBenchDir(benchDir);
   const paths = itemPaths(benchDir, itemId);
@@ -112,17 +111,20 @@ export async function clip(
   try {
     const streams = new Map<AudioSource, Int16Array>();
     const gaps: ItemGap[] = [];
+    let audioEndMs = 0;
     try {
       for (const source of AUDIO_SOURCES) {
         const chunks = meeting.chunks.filter((chunk) => chunk.source === source);
         const cut = await cutWindow(chunks, fromMs, toMs, deps.decode, scratchDir);
-        if (cut === null) continue;
+        audioEndMs = Math.max(audioEndMs, cut.audioEndMs);
+        if (cut.samples === null) continue;
         streams.set(source, cut.samples);
         gaps.push(...cut.gaps.map((gap) => ({ source, ...gap })));
       }
     } finally {
       await rm(scratchDir, { recursive: true, force: true });
     }
+    if (toMs > audioEndMs) throw pastTheEnd(meetingId, audioEndMs, toMs);
     if (streams.size === 0) {
       throw new Error(
         `meeting ${meetingId} has no backup audio between ${formatClock(fromMs)} and ` +
@@ -184,27 +186,39 @@ export function parseParticipant(text: string): Participant {
 }
 
 interface Cut {
-  samples: Int16Array;
+  /** The window's samples; null when no chunk of the stream reaches into the window. */
+  samples: Int16Array | null;
   /** In item time. */
   gaps: { startMs: number; endMs: number }[];
+  /** Meeting time past the stream's last sample: an open row ends where its decoded audio does. */
+  audioEndMs: number;
 }
 
-/** One stream's samples for the window, or null when no chunk of it reaches into the window. */
+/** One stream's samples for the window, and where its audio ends. */
 async function cutWindow(
   chunks: readonly BackupChunk[],
   fromMs: number,
   toMs: number,
   decode: DecodeChunk,
   scratchDir: string,
-): Promise<Cut | null> {
+): Promise<Cut> {
   // Sample indexes, never ms, so a window is cut to the exact sample.
   const from = fromMs * SAMPLES_PER_MS;
   const to = toMs * SAMPLES_PER_MS;
   const samples = new Int16Array(to - from);
   const covered: [number, number][] = [];
+  let audioEndMs = 0;
   for (const chunk of chunks) {
-    if (chunk.startMs >= toMs || (chunk.endMs !== null && chunk.endMs <= fromMs)) continue;
+    if (chunk.startMs >= toMs || (chunk.endMs !== null && chunk.endMs <= fromMs)) {
+      // Not decoded: an open row starting at or after --to already shows the audio reaches it.
+      audioEndMs = Math.max(audioEndMs, chunk.endMs ?? chunk.startMs);
+      continue;
+    }
     const decoded = await decode(chunk, scratchDir);
+    audioEndMs = Math.max(
+      audioEndMs,
+      chunk.endMs ?? chunk.startMs + decoded.length / SAMPLES_PER_MS,
+    );
     const start = chunk.startMs * SAMPLES_PER_MS;
     // The row's end bounds the chunk: a decoder that pads its output must not spill over the next
     // chunk's start. A decode shorter than the row leaves the rest as a gap.
@@ -218,7 +232,7 @@ async function cutWindow(
     samples.set(decoded.subarray(lo - start, hi - start), lo - from);
     covered.push([lo - from, hi - from]);
   }
-  if (covered.length === 0) return null;
+  if (covered.length === 0) return { samples: null, gaps: [], audioEndMs };
 
   const gaps: Cut['gaps'] = [];
   let cursor = 0;
@@ -227,7 +241,14 @@ async function cutWindow(
     cursor = Math.max(cursor, hi);
   }
   if (cursor < samples.length) gaps.push(gapMs(cursor, samples.length));
-  return { samples, gaps };
+  return { samples, gaps, audioEndMs };
+}
+
+function pastTheEnd(meetingId: string, audioEndMs: number, toMs: number): Error {
+  return new Error(
+    `the backup of meeting ${meetingId} ends at ${formatClock(audioEndMs)}; ` +
+      `--to ${formatClock(toMs)} is past it`,
+  );
 }
 
 function gapMs(fromSample: number, toSample: number): { startMs: number; endMs: number } {
