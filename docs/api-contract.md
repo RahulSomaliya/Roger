@@ -959,6 +959,70 @@ The tool returns every line of the meeting in one text block, so a very long cal
 large output that an MCP client may cut off at its output cap. Slicing by time range arrives in
 M7. The text never includes word timings; read them from `GET /v1/meetings/{id}/transcript`.
 
+### Tool `get_notes`
+
+Description shown to the model (this wording is part of the contract; it sends the model to
+`get_transcript` for quotes):
+
+> Get the notes for a meeting: the AI-written notes and the user's own rough notes, as Markdown.
+> Each AI line ends with the transcript times it came from, like [00:12:03]. Notes are a summary:
+> to quote what someone said, call get_transcript and use its exact words. If meeting_id is
+> omitted, returns the most recent meeting.
+
+Input: `{ "meeting_id": "uuid (optional)" }`.
+
+Output (text content): a header, then three Markdown sections, read from the meeting's stored
+notes (`GET /v1/meetings/{meeting_id}/notes`) as they are now, edits included:
+
+```
+Meeting: Weekly sync with Acme
+Meeting ID: 7f3c2d1e-...
+Started: 2026-10-05T10:00:00Z   Ended: 2026-10-05T10:31:12Z
+
+# AI notes
+
+### Decisions
+
+- Beta ships Friday [00:03:12]
+
+### Action items
+
+- Me: book the follow-up for the 14th [00:10:10] [00:10:55]
+
+# From your notes
+
+*Not said on the call*
+
+- Ask Acme about the Q3 renewal
+
+# My notes
+
+#### Pricing
+
+- 50k **first year**
+```
+
+- `Ended` reads `still recording` for a meeting that has not ended.
+- `# AI notes`: the AI doc without its "From your notes" list. A section the user added after
+  that list, under a heading at the list's level or higher, stays here. Each citation chip is the
+  `hh:mm:ss` offset of the line it points at (its `startMs`), the same offsets `get_transcript`
+  prints, so the line can be found there. A chip with no `startMs` shows its label instead.
+  "(No AI notes yet.)" when there is no AI doc or it is empty; "(No lines from the transcript. See
+  From your notes.)" when every AI line is in that list.
+- `# From your notes`: the AI lines only the user's notes back (M4 D7), with their "Not said on
+  the call" line: what the AI doc holds under its "From your notes" heading, up to the next
+  heading at that level or higher. The notes run writes these lines with no chips, so they carry
+  no times unless the user pasted one in. Only present when the AI doc has that list.
+- `# My notes`: the user's doc; "(No notes yet.)" when there is none or it is empty.
+- Lines the app flags "check this" (citation `support: "weak"`) carry no mark here: their times
+  read like any other. A cue for MCP is an open product call.
+- Text is Markdown as written, never escaped. Headings inside the docs go one level lower, so
+  each sits under its section: a doc's level-1 heading reads `##`, and level 6 stays at 6.
+
+A missing id, or one in another workspace, returns a tool error "Meeting not found". An empty
+workspace returns "No meetings yet". Both docs come back whole in one text block; date ranges and
+other shapes are M7's.
+
 ## Database (Postgres)
 
 Every table carries `workspace_id` from day one.
