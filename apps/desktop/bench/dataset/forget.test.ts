@@ -158,6 +158,23 @@ describe('forget', () => {
     expect(existsSync(itemPaths(benchDir, 'standup-1').dir)).toBe(false);
   });
 
+  it('lists run outputs whose item folder was deleted by hand, and keeps them', async () => {
+    // As clip advises to clip an item again; its outputs in r1 stay behind.
+    await rm(itemPaths(benchDir, 'standup-2').dir, { recursive: true });
+
+    const result = await forget(benchDir, { person: 'Ana Lopez' });
+
+    expect(result.deleted).toEqual([{ itemId: 'standup-1', runs: ['r1', 'r2'] }]);
+    expect(result.unchecked).toEqual([
+      {
+        what: runPaths(benchDir, 'r1').itemDir('standup-2'),
+        reason: 'no item standup-2 in items/ says who it holds',
+      },
+    ]);
+    // Never deleted on a guess: it may hold someone else, kept with their consent.
+    expect(existsSync(runPaths(benchDir, 'r1').itemDir('standup-2'))).toBe(true);
+  });
+
   it('refuses a blank person or meeting', async () => {
     await expect(forget(benchDir, { person: ' ' })).rejects.toThrow(
       'forget needs --person <name> or --meeting <id>',

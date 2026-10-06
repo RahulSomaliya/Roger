@@ -19,7 +19,7 @@ import {
  * in the app never reaches the bench copies.
  *
  * Nothing is skipped in silence: an item or a run.json it cannot read is returned as unchecked,
- * because it may still hold the person.
+ * because it may still hold the person, and so is a run's folder for an item whose folder is gone.
  */
 
 export type ForgetTarget = { person: string } | { meetingId: string };
@@ -45,7 +45,8 @@ export async function forget(benchDir: string, target: ForgetTarget): Promise<Fo
   const result: ForgetResult = { deleted: [], unchecked: [], names: [] };
   const names = new Set<string>();
   const matched: string[] = [];
-  for (const itemId of await listItemIds(benchDir)) {
+  const itemIds = await listItemIds(benchDir);
+  for (const itemId of itemIds) {
     try {
       const item = await readItem(benchDir, itemId);
       for (const person of item.participants) names.add(person.name);
@@ -96,6 +97,21 @@ export async function forget(benchDir: string, target: ForgetTarget): Promise<Fo
     // Last: until the item folder goes, a forget cut short finds the item again when re-run.
     await rm(itemPaths(benchDir, itemId).dir, { recursive: true, force: true });
     result.deleted.push({ itemId, runs: touched });
+  }
+
+  // Outputs are found through the item that names the person, so a run's folder for an item whose
+  // folder was deleted by hand (as clip says to, to clip it again) can no longer say who it holds.
+  // It may hold the person: listed, never deleted on a guess, as it may hold only people who
+  // agreed. Its run.json entry is not listed: it holds timings and errors, never words.
+  const known = new Set(itemIds);
+  for (const runId of runs.keys()) {
+    for (const itemId of await listFolders(join(runsDir, runId))) {
+      if (known.has(itemId)) continue;
+      result.unchecked.push({
+        what: join(runsDir, runId, itemId),
+        reason: `no item ${itemId} in items/ says who it holds`,
+      });
+    }
   }
   return result;
 }
