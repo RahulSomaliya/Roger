@@ -181,7 +181,8 @@ AWAITING_A_DESKTOP_ADAPTER = frozenset({"soniox"})
 def test_every_preset_names_a_registered_vendor() -> None:
     # config.py validates STT_PROVIDER against the Literal and reads the mapping: they must agree.
     assert set(get_args(SttPresetId.__value__)) == set(STT_PRESETS)
-    assert {row.vendor for row in STT_PRESETS.values()} <= set(STT_VENDORS)
+    # Both ways: STT_PROVIDER cannot select a vendor that no preset names (the Literal refuses it).
+    assert {row.vendor for row in STT_PRESETS.values()} == set(STT_VENDORS)
     # The token's `provider` is the vendor, and the desktop picks its adapter by that id: an id
     # missing there fails Start on the Mac, not at the API's startup.
     desktop = desktop_stt_provider_ids()
