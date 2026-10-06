@@ -1,9 +1,9 @@
-"""The notes eval harness (`roger_api/evals`, M4-T12): cases, scores, the judge, reports and the
-command line.
+"""The notes eval harness (`roger_api/evals`, M4-T12): cases, scores, the judge, reports, the fix
+size and the command line.
 
 Everything here runs offline: the fake model and scripted answers stand in for the vendor, as in the
-plan's tiers (the fake in `make check`, the real model only by hand with `make eval-notes`). The
-export reads Postgres, so its tests use the test database.
+plan's tiers (the fake in `make check`, the real model only by hand with `make eval-notes`). The fix
+size and the export read Postgres, so those tests use the test database.
 """
 
 import asyncio
@@ -37,6 +37,7 @@ from roger_api.evals.notes_cases import (
     write_case,
 )
 from roger_api.evals.notes_eval import main, run_eval
+from roger_api.evals.notes_fixes import measure_fixes, render_fixes
 from roger_api.evals.notes_judge import JUDGE_PROMPT_VERSION
 from roger_api.evals.notes_report import EvalReport, render_report, write_report
 from roger_api.evals.notes_score import Share
@@ -421,7 +422,7 @@ def test_a_case_file_name_is_refused_when_markdown_would_break_on_it(tmp_path: P
         load_cases(tmp_path)
 
 
-# --- The export (Postgres) ---------------------------------------------------------------------
+# --- The fix size and the export (Postgres) ----------------------------------------------------
 
 
 @pytest.fixture
@@ -506,6 +507,76 @@ async def add_generated_notes(
         )
         await session.commit()
     return run_id
+
+
+async def test_fix_report_measures_edits_between_run_output_and_current_notes(
+    database: Database, principal: Principal
+) -> None:
+    generated = bullets_doc("Beta ships Friday", "Pricing stays at 50k", heading="Decisions")
+    workspace_id = principal.workspace_id
+    # Newest first: one line added, one line removed, nothing changed.
+    added = await add_meeting(database, workspace_id, hours_ago=1)
+    await add_generated_notes(
+        database,
+        workspace_id,
+        added,
+        generated=generated,
+        current=bullets_doc(
+            "Beta ships Friday", "Pricing stays at 50k", "Me: send the deck", heading="Decisions"
+        ),
+        edited=True,
+    )
+    removed = await add_meeting(database, workspace_id, hours_ago=2)
+    await add_generated_notes(
+        database,
+        workspace_id,
+        removed,
+        generated=generated,
+        current=bullets_doc("Beta ships Friday", heading="Decisions"),
+        edited=True,
+    )
+    untouched = await add_meeting(database, workspace_id, hours_ago=3)
+    await add_generated_notes(
+        database, workspace_id, untouched, generated=generated, current=generated, edited=False
+    )
+    # Not measured: a run that wrote nothing, and another workspace's meeting.
+    failed = await add_meeting(database, workspace_id)
+    await add_generated_notes(
+        database, workspace_id, failed, generated=None, current=generated, edited=False
+    )
+    other = Workspace(id=uuid4(), name="Someone else")
+    async with database.session() as session:
+        session.add(other)
+        await session.commit()
+    foreign = await add_meeting(database, other.id)
+    await add_generated_notes(
+        database, other.id, foreign, generated=generated, current=bullets_doc("Edited"), edited=True
+    )
+
+    fixes = await measure_fixes(database, principal, limit=10)
+
+    assert [fix.meeting_id for fix in fixes] == [added, removed, untouched]
+    first, second, third = fixes
+    assert (first.lines_added, first.lines_removed) == (1, 0)
+    assert (first.characters_added, first.characters_removed) == (len("\n- Me: send the deck"), 0)
+    assert first.edited
+    assert (second.lines_added, second.lines_removed) == (0, 1)
+    assert (second.characters_added, second.characters_removed) == (
+        0,
+        len("\n- Pricing stays at 50k"),
+    )
+    assert (third.lines_added, third.lines_removed, third.characters_added) == (0, 0, 0)
+    assert not third.edited
+    # The run's own counts and cost, for the exit check log beside the stopwatch.
+    assert (first.dropped_count, first.flagged_count, first.from_notes_count) == (1, 2, 1)
+    assert first.cost_usd == Decimal("0.0031")
+    assert first.model == "xiaomi/mimo-v2.6-pro"
+    assert [fix.meeting_id for fix in await measure_fixes(database, principal, limit=1)] == [added]
+    only = await measure_fixes(database, principal, meeting_id=removed, limit=10)
+    assert [fix.meeting_id for fix in only] == [removed]
+    markdown = render_fixes(fixes)
+    assert "+1 / -0" in markdown
+    assert f"+0 / -{len(chr(10) + '- Pricing stays at 50k')}" in markdown
 
 
 async def test_export_writes_a_case_from_a_meeting_and_its_notes(
@@ -636,10 +707,10 @@ def test_model_options_are_refused_on_the_fake_provider(
     assert not out.exists()
 
 
-async def test_export_command_writes_a_case_and_never_overwrites_it(
+async def test_export_and_fixes_commands_read_the_default_workspace(
     database: Database, database_url: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    # The command resolves the API's own principal (one workspace until M6), as a request would.
+    # The commands resolve the API's own principal (one workspace until M6), as a request would.
     settings = make_settings(database_url)
     async with database.session() as session:
         session.add(Workspace(id=settings.default_workspace_id, name="Linkt"))
@@ -659,16 +730,40 @@ async def test_export_command_writes_a_case_and_never_overwrites_it(
             )
         )
         await session.commit()
+    generated = bullets_doc("Beta ships Friday", heading="Decisions")
+    await add_generated_notes(
+        database,
+        settings.default_workspace_id,
+        meeting_id,
+        generated=generated,
+        current=bullets_doc("Beta ships Monday", heading="Decisions"),
+        edited=True,
+    )
     case_file = tmp_path / "local" / "acme.json"
     export = ["export", "--meeting", str(meeting_id), "--template", "client_call"]
 
     # `main` runs its own event loop, so it runs in a thread beside this test's.
     exported = await asyncio.to_thread(main, [*export, "--out", str(case_file)], settings=settings)
     again = await asyncio.to_thread(main, [*export, "--out", str(case_file)], settings=settings)
+    fixed = await asyncio.to_thread(
+        main, ["fixes", "--out", str(tmp_path / "fixes")], settings=settings
+    )
 
-    assert (exported, again) == (0, 1)
+    assert (exported, again, fixed) == (0, 1, 0)
     [case] = load_cases(tmp_path)
     assert case.case.template_id == "client_call"
     assert case.case.meeting_id == meeting_id
     # A second export would have erased the hand labels: refused, the file kept.
     assert "File exists" in capsys.readouterr().err
+    fixes = json.loads((tmp_path / "fixes" / "fixes.json").read_text(encoding="utf-8"))
+    assert [fix["meeting_id"] for fix in fixes["fixes"]] == [str(meeting_id)]
+    assert "Acme renewal" in (tmp_path / "fixes" / "fixes.md").read_text(encoding="utf-8")
+
+
+def test_fixes_refuses_a_limit_below_one(capsys: pytest.CaptureFixture[str]) -> None:
+    # Postgres would refuse a negative LIMIT mid-run; 0 would measure nothing without saying so.
+    with pytest.raises(SystemExit) as stopped:
+        main(["fixes", "--limit", "0"], settings=make_settings(UNUSED_DATABASE_URL))
+
+    assert stopped.value.code == 2
+    assert "must be at least 1" in capsys.readouterr().err

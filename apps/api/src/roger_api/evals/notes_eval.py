@@ -1,11 +1,13 @@
-"""The notes eval (M4-T12): scores AI notes on recorded calls.
+"""The notes eval (M4-T12): scores AI notes on recorded calls and measures how much they were fixed.
 
-Run from apps/api, as `make eval-notes` does:
+Run from apps/api, as `make eval-notes` and `make eval-notes-fixes` do:
 
     uv run --frozen python -m roger_api.evals.notes_eval run [--case ID ...] [--model ID]
         [--reasoning on|off] [--judge-model ID] [--cases DIR] [--out DIR]
     uv run --frozen python -m roger_api.evals.notes_eval export --meeting ID [--template ID]
         [--out FILE] [--force]
+    uv run --frozen python -m roger_api.evals.notes_eval fixes [--meeting ID] [--limit N]
+        [--out DIR]
 
 - `run` writes each case's notes through `generate_notes`, the DB-free core every API notes run
   uses (services/notes_generation.py), and scores them (notes_score.py; with `--judge-model`, a
@@ -14,6 +16,8 @@ Run from apps/api, as `make eval-notes` does:
   `--reasoning` compare models and M4 D2's two reasoning settings on the same cases.
 - `export` copies a meeting from Postgres into `evals/notes/cases/local/<meeting id>.json`
   (git-ignored: client calls) with no labels; write its action items and facts by hand.
+- `fixes` measures how much each meeting's AI notes changed since the run that wrote them
+  (notes_fixes.py), for the exit check log.
 
 Tiers, after anarlog's contract / smoke / live split: tests/test_notes_eval.py runs the harness on
 the fake model in `make check`, offline. A real model runs only by hand, with NOTES_PROVIDER=
@@ -50,6 +54,7 @@ from roger_api.evals.notes_cases import (
     load_cases,
     write_case,
 )
+from roger_api.evals.notes_fixes import FixSize, measure_fixes, render_fixes, write_fixes
 from roger_api.evals.notes_judge import JUDGE_PROMPT_VERSION, judge_lines
 from roger_api.evals.notes_report import (
     CaseFailure,
@@ -81,6 +86,7 @@ from roger_api.services.notes_prompt import PROMPT_VERSION
 logger = get_logger(__name__)
 
 REPORTS_ROOT = EVALS_ROOT / "reports"
+DEFAULT_FIXES_LIMIT = 20
 # The events that put a line on the user's screen: the first one is the wait the user feels.
 _LINE_EVENTS = frozenset({"item", "from_notes"})
 # A judge with no kept line to check is never called. Zero is the truth then, unlike a call whose
@@ -378,6 +384,23 @@ def _export(args: argparse.Namespace, settings: Settings) -> int:
     return 0
 
 
+def _fixes(args: argparse.Namespace, settings: Settings) -> int:
+    async def measure() -> list[FixSize]:
+        database = Database(settings.database_url)
+        try:
+            return await measure_fixes(
+                database, default_principal(settings), meeting_id=args.meeting, limit=args.limit
+            )
+        finally:
+            await database.dispose()
+
+    fixes = asyncio.run(measure())
+    out: Path = args.out or REPORTS_ROOT / f"{stamp(datetime.now(UTC))}-fixes"
+    files = write_fixes(fixes, out)
+    sys.stdout.write(f"{render_fixes(fixes)}\nReport: {files.markdown}\n")
+    return 0
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="notes_eval", description="Score AI notes on recorded calls (M4-T12)."
@@ -402,7 +425,22 @@ def _parser() -> argparse.ArgumentParser:
     export.add_argument("--out", type=Path, help="case file; default cases/local/<meeting>.json")
     export.add_argument("--force", action="store_true", help="replace a case (and its labels)")
 
+    fixes = commands.add_parser("fixes", help="edit size of each meeting's AI notes")
+    fixes.set_defaults(command=_fixes)
+    fixes.add_argument("--meeting", type=UUID, help="one meeting; default the newest")
+    fixes.add_argument(
+        "--limit", type=_at_least_one, default=DEFAULT_FIXES_LIMIT, help="meetings to list"
+    )
+    fixes.add_argument("--out", type=Path, help="report folder; default reports/<UTC time>-fixes")
     return parser
+
+
+def _at_least_one(value: str) -> int:
+    # Postgres refuses a negative LIMIT, and 0 would measure nothing without saying so.
+    number = int(value)
+    if number < 1:
+        raise argparse.ArgumentTypeError(f"must be at least 1, not {number}")
+    return number
 
 
 def _cli() -> int:
