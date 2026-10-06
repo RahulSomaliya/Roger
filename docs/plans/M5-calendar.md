@@ -122,7 +122,7 @@ the milestone closes when the streak is logged. It runs alongside Gate 2.
 | OAuth client | Google "Desktop app" client; id and secret in API settings; the secret goes to the token endpoint | "Web application" client | A Desktop client accepts any loopback port. Google still requires the secret at the token endpoint for this client type and says installed apps cannot keep it, so it is configuration, not a security boundary. It stays on the API all the same. |
 | Scopes | `openid email https://www.googleapis.com/auth/calendar.events.readonly` | `calendar.readonly`; `calendar.events.owned.readonly` | The narrowest documented scope that reads invites on the primary calendar. `calendar.readonly` reads every calendar the user can see, not only events. `events.owned.readonly` is narrower but it is not proven to include events other people invited you to; revisit when the app goes for Google verification (M11). `email` names the account in Settings and comes in the ID token. |
 | ID token | Read `email` from the payload with stdlib `base64` and `json` only, without verifying the signature. A ruff `banned-api` rule refuses `jwt` and `cryptography` anywhere in the API. | Verify with Google's keys; `import jwt` | The API receives it straight from Google's token endpoint over TLS while authenticating with the client secret, which Google says is enough ([Google, OpenID Connect](https://developers.google.com/identity/openid-connect/openid-connect)). `pyjwt` and `cryptography` are installed only because `mcp` pulls in `pyjwt[crypto]` (`uv.lock`); importing them adds an undeclared dependency (C2) that breaks silently if `mcp` drops it. `TID` is already selected in ruff, so the ban costs one config block. |
-| Consent screen audience | Internal, in a Google Cloud project under the linkt.ai Workspace org. If that is not possible, External + Testing with a warning before the 7-day expiry. | External, publishing status Testing, test users | Internal needs no test users and no Google review for sensitive scopes, and its refresh tokens do not expire on a timer. External in Testing issues refresh tokens that expire after 7 days ([Google, refresh token expiration](https://developers.google.com/identity/protocols/oauth2)). Internal needs the right to create a project under linkt.ai and a linkt.ai calendar; when either fails, `GOOGLE_OAUTH_AUDIENCE=external_testing` makes the API return `expires_hint = connected_at + 7 days`, and from day 6 the menu bar and Home say "Reconnect Google Calendar before <date>". **Owner decision D2.** |
+| Consent screen audience | **Owner decision 2026-10-06: External, open to any Google account, not limited to linkt.ai.** Start in publishing status Testing (`GOOGLE_OAUTH_AUDIENCE=external_testing`: up to 100 test users, refresh tokens expire after 7 days, warned from day 6); move to In production (`external_production`) once Google verifies the app for the sensitive calendar scope (privacy policy, homepage, domain, demo video; owner task, M11 at the latest). Until verified, In production shows "Google hasn't verified this app" and caps new users at 100. `internal` stays a valid value. | External, publishing status Testing, test users | Internal needs no test users and no Google review for sensitive scopes, and its refresh tokens do not expire on a timer. External in Testing issues refresh tokens that expire after 7 days ([Google, refresh token expiration](https://developers.google.com/identity/protocols/oauth2)). Internal needs the right to create a project under linkt.ai and a linkt.ai calendar; when either fails, `GOOGLE_OAUTH_AUDIENCE=external_testing` makes the API return `expires_hint = connected_at + 7 days`, and from day 6 the menu bar and Home say "Reconnect Google Calendar before <date>". **Owner decision D2.** |
 | Polling or push | The desktop asks the API every 5 min, on wake, on window focus (at most every 30 s), right after connect, and before showing a prompt when its copy is older than 2 min. At launch, one catch-up fetch from the previous run's last tick (at most 6 days back, below the API's 7-day limit) feeds the missed-prompt log only. The API calls Google live: `events.list` on `primary` with `singleEvents=true`, `orderBy=startTime`, `eventTypes=default`, `maxAttendees=100`, following `nextPageToken`. Failures back off x2 up to 30 min. | `events.watch` push channels; `syncToken` incremental sync | Push needs a public HTTPS URL with a valid certificate and sends no event data anyway, only a "go fetch" signal ([Google, push](https://developers.google.com/workspace/calendar/api/guides/push)). The API is on 127.0.0.1 until M6. A three-day window is one small request; a sync token adds state for nothing. Interval and backoff from openwhispr `calendarSyncInterval.js` and `googleCalendarManager.js`. |
 | Where events are kept | Not on the API. The API normalises and returns them; the desktop keeps the last good answer in its own `calendar.sqlite` | An events table on the API synced from Google | Prompts must fire with the API down or the Mac offline (house rule 1 in spirit). Nothing in M5 queries events on the server; M7 adds a table when MCP needs one. |
 | Time zones and the window | The API returns timed events as UTC instants (Google's offsets resolved) and all-day events as plain dates (`start_date`, `end_date`, end exclusive). Prompts run on instants. "Today" is grouped by local date in the renderer. Main fetches now − 36 h to now + 36 h. | Main computes "today"; now − 12 h to now + 36 h | Instants make prompt timing safe across DST and travel. The renderer follows a macOS time zone change; main may keep the zone it started in, so main never decides what "today" is, and fetches wide enough that today in any zone is inside the window (at 23:30 IST the 10:00 standup is 13.5 h back). openwhispr pads its window by 48 h for this reason (`googleCalendarManager.js` `ALL_DAY_TIMEZONE_PADDING_MS`). anarlog `crates/calendar/src/convert.rs` turns all-day dates into midnight UTC, which moves them a day back west of UTC: not copied. |
@@ -366,7 +366,7 @@ WHERE action IN ('started', 'joined_and_started')
 | --- | --- | --- |
 | API | `CALENDAR_PROVIDER` | `fake` |
 | API | `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET` | required when `google` |
-| API | `GOOGLE_OAUTH_AUDIENCE` | `internal`; `external_testing` turns on `expires_hint` |
+| API | `GOOGLE_OAUTH_AUDIENCE` | `external_testing` (owner decision: open to everyone); `external_testing` turns on `expires_hint`; `external_production` after Google verification; `internal` for a Workspace-only project |
 | API | `CALENDAR_TOKEN_KEY` | required when `google`, at least 32 characters (`openssl rand -hex 32`) |
 | API | `FAKE_CALENDAR_FILE` | empty: built-in fake events |
 | Desktop prefs | `calendar.reminderLeadMinutes` | 1 |
@@ -416,29 +416,28 @@ What M5 needs from each:
 
 ### Owner setup: Google Cloud (about 10 minutes)
 
-1. Check you may create projects in the linkt.ai organization (console.cloud.google.com → project
-   picker → organization **linkt.ai** → **New project** is enabled). If not, ask the Workspace
-   admin for the Project Creator role, or for a project to be made for you. Without it, use
-   External (step 3) and expect a reconnect every 7 days.
-2. Sign in at console.cloud.google.com with your linkt.ai account. Project picker → **New
-   project**, name "Roger", organization **linkt.ai** (needed for Internal), Create.
-3. **APIs & Services → Library**, search "Google Calendar API", **Enable**.
-4. **Menu → Google Auth platform → Branding → Get started.** App name "Roger", user support email
-   yours. **Audience: Internal** (D2). Contact email yours. Agree, Create.
-   If you choose External instead: **Audience → Test users → Add users**, add every Linkt person
-   who will connect (100 at most). Keep publishing status Testing, and set
-   `GOOGLE_OAUTH_AUDIENCE=external_testing` in step 7. Google shows "Google hasn't verified this
-   app" at sign-in (Continue), and the connection dies every 7 days; Roger warns from day 6.
-5. **Data Access → Add or remove scopes:** `openid`, `.../auth/userinfo.email`,
+1. Sign in at console.cloud.google.com with the account that should own Roger's Google project.
+   Project picker → **New project**, name "Roger", Create. (No organization needed: the owner
+   decided on 2026-10-06 that any Google account may connect, not only linkt.ai.)
+2. **APIs & Services → Library**, search "Google Calendar API", **Enable**.
+3. **Menu → Google Auth platform → Branding → Get started.** App name "Roger", user support email
+   yours. **Audience: External** (D2). Contact email yours. Agree, Create. Then **Audience → Test
+   users → Add users**: add everyone who will connect for now (100 at most). Keep publishing
+   status Testing and `GOOGLE_OAUTH_AUDIENCE=external_testing` (step 6). Google shows "Google
+   hasn't verified this app" at sign-in (Continue), and a connection lasts 7 days; Roger warns from
+   day 6. To open it to anyone without the weekly reconnect: Branding needs a homepage and privacy
+   policy on a verified domain, then **Audience → Publish app** and submit verification for the
+   calendar scope; set `GOOGLE_OAUTH_AUDIENCE=external_production` once it is approved.
+4. **Data Access → Add or remove scopes:** `openid`, `.../auth/userinfo.email`,
    `.../auth/calendar.events.readonly`. Save.
-6. **Clients → Create client → Application type: Desktop app**, name "Roger desktop", Create.
+5. **Clients → Create client → Application type: Desktop app**, name "Roger desktop", Create.
    **Download the JSON now**: Google shows the client secret only once, at creation.
-7. In the repo-root `.env` (never committed): `CALENDAR_PROVIDER=google`,
+6. In the repo-root `.env` (never committed): `CALENDAR_PROVIDER=google`,
    `GOOGLE_OAUTH_CLIENT_ID=...`, `GOOGLE_OAUTH_CLIENT_SECRET=...`,
    `CALENDAR_TOKEN_KEY=$(openssl rand -hex 32)`. Keep the key: losing it means reconnecting.
-8. `make migrate && make dev-api`, then Roger → Settings → Calendar → Connect Google Calendar.
-   Connect the calendar you take calls on; Internal works only for a linkt.ai account.
-9. Only if sign-in says the app is blocked by your admin: Google Admin → Security → Access and data
+7. `make migrate && make dev-api`, then Roger → Settings → Calendar → Connect Google Calendar.
+   Connect the calendar you take calls on, with an account listed as a test user.
+8. Only if sign-in says the app is blocked by your admin: Google Admin → Security → Access and data
    control → API controls → Manage third-party app access → add the client id as Trusted.
 
 ### Decisions for the owner
@@ -446,7 +445,7 @@ What M5 needs from each:
 | Id | Question | Recommendation | Alternative |
 | --- | --- | --- | --- |
 | D1 | Where does the Google refresh token live? | The API, pgcrypto-encrypted, so the desktop keeps holding only the Roger token and M6 reuses the store. Phase 2 cost: `make dev-api` must run; Roger says loudly when the calendar goes stale | Desktop Keychain via `safeStorage`: no API hop and no stale risk, but bends house rule 3 and has to move to the server in M6 |
-| D2 | Consent screen audience | Internal, project under the linkt.ai org: no test users, no review, no 7-day expiry | External + Testing: works for any Google account, reconnect every 7 days, warned from day 6 |
+| D2 | Consent screen audience | **Decided by the owner 2026-10-06:** External, open to any Google account. Testing first (test users, reconnect every 7 days, warned from day 6), In production after Google verification | Internal under the linkt.ai org (no expiry, linkt.ai accounts only) |
 | D3 | Notice wording | The default above, on by default, reviewed by Linkt's legal view before Gate 2. M2 keeps call audio on the Mac for 7 days; legal may want the notice to say so. | Wait for legal before shipping any text |
 | D4 | Who owns the app shell | M4-S1 to M4-S4b (M4 D6), with SHELL-0's spec folded into M4-S1 and M4-S2; M5 only mounts a Home section, a Settings section and a meeting banner (T13). Revised 2026-10-06 in `phase-2-build-order.md` (OD-19) | Two foundation tasks outside the milestones (this plan's first draft) |
 | D5 | Who owns the prompt panel | M5, with `PromptService.offer` that M2's call detection feeds, and M2-T17 and M2-T20 changed to match | M2 owns it and M5 feeds it |
@@ -597,7 +596,7 @@ Google with `httpx.MockTransport`, as `test_stt_token.py` does for Deepgram.
 | What | Test |
 | --- | --- |
 | Migration builds the models; pgcrypto present; one connection per workspace and user even with `user_id` NULL; unknown `start_source` refused by the database, `call_detected` accepted; attendees go with their meeting | `apps/api/tests/test_migrations.py`, `tests/test_calendar_schema.py` |
-| Google provider needs client id, secret and a 32+ character key; fake needs none; audience is `internal` or `external_testing` | `tests/test_calendar_config.py` |
+| Google provider needs client id, secret and a 32+ character key; fake needs none; audience is `external_testing` (default), `external_production` or `internal` | `tests/test_calendar_config.py` |
 | Auth URL carries client id, loopback redirect, S256 challenge, state, offline access, exact scopes | `tests/test_calendar_google.py::test_authorization_url_is_exact` |
 | Code exchange sends code, verifier, secret and redirect; reads the email from the ID token with stdlib decoding; refuses a grant without the calendar scope (`424`, "tick the box") | `test_calendar_google.py::test_exchange_*` |
 | No module in the API imports `jwt` or `cryptography` | ruff `TID251` in `make check`, plus `tests/test_calendar_google.py::test_no_jwt_or_cryptography_import` (walks `roger_api` with `ast`) |
@@ -647,7 +646,7 @@ Google with `httpx.MockTransport`, as `test_stt_token.py` does for Deepgram.
 
 | Risk | Signal | Response |
 | --- | --- | --- |
-| Refresh token expires weekly (External + Testing) | Home and the menu bar say "Reconnect before <date>" from day 6 | Internal audience (D2). Otherwise reconnect on day 6, between calls. |
+| Refresh token expires weekly (External + Testing) | Home and the menu bar say "Reconnect before <date>" from day 6 | Google verification, then `external_production` (D2). Until then reconnect on day 6, between calls. |
 | No prompt because Roger was not running (quit, crash, login item waiting for approval) | A `missed` row with `not_running` | Menu bar presence, open at login with its approval state in Settings, M2's crash work. The streak restarts. |
 | The local API is not running (D1's Phase 2 cost) | "Calendar not updated since …" in the menu bar, the panel and Home after 1 h; `missed` rows with `api_stale` | Prompts keep coming from the local copy for up to 36 h; `restart: unless-stopped` brings Postgres back; start `make dev-api` after a reboot. A LaunchAgent for the API was not chosen: the API moves to the cloud in M6. |
 | A capture problem passes as a good start | `started_degraded` rows; a meeting with `them_lines = 0` | Streak starts only after M2-T1, T7, T9, T10, T19; `started` needs both sources live; the Postgres check needs lines from both. |

@@ -504,14 +504,14 @@ or a done-when line on purpose. A plan's engineering calls are not repeated here
 | OD-12 | Never train vendors on calls | Deepgram: `mip_opt_out=true` on every request, even at a higher price. AssemblyAI: opted out in its dashboard before any real call, M1's included. | Stay in Deepgram's program for the discount | M3 D3 |
 | OD-13 | How is the STT vendor chosen? | The rule fixed in M3 before any scoring: latency and failure gates, then pooled WER, then term recall, then cost | Decide after seeing the numbers | M3 D4 |
 | OD-14 | How does the API reach LLMs? | A thin `NotesModel` adapter over `httpx` to OpenRouter. LiteLLM 1.82.7 and 1.82.8 were malicious PyPI releases on 2026-03-24 (LiteLLM's security post; Datadog Security Labs). | LiteLLM pinned to a clean release, after a re-lock | M4 D1 |
-| OD-15 | Which model writes notes and answers chat? | `anthropic/claude-sonnet-5.5`, reasoning off | Opus 5.5 for notes; reasoning on | M4 D2 |
+| OD-15 | Which model writes notes and answers chat? | **Owner, 2026-10-06:** `xiaomi/mimo-v2.6-pro`, reasoning off, zero-retention routing (Novita, DeepInfra) | `anthropic/claude-sonnet-5.5` if the eval shows MiMo's notes need more fixing | M4 D2 |
 | OD-16 | May calls go to providers that keep data? | No: `zdr: true` and `data_collection: deny` on every request | `data_collection: deny` only | M4 D3 |
 | OD-17 | What happens to an AI line the transcript does not back? | Drop it if it has no valid citation (listed as removed). Flag it if its numbers or words are not in the cited lines. | Flag all, drop none | M4 D4 |
 | OD-18 | How are edits from two places reconciled? | Whole-doc versions with a visible conflict copy. A CRDT is revisited in M10. | Yjs now | M4 D5 |
 | OD-19 | Who owns the app shell? | M4-S1 to M4-S4b, in waves 1 to 3. M5's SHELL-0 spec is folded into S1 and S2, and every plan uses these ids. | Two foundation tasks outside the milestones | M4 D6, M5 D4 |
 | OD-20 | An AI line backed only by the user's notes | (a) A closing "From your notes" list with no chips | (b) A note chip in place, with stable block ids | M4 D7 |
 | OD-21 | Where does the Google refresh token live? | In the API, encrypted with pgcrypto. The cost: `make dev-api` must run, and a stale calendar is loud after 1 h. | Desktop Keychain | M5 D1 |
-| OD-22 | Google consent screen audience | Internal, under the linkt.ai org | External + Testing, with a reconnect every 7 days | M5 D2 |
+| OD-22 | Google consent screen audience | **Owner, 2026-10-06:** External, open to any Google account (Testing first, In production after Google verification) | Internal under the linkt.ai org | M5 D2 |
 | OD-23 | Notice wording | The default text, on by default, reviewed by Linkt's legal view before Gate 2. Consider naming the 7-day local audio backup (OD-7). | Wait for legal | M5 D3 |
 | OD-24 | Who owns the prompt panel and call-detected offers? | M5's `PromptService.offer`. M2-T17b feeds it and builds no card or notification of its own. A click stores `call_detected`, or `notification` when one calendar event matches. | M2 owns it | M5 D5, M2 D6 |
 | OD-25 | Crash relaunch | The monitor helper relaunches Roger once per meeting and resumes the same meeting, with a visible Stop | End the meeting at launch | M2 D7 |
