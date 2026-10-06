@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { AudioTimeline, RUN_DRIFT_LIMIT_MS } from './AudioTimeline';
+import { AudioTimeline, RUN_DRIFT_LIMIT_MS, RUN_EDGE_SNAP_MS } from './AudioTimeline';
 
 const RATE = 16_000;
 /** 100 ms at 16 kHz: the renderer's and the helper's chunk. */
@@ -131,6 +131,104 @@ describe('AudioTimeline', () => {
     expect(timeline.toCapturedAtMs(2_000, 'start')).toBe(T0 + 5_000);
     expect(timeline.toCapturedAtMs(2_000, 'end')).toBe(T0 + 2_000);
     expect(timeline.toCapturedAtMs(0, 'end')).toBe(T0);
+  });
+
+  describe('a span near a run boundary', () => {
+    /** Stream 0-2 s captured from T0; the mic stalls 18 s; stream 2-3 s captured from T0 + 20 s. */
+    function stalled(): AudioTimeline {
+      const timeline = new AudioTimeline(RATE);
+      appendContiguous(timeline, T0, 20);
+      appendContiguous(timeline, T0 + 20_000, 10);
+      return timeline;
+    }
+
+    it('maps nothing before the first chunk', () => {
+      expect(new AudioTimeline(RATE).toCapturedSpan(0, 100)).toBeNull();
+    });
+
+    it('cuts an end that spills just past a boundary back to the run before it', () => {
+      // The vendor hears no hole and stamps the cut word's end 10 ms past the splice. Mapped on
+      // its own, that end lands 18 s later and stretches the word across the stall.
+      expect(stalled().toCapturedSpan(1_700, 2_010)).toEqual({
+        startMs: T0 + 1_700,
+        endMs: T0 + 2_000,
+      });
+      expect(stalled().toCapturedSpan(0, 2_000 + RUN_EDGE_SNAP_MS)).toEqual({
+        startMs: T0,
+        endMs: T0 + 2_000,
+      });
+    });
+
+    it('moves a start that sits just before a boundary forward to the run after it', () => {
+      expect(stalled().toCapturedSpan(1_999, 2_400)).toEqual({
+        startMs: T0 + 20_000,
+        endMs: T0 + 20_400,
+      });
+      expect(stalled().toCapturedSpan(2_000 - RUN_EDGE_SNAP_MS, 2_900)).toEqual({
+        startMs: T0 + 20_000,
+        endMs: T0 + 20_900,
+      });
+    });
+
+    it('keeps a span across a boundary when it holds more than the snap on both sides', () => {
+      expect(RUN_EDGE_SNAP_MS).toBe(200);
+      expect(stalled().toCapturedSpan(1_500, 2_000 + RUN_EDGE_SNAP_MS + 1)).toEqual({
+        startMs: T0 + 1_500,
+        endMs: T0 + 20_201,
+      });
+      expect(stalled().toCapturedSpan(2_000 - RUN_EDGE_SNAP_MS - 1, 2_500)).toEqual({
+        startMs: T0 + 1_799,
+        endMs: T0 + 20_500,
+      });
+    });
+
+    it('puts a short span astride a boundary on the side that holds more of it', () => {
+      expect(stalled().toCapturedSpan(1_900, 2_050)).toEqual({
+        startMs: T0 + 1_900,
+        endMs: T0 + 2_000,
+      });
+      expect(stalled().toCapturedSpan(1_950, 2_100)).toEqual({
+        startMs: T0 + 20_000,
+        endMs: T0 + 20_100,
+      });
+      // A tie stays before the boundary.
+      expect(stalled().toCapturedSpan(1_900, 2_100)).toEqual({
+        startMs: T0 + 1_900,
+        endMs: T0 + 2_000,
+      });
+    });
+
+    it('never moves a span that sits inside one run, however near a boundary', () => {
+      // Snapping each time on its own would carry this word, said just before the stall, 18 s
+      // forward with its start; and this one, said just after it, back before its own start.
+      expect(stalled().toCapturedSpan(1_850, 1_990)).toEqual({
+        startMs: T0 + 1_850,
+        endMs: T0 + 1_990,
+      });
+      expect(stalled().toCapturedSpan(2_010, 2_150)).toEqual({
+        startMs: T0 + 20_010,
+        endMs: T0 + 20_150,
+      });
+    });
+
+    it('cuts at most one boundary at each end, however short the runs between', () => {
+      const timeline = new AudioTimeline(RATE);
+      appendContiguous(timeline, T0, 20); // stream 0-2 s
+      appendContiguous(timeline, T0 + 5_000, 1); // stream 2-2.1 s, a lone chunk between jumps
+      appendContiguous(timeline, T0 + 9_000, 10); // stream 2.1-3.1 s
+      // 50 ms before the first boundary and 50 ms past the last: both are spill, and what is left
+      // is the middle run.
+      expect(timeline.toCapturedSpan(1_950, 2_150)).toEqual({
+        startMs: T0 + 5_000,
+        endMs: T0 + 5_100,
+      });
+      // This end is 50 ms past the last boundary and 150 ms past the one before it: only the last
+      // is cut, so the end stays in the lone chunk's run and does not fall back 3 s to the first.
+      expect(timeline.toCapturedSpan(1_000, 2_150)).toEqual({
+        startMs: T0 + 1_000,
+        endMs: T0 + 5_100,
+      });
+    });
   });
 
   it('places times outside the audio by the nearest run', () => {

@@ -1,10 +1,24 @@
 /**
  * How far a chunk's capture time may sit from where its run predicts it before the chunk starts a
  * new run (M2 design, "Timeline"). Over it, audio is missing (a stall, a held reconnect, a sleep)
- * or the clock moved; under it is the jitter of the capture times themselves. It also bounds how
- * far a line can be misdated, so it stays well inside the echo filter's ±700 ms window.
+ * or the clock moved; under it is the jitter of the capture times themselves. Inside a run it
+ * bounds how far a time can be misdated, so a line stays well inside the echo filter's ±700 ms
+ * window. At a run boundary it bounds nothing: there the gap is, and RUN_EDGE_SNAP_MS decides.
  */
 export const RUN_DRIFT_LIMIT_MS = 250;
+
+/**
+ * How far a span may reach across a run boundary and still be read as spill rather than audio
+ * from the other side: toCapturedSpan cuts a piece this short off at the boundary. The vendor
+ * hears spliced audio with no hole, and its word edges are a model's estimate, not the splice
+ * point, so a word cut by a stall ends a little past the boundary (or the next word starts a
+ * little before it), almost never on it. Mapped as it stands, that piece lands on the far side of
+ * the gap and stretches the word and its line across all of it: after an 18 s stall a two-word mic
+ * line would be 18 s long, overlap its call-audio twin by about 2%, and the echo filter would keep
+ * it. A cut moves an edge by at most this much of the stream's own clock; a longer piece is real
+ * audio and the span keeps it.
+ */
+export const RUN_EDGE_SNAP_MS = 200;
 
 /** A stretch of contiguous audio: samples with no hole between them on the wall clock. */
 export interface AudioRun {
@@ -25,6 +39,12 @@ export interface AudioRun {
 /** Which run a time exactly on a run boundary belongs to: see toCapturedAtMs. */
 export type TimelineEdge = 'start' | 'end';
 
+/** A span as wall clock (epoch ms): see toCapturedSpan. */
+export interface CapturedSpan {
+  readonly startMs: number;
+  readonly endMs: number;
+}
+
 interface Run {
   startSample: number;
   capturedAtMs: number;
@@ -42,7 +62,7 @@ interface Run {
  * line early by the gap's length (a 10-minute sleep, 10 minutes). Here every chunk brings the
  * capture time of its first sample, and a chunk whose time drifts from what its run's samples
  * predict by more than RUN_DRIFT_LIMIT_MS starts a new run; a time maps through the run that holds
- * it.
+ * it, and a span's spill across a run boundary is cut off at it (RUN_EDGE_SNAP_MS).
  *
  * Feed it capture times, never arrival times: chunks reach main 0 to 400 ms late (GC pauses,
  * synchronous SQLite writes, two different paths for the two sources), which would split runs
@@ -111,15 +131,65 @@ export class AudioTimeline {
    * Wall clock (epoch ms) of `streamMs` on the stream's own clock, or null before the first chunk.
    * A time on a run boundary is both the first sample of the later run and the end of the earlier
    * one: a line's or word's start (`'start'`) belongs to the run it opens, its end (`'end'`) to the
-   * run it closes, so a word that ends at a gap is not stretched across it. Times before the first
-   * sample or past the last are placed by the nearest run.
+   * run it closes. Times before the first sample or past the last are placed by the nearest run.
+   *
+   * One time alone cannot tell a vendor's spill past a boundary from audio on the far side of it,
+   * so a line's or a word's span goes through toCapturedSpan, never through two calls here.
    */
   toCapturedAtMs(streamMs: number, edge: TimelineEdge = 'start'): number | null {
-    const first = this.runList[0];
-    if (first === undefined) return null;
-    const sample = (streamMs * this.sampleRate) / 1_000;
-    let run = first;
-    // Binary search for the last run that starts at the sample (a start) or before it (an end).
+    const sample = this.msToSamples(streamMs);
+    const run = this.runList[this.runIndexAt(sample, edge)];
+    return run === undefined ? null : this.throughRun(run, sample);
+  }
+
+  /**
+   * A span on the stream's own clock (a line's or a word's) as wall clock (epoch ms), or null
+   * before the first chunk. A span inside one run maps as its two edges do. A span across a run
+   * boundary loses a piece of RUN_EDGE_SNAP_MS or less beyond it: its end is cut back to the end of
+   * the run before (spill past the splice), its start moved up to the start of the run after (spill
+   * before it). Over a single boundary only the shorter piece is cut, so a short word astride one
+   * lands on the side that holds more of it (a tie stays before the boundary). Over several, each
+   * edge is cut at its own nearest boundary only, so no edge moves by more than RUN_EDGE_SNAP_MS
+   * of the stream's clock (on the wall clock it moves by that plus the gap it no longer crosses).
+   *
+   * The decision needs both edges: a short word that ends just before a gap is real audio before
+   * it, and its start must not be carried across with a start rule alone. A span whose end comes
+   * before its start is mapped as it stands.
+   */
+  toCapturedSpan(startMs: number, endMs: number): CapturedSpan | null {
+    let start = this.msToSamples(startMs);
+    let end = this.msToSamples(endMs);
+    let first = this.runIndexAt(start, 'start');
+    let last = this.runIndexAt(end, 'end');
+    const afterFirst = this.runList[first + 1];
+    const lastRun = this.runList[last];
+    if (last > first && afterFirst !== undefined && lastRun !== undefined) {
+      const snap = this.msToSamples(RUN_EDGE_SNAP_MS);
+      const head = afterFirst.startSample - start;
+      const tail = end - lastRun.startSample;
+      // Over one boundary, head and tail are the two sides of it: never cut both.
+      const oneBoundary = last === first + 1;
+      if (tail <= snap && (!oneBoundary || tail <= head)) {
+        end = lastRun.startSample;
+        last -= 1;
+      }
+      if (head <= snap && (!oneBoundary || head < tail)) {
+        start = afterFirst.startSample;
+        first += 1;
+      }
+    }
+    const startRun = this.runList[first];
+    const endRun = this.runList[last];
+    if (startRun === undefined || endRun === undefined) return null;
+    return { startMs: this.throughRun(startRun, start), endMs: this.throughRun(endRun, end) };
+  }
+
+  /**
+   * Index of the last run that starts at the sample (a start) or before it (an end): see
+   * toCapturedAtMs. The first run's for a sample before any, and 0 with no run yet.
+   */
+  private runIndexAt(sample: number, edge: TimelineEdge): number {
+    let index = 0;
     let low = 1;
     let high = this.runList.length - 1;
     while (low <= high) {
@@ -129,12 +199,17 @@ export class AudioTimeline {
       const holds =
         edge === 'start' ? candidate.startSample <= sample : candidate.startSample < sample;
       if (holds) {
-        run = candidate;
+        index = middle;
         low = middle + 1;
       } else {
         high = middle - 1;
       }
     }
+    return index;
+  }
+
+  /** Wall clock of a sample on the stream's clock, placed through `run`. */
+  private throughRun(run: Run, sample: number): number {
     return run.capturedAtMs + this.samplesToMs(sample - run.startSample);
   }
 
@@ -145,5 +220,9 @@ export class AudioTimeline {
 
   private samplesToMs(samples: number): number {
     return (samples * 1_000) / this.sampleRate;
+  }
+
+  private msToSamples(ms: number): number {
+    return (ms * this.sampleRate) / 1_000;
   }
 }
