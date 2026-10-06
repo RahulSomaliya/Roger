@@ -112,7 +112,7 @@ export class AssemblyAiSpeechToText implements SpeechToText {
       await waitForOpen(socket, this.connectTimeoutMs);
     } catch (error) {
       if (!(error instanceof SttConnectError)) throw error;
-      throw new SttConnectError(`AssemblyAI connection ${error.message}`, error.statusCode);
+      throw new SttConnectError(`AssemblyAI: ${error.message}`, error.statusCode);
     }
     await stream.began(this.connectTimeoutMs);
     logger.info('assemblyai stream open', { model: options.settings.model });
@@ -270,6 +270,11 @@ class AssemblyAiStream implements SttStream {
     return this.emitter.on(listener);
   }
 
+  /**
+   * Frames only regroup the renderer's bytes, never drop or reorder them, so the vendor's time zero
+   * stays the first byte CaptureSession timed (firstChunkOffsetMs) and word offsets line up with the
+   * meeting clock. Dropping or skipping leading audio here would shift every line of the stream.
+   */
   private sendFrame(frame: Uint8Array): void {
     this.socket.send(frame);
     this.audioSentBytes += frame.byteLength;

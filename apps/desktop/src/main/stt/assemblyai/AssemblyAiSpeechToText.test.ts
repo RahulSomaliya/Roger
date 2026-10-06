@@ -331,7 +331,7 @@ describe('AssemblyAiSpeechToText', () => {
 
     expect(error).toBeInstanceOf(SttConnectError);
     expect((error as SttConnectError).statusCode).toBe(401);
-    expect((error as SttConnectError).message).toContain('AssemblyAI');
+    expect((error as SttConnectError).message).toBe('AssemblyAI: rejected with HTTP 401');
   });
 
   it('fails to open when Begin never arrives', async () => {

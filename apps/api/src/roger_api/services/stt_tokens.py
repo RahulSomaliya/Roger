@@ -77,7 +77,9 @@ async def _request_vendor_token[M: BaseModel](
     except ValidationError as exc:
         # `str(exc)` would quote the input, and a success body holds the token.
         logger.warning(
-            "stt_token_unreadable", provider=provider, errors=exc.errors(include_input=False)
+            "stt_token_unreadable",
+            provider=provider,
+            errors=exc.errors(include_url=False, include_input=False),
         )
         raise SttProviderError("Speech-to-text provider sent an unreadable token") from exc
 
