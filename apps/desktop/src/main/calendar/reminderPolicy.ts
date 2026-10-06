@@ -54,8 +54,17 @@ export function promptWorthiness(event: CalendarEvent): PromptWorthiness {
   return { worthy: true, event };
 }
 
-export function isPromptWorthy(event: CalendarEvent): event is TimedCalendarEvent {
-  return promptWorthiness(event).worthy;
+/**
+ * The prompt-worthy events, in their order. Narrows through `promptWorthiness`, never through an
+ * `event is TimedCalendarEvent` predicate: "not worthy" also holds for timed events (a declined
+ * call, a solo block), so such a predicate would type its false branch as `AllDayCalendarEvent`,
+ * and code there would read `startDate`, null on a timed event, as a string.
+ */
+export function promptWorthyEvents(events: readonly CalendarEvent[]): TimedCalendarEvent[] {
+  return events.flatMap((candidate) => {
+    const worthiness = promptWorthiness(candidate);
+    return worthiness.worthy ? [worthiness.event] : [];
+  });
 }
 
 export interface DueWindow {
@@ -93,8 +102,7 @@ export function dueEvents(
   leadMinutes: ReminderLeadMinutes,
   loggedKeys: ReadonlySet<string>,
 ): TimedCalendarEvent[] {
-  return events
-    .filter(isPromptWorthy)
+  return promptWorthyEvents(events)
     .filter((event) => isDue(event, nowMs, leadMinutes) && !loggedKeys.has(promptKey(event)))
     .sort((a, b) => parseInstant(a.start) - parseInstant(b.start));
 }
@@ -118,7 +126,7 @@ export function oneClearMatch(
   events: readonly CalendarEvent[],
   nowMs: number,
 ): TimedCalendarEvent | null {
-  const matches = events.filter(isPromptWorthy).filter((event) => {
+  const matches = promptWorthyEvents(events).filter((event) => {
     const startMs = parseInstant(event.start);
     const running = startMs <= nowMs && nowMs < parseInstant(event.end);
     const imminent = nowMs < startMs && startMs <= nowMs + LINK_BEFORE_START_MS;

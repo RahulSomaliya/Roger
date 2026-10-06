@@ -11,11 +11,11 @@ import {
   dueEvents,
   dueWindow,
   isDue,
-  isPromptWorthy,
   missedReason,
   oneClearMatch,
   PROMPT_OPEN_AFTER_START_MS,
   promptWorthiness,
+  promptWorthyEvents,
   sharesCard,
   type MissedReasonInput,
 } from './reminderPolicy';
@@ -123,13 +123,28 @@ describe('promptWorthiness', () => {
   });
 
   it('prompts when Google left the other attendees out', () => {
-    expect(isPromptWorthy(solo({ attendees: [me], attendeesOmitted: true }))).toBe(true);
+    expect(promptWorthiness(solo({ attendees: [me], attendeesOmitted: true })).worthy).toBe(true);
   });
 
   it('prompts tentative and unanswered calls', () => {
-    expect(isPromptWorthy(call({ selfResponse: 'tentative' }))).toBe(true);
-    expect(isPromptWorthy(call({ selfResponse: 'needs_action' }))).toBe(true);
-    expect(isPromptWorthy(call({ status: 'tentative' }))).toBe(true);
+    expect(promptWorthiness(call({ selfResponse: 'tentative' })).worthy).toBe(true);
+    expect(promptWorthiness(call({ selfResponse: 'needs_action' })).worthy).toBe(true);
+    expect(promptWorthiness(call({ status: 'tentative' })).worthy).toBe(true);
+  });
+});
+
+describe('promptWorthyEvents', () => {
+  it('keeps the calls in their order and drops the events that never prompt', () => {
+    const first = call({ id: 'first' });
+    const second = call({ id: 'second', start: '2026-10-06T08:00:00Z' });
+    const events: CalendarEvent[] = [
+      first,
+      solo(),
+      allDay(),
+      call({ id: 'declined', selfResponse: 'declined' }),
+      second,
+    ];
+    expect(promptWorthyEvents(events)).toEqual([first, second]);
   });
 });
 
