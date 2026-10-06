@@ -17,7 +17,18 @@ import { createMainWindow, installPermissionHandlers, resolveAppPage } from './w
 const MISSING_TOKEN =
   'No API token. Set ROGER_DESKTOP_API_TOKEN (or "apiToken" in config.json in the app data folder) and restart.';
 
+/**
+ * The composition root. Phase 2 tasks wire their features in through named slots: a marker line
+ * `// [slot <task>] <what>` and a blank line. A task writes only under its own marker and never
+ * moves or rewords one, so tasks that fill different slots merge cleanly (the next marker is an
+ * unchanged line between them). The marker order is load-bearing; each marker says why where it
+ * matters. Phase 2's slot list: docs/plans/phase-2-build-order.md, section 1 (P2-F1).
+ */
 async function main(): Promise<void> {
+  // [slot M2-T13] e2e mode: temporary user data, no TCC prompt. Before the lock (it uses userData).
+
+  // [slot M5-T11 userData] "Roger Dev" when not packaged. Before the lock; never over M2-T13's.
+
   if (!app.requestSingleInstanceLock()) {
     // A second copy would fight over the SQLite file and the microphone.
     app.quit();
@@ -39,13 +50,26 @@ async function main(): Promise<void> {
       value: config.sttProviderOverride,
     });
   }
+  // Set by the window creation below; every IPC registrar trusts only this window's page.
+  let window: BrowserWindow | null = null;
+
+  // [slot M4-S2] the preferences store
+
+  // [slot M2-T4 store] the transcript store
 
   const store = new SqliteTranscriptStore(join(userData, 'roger.sqlite'));
+
+  // [slot M2-T23] meetings a previous run left open (M2-T23 replaces this with CrashRecovery)
+
   // No session can be running at startup, so any open meeting was cut off by a crash, a force-quit,
   // or a quit whose stop outran quitStopTimeoutMs (lifecycle.ts).
   const recovered = store.endMeetingsLeftOpen(new Date().toISOString());
   if (recovered > 0)
     logger.warn('ended meetings left open by a previous run', { count: recovered });
+
+  // [slot M4-T16 notes store] notes.sqlite. Before the runtime: the uploader and capture need it.
+
+  // [slot M2-T4 runtime] API client, uploader, capture, capture IPC, the recording lifecycle
 
   const api = new ApiClient({ baseUrl: config.apiUrl, token: config.apiToken ?? '' });
   const uploader = new TranscriptUploader({
@@ -81,11 +105,18 @@ async function main(): Promise<void> {
   });
 
   // Quit, sleep, the window closing, crashing or reloading: each stops the recording (lifecycle.ts).
+  // After the stop, a quit runs the hooks below in order, each bounded. The two markers in the
+  // list are slots like the others: whoever rewires this block keeps both, in this order, because
+  // the notes flush must run before the stores close.
   const lifecycle = new RecordingLifecycle({
     capture,
     logger: logger.child({ component: 'lifecycle' }),
     quitStopTimeoutMs: config.costGuards.quitStopTimeoutMs,
     quitHooks: [
+      // [slot M4-T16 quit] ask each window to flush its notes (1 s), then close notes.sqlite
+
+      // [slot M2-T4 quit] stop the uploader and close the transcript store
+
       {
         name: 'stop the uploader and close the transcript store',
         // Synchronous, so the bound never cuts it; every hook names one all the same.
@@ -93,8 +124,9 @@ async function main(): Promise<void> {
         run: () => {
           uploader.stop();
           // A tick still awaiting the API meets the closed store next ('database is not open').
-          // TranscriptUploader.tick logs that and never rejects; a rejection would be unhandled here.
-          // After a stop that timed out, a late final line meets it too; CaptureSession logs that.
+          // TranscriptUploader.tick logs that and never rejects; a rejection would be unhandled
+          // here. After a stop that timed out, a late final line meets it too; CaptureSession
+          // logs that.
           store.close();
         },
       },
@@ -105,7 +137,6 @@ async function main(): Promise<void> {
   });
   watchApp(lifecycle, { app, powerMonitor });
 
-  let window: BrowserWindow | null = null;
   registerIpcHandlers({
     ipcMain,
     capture,
@@ -114,6 +145,16 @@ async function main(): Promise<void> {
   });
   if (missingToken === null) uploader.start();
   else logger.error(missingToken);
+
+  // [slot M4-S1] navigation and the app menu
+
+  // [slot M4-S4b] meetings IPC
+
+  // [slot M3-T8] vocabulary IPC
+
+  // [slot M4-T16 notes] notes and chat IPC, the notes generator and the notes sync
+
+  // [slot M5-T9c] the calendar runtime and the start-request enricher
 
   const page = resolveAppPage();
   installPermissionHandlers(
@@ -137,6 +178,8 @@ async function main(): Promise<void> {
     }
   });
   logger.info('roger started', { apiUrl: config.apiUrl, userData, packaged: app.isPackaged });
+
+  // [slot M5-T11 lifecycle] the tray, the login item, activate, and window-all-closed
 
   app.on('window-all-closed', () => {
     app.quit();
