@@ -5,12 +5,26 @@ import { errorMessage, type Logger } from './logger';
 import { withTimeout } from './util/time';
 
 /**
- * Cost guard G4: whatever ends the app's ability to record (quit, the window closing, the renderer
- * crashing or reloading, the Mac sleeping) stops the recording through the normal stop: finish
- * sequence, last lines saved, sessions closed. Left open, each vendor session bills until a vendor
- * timeout (AssemblyAI: the 120 s idle timeout Roger asks for; without it, the 3-hour cap, $0.45 a
- * stream). The decisions live here and are tested; index.ts only connects Electron's objects.
+ * Cost guard G4: whatever ends the app's ability to record (quit, the window closing, the Mac
+ * sleeping, a page that cannot be brought back) stops the recording through the normal stop:
+ * finish sequence, last lines saved, sessions closed. Left open, each vendor session bills until a
+ * vendor timeout (AssemblyAI: the 120 s idle timeout Roger asks for; without it, the 3-hour cap,
+ * $0.45 a stream). A renderer crash or a reload no longer stops (M2 D7, M2-T12): the page comes
+ * back and reopens the mic because main is recording, and until its chunks come, G2's stall close
+ * shuts the mic's session after 30 s, so a crash costs at most that. A page that keeps crashing
+ * stops instead (RENDERER_CRASH_LIMIT). The decisions live here and are tested; index.ts only
+ * connects Electron's objects.
  */
+
+/**
+ * The crash that makes this many within RENDERER_CRASH_WINDOW_MS stops the recording instead of
+ * reloading. The page opens the mic only after it loads, so a crash in the capture path or the
+ * recording view comes after did-finish-load, past the guard for a page that dies on load. Each
+ * such cycle sends a few chunks, so G2's stall close never fires: without this limit the window
+ * reloads every second or two, the mic flickering, until G5's 4-hour cap.
+ */
+export const RENDERER_CRASH_LIMIT = 3;
+export const RENDERER_CRASH_WINDOW_MS = 60_000;
 
 export interface StoppableCapture {
   stop(options: StopOptions): Promise<CaptureStatus>;
@@ -37,6 +51,11 @@ export interface RecordingLifecycleOptions {
   /** How long a quit waits for the stop (costGuards.quitStopTimeoutMs). */
   quitStopTimeoutMs: number;
   /**
+   * Monotonic ms for the crash window (performance.now() in the app). Never the wall clock: an
+   * NTP step could hide a crash loop or invent one. Injected in tests.
+   */
+  now?: () => number;
+  /**
    * The quit's cleanup after the stop, in order; index.ts lists them, with the uploader stop and
    * the store close last. Add a hook to that list; never a before-quit listener of your own:
    * Electron runs it on the first Cmd+Q, while this class is still stopping the recording, so a
@@ -51,13 +70,34 @@ export interface RecordingLifecycleOptions {
 /** The reasons an Electron event stops a recording; the quit has its own path. */
 export type LifecycleStopReason = Extract<
   StopReason,
-  'window-closed' | 'renderer-gone' | 'page-reloaded' | 'system-sleep'
+  'window-closed' | 'renderer-gone' | 'system-sleep'
 >;
+
+/** Chromium's net error for a load that another load replaced, or one that was cancelled. */
+const ERR_ABORTED = -3;
+
+/** A page load that failed (Electron's did-fail-load), as far as the decision below needs it. */
+export interface PageLoadFailure {
+  errorCode: number;
+  errorDescription: string;
+  /** False for a subframe; the app has none, and a subframe's failure leaves the page running. */
+  isMainFrame: boolean;
+}
 
 export class RecordingLifecycle {
   private quitState: 'running' | 'stopping' | 'done' = 'running';
+  /**
+   * True from a crash's reload until that page has loaded. A crash before then is the reloaded
+   * page dying on load, which would reload forever: that one stops instead.
+   */
+  private reloadingAfterCrash = false;
+  /** When each crash in the last RENDERER_CRASH_WINDOW_MS came, on `now`'s clock. */
+  private recentCrashes: number[] = [];
+  private readonly now: () => number;
 
-  constructor(private readonly options: RecordingLifecycleOptions) {}
+  constructor(private readonly options: RecordingLifecycleOptions) {
+    this.now = options.now ?? (() => performance.now());
+  }
 
   /**
    * before-quit and will-quit (Cmd+Q, the menu, logout). True means the caller must prevent this
@@ -90,6 +130,69 @@ export class RecordingLifecycle {
     capture.stop(options).catch((error: unknown) => {
       logger.error('stop failed', { reason, error: errorMessage(error) });
     });
+  }
+
+  /**
+   * The renderer process died (M2 D7): reload the page instead of stopping, while recording or
+   * not, so the window is never left dead. The reloaded page reopens the mic because main is
+   * recording (renderer/src/state/useCapture.ts follows main). `reload` throwing, the reloaded
+   * page crashing before it loads, or a page that keeps crashing after it loads
+   * (RENDERER_CRASH_LIMIT) stops with `renderer-gone` and reloads no more.
+   */
+  onRendererGone(reason: string, reload: () => void): void {
+    // Quitting: the window is going away, and the quit has stopped the recording itself.
+    if (this.quitState !== 'running') return;
+    const { capture, logger } = this.options;
+    if (this.reloadingAfterCrash) {
+      logger.error('the reloaded page crashed before it loaded; not reloading again', { reason });
+      this.stopFor('renderer-gone', `it crashed again: ${reason}`);
+      return;
+    }
+    const now = this.now();
+    this.recentCrashes = [
+      ...this.recentCrashes.filter((at) => now - at < RENDERER_CRASH_WINDOW_MS),
+      now,
+    ];
+    if (this.recentCrashes.length >= RENDERER_CRASH_LIMIT) {
+      logger.error('the page keeps crashing; not reloading again', {
+        reason,
+        crashes: this.recentCrashes.length,
+        withinMs: RENDERER_CRASH_WINDOW_MS,
+      });
+      this.stopFor('renderer-gone', `it kept crashing: ${reason}`);
+      return;
+    }
+    logger.warn('renderer gone; reloading the page', { reason, phase: capture.phase });
+    this.reloadingAfterCrash = true;
+    try {
+      reload();
+    } catch (error) {
+      logger.error('reload after a renderer crash failed', { reason, error: errorMessage(error) });
+      this.stopFor('renderer-gone', errorMessage(error));
+    }
+  }
+
+  /**
+   * The page finished loading: a later crash is a new one, and reloads again unless the page keeps
+   * crashing (RENDERER_CRASH_LIMIT).
+   */
+  onPageLoaded(): void {
+    this.reloadingAfterCrash = false;
+  }
+
+  /**
+   * A page load failed. A main-frame failure leaves no page to capture the mic, whichever reload it
+   * was (a crash's, or one someone asked for): stop with `renderer-gone`. ERR_ABORTED is a load
+   * another load replaced (two quick reloads) or one that was cancelled: the page carries on.
+   */
+  onPageLoadFailed({ errorCode, errorDescription, isMainFrame }: PageLoadFailure): void {
+    if (!isMainFrame || errorCode === ERR_ABORTED) return;
+    this.reloadingAfterCrash = false;
+    this.options.logger.warn('page failed to load', { errorCode, errorDescription });
+    this.stopFor(
+      'renderer-gone',
+      errorDescription === '' ? `error ${errorCode}` : errorDescription,
+    );
   }
 
   private async stopThenQuit(): Promise<void> {
@@ -144,7 +247,19 @@ export interface WindowEventSource {
       event: 'render-process-gone',
       listener: (event: unknown, details: { reason: string }) => void,
     ): unknown;
-    on(event: 'did-start-loading', listener: () => void): unknown;
+    on(event: 'did-finish-load', listener: () => void): unknown;
+    on(
+      event: 'did-fail-load',
+      listener: (
+        event: unknown,
+        errorCode: number,
+        errorDescription: string,
+        validatedURL: string,
+        isMainFrame: boolean,
+      ) => void,
+    ): unknown;
+    reload(): void;
+    isDestroyed(): boolean;
   };
 }
 
@@ -165,16 +280,26 @@ export function watchApp(
 }
 
 export function watchWindow(lifecycle: RecordingLifecycle, window: WindowEventSource): void {
+  const { webContents } = window;
   window.on('close', () => {
     lifecycle.stopFor('window-closed');
   });
-  // The page that captured the audio is gone: no more chunks will come.
-  window.webContents.on('render-process-gone', (_event, details) => {
-    lifecycle.stopFor('renderer-gone', details.reason);
+  webContents.on('render-process-gone', (_event, details) => {
+    // A renderer that goes with its destroyed window needs no reload: the close stopped it.
+    if (webContents.isDestroyed()) return;
+    lifecycle.onRendererGone(details.reason, () => {
+      webContents.reload();
+    });
   });
-  // Recording only starts from a loaded page, so any load while recording is a reload or a
-  // navigation (will-navigate keeps it on the app's own page) that throws the capture away.
-  window.webContents.on('did-start-loading', () => {
-    lifecycle.stopFor('page-reloaded');
+  webContents.on('did-finish-load', () => {
+    lifecycle.onPageLoaded();
   });
+  webContents.on('did-fail-load', (_event, errorCode, errorDescription, _url, isMainFrame) => {
+    lifecycle.onPageLoadFailed({ errorCode, errorDescription, isMainFrame });
+  });
+  // No stop on a reload (`did-start-loading`) any more, M2-T12: the reloaded page reopens the mic
+  // because main is recording, and G2 closes the mic's session if no chunk comes for 30 s. While
+  // that stop existed, renderer/src/app/router.ts kept the shell's route out of `location.hash`,
+  // because Chromium starts a load on a hash change or a `replaceState`; read its trap note before
+  // bringing back any stop on a load.
 }

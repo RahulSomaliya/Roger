@@ -1,6 +1,14 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, expectTypeOf, it } from 'vitest';
 import { DEFAULT_COST_GUARDS } from '../costGuards';
-import { stopNotice } from './stopReasons';
+import { type StopReason, stopNotice } from './stopReasons';
+
+describe('StopReason', () => {
+  // Checked by tsc, not at run time. A reload no longer stops a recording (M2-T12): the reloaded
+  // page reopens the mic. Rows written before keep the string (TranscriptStore.MeetingStopReason).
+  it('has no reload stop any more', () => {
+    expectTypeOf<Extract<StopReason, 'page-reloaded'>>().toBeNever();
+  });
+});
 
 describe('stopNotice', () => {
   const at = new Date(2026, 9, 6, 14, 32);
@@ -14,10 +22,12 @@ describe('stopNotice', () => {
       stopNotice(reason, at, DEFAULT_COST_GUARDS, detail);
     expect(notice('no-speech')).toBe('Stopped at 14:32 after 15 minutes with no speech.');
     expect(notice('max-duration')).toBe('Stopped at 14:32: one recording is capped at 4 hours.');
-    expect(notice('renderer-gone', 'oom')).toBe(
-      'Stopped at 14:32 because the Roger window crashed (oom).',
+    expect(notice('renderer-gone', 'it crashed again: oom')).toBe(
+      'Stopped at 14:32 because the Roger window could not reload (it crashed again: oom).',
     );
-    expect(notice('page-reloaded')).toBe('Stopped at 14:32 because the Roger window reloaded.');
+    expect(notice('renderer-gone')).toBe(
+      'Stopped at 14:32 because the Roger window could not reload.',
+    );
     expect(notice('system-sleep')).toBe('Stopped at 14:32 because the Mac went to sleep.');
   });
 
