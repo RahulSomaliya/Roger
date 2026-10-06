@@ -36,12 +36,16 @@ import type {
  *   protocol blames on the jargon list rejects with `keytermsRejected` set; it is never retried
  *   here (see keytermsRefused). A wire tap that fails here fails the connect too (see tap).
  * - open: audio flows, paced to real time for a vendor that declares it (see pump). The keep-alive
- *   runs only while audio was sent within keepAliveForMs. A vendor close here is one fatal error,
- *   then "closed".
+ *   runs only while audio was sent within keepAliveForMs, and so do the liveness pings: a socket
+ *   that stops answering them is dead, one fatal error and a terminate (see checkLiveness). A
+ *   vendor close here is one fatal error, then "closed".
  * - finishing: Stop sends the audio still waiting for its pace, then the finish sequence (or the
  *   vendor reported a fatal error, and that audio is dropped). No new audio, no keep-alive.
  *   closeTimeoutMs after Stop the socket is terminated, whatever the vendor does, queue or not.
  * - closed: final. Audio is dropped and counted; close() returns the same settled promise.
+ *
+ * terminate() skips the finish: from connecting, open or finishing, the socket is dropped at once
+ * (CaptureSession's offline suspend, M2-T6: with the network gone a finish can only wait).
  */
 
 export type SttConnectionState = 'connecting' | 'open' | 'finishing' | 'closed';
@@ -76,6 +80,36 @@ export type SttWireRecord =
 
 export type SttWireTap = (record: SttWireRecord) => void;
 
+/**
+ * Dead-socket detection (M2 design, "STT reconnect"). `ws` gets no prompt error when the Mac's
+ * network goes down: a half-open socket looks open until TCP gives up, minutes later, while the
+ * audio sent into it is lost and nothing says so. So while audio flows the core pings the vendor,
+ * and a socket that answered pings and then hears nothing at all (no pong, no message) for
+ * deadAfterMs is dead: one fatal error and a terminate, and CaptureSession's landed retry reopens
+ * it through the open budget. With the check once per pingIntervalMs, a cut is declared at most
+ * deadAfterMs plus one interval after the last thing heard (4 to 5 s), whatever the phase of the
+ * cycle: inside the exit check's 10 s warning, with the 1 s network poll catching Wi-Fi off first.
+ */
+export interface SttLiveness {
+  /** A WebSocket ping this often while audio flows; the deadline is checked as often. */
+  pingIntervalMs: number;
+  /** Once the vendor has answered a ping: no pong and no message this long is a dead socket. */
+  deadAfterMs: number;
+  /**
+   * No pong this long after the first ping: the vendor ignores pings (RFC 6455 says answer, not
+   * every server does). The socket then has no deadline and relies on vendor messages and closes,
+   * send errors and main's network poll; declaring it dead would reopen a healthy, billed session
+   * every few seconds for good. Said once in the log.
+   */
+  firstPongWithinMs: number;
+}
+
+export const STT_LIVENESS: Readonly<SttLiveness> = Object.freeze({
+  pingIntervalMs: 1_000,
+  deadAfterMs: 4_000,
+  firstPongWithinMs: 10_000,
+});
+
 export interface SttConnectionOptions {
   protocol: SttProtocol;
   stream: OpenStreamOptions;
@@ -92,12 +126,16 @@ export interface SttConnectionOptions {
   /** Wall-clock ms: the connected time and the keep-alive window. Never the pacer's (paceClock). */
   clock: () => number;
   /**
-   * Monotonic ms, for pacing only (performance.now() in the app). Never the wall clock: an NTP step
-   * or a manual time change forward would count as time passed and send a backlog at once, the
-   * 3007 close pacing exists to prevent; a step back would hold it until the clock caught up.
-   * Node's timers run on monotonic time too, so the pace timer shares the pacer's time base.
+   * Monotonic ms, for pacing and the liveness deadline (performance.now() in the app). Never the
+   * wall clock: an NTP step or a manual time change forward would count as time passed and send a
+   * backlog at once, the 3007 close pacing exists to prevent, or declare a healthy socket dead (a
+   * billed reopen and a false gap); a step back would hold a backlog, or hide a dead socket, until
+   * the clock caught up. Node's timers run on monotonic time too, so the pace timer and the
+   * liveness check share this time base.
    */
   paceClock: () => number;
+  /** The ping cadence and deadlines (STT_LIVENESS in the app; tests shorten the interval). */
+  liveness: SttLiveness;
   /** Sees every message both ways and the query without the token (SttWireRecord). Bench only. */
   wireTap?: SttWireTap | null;
 }
@@ -129,6 +167,16 @@ export class SttConnection implements SttStream {
   private connectTimer: NodeJS.Timeout | null;
   private finishTimer: NodeJS.Timeout | null = null;
   private keepAliveTimer: NodeJS.Timeout | null = null;
+  private readonly liveness: SttLiveness;
+  /** Pings and checks the deadline while open (checkLiveness). */
+  private livenessTimer: NodeJS.Timeout | null = null;
+  /** paceClock time the vendor last sent anything: a pong, a ping, a message. */
+  private heardAtMs = 0;
+  /** Whether the vendor answers pings: unknown until its first pong, or firstPongWithinMs. */
+  private pongs: 'unknown' | 'answered' | 'ignored' = 'unknown';
+  private firstPingAtMs: number | null = null;
+  /** No audio flows, so no ping goes: the deadline starts over when audio does. */
+  private pingsIdle = true;
   /** Wakes pump() when the next paced frame is due. */
   private paceTimer: NodeJS.Timeout | null = null;
   private readonly pacer: AudioPacer;
@@ -162,6 +210,7 @@ export class SttConnection implements SttStream {
     this.label = options.stream.label;
     this.closeTimeoutMs = options.closeTimeoutMs;
     this.keepAliveForMs = options.keepAliveForMs;
+    this.liveness = options.liveness;
     this.pacer = new AudioPacer({ pacing: this.protocol.audioPacing, sampleRate: this.sampleRate });
     this.wireTap = options.wireTap ?? null;
     const stream = this.withCappedKeyterms(options.stream);
@@ -220,7 +269,16 @@ export class SttConnection implements SttStream {
       this.logger.error('stt socket error', { error: errorMessage(error) });
       this.endAfterFatal(`${this.protocol.vendorName} connection failed: ${error.message}`);
     });
+    // Any frame from the vendor is a sign of life (checkLiveness); ws answers its pings itself.
+    this.socket.on('pong', () => {
+      this.heard();
+      this.pongs = 'answered';
+    });
+    this.socket.on('ping', () => {
+      this.heard();
+    });
     this.socket.on('message', (data, isBinary) => {
+      this.heard();
       if (isBinary) {
         this.tap({
           kind: 'binary',
@@ -281,6 +339,7 @@ export class SttConnection implements SttStream {
     if (this.currentState === 'open') {
       this.currentState = 'finishing';
       this.stopKeepAlive();
+      this.stopLiveness();
       // Armed first: draining the paced audio counts against the same hard deadline. A backlog
       // longer than closeTimeoutMs is cut by the terminate, and its last turn with it.
       this.armFinishTimer();
@@ -290,6 +349,31 @@ export class SttConnection implements SttStream {
       this.failConnect(
         new SttConnectError(`${this.protocol.vendorName}: closed before the session began`),
       );
+    }
+    return this.closing.promise;
+  }
+
+  /**
+   * Drops the connection now: no finish sequence, no wait for the vendor, no fatal error (the
+   * caller asked). For CaptureSession's offline suspend (M2-T6): with the network gone a finish
+   * can only wait out its deadline, while a half-open socket may bill until the vendor's own idle
+   * timeout. Lines the protocol held still arrive before "closed"; audio the vendor had not turned
+   * into lines is lost to this stream, which CaptureSession records as a gap. Also cuts short a
+   * Stop still waiting for the vendor. Every call returns close()'s promise.
+   */
+  terminate(): Promise<void> {
+    if (this.currentState === 'connecting') {
+      this.failConnect(
+        new SttConnectError(`${this.protocol.vendorName}: closed before the session began`),
+      );
+    } else if (this.currentState === 'open' || this.currentState === 'finishing') {
+      this.logger.info('stt stream terminated: no finish sequence', { state: this.currentState });
+      this.dropPacedAudio();
+      this.stopKeepAlive();
+      this.stopLiveness();
+      // Left 'open', finalize would report the close as the vendor ending the stream mid-call.
+      this.currentState = 'finishing';
+      this.socket.terminate();
     }
     return this.closing.promise;
   }
@@ -330,8 +414,80 @@ export class SttConnection implements SttStream {
         }
       }, keepAlive.intervalMs);
     }
+    this.livenessTimer = setInterval(() => {
+      this.checkLiveness();
+    }, this.liveness.pingIntervalMs);
     this.pacer.start(this.paceClock());
     this.opening.resolve();
+  }
+
+  /**
+   * One liveness check (SttLiveness): runs every pingIntervalMs while open. The timer only wakes
+   * it; paceClock decides what is due. Pings go only while audio flows, by the keep-alive's rule: a
+   * source that sent nothing for keepAliveForMs is stalled (CaptureSession closes it), and while no
+   * ping goes, no pong is owed, so the deadline starts over when audio does. Before the first pong
+   * there is no deadline at all: a vendor that ignores pings is not a dead one.
+   */
+  private checkLiveness(): void {
+    if (this.currentState !== 'open' || this.socket.readyState !== WebSocket.OPEN) return;
+    const now = this.paceClock();
+    if (!this.audioFlowing()) {
+      this.pingsIdle = true;
+      return;
+    }
+    if (this.pingsIdle) {
+      this.pingsIdle = false;
+      this.heardAtMs = now;
+    }
+    if (this.pongs === 'answered') {
+      const silentMs = now - this.heardAtMs;
+      if (silentMs >= this.liveness.deadAfterMs) {
+        this.declareDead(silentMs);
+        return;
+      }
+    } else if (
+      this.firstPingAtMs !== null &&
+      now - this.firstPingAtMs >= this.liveness.firstPongWithinMs
+    ) {
+      this.pongs = 'ignored';
+      this.stopLiveness();
+      this.logger.warn('stt vendor answers no ping: no dead-socket check on this stream', {
+        waitedMs: Math.round(now - this.firstPingAtMs),
+      });
+      return;
+    }
+    this.socket.ping();
+    this.firstPingAtMs ??= now;
+  }
+
+  /** Audio was sent within the keep-alive window: what keeps pings, and the deadline, going. */
+  private audioFlowing(): boolean {
+    return this.lastAudioAtMs !== null && this.clock() - this.lastAudioAtMs < this.keepAliveForMs;
+  }
+
+  private heard(): void {
+    this.heardAtMs = this.paceClock();
+  }
+
+  /**
+   * The vendor stopped answering: the network under the socket is gone (Wi-Fi dropped, a proxy cut
+   * it). Terminated, not closed: a peer that answers no ping answers no close frame or finish
+   * either, and ws waits 30 s for a close frame. The fatal error hands it to CaptureSession's
+   * landed retry, which reopens through the open budget.
+   */
+  private declareDead(silentMs: number): void {
+    this.logger.warn('stt socket dead: the vendor stopped answering', {
+      silentMs: Math.round(silentMs),
+    });
+    this.dropPacedAudio();
+    this.stopKeepAlive();
+    this.stopLiveness();
+    // Before the report, as in endAfterFatal: a close() from the listener must find nothing to finish.
+    this.currentState = 'finishing';
+    this.socket.terminate();
+    this.reportFatal(
+      `${this.protocol.vendorName} stopped answering: nothing received for ${Math.round(silentMs / 1000)} s`,
+    );
   }
 
   private connectTimedOut(timeoutMs: number): void {
@@ -417,6 +573,7 @@ export class SttConnection implements SttStream {
     // Also while Stop drains it: audio still waiting for its pace, and the finish sequence behind
     // it, would go to a session the vendor already ended.
     this.dropPacedAudio();
+    this.stopLiveness();
     if (this.currentState === 'open') {
       this.currentState = 'finishing';
       this.stopKeepAlive();
@@ -508,8 +665,8 @@ export class SttConnection implements SttStream {
 
   /**
    * Adapters may regroup the renderer's bytes into frames (AssemblyAI does), never drop or reorder
-   * them: the vendor's time zero is the first byte CaptureSession timed (firstChunkOffsetMs), so
-   * dropping or skipping leading audio would shift every line of the stream.
+   * them: CaptureSession's per-stream AudioTimeline counts the vendor's clock in the samples it
+   * sent, so dropping or reordering bytes would shift every later line of the stream.
    */
   private sendFrame(frame: Uint8Array): void {
     this.transmit(frame);
@@ -586,6 +743,7 @@ export class SttConnection implements SttStream {
     this.currentState = 'closed';
     this.clearConnectTimer();
     this.stopKeepAlive();
+    this.stopLiveness();
     this.dropPacedAudio();
     if (this.finishTimer !== null) clearTimeout(this.finishTimer);
     this.finishTimer = null;
@@ -688,6 +846,11 @@ export class SttConnection implements SttStream {
   private stopKeepAlive(): void {
     if (this.keepAliveTimer !== null) clearInterval(this.keepAliveTimer);
     this.keepAliveTimer = null;
+  }
+
+  private stopLiveness(): void {
+    if (this.livenessTimer !== null) clearInterval(this.livenessTimer);
+    this.livenessTimer = null;
   }
 
   private clearPaceTimer(): void {

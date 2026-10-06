@@ -7,7 +7,12 @@ import {
   SilentTcpServer,
   waitFor,
 } from '../testing/fakeVendorServer';
-import { SttConnection, type SttConnectionOptions, type SttWireRecord } from './SttConnection';
+import {
+  STT_LIVENESS,
+  SttConnection,
+  type SttConnectionOptions,
+  type SttWireRecord,
+} from './SttConnection';
 import {
   describeCloseWith,
   type SttConnectRefusal,
@@ -145,6 +150,7 @@ describe('SttConnection', () => {
       keepAliveForMs: 30_000,
       clock: () => Date.now(),
       paceClock: () => performance.now(),
+      liveness: STT_LIVENESS,
       ...overrides,
     };
   }
@@ -1046,6 +1052,215 @@ describe('SttConnection', () => {
         'Toy ended the connection before the session began (code 1006: the connection dropped ' +
           'without a close frame)',
       );
+    });
+  });
+
+  /**
+   * Dead-socket detection (M2-T6) on a manual clock: real timers only wake the check, every few ms
+   * here and every second in the app, and the clock decides what is due. A clock step here is one
+   * of the app's checks.
+   */
+  describe('liveness', () => {
+    const TICK_MS = 5;
+    /** Long enough for several checks to run and for a frame to cross the loopback. */
+    const ticks = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, TICK_MS * 6));
+
+    function lively(
+      clock: ReturnType<typeof manualClock>,
+      overrides: Partial<SttConnectionOptions> = {},
+    ): Partial<SttConnectionOptions> {
+      return {
+        clock: clock.now,
+        paceClock: clock.now,
+        liveness: { ...STT_LIVENESS, pingIntervalMs: TICK_MS },
+        ...overrides,
+      };
+    }
+
+    /** Open, audio flowing, and the vendor has answered a ping: all at clock time 0. */
+    async function answering(clock: ReturnType<typeof manualClock>) {
+      const opened = await open(lively(clock));
+      opened.connection.send(new Uint8Array(CHUNK_100_MS));
+      await waitFor(() => vendor.last().pings > 0);
+      await ticks(); // the pongs are back
+      return opened;
+    }
+
+    const said = (message: string): number => lines.filter((l) => l.message === message).length;
+
+    it('pings only while audio flows: none before the first chunk, none once it stopped', async () => {
+      const clock = manualClock(0);
+      const { connection } = await open(lively(clock, { keepAliveForMs: 1_000 }));
+      await ticks();
+      expect(vendor.last().pings).toBe(0);
+
+      connection.send(new Uint8Array(CHUNK_100_MS));
+      await waitFor(() => vendor.last().pings > 0);
+
+      clock.set(1_000); // no audio for the keep-alive window: a stalled source
+      await ticks();
+      const stalled = vendor.last().pings;
+      await ticks();
+      expect(vendor.last().pings).toBe(stalled);
+      await connection.close();
+    });
+
+    it('declares the socket dead when nothing came for 4 s: one fatal error, then terminated', async () => {
+      const clock = manualClock(0);
+      const { connection, events } = await answering(clock);
+      vendor.last().answersPings = false;
+
+      clock.set(3_999);
+      await ticks();
+      expect(events).toEqual([]);
+
+      clock.set(4_000);
+      await waitFor(() => events.some((event) => event.type === 'closed'));
+      expect(events).toEqual([
+        { type: 'error', message: 'Toy stopped answering: nothing received for 4 s', fatal: true },
+        // Terminated: a peer that answers no ping answers no close frame either.
+        { type: 'closed', code: 1006, reason: null },
+      ]);
+      expect(connection.state).toBe('closed');
+      expect(vendor.last().texts).not.toContain(FINISH);
+      expect(said('stt socket dead: the vendor stopped answering')).toBe(1);
+      await waitFor(() => vendor.last().closed);
+    });
+
+    it('counts any message from the vendor as a sign of life', async () => {
+      const clock = manualClock(0);
+      const { events } = await answering(clock);
+      vendor.last().answersPings = false;
+
+      clock.set(3_000);
+      vendor.last().socket.send(JSON.stringify({ type: 'progress' }));
+      await ticks();
+      clock.set(6_999);
+      await ticks();
+      expect(events).toEqual([]);
+
+      clock.set(7_000);
+      await waitFor(() => events.some((event) => event.type === 'closed'));
+      expect(events[0]).toMatchObject({ type: 'error', fatal: true });
+    });
+
+    it('starts the 4 s over when audio flows again after a quiet spell', async () => {
+      const clock = manualClock(0);
+      const { connection, events } = await answering(clock);
+      vendor.last().answersPings = false;
+
+      // No audio for the keep-alive window (30 s): no ping is owed an answer, so nothing is dead.
+      clock.set(30_000);
+      await ticks();
+      clock.set(100_000);
+      await ticks();
+      expect(events).toEqual([]);
+
+      connection.send(new Uint8Array(CHUNK_100_MS));
+      await ticks();
+      clock.set(103_999);
+      await ticks();
+      expect(events).toEqual([]);
+
+      clock.set(104_000);
+      await waitFor(() => events.some((event) => event.type === 'closed'));
+      expect(events[0]).toMatchObject({ type: 'error', fatal: true });
+    });
+
+    it('falls back to messages, send errors and the network poll for a vendor that answers no ping', async () => {
+      vendor.answersPings = false;
+      const clock = manualClock(0);
+      const { connection, events } = await open(lively(clock));
+      connection.send(new Uint8Array(CHUNK_100_MS));
+      await waitFor(() => vendor.last().pings > 0);
+
+      // No pong yet, so no deadline: a vendor that ignores pings is not a dead one.
+      clock.set(9_999);
+      await ticks();
+      expect(events).toEqual([]);
+      expect(said('stt vendor answers no ping: no dead-socket check on this stream')).toBe(0);
+
+      clock.set(10_000);
+      await ticks();
+      const pings = vendor.last().pings;
+      clock.set(60_000);
+      connection.send(new Uint8Array(CHUNK_100_MS));
+      await ticks();
+
+      expect(vendor.last().pings).toBe(pings);
+      expect(events).toEqual([]);
+      expect(connection.state).toBe('open');
+      expect(said('stt vendor answers no ping: no dead-socket check on this stream')).toBe(1);
+      await connection.close();
+    });
+
+    it('stops pinging once Stop begins', async () => {
+      vendor.script.onText = () => undefined; // never answers Finish: Stop waits for its deadline
+      const clock = manualClock(0);
+      const { connection } = await open(lively(clock, { closeTimeoutMs: 300 }));
+      connection.send(new Uint8Array(CHUNK_100_MS));
+      await waitFor(() => vendor.last().pings > 0);
+
+      const closing = connection.close();
+      await ticks(); // a ping already on the wire lands
+      const pings = vendor.last().pings;
+      await ticks();
+      expect(vendor.last().pings).toBe(pings);
+      await closing;
+    });
+  });
+
+  /** For the network poll (M2-T6): with the network gone, a finish sequence can only wait. */
+  describe('terminate', () => {
+    it('drops the socket at once: no finish sequence, no fatal error, held lines first', async () => {
+      vendor.script.onBinary = (connection) => {
+        connection.socket.send(JSON.stringify({ type: 'hold', text: 'held line' }));
+      };
+      const { connection, events } = await open();
+      connection.send(new Uint8Array(CHUNK_100_MS));
+      await waitFor(() => vendor.last().binaryFrames.length === 1);
+      await new Promise((resolve) => setTimeout(resolve, 20)); // the held line is in
+
+      const started = Date.now();
+      await connection.terminate();
+
+      expect(Date.now() - started).toBeLessThan(500);
+      expect(vendor.last().texts).not.toContain(FINISH);
+      expect(events).toEqual([final('held line'), { type: 'closed', code: 1006, reason: null }]);
+      expect(
+        lines.some((line) => line.message === 'stt stream terminated: no finish sequence'),
+      ).toBe(true);
+      await waitFor(() => vendor.last().closed);
+    });
+
+    it('cuts short a Stop still waiting for the vendor to finish', async () => {
+      vendor.script.onText = () => undefined; // never answers Finish
+      const { connection, events } = await open({ closeTimeoutMs: 5_000 });
+      const closing = connection.close();
+      await waitFor(() => vendor.last().texts.includes(FINISH));
+
+      const started = Date.now();
+      await connection.terminate();
+      await closing;
+
+      expect(Date.now() - started).toBeLessThan(1_000);
+      expect(events.filter((event) => event.type === 'closed')).toHaveLength(1);
+      expect(lines.some((line) => line.message.includes('did not finish in time'))).toBe(false);
+    });
+
+    it('fails a connect still waiting for the ready signal', async () => {
+      vendor.script.onConnect = () => undefined; // never ready
+      const connection = new SttConnection(options());
+      const opening = connection.whenOpen().then(
+        () => null,
+        (e: unknown) => e,
+      );
+      await waitFor(() => vendor.connections.length === 1);
+
+      await connection.terminate();
+
+      expect(await opening).toBeInstanceOf(SttConnectError);
+      expect(connection.state).toBe('closed');
     });
   });
 

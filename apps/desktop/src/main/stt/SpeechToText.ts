@@ -53,6 +53,14 @@ export interface SttStream {
   send(pcm: Uint8Array): void;
   /** Flush pending audio, collect the last finals and close. Resolves once the stream is closed. */
   close(): Promise<void>;
+  /**
+   * Drop the connection now, with no finish sequence (M2-T6: the Mac went offline, so a finish
+   * could only wait out its deadline while a half-open socket may still bill). Lines the adapter
+   * held still arrive before "closed"; audio the vendor had not finished with is lost to this
+   * stream, and CaptureSession records it as a gap. Resolves once closed. Optional: a stream with
+   * no socket (the fake) has nothing to drop, and its caller closes it instead.
+   */
+  terminate?(): Promise<void>;
   on(listener: SttEventListener): () => void;
 }
 
