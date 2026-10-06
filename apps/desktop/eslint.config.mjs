@@ -6,7 +6,9 @@ import globals from 'globals';
 import tseslint from 'typescript-eslint';
 
 export default defineConfig([
-  globalIgnores(['out/**', 'dist/**', 'node_modules/**']),
+  // `bench/dist` is the benchmark CLI bundle (`pnpm bench`): `dist/**` only matches the top
+  // folder, so without its own line every `make bench` would break `make check`.
+  globalIgnores(['out/**', 'dist/**', 'bench/dist/**', 'node_modules/**']),
   js.configs.recommended,
   tseslint.configs.strictTypeChecked,
   tseslint.configs.stylisticTypeChecked,
