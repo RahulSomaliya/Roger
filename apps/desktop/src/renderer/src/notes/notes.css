@@ -41,7 +41,7 @@
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: var(--line);
+  background: var(--muted);
 }
 
 .note-status-good::before {
@@ -143,8 +143,8 @@
 }
 
 .note-editor-content:focus {
+  /* The border alone: a ring around the notes for the whole call is loud. */
   border-color: var(--focus-ring);
-  box-shadow: 0 0 0 2px var(--focus-ring);
 }
 
 .note-editor-content > * + * {
