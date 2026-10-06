@@ -236,6 +236,44 @@ async def test_action_items_and_facts_match_by_owner_numbers_and_words() -> None
     assert scores.missed_facts == ["the pilot stays at 60k"]
 
 
+async def test_an_action_item_counts_only_under_the_owner_the_line_gives_it_to() -> None:
+    # The prompt writes "Owner: what, by when". "Me" and "Them" are everyday objects too ("send
+    # me"), so an owner found anywhere in the line would count a reversed item as found.
+    labels = CaseLabels(
+        action_items=(
+            ActionItemLabel(owner="Me", text="send the contract to Dana by Friday"),
+            ActionItemLabel(owner="Priya", text="send the deck by Friday"),
+            ActionItemLabel(owner="Them", text="share the migration runbook by Thursday"),
+            # A time's colon does not end the owner: this line opens with Them.
+            ActionItemLabel(owner="Me", text="send the deck for Lena"),
+            # Found: one of the owners named before the colon, and a line that opens with its owner.
+            ActionItemLabel(owner="Sam", text="review the pricing page"),
+            ActionItemLabel(owner="Dev", text="fix the webhook retries by noon"),
+        )
+    )
+    case = inline_case(*(f"Line {number}." for number in range(1, 7)), labels=labels)
+    answer = (
+        "- Them: send me the contract by Friday [L1]\n"
+        "- Sam: send Priya the deck by Friday [L2]\n"
+        "- Me: share the migration runbook with them by Thursday [L3]\n"
+        "- Them to send me the deck for Lena by 3:00 [L4]\n"
+        "- Priya and Sam: review the pricing page [L5]\n"
+        "- Dev will fix the webhook retries by noon [L6]\n"
+    )
+
+    report = await run_eval([case], scripted(answer), provider="fake", reasoning="off")
+
+    scores = report.cases[0].scores
+    assert scores is not None
+    assert [(item.owner, item.text) for item in scores.missed_action_items] == [
+        ("Me", "send the contract to Dana by Friday"),
+        ("Priya", "send the deck by Friday"),
+        ("Them", "share the migration runbook by Thursday"),
+        ("Me", "send the deck for Lena"),
+    ]
+    assert counted(scores.action_items) == (2, 6)
+
+
 async def test_flagged_lines_and_numbers_are_counted_against_their_cited_lines() -> None:
     case = inline_case(
         "Beta ships on Friday.",

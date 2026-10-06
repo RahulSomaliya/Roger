@@ -31,6 +31,8 @@ _WHOLE_WORD_BELOW = 4
 
 _TOKEN = re.compile(r"[^\W_]+(?:'[^\W_]+)*")
 _DIGIT = re.compile(r"[0-9]")
+# The colon that ends an action item's owner ("Priya: share ..."), never one inside a time ("3:00").
+_OWNER_END = re.compile(r":(?![0-9])")
 # Words that say nothing about what was agreed. Numbers are compared apart, by `check_support`.
 _WORDS_WITHOUT_CONTENT = """
     a an and or but the to of for by on in at with from as into about is are was were be been
@@ -172,14 +174,14 @@ def _any_holds(lines: Sequence[str], label: str, owner: str | None) -> bool:
 
 
 def _holds(line: str, label: str, owner: str | None) -> bool:
-    """Does `line` say `label`: its owner by name, every number it names, and most of its words?
+    """Does `line` say `label`: under its owner, with every number it names and most of its words?
 
-    The owner must be a whole word of the line ("Priya", "Me"): an item under the wrong owner is a
-    wrong item, which is what the plan's action-item recall is about.
+    An item under the wrong owner is a wrong item, which is what the plan's action-item recall is
+    about (see `_gives_to`).
     """
-    tokens = _tokens(line)
-    if owner is not None and not set(_tokens(owner)) <= set(tokens):
+    if owner is not None and not _gives_to(line, owner):
         return False
+    tokens = _tokens(line)
     # Normalised on both sides: "50k" in a label is the line's "fifty thousand".
     if check_support(label, [line]).missing_numbers:
         return False
@@ -190,6 +192,21 @@ def _holds(line: str, label: str, owner: str | None) -> bool:
     have = _words(tokens)
     hits = sum(any(_same_word(word, other) for other in have) for word in wanted)
     return hits / len(wanted) >= LABEL_WORD_SHARE
+
+
+def _gives_to(line: str, owner: str) -> bool:
+    """Does `line` give its item to `owner`? The prompt writes one as "Owner: what, by when", so
+    the owner is named before the first colon ("Priya and Sam: ..."); a line with no such colon
+    must open with the owner ("Priya will share ...").
+
+    Never a name anywhere in the line: "Me" and "Them" are owners and everyday objects too, and
+    "Them: send me the contract" is Them's item, not mine.
+    """
+    wanted = _tokens(owner)
+    owner_part, *rest = _OWNER_END.split(line, maxsplit=1)
+    if rest:
+        return set(wanted) <= set(_tokens(owner_part))
+    return _tokens(line)[: len(wanted)] == wanted
 
 
 def _tokens(text: str) -> list[str]:
