@@ -117,8 +117,8 @@ type ErrorOutcome = 'fail' | 'retry' | 'end';
  * event and NotesSync change that may unblock it, at launch and every 30 s. The run streams
  * through LlmStreams to the page; `done` goes into notes.sqlite through `applyServerNote`, and a
  * stream lost before `done` or `error` is followed by polling the run, whose saved notes are then
- * loaded (`pullMeeting`). The row is deleted on `done`, on `cancelled` and on an error Retry cannot
- * fix; `llm_provider_error` keeps it, failed, for Retry.
+ * loaded (`pullMeeting`). The row is deleted on `done`, on `cancelled` and on an error a retry
+ * would only repeat (`errorOutcome`); `llm_provider_error` keeps it, failed, for Retry.
  *
  * Trap: every attempt re-sends the row's run id. The API attaches a re-sent id to its running run
  * or replays its stored result, so a retry after a crash, a lost stream or an unreachable API
@@ -741,9 +741,14 @@ export class NotesGenerator {
 function errorOutcome(code: string, status: number | null): ErrorOutcome {
   // Retry takes a new run id: the API replays a finished run's stored failure to the old one.
   if (code === 'llm_provider_error') return 'fail';
-  // The API was not reached, or failed before the run: the run may exist, so the same id later.
-  if (status !== null && (status === 0 || status >= 500)) return 'retry';
-  // The run's own end (`cancelled`, `cut_off`, `internal_error`), or a refusal a retry would only
-  // repeat: an empty meeting, an unknown template or meeting, a second stale-version `409`.
-  return 'end';
+  // The run's own end (`cancelled`, `cut_off`, `internal_error`: no status), or a refusal a retry
+  // would only repeat: an empty meeting (`422`), an unknown template or meeting (`404`), a second
+  // stale-version `409` or another run holding the meeting.
+  if (status === null || status === 404 || status === 409 || status === 422) return 'end';
+  // Anything else keeps the row and its run id for the next re-check: the API was not reached
+  // (`0`) or failed before the run (`5xx`), so the run may exist; or it refused what a later try
+  // may fix, as NotesSync's `refused` reads it (`401` for a token it no longer takes, `429`).
+  // Trap: never end on those. The token is read at launch, so the user fixes it and relaunches,
+  // and a deleted row would leave that call with no notes and no word of why.
+  return 'retry';
 }

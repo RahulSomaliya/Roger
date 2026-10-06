@@ -876,6 +876,42 @@ describe('NotesGenerator: the run', () => {
     }
   });
 
+  it('keeps the pending generate on a refusal a later try may fix', async () => {
+    // A token the API no longer takes (rotated, or the API restarted with another one): the user
+    // fixes it and relaunches, and the after-Stop generate must still be there to run.
+    const refusals: StreamEnd<Note>[] = [
+      { kind: 'error', code: 'unauthorized', message: 'Bad token.', status: 401 },
+      { kind: 'error', code: 'forbidden', message: 'Not allowed.', status: 403 },
+      { kind: 'error', code: 'rate_limited', message: 'Slow down.', status: 429 },
+    ];
+    for (const refusal of refusals) {
+      const label = refusal.kind === 'error' ? refusal.code : '';
+      const h = harness();
+      h.generator.start();
+      h.generator.generate(MEETING, 'standup');
+      await settle();
+
+      h.streams.last().end(refusal);
+      await settle();
+
+      expect(h.store.getPendingGenerate(MEETING), label).toMatchObject({
+        runId: RUN_1,
+        lastError: null,
+      });
+      expect(h.generator.getPending(MEETING)?.status, label).toEqual({
+        phase: 'waiting_for_notes',
+        cause: 'offline',
+      });
+      // As after an unreachable API: the 30 s re-check sends the same run id.
+      await vi.advanceTimersByTimeAsync(NOTES_RECHECK_MS);
+      expect(
+        h.streams.calls.map((call) => call.request.runId),
+        label,
+      ).toEqual([RUN_1, RUN_1]);
+      h.generator.stop();
+    }
+  });
+
   it('on a stale-version 409 it pulls the notes, flushes again and retries once', async () => {
     const h = harness();
     // Postgres holds AI notes this Mac never pulled: the flush answers aiBaseVersion 0.
