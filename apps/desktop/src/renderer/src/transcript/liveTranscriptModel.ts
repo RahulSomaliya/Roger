@@ -368,22 +368,23 @@ class TranscriptDraft {
  * Following live (M3 design, "Scrolling"): while the reader is at the bottom, new lines scroll
  * into view; scrolling up pauses that and shows "Jump to live". Pure, on scroll positions, so
  * LiveTranscript.tsx only reads the scroll container and the rules are tested under Node.
+ *
+ * Up and down are told apart from where the view was last seen: the last scroll event's position,
+ * or where the panel last put the view itself, whichever came later. The panel's own scroll to new
+ * lines and a scroll up by the reader in the same frame reach it as one scroll event, so a
+ * comparison with the last event alone reads that scroll up as a scroll down.
  */
 
 /**
- * - `live`: new lines scroll into view.
- * - `reading`: the reader scrolled up (or opened a past meeting); reaching the bottom follows again.
- * - `held`: a citation chip paused it (M4-T21's reveal, through `pauseFollow`). Its own scroll can
- *   land at the bottom, which must not follow again, or the next line pulls the cited one away.
- *   Only "Jump to live", or the reader scrolling up first, ends it.
+ * - `live`: new lines scroll into view. "Jump to live" sets it, and so does the meeting starting
+ *   to record.
+ * - `reading`: the reader scrolled up (or opened a past meeting); reaching the bottom follows
+ *   again.
+ * - `held`: a citation chip paused it (M4-T21's reveal, through the handle's `pauseFollow`). Its
+ *   own scroll can land at the bottom, which must not follow again, or the next line pulls the
+ *   cited one away. Only "Jump to live", or the reader scrolling up first, ends it.
  */
 export type FollowMode = 'live' | 'reading' | 'held';
-
-export interface FollowState {
-  readonly mode: FollowMode;
-  /** The scroll position last seen, to tell a scroll up from a scroll down. */
-  readonly scrollTop: number;
-}
 
 export interface ScrollMetrics {
   scrollTop: number;
@@ -398,40 +399,39 @@ export interface ScrollMetrics {
 export const BOTTOM_SLACK_PX = 24;
 
 /** A live meeting starts following; a past one starts at its first line. */
-export function startFollow(live: boolean): FollowState {
-  return { mode: live ? 'live' : 'reading', scrollTop: 0 };
+export function startFollow(live: boolean): FollowMode {
+  return live ? 'live' : 'reading';
 }
 
-export function isFollowing(state: FollowState): boolean {
-  return state.mode === 'live';
+function atBottom(metrics: ScrollMetrics): boolean {
+  return metrics.scrollHeight - metrics.clientHeight - metrics.scrollTop <= BOTTOM_SLACK_PX;
 }
 
 /**
- * The state after a scroll event. Only a scroll up pauses: content growing at the bottom, a
- * window that shrinks, or the panel's own scroll to a new line all leave following on.
+ * The mode after a scroll event, `lastTop` being where the view was last seen. Only a scroll up
+ * pauses, by any amount once off the bottom, so a slow scroll pauses too: content growing at the
+ * bottom, a window that shrinks, or the panel's own scroll to a new line all leave following on.
  */
-export function followScroll(state: FollowState, metrics: ScrollMetrics): FollowState {
-  const atBottom =
-    metrics.scrollHeight - metrics.clientHeight - metrics.scrollTop <= BOTTOM_SLACK_PX;
-  const movedUp = metrics.scrollTop < state.scrollTop;
-  let mode = state.mode;
-  if (mode === 'held') {
-    if (movedUp && !atBottom) mode = 'reading';
-  } else if (atBottom) {
-    mode = 'live';
-  } else if (movedUp) {
-    mode = 'reading';
-  }
-  if (mode === state.mode && metrics.scrollTop === state.scrollTop) return state;
-  return { mode, scrollTop: metrics.scrollTop };
+export function followScroll(
+  mode: FollowMode,
+  lastTop: number,
+  metrics: ScrollMetrics,
+): FollowMode {
+  const bottom = atBottom(metrics);
+  const movedUp = metrics.scrollTop < lastTop;
+  if (mode === 'held') return movedUp && !bottom ? 'reading' : 'held';
+  if (bottom) return 'live';
+  return movedUp ? 'reading' : mode;
 }
 
-/** What a citation's reveal calls first (TranscriptHandle.pauseFollow). */
-export function pauseFollow(state: FollowState): FollowState {
-  return state.mode === 'held' ? state : { ...state, mode: 'held' };
-}
-
-/** "Jump to live": follow again; the panel then scrolls to the newest line. */
-export function jumpToLive(state: FollowState): FollowState {
-  return state.mode === 'live' ? state : { ...state, mode: 'live' };
+/**
+ * Whether the reader scrolled up, past the slack, since the view was last seen at `lastTop`. The
+ * panel checks it before it puts new lines in view: the scroll event that reports the reader's
+ * scroll may not have come yet, and scrolling to the bottom first would undo it and make that
+ * event read the bottom. Only the reader moves the view up here: new lines grow the content below
+ * it, lines that go away pull it down to the new bottom, and the panel turns off the browser's
+ * scroll anchoring (transcript.css), which would move it on its own.
+ */
+export function scrolledAway(lastTop: number, metrics: ScrollMetrics): boolean {
+  return !atBottom(metrics) && metrics.scrollTop < lastTop - BOTTOM_SLACK_PX;
 }

@@ -1,10 +1,9 @@
 import { memo, type UIEvent, useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { formatOffset } from '../format';
 import {
+  type FollowMode,
   followScroll,
-  isFollowing,
-  jumpToLive,
-  pauseFollow,
+  scrolledAway,
   startFollow,
   type TranscriptItem,
 } from './liveTranscriptModel';
@@ -49,21 +48,25 @@ function TranscriptPanel({ meetingId, storedLines, showHidden, live }: LiveTrans
     scroller.current = element;
     setContainer(element);
   }, []);
-  const [follow, setFollow] = useState(() => startFollow(live));
+  const [mode, setMode] = useState<FollowMode>(() => startFollow(live));
+  // Where the view was last seen: the last scroll event's position, or where the layout effect
+  // last put it, whichever came later (the model's "Following live" says why both). A ref, as the
+  // layout effect must set it without a render; read and written only in effects and handlers.
+  const lastTop = useRef(0);
   // A page learns that its meeting records after its first render (main's capture status comes
   // later), and a resumed meeting records again: either way the panel follows from then on.
   // State that follows a prop, set while rendering, so the first live frame already follows.
   const [wasLive, setWasLive] = useState(live);
   if (wasLive !== live) {
     setWasLive(live);
-    if (live) setFollow(jumpToLive);
+    if (live) setMode('live');
   }
-  const following = isFollowing(follow);
+  const following = mode === 'live';
 
   // Citation chips find lines through the navigator (M4-T21), which pauses following before it
   // scrolls; this panel never reveals lines itself. A stable handle registers once per element.
   const pause = useCallback(() => {
-    setFollow(pauseFollow);
+    setMode('held');
   }, []);
   const handle = useMemo(
     () => (container === null ? null : { container, pauseFollow: pause }),
@@ -71,19 +74,29 @@ function TranscriptPanel({ meetingId, storedLines, showHidden, live }: LiveTrans
   );
   useRegisterTranscript(handle);
 
-  // While following, the newest line is in view before the browser paints the new lines.
+  // While following, the newest line is in view before the browser paints the new lines. Not when
+  // the reader scrolled up since the view was last seen: its scroll event has not come yet, and
+  // scrolling to the bottom first would undo the scroll and make that event read the bottom.
+  // Leaving the view, that event pauses following instead.
   useLayoutEffect(() => {
     const element = scroller.current;
-    if (following && element !== null) element.scrollTop = element.scrollHeight;
+    if (!following || element === null || scrolledAway(lastTop.current, element)) return;
+    element.scrollTop = element.scrollHeight;
+    // The next scroll event compares with this: a scroll up in the same frame then reads as up.
+    lastTop.current = element.scrollTop;
   }, [following, container, items]);
 
   const onScroll = useCallback((event: UIEvent<HTMLDivElement>) => {
     const { scrollTop, scrollHeight, clientHeight } = event.currentTarget;
-    setFollow((previous) => followScroll(previous, { scrollTop, scrollHeight, clientHeight }));
+    const seenAt = lastTop.current;
+    lastTop.current = scrollTop;
+    setMode((previous) =>
+      followScroll(previous, seenAt, { scrollTop, scrollHeight, clientHeight }),
+    );
   }, []);
 
   const jump = (): void => {
-    setFollow(jumpToLive);
+    setMode('live');
     // The button goes away once following; keep keyboard focus in the transcript, not on <body>.
     container?.focus({ preventScroll: true });
   };

@@ -20,11 +20,19 @@
   background: var(--panel);
 }
 
+/*
+ * No scroll anchoring: the panel tells the reader's scroll from its own by the view's position
+ * (liveTranscriptModel.ts `scrolledAway`), and Chrome's anchoring moves the view by itself when a
+ * row above it changes height, which would read as the reader scrolling up and pause following.
+ * Following puts the view at the bottom itself; a reader scrolled up keeps the place anyway, as
+ * new rows and interims land below it.
+ */
 .live-transcript-lines {
   flex: 1;
   min-height: 0;
   padding: 10px 12px;
   overflow-y: auto;
+  overflow-anchor: none;
   border-radius: inherit;
 }
 

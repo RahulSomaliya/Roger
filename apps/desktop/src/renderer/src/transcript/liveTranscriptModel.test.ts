@@ -12,15 +12,13 @@ import {
   applyTranscriptActions,
   type CaptureSessions,
   followScroll,
-  isFollowing,
-  jumpToLive,
+  type FollowMode,
   openMeeting,
-  pauseFollow,
+  scrolledAway,
   segmentChanged,
   setInterim,
   startFollow,
   transcriptItems,
-  type FollowState,
   type LiveTranscriptState,
   type ScrollMetrics,
 } from './liveTranscriptModel';
@@ -444,44 +442,64 @@ describe('following live', () => {
     clientHeight: 400,
   });
 
-  const scrolled = (state: FollowState, ...tops: number[]): FollowState =>
-    tops.reduce((current, top) => followScroll(current, at(top)), state);
+  /** Scroll events in turn, from a view last seen at `from`; each compares with the one before. */
+  const scrolled = (mode: FollowMode, from: number, ...tops: number[]): FollowMode => {
+    let last = from;
+    let current = mode;
+    for (const top of tops) {
+      current = followScroll(current, last, at(top));
+      last = top;
+    }
+    return current;
+  };
 
   it('a live meeting follows from the start, a past one does not', () => {
-    expect(isFollowing(startFollow(true))).toBe(true);
-    expect(isFollowing(startFollow(false))).toBe(false);
+    expect(startFollow(true)).toBe('live');
+    expect(startFollow(false)).toBe('reading');
   });
 
   it('keeps following while the view stays at the bottom', () => {
-    expect(isFollowing(scrolled(startFollow(true), 1600, 1590))).toBe(true);
+    expect(scrolled('live', 1600, 1600, 1590)).toBe('live');
   });
 
   it('pauses when the reader scrolls up, and follows again back at the bottom', () => {
-    const paused = scrolled(startFollow(true), 1600, 1200);
-    expect(isFollowing(paused)).toBe(false);
-    expect(isFollowing(scrolled(paused, 1400))).toBe(false);
-    expect(isFollowing(scrolled(paused, 1400, 1600))).toBe(true);
+    expect(scrolled('live', 1600, 1200)).toBe('reading');
+    expect(scrolled('live', 1600, 1200, 1400)).toBe('reading');
+    expect(scrolled('live', 1600, 1200, 1400, 1600)).toBe('live');
+  });
+
+  it('pauses on a slow scroll up too, once it is past the slack', () => {
+    expect(scrolled('live', 1600, 1590, 1580, 1570)).toBe('reading');
   });
 
   it('never pauses on a scroll down, such as following to new lines', () => {
-    expect(isFollowing(scrolled(startFollow(true), 1000, 1500))).toBe(true);
+    expect(scrolled('live', 0, 1000, 1500)).toBe('live');
   });
 
   it('a pause from a citation holds, even where its scroll lands at the bottom', () => {
-    const held = pauseFollow(startFollow(true));
-    expect(isFollowing(held)).toBe(false);
-    expect(isFollowing(scrolled(held, 1600))).toBe(false);
+    expect(scrolled('held', 1600, 1600)).toBe('held');
     // The reader takes over by scrolling up; the bottom then follows again.
-    expect(isFollowing(scrolled(held, 1600, 1000, 1600))).toBe(true);
+    expect(scrolled('held', 1600, 1600, 1000, 1600)).toBe('live');
   });
 
-  it('Jump to live follows again from anywhere', () => {
-    expect(isFollowing(jumpToLive(scrolled(startFollow(true), 1600, 200)))).toBe(true);
-    expect(isFollowing(jumpToLive(pauseFollow(startFollow(true))))).toBe(true);
+  it("a scroll up in the frame of the panel's own scroll to new lines still pauses", () => {
+    // Following at 1600, 60 px of lines arrive and the panel puts the view at the new bottom,
+    // 1660. The reader scrolls up 40 px before the frame's one scroll event, which reads 1620.
+    // Compared with the last scroll event (1600) that is a scroll down and following stays on, so
+    // the next line pulls the reader back: the panel's own scroll is where the view was last seen.
+    expect(followScroll('live', 1660, at(1620, 2060))).toBe('reading');
+    expect(followScroll('live', 1660, at(1650, 2060))).toBe('live');
   });
 
-  it('returns the same state when a scroll changes nothing, so React skips the render', () => {
-    const following = scrolled(startFollow(true), 1600);
-    expect(followScroll(following, at(1600))).toBe(following);
+  it('puts new lines in view only while the reader has not scrolled away since', () => {
+    // Last seen at the bottom, 1600; 60 px of new lines; the view where it was.
+    expect(scrolledAway(1600, at(1600, 2060))).toBe(false);
+    // The reader scrolled up 40 px before React drew the lines: scrolling now would undo that,
+    // and the scroll event reporting it would then read the bottom and keep following.
+    expect(scrolledAway(1600, at(1560, 2060))).toBe(true);
+    // A nudge within the slack is no scroll away.
+    expect(scrolledAway(1600, at(1590, 2060))).toBe(false);
+    // Lines that went away (an interim ended) pulled the view to the new bottom: still there.
+    expect(scrolledAway(1600, at(1540, 1940))).toBe(false);
   });
 });
