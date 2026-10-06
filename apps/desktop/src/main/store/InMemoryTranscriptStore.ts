@@ -1,5 +1,12 @@
+import { compareTranscriptOrder } from '../../shared/meetings';
 import type { AudioSource, TranscriptSegment } from '../../shared/transcript';
-import { canonicalInstant, checkAudioPath, checkGapWindow, checkTrim } from './storeChecks';
+import {
+  canonicalInstant,
+  checkAudioPath,
+  checkGapWindow,
+  checkListLimit,
+  checkTrim,
+} from './storeChecks';
 import type {
   AppStateEntry,
   AudioFile,
@@ -421,6 +428,23 @@ export class InMemoryTranscriptStore implements TranscriptStore {
     this.appState.delete(key);
   }
 
+  listMeetings(limit: number): LocalMeeting[] {
+    checkListLimit(limit, 'meetings');
+    // The twin of SqliteTranscriptStore's `recentMeetings`: change both. Text compared as SQLite's
+    // BINARY collation compares it, by character code, never localeCompare.
+    return [...this.meetings.values()]
+      .sort((a, b) => compareText(b.startedAt, a.startedAt) || compareText(b.id, a.id))
+      .slice(0, limit)
+      .map((meeting) => ({ ...meeting }));
+  }
+
+  listSegments(meetingId: string): TranscriptSegment[] {
+    return [...this.segments.values()]
+      .filter((segment) => segment.meetingId === meetingId && segment.suppressedReason === null)
+      .map(toTranscriptSegment)
+      .sort(compareTranscriptOrder);
+  }
+
   close(): void {
     // nothing to release
   }
@@ -469,6 +493,10 @@ function sortLines(lines: MemorySegment[]): MemorySegment[] {
   return lines.sort(
     (a, b) => a.startMs - b.startMs || a.source.localeCompare(b.source) || a.id.localeCompare(b.id),
   );
+}
+
+function compareText(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
 }
 
 function toTranscriptSegment(segment: MemorySegment): TranscriptSegment {

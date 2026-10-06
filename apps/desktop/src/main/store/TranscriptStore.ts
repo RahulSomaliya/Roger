@@ -17,6 +17,11 @@ export interface LocalMeeting {
 export interface NewLocalMeeting {
   id: string;
   title: string;
+  /**
+   * In `toISOString` form ("2026-10-06T09:30:00.000Z"), as CaptureService writes it: the store
+   * orders meetings on this text (listMeetings), and "09:30:00Z" or a "+01:00" offset sorts
+   * against it by its characters, not by its instant, so the sidebar would list it out of order.
+   */
   startedAt: string;
 }
 
@@ -342,5 +347,20 @@ export interface TranscriptStore {
    */
   saveSttUsage(usage: MeetingSttUsage): void;
   getSttUsage(meetingId: string): MeetingSttUsage | null;
+
+  /**
+   * The newest meetings first, open ones included, at most `limit`: the sidebar's recent list
+   * (M4-S4b). Ordered by `startedAt`, then by id, both descending. The start is compared as text,
+   * which is right only while every start is written in `toISOString` form (NewLocalMeeting).
+   * Throws on a limit that is not a whole number from 1: SQLite reads a negative one as no limit.
+   */
+  listMeetings(limit: number): LocalMeeting[];
+  /**
+   * One meeting's lines as its page shows them (M4-S4b): the TranscriptSegment fields only, in
+   * transcript order (compareTranscriptOrder in src/shared/meetings.ts), without the lines the
+   * echo filter hid, which the uploader leaves out of Postgres too. Trimmed, held, re-run and
+   * rejected lines stay: each is still what was said. Empty for a meeting it does not hold.
+   */
+  listSegments(meetingId: string): TranscriptSegment[];
   close(): void;
 }

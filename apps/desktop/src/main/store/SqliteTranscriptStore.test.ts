@@ -901,3 +901,137 @@ describe('SqliteTranscriptStore migration 4 and crash reopen', () => {
     crashed.close();
   });
 });
+
+// ---------------------------------------------------------------------------------------------
+// Meeting reads (M4-S4b): the sidebar's recent meetings and the meeting page's stored lines.
+
+describe.each([
+  ['SqliteTranscriptStore', (): TranscriptStore => new SqliteTranscriptStore(':memory:')],
+  ['InMemoryTranscriptStore', (): TranscriptStore => new InMemoryTranscriptStore()],
+])('%s meeting reads', (_name, open: () => TranscriptStore) => {
+  it('listMeetings and listSegments read in order', () => {
+    const store = open();
+    store.createMeeting({ id: 'standup', title: 'Standup', startedAt: '2026-10-05T09:00:00.000Z' });
+    store.createMeeting({ id: 'review', title: 'Review', startedAt: '2026-10-06T14:00:00.000Z' });
+    // Two meetings that started in the same millisecond: the larger id first, as a tie-break.
+    store.createMeeting({ id: 'retro-a', title: 'Retro', startedAt: '2026-10-06T09:00:00.000Z' });
+    store.createMeeting({ id: 'retro-b', title: 'Retro', startedAt: '2026-10-06T09:00:00.000Z' });
+    store.markMeetingEnded('standup', '2026-10-05T09:15:00.000Z');
+    store.setMeetingRemoteState('standup', 'ended');
+
+    expect(store.listMeetings(10).map((m) => m.id)).toEqual([
+      'review',
+      'retro-b',
+      'retro-a',
+      'standup',
+    ]);
+    // A meeting still recording is listed too: the sidebar shows it while it records.
+    expect(store.listMeetings(2)).toEqual([
+      {
+        id: 'review',
+        title: 'Review',
+        startedAt: '2026-10-06T14:00:00.000Z',
+        endedAt: null,
+        remoteState: 'pending',
+      },
+      {
+        id: 'retro-b',
+        title: 'Retro',
+        startedAt: '2026-10-06T09:00:00.000Z',
+        endedAt: null,
+        remoteState: 'pending',
+      },
+    ]);
+    expect(store.listMeetings(100).at(-1)).toEqual({
+      id: 'standup',
+      title: 'Standup',
+      startedAt: '2026-10-05T09:00:00.000Z',
+      endedAt: '2026-10-05T09:15:00.000Z',
+      remoteState: 'ended',
+    });
+
+    store.createMeeting({ id: 'm1', title: 'T', startedAt: '2026-10-06T15:00:00.000Z' });
+    // Appended out of order. Transcript order is by start, the mic before call audio at the same
+    // start, then by id; and by start as a number (10 s after 2 s), never as text.
+    store.appendSegment(segment(10));
+    store.appendSegment(segment(1, { id: 'seg-1-system', source: 'system', speaker: 'them' }));
+    store.appendSegment(segment(2));
+    store.appendSegment(segment(1, { id: 'seg-1b' }));
+    store.appendSegment(segment(1));
+    store.appendSegment(segment(3, { meetingId: 'review' })); // another meeting's line
+
+    expect(store.listSegments('m1')).toEqual([
+      segment(1),
+      segment(1, { id: 'seg-1b' }),
+      segment(1, { id: 'seg-1-system', source: 'system', speaker: 'them' }),
+      segment(2),
+      segment(10),
+    ]);
+    expect(store.listSegments('review')).toEqual([segment(3, { meetingId: 'review' })]);
+    store.close();
+  });
+
+  it('leaves out the lines the echo filter hid, and keeps trimmed, held, re-run and rejected ones', () => {
+    const store = open();
+    store.createMeeting({ id: 'm1', title: 'T', startedAt: '2026-10-06T09:00:00.000Z' });
+    store.appendSegment(segment(1, { id: 'sys-1', source: 'system', speaker: 'them' }));
+    for (const n of [2, 3, 4, 5]) store.appendSegment(segment(n));
+    store.appendSegment(segment(6), 'rerun');
+    expect(store.suppressSegment('seg-2', 'echo', 'sys-1')).toBe(true);
+    expect(store.suppressSegment('seg-3', 'echo', 'sys-1')).toBe(true);
+    expect(store.unhideSegment('seg-3')).toBe(true); // shown again, so read again
+    const trimmed = { text: 'kept words', words: null, echoOf: 'sys-1' };
+    expect(store.trimSegment('seg-4', trimmed)).toBe(true);
+    expect(store.holdSegment('seg-5', '2026-10-06T10:02:00.000Z')).toBe(true);
+    store.markSegmentRejected('seg-6', 'text too short', T0);
+
+    expect(store.listSegments('m1')).toEqual([
+      segment(1, { id: 'sys-1', source: 'system', speaker: 'them' }),
+      segment(3),
+      segment(4, { text: 'kept words', words: null }),
+      segment(5),
+      segment(6),
+    ]);
+    store.close();
+  });
+
+  it('reads nothing from a store or a meeting with no rows', () => {
+    const store = open();
+    expect(store.listMeetings(30)).toEqual([]);
+    store.createMeeting({ id: 'm1', title: 'T', startedAt: '2026-10-06T09:00:00.000Z' });
+    expect(store.listSegments('m1')).toEqual([]);
+    expect(store.listSegments('missing')).toEqual([]);
+    store.close();
+  });
+
+  it('refuses a list limit that is not a whole number from 1: SQLite reads -1 as no limit', () => {
+    const store = open();
+    store.createMeeting({ id: 'm1', title: 'T', startedAt: '2026-10-06T09:00:00.000Z' });
+    for (const limit of [-1, 0, 1.5, Number.NaN]) {
+      expect(() => store.listMeetings(limit)).toThrow(
+        `could not list meetings: the limit must be a whole number from 1 (got ${limit})`,
+      );
+    }
+    store.close();
+  });
+});
+
+describe('SqliteTranscriptStore reading a corrupt row', () => {
+  it('names the bad words column without quoting what it holds: the words are what people said', () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'roger-store-')), 'roger.sqlite');
+    const store = new SqliteTranscriptStore(path);
+    store.createMeeting({ id: 'm1', title: 'T', startedAt: '2026-10-06T09:00:00.000Z' });
+    store.appendSegment(segment(1));
+    const raw = new DatabaseSync(path);
+    // V8's JSON.parse error quotes the text near the fault ("Acme renew"... is not valid JSON).
+    raw
+      .prepare(`UPDATE segments SET words_json = 'Acme renewal is at risk' WHERE id = ?`)
+      .run('seg-1');
+    raw.close();
+
+    const read = (): unknown => store.listSegments('m1');
+    expect(read).toThrow('corrupt segment row seg-1: words_json is not JSON');
+    expect(read).not.toThrow(/Acme/);
+    store.close();
+  });
+});
