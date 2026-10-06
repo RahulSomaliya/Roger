@@ -3,7 +3,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { type CapturePhase, type CaptureStatus, idleCaptureStatus } from '../shared/capture';
 import type { StopOptions } from './capture/CaptureService';
 import { createLogger } from './logger';
-import { type QuitHook, RecordingLifecycle, watchApp, watchWindow } from './lifecycle';
+import {
+  type QuitHook,
+  RENDERER_CRASH_LIMIT,
+  RENDERER_CRASH_WINDOW_MS,
+  RecordingLifecycle,
+  watchApp,
+  watchWindow,
+} from './lifecycle';
 
 function fakeCapture(phase: CapturePhase = 'recording') {
   const status: CaptureStatus = {
@@ -47,9 +54,12 @@ function harness(phase: CapturePhase = 'recording') {
   const capture = fakeCapture(phase);
   const lines: string[] = [];
   const order: string[] = [];
+  /** The lifecycle's monotonic clock, moved by the test. */
+  const clock = { ms: 0 };
   const lifecycle = new RecordingLifecycle({
     capture,
     logger: createLogger({ level: 'info', format: 'json', sink: (line) => lines.push(line) }),
+    now: () => clock.ms,
     quitStopTimeoutMs: 5_000,
     quitHooks: [
       {
@@ -62,7 +72,7 @@ function harness(phase: CapturePhase = 'recording') {
     ],
     quit: () => order.push('quit'),
   });
-  return { capture, lines, order, lifecycle };
+  return { capture, lines, order, lifecycle, clock };
 }
 
 const flush = () => new Promise((resolve) => setImmediate(resolve));
@@ -407,6 +417,35 @@ describe('a renderer crash or a reload while recording (M2 D7)', () => {
     h.window.webContents.emit('did-finish-load');
     h.window.webContents.emit('render-process-gone', {}, { reason: 'oom' });
     expect(h.window.webContents.reloads).toBe(2);
+    expect(h.stops()).toEqual([]);
+  });
+
+  it('stops instead of reloading when the loaded page keeps crashing', () => {
+    // The page opens the mic only after it loads, so a crash in the capture path or the recording
+    // view comes after did-finish-load. Each cycle sends a few chunks, so G2's stall close never
+    // fires, and without this the window would reload every second or two until the 4-hour cap.
+    const h = watched();
+    for (let crash = 1; crash < RENDERER_CRASH_LIMIT; crash += 1) {
+      h.window.webContents.emit('render-process-gone', {}, { reason: 'crashed' });
+      h.clock.ms += 1_000;
+      h.window.webContents.emit('did-finish-load');
+      h.clock.ms += 1_000;
+    }
+    h.window.webContents.emit('render-process-gone', {}, { reason: 'crashed' });
+
+    expect(h.window.webContents.reloads).toBe(RENDERER_CRASH_LIMIT - 1);
+    expect(h.stops()).toEqual([['renderer-gone', 'it kept crashing: crashed']]);
+  });
+
+  it('keeps reloading crashes spread wider than the window', () => {
+    const h = watched();
+    const gap = RENDERER_CRASH_WINDOW_MS / (RENDERER_CRASH_LIMIT - 1) + 1;
+    for (let crash = 0; crash < RENDERER_CRASH_LIMIT * 2; crash += 1) {
+      h.window.webContents.emit('render-process-gone', {}, { reason: 'oom' });
+      h.window.webContents.emit('did-finish-load');
+      h.clock.ms += gap;
+    }
+    expect(h.window.webContents.reloads).toBe(RENDERER_CRASH_LIMIT * 2);
     expect(h.stops()).toEqual([]);
   });
 

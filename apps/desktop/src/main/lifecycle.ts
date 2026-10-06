@@ -11,9 +11,20 @@ import { withTimeout } from './util/time';
  * vendor timeout (AssemblyAI: the 120 s idle timeout Roger asks for; without it, the 3-hour cap,
  * $0.45 a stream). A renderer crash or a reload no longer stops (M2 D7, M2-T12): the page comes
  * back and reopens the mic because main is recording, and until its chunks come, G2's stall close
- * shuts the mic's session after 30 s, so a crash costs at most that. The decisions live here and
- * are tested; index.ts only connects Electron's objects.
+ * shuts the mic's session after 30 s, so a crash costs at most that. A page that keeps crashing
+ * stops instead (RENDERER_CRASH_LIMIT). The decisions live here and are tested; index.ts only
+ * connects Electron's objects.
  */
+
+/**
+ * The crash that makes this many within RENDERER_CRASH_WINDOW_MS stops the recording instead of
+ * reloading. The page opens the mic only after it loads, so a crash in the capture path or the
+ * recording view comes after did-finish-load, past the guard for a page that dies on load. Each
+ * such cycle sends a few chunks, so G2's stall close never fires: without this limit the window
+ * reloads every second or two, the mic flickering, until G5's 4-hour cap.
+ */
+export const RENDERER_CRASH_LIMIT = 3;
+export const RENDERER_CRASH_WINDOW_MS = 60_000;
 
 export interface StoppableCapture {
   stop(options: StopOptions): Promise<CaptureStatus>;
@@ -39,6 +50,11 @@ export interface RecordingLifecycleOptions {
   logger: Logger;
   /** How long a quit waits for the stop (costGuards.quitStopTimeoutMs). */
   quitStopTimeoutMs: number;
+  /**
+   * Monotonic ms for the crash window (performance.now() in the app). Never the wall clock: an
+   * NTP step could hide a crash loop or invent one. Injected in tests.
+   */
+  now?: () => number;
   /**
    * The quit's cleanup after the stop, in order; index.ts lists them, with the uploader stop and
    * the store close last. Add a hook to that list; never a before-quit listener of your own:
@@ -75,8 +91,13 @@ export class RecordingLifecycle {
    * page dying on load, which would reload forever: that one stops instead.
    */
   private reloadingAfterCrash = false;
+  /** When each crash in the last RENDERER_CRASH_WINDOW_MS came, on `now`'s clock. */
+  private recentCrashes: number[] = [];
+  private readonly now: () => number;
 
-  constructor(private readonly options: RecordingLifecycleOptions) {}
+  constructor(private readonly options: RecordingLifecycleOptions) {
+    this.now = options.now ?? (() => performance.now());
+  }
 
   /**
    * before-quit and will-quit (Cmd+Q, the menu, logout). True means the caller must prevent this
@@ -114,8 +135,9 @@ export class RecordingLifecycle {
   /**
    * The renderer process died (M2 D7): reload the page instead of stopping, while recording or
    * not, so the window is never left dead. The reloaded page reopens the mic because main is
-   * recording (renderer/src/state/useCapture.ts follows main). `reload` throwing, or the reloaded
-   * page crashing before it loads, stops with `renderer-gone` and reloads no more.
+   * recording (renderer/src/state/useCapture.ts follows main). `reload` throwing, the reloaded
+   * page crashing before it loads, or a page that keeps crashing after it loads
+   * (RENDERER_CRASH_LIMIT) stops with `renderer-gone` and reloads no more.
    */
   onRendererGone(reason: string, reload: () => void): void {
     // Quitting: the window is going away, and the quit has stopped the recording itself.
@@ -124,6 +146,20 @@ export class RecordingLifecycle {
     if (this.reloadingAfterCrash) {
       logger.error('the reloaded page crashed before it loaded; not reloading again', { reason });
       this.stopFor('renderer-gone', `it crashed again: ${reason}`);
+      return;
+    }
+    const now = this.now();
+    this.recentCrashes = [
+      ...this.recentCrashes.filter((at) => now - at < RENDERER_CRASH_WINDOW_MS),
+      now,
+    ];
+    if (this.recentCrashes.length >= RENDERER_CRASH_LIMIT) {
+      logger.error('the page keeps crashing; not reloading again', {
+        reason,
+        crashes: this.recentCrashes.length,
+        withinMs: RENDERER_CRASH_WINDOW_MS,
+      });
+      this.stopFor('renderer-gone', `it kept crashing: ${reason}`);
       return;
     }
     logger.warn('renderer gone; reloading the page', { reason, phase: capture.phase });
@@ -136,7 +172,10 @@ export class RecordingLifecycle {
     }
   }
 
-  /** The page finished loading: a later crash is a new one, and reloads again. */
+  /**
+   * The page finished loading: a later crash is a new one, and reloads again unless the page keeps
+   * crashing (RENDERER_CRASH_LIMIT).
+   */
   onPageLoaded(): void {
     this.reloadingAfterCrash = false;
   }
