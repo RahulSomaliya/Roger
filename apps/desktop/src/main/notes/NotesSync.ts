@@ -99,6 +99,14 @@ export class NotesSync {
   private readonly stranded = new Set<string>();
   private running = false;
   private stopped = false;
+  /**
+   * A pass is running. Passes never overlap: a second one queues behind the first one's hung `PUT`
+   * (`serialised`) and sends the moment it fails, inside the backoff, so while requests fail
+   * slowly the `PUT`s go back to back and the backoff climbs twice as fast.
+   */
+  private passing = false;
+  /** A pass came due while one was running; it runs when that one ends. */
+  private passDue = false;
   private timer: NodeJS.Timeout | null = null;
   private failures = 0;
   /** No pass before this instant while backing off (ms since the epoch). */
@@ -251,9 +259,14 @@ export class NotesSync {
     }
   }
 
-  /** One attempt at every dirty note. Never rejects. */
+  /** One attempt at every dirty note, one pass at a time. Never rejects. */
   private async pass(): Promise<void> {
     if (!this.running) return;
+    if (this.passing) {
+      this.passDue = true;
+      return;
+    }
+    this.passing = true;
     let failed = false;
     try {
       for (const note of this.options.store.listDirtyNotes()) {
@@ -265,14 +278,20 @@ export class NotesSync {
     } catch (error) {
       failed = true;
       this.options.logger.error('notes sync failed', { error: errorMessage(error) });
+    } finally {
+      this.passing = false;
     }
+    const due = this.passDue;
+    this.passDue = false;
     // Stopped (quit) while a request was out: no retry, and the store may be closed.
     if (this.stopped) return;
     if (!failed) {
       this.failures = 0;
       this.retryAtMs = 0;
+      if (due) this.soon();
       return;
     }
+    // A failure drops a pass that came due: the retry below is a pass over every dirty note.
     this.failures += 1;
     const delayMs = Math.min(this.maxBackoffMs, this.firstRetryMs * 2 ** (this.failures - 1));
     this.retryAtMs = this.nowMs() + delayMs;

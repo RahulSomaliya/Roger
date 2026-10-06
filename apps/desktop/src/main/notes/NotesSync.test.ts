@@ -56,6 +56,11 @@ function deferred(): Deferred {
 class FakeNotesApi implements NotesSyncApi {
   readonly calls: string[] = [];
   down = false;
+  /**
+   * Every PUT answers this long after it went out: a slow network, or with `down`, a request that
+   * hangs until http.ts's 10 s timeout fails it.
+   */
+  answerAfterMs = 0;
   readonly missing = new Set<string>();
   private readonly stored = new Map<string, { note: Note; revisionId: string | null }>();
   private gate: Promise<void> | null = null;
@@ -94,6 +99,9 @@ class FakeNotesApi implements NotesSyncApi {
     );
     const gate = this.gate;
     this.gate = null;
+    if (this.answerAfterMs > 0) {
+      await new Promise((resolve) => setTimeout(resolve, this.answerAfterMs));
+    }
     const note = this.store(meetingId, kind, request);
     if (gate !== null) await gate;
     return note;
@@ -310,6 +318,57 @@ describe('NotesSync: uploads', () => {
     sync.save(MEETING, 'user', paragraphs('Back online'));
     await vi.advanceTimersByTimeAsync(1_500);
     expect(api.puts()).toHaveLength(9);
+    sync.stop();
+  });
+
+  it('never runs two passes at once, so a slow failure still backs off', async () => {
+    const { api, sync } = harness();
+    api.down = true;
+    api.answerAfterMs = 10_000;
+    sync.start();
+
+    sync.save(MEETING, 'user', paragraphs('Typed on bad wifi'));
+    await vi.advanceTimersByTimeAsync(1_500);
+    expect(api.puts()).toHaveLength(1);
+    // Saved again while that PUT hangs: its pass comes due at 6.5 s, with the first still out.
+    await vi.advanceTimersByTimeAsync(3_500);
+    sync.save(MEETING, 'user', paragraphs('Typed on bad wifi', 'more'));
+
+    // The first fails at 11.5 s. The next PUT waits the 2 s backoff, not going out at once.
+    await vi.advanceTimersByTimeAsync(6_500);
+    expect(api.puts()).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1_999);
+    expect(api.puts()).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(api.puts()).toHaveLength(2);
+    // That one fails at 23.5 s; the next waits 4 s.
+    await vi.advanceTimersByTimeAsync(13_999);
+    expect(api.puts()).toHaveLength(2);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(api.puts()).toHaveLength(3);
+    sync.stop();
+  });
+
+  it('a pass that comes due while one runs goes as soon as it ends', async () => {
+    const { api, store, sync } = harness();
+    api.answerAfterMs = 10_000;
+    sync.start();
+
+    sync.save(MEETING, 'user', paragraphs('First'));
+    await vi.advanceTimersByTimeAsync(1_500);
+    sync.save(OTHER_MEETING, 'user', paragraphs('Second'));
+    await vi.advanceTimersByTimeAsync(1_500);
+    expect(api.puts()).toEqual([`PUT ${MEETING}/user base=0 revision=rev-1`]);
+
+    // The first answers at 11.5 s, and the pass that came due at 3 s goes then (its 0 ms timer
+    // waits 1 ms, as Node's does).
+    await vi.advanceTimersByTimeAsync(8_501);
+    expect(api.puts()).toEqual([
+      `PUT ${MEETING}/user base=0 revision=rev-1`,
+      `PUT ${OTHER_MEETING}/user base=0 revision=rev-2`,
+    ]);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(store.listDirtyNotes()).toEqual([]);
     sync.stop();
   });
 
