@@ -540,7 +540,150 @@ writes such keys: its keys are its schema's names.
 
 ### Notes runs and streaming
 
-Not built yet. Owner: M4-T8, which writes its routes here, with their `409`s.
+A notes run writes the AI notes. The API reads the meeting's transcript and the user's notes,
+asks the notes model, checks every line the model writes against the transcript lines and note
+blocks it cites, streams each line as a server-sent event once it is checked, and saves the result
+as the meeting's `ai` note (Notes). A run outlives its request: a client that drops the stream does
+not stop it, and it saves without anyone listening. Notes runs and chat runs (Chat) are both
+`LlmRun`s.
+
+```ts
+type RunKind = "notes" | "chat";
+type RunStatus = "running" | "succeeded" | "failed" | "cancelled";
+// The `error` event's codes, also stored as `error_code`.
+type RunErrorCode = "llm_provider_error" | "cut_off" | "cancelled" | "internal_error";
+// `no_refs`: the line cited nothing. `unknown_refs`: every ref it cited points nowhere.
+type DropReason = "no_refs" | "unknown_refs";
+
+interface DroppedLine {
+  text: string;
+  reason: DropReason;
+}
+
+interface LlmRun {
+  id: string;
+  meeting_id: string;
+  kind: RunKind;
+  status: RunStatus;
+  model: string;                     // the model the run asked
+  prompt_version: string;            // changes with the prompt's rules or layout
+  template_id: string | null;        // notes runs only
+  line_count: number;                // transcript lines the model was shown
+  user_notes_version: number | null; // the versions a notes run built on; 0: that note did not exist
+  ai_base_version: number | null;
+  error_code: RunErrorCode | null;   // null unless failed or cancelled
+  error: string | null;              // in words for the user; never the vendor's body
+  dropped: DroppedLine[] | null;     // removed lines, in the order written; null unless succeeded
+  flagged_count: number;             // lines kept with support "weak" ("check this")
+  from_notes_count: number;          // lines under "From your notes"
+  input_tokens: number | null;
+  output_tokens: number | null;
+  cached_tokens: number | null;
+  cost_usd: string | null;           // a decimal string ("0.00083"); null when unknown, never "0"
+  started_at: string;                // instant
+  heartbeat_at: string;              // instant; moves every 20 s while the run runs
+  finished_at: string | null;        // instant
+}
+```
+
+A `running` run whose `heartbeat_at` is 2 minutes old is dead (the API process driving it
+stopped). It is stored `failed` with `internal_error` when the API starts, and before the next run
+of its meeting is claimed.
+
+#### `POST /v1/meetings/{meeting_id}/notes/generate`
+
+Request:
+
+```json
+{ "run_id": "uuid", "template_id": "standup", "user_notes_version": 3, "ai_base_version": 1 }
+```
+
+- `run_id`: made by the client before its first attempt and re-sent by every retry of that
+  attempt (Re-sends, below). A retry after a failed run takes a new id: the old one replays the
+  failure.
+- `template_id`: an id from `GET /v1/note-templates`; any other is a `422 validation_error`.
+- `user_notes_version`, `ai_base_version`: the stored versions of the user's notes and of the AI
+  notes, `0` for a note that does not exist. The desktop saves its notes first, so the run reads
+  what the user last typed.
+
+Response: `200 text/event-stream`. The headers are sent only once the run is claimed and the
+model's vendor has accepted the request, then a `: ping` comment every 15 s while nothing else is
+sent. Each event's `data` is one JSON object:
+
+| Event | Data | When |
+| --- | --- | --- |
+| `run` | `{run_id, model, template_id, line_count}` | First |
+| `section` | `{index, heading}` | Before the first kept line of a section. `index` names the section in `item`; a section that keeps no line is never sent. |
+| `item` | `{section, text, citations: [{ref, segment_id, start_ms}], support}` | A kept line, with each transcript line it cites in transcript order. `support` is `"weak"` when a number in the line is in none of its cited lines and note blocks, or the line shares no word with them; else `"ok"`. |
+| `from_notes` | `{text}` | A line only the user's notes back: it goes to the closing "From your notes" list, without chips |
+| `dropped` | `{text, reason}` | A removed line (`DropReason`) |
+| `done` | `{run_id, note}` | Last, once the AI notes are saved: `note` is the `ai` `Note` as stored |
+| `error` | `{code, message}` | Last, when the run failed or was cancelled (`RunErrorCode`); the AI notes are unchanged |
+
+Error codes: `llm_provider_error` (the vendor failed after the stream started), `cut_off` (the
+answer stopped at the output limit), `cancelled` (`POST .../cancel`), `internal_error`. A stream
+that ends with neither `done` nor `error` (a dropped connection, or a re-send this API process
+cannot follow) means the run may still finish: poll `GET .../runs/{run_id}` until it ends or its
+`heartbeat_at` is 2 minutes old, then read the notes.
+
+The AI notes doc (`done`'s `note.doc`, and the run's `output_doc`): for each section that kept a
+line, in the order the model wrote them, a level-2 heading and a bullet list. A template section's
+heading is written as the template has it, whatever case the model used; a heading the template
+does not have keeps its own section, under the model's wording; lines before any heading belong to
+the template's first section. Each bullet is a list item holding one paragraph: the line's text,
+then a `citation` chip for each run of neighbouring transcript lines it cites (`[L12, L13, L15]`
+is two chips):
+
+```json
+{ "type": "citation",
+  "attrs": { "segmentIds": ["uuid", "uuid"], "startMs": 305000, "label": "05:05", "support": "ok" } }
+```
+
+`startMs` is the first line's start; `label` is its time as the chip shows it (`mm:ss`, or
+`h:mm:ss` past an hour). When some lines only the user's notes back, the doc ends with a level-2
+"From your notes" heading, an italic paragraph "Not said on the call" and a plain bullet list, in
+the order of the user's notes. A run that kept no line writes an empty doc (one empty paragraph).
+`apps/api/tests/fixtures/ai_notes_doc.json` is the example both apps test against.
+
+The save takes the meeting's lock, as every save of the AI notes does. The stored AI doc at that
+moment becomes the run's `replaced_doc`; the new doc raises the note's `version`, and
+`template_id`, `last_run_id` and `generated_version` (the new version) record the run. A run that
+fails or is cancelled leaves the AI notes as they were.
+
+Re-sends: a `run_id` already stored for this meeting is matched by id alone, before any other
+check, and never starts a second run. While the run runs in this API process, the stream sends
+every event so far, then each new one. Once it has ended, it sends the stored result: `run`, then
+its `dropped` lines and `done` with the AI notes as stored now, or its `error`. A `running` run that
+this process does not drive sends `run` only; poll it.
+
+`409 conflict`, and nothing is stored or replayed, when:
+
+- another notes run of the meeting is running;
+- `user_notes_version` or `ai_base_version` is not the stored version: the notes were saved from
+  somewhere else since. The desktop saves its notes again and retries once;
+- `run_id` is stored under another meeting or workspace.
+
+`422 empty_meeting` when the meeting has no transcript lines and its user notes hold no words.
+`502 llm_provider_error` when the vendor refused before the stream started: the run is stored
+`failed`, and re-sending its id replays that failure.
+
+#### `GET /v1/meetings/{meeting_id}/runs?kind=notes&limit=10`
+
+Response: `200 { "items": LlmRun[] }`, newest first. `kind` (`notes` or `chat`) filters; `limit` is
+1 to 100, default 10. No `409`s.
+
+#### `GET /v1/meetings/{meeting_id}/runs/{run_id}`
+
+Response: `200`, the `LlmRun` with `output_doc` (the doc the run wrote) and `replaced_doc` (the AI
+doc it replaced, which "Restore previous notes" puts back), both always present and `null` when
+empty. A run of another meeting or workspace is a `404`. No `409`s.
+
+#### `POST /v1/meetings/{meeting_id}/runs/{run_id}/cancel`
+
+Stops a notes or chat run. No body. Response: `200 LlmRun` once the run has ended: `cancelled`,
+or as it ended when it finished first (a run already saving its result ends as it would have).
+Its stream ends with the `error` code `cancelled`. A run of another meeting or workspace is a
+`404`. No `409`s.
 
 ### Chat
 
