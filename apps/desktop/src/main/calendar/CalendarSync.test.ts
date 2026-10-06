@@ -566,6 +566,22 @@ describe('CalendarSync', () => {
       expect(listEvents).toHaveBeenCalledTimes(2);
       sync.stop();
     });
+
+    it('never spins on the stale timer when the last success is weeks ahead (a clock set back)', async () => {
+      const { sync, listEvents, cache } = harness();
+      // Over setTimeout's 24.8-day limit, which Node turns into a 1 ms timer.
+      cache.replaceEvents([], iso(START + 30 * DAY));
+      listEvents.mockRejectedValue(down());
+      sync.start({ previousRunLastTickAt: null });
+      await vi.advanceTimersByTimeAsync(0);
+      const reads = vi.spyOn(cache, 'getSyncState');
+
+      await vi.advanceTimersByTimeAsync(SECOND);
+
+      expect(reads.mock.calls.length).toBe(0);
+      expect(sync.getState().staleSince).toBeNull();
+      sync.stop();
+    });
   });
 
   it('drops an answer that lands after a disconnect, and polls no more', async () => {

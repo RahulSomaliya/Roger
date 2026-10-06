@@ -355,10 +355,16 @@ export class CalendarSync {
     const staleAtMs = parseInstant(since) + CALENDAR_STALE_AFTER_MS;
     const delayMs = staleAtMs - this.nowMs();
     if (delayMs > 0) {
-      this.staleTimer = setTimeout(() => {
-        this.staleTimer = null;
-        this.checkStale();
-      }, delayMs);
+      // Capped at the hour: a success stamped while the clock ran ahead (then set back) can be
+      // weeks away, and setTimeout turns a wait over 24.8 days into 1 ms, which would re-arm this
+      // every millisecond until the next success, and for good while a 424 halts requests.
+      this.staleTimer = setTimeout(
+        () => {
+          this.staleTimer = null;
+          this.checkStale();
+        },
+        Math.min(delayMs, CALENDAR_STALE_AFTER_MS),
+      );
       return;
     }
     // A request on its way checks again when it settles (refresh's `finally`).
