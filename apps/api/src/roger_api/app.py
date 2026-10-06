@@ -13,8 +13,8 @@ from roger_api.log import configure_logging, get_logger
 from roger_api.mcp_server import McpDependencies, build_mcp_http_app, build_mcp_server
 from roger_api.middleware import RequestContextMiddleware
 from roger_api.routers import health, meetings, stt
-from roger_api.services.stt_tokens import open_stt_token_issuer
 from roger_api.services.workspaces import ensure_workspace
+from roger_api.stt_vendors import open_stt_token_issuer
 
 logger = get_logger(__name__)
 
@@ -62,7 +62,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     app_env=settings.app_env,
                     stt_provider=settings.stt_provider,
                     stt_model=settings.stt_stream_model,
+                    stt_price_per_hour_usd=settings.stt_stream_price_per_hour_usd,
                 )
+                if settings.stt_stream_price_per_hour_usd is None:
+                    logger.warning(
+                        "stt_price_unknown",
+                        stt_provider=settings.stt_provider,
+                        stt_model=settings.stt_stream_model,
+                        hint="Set STT_PRICE_PER_HOUR_USD so the desktop can meter cost",
+                    )
                 yield
         finally:
             await database.dispose()

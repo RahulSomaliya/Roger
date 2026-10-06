@@ -1,9 +1,12 @@
 import re
+from typing import get_args
 
 import pytest
 from pydantic import ValidationError
 
 from roger_api.config import REPO_ROOT_ENV_FILE
+from roger_api.domain import SttProvider
+from roger_api.stt_vendors import STT_VENDORS
 from tests.conftest import make_settings
 from tests.helpers import TEST_TOKEN
 
@@ -210,3 +213,63 @@ def test_vendor_key_is_not_echoed_in_validation_errors(provider: str) -> None:
         )
 
     assert VENDOR_KEY not in str(raised.value)
+
+
+def test_every_provider_has_a_registry_entry() -> None:
+    # Adding a provider to the SttProvider type without a registry entry would fail only when
+    # someone configured it.
+    assert set(get_args(SttProvider.__value__)) == set(STT_VENDORS)
+    for provider, vendor in STT_VENDORS.items():
+        assert vendor.provider == provider
+
+
+@pytest.mark.parametrize(
+    ("provider", "model", "price"),
+    [
+        ("fake", None, 0.0),
+        ("fake", "nova-3", 0.0),  # the fake provider costs nothing, whatever the model is called
+        ("assemblyai", None, 0.15),
+        ("assemblyai", "universal-streaming-multilingual", 0.15),
+        ("assemblyai", "universal-3-6-pro", 0.45),
+        ("deepgram", None, 0.462),
+        ("deepgram", "nova-2", None),  # no list price on file: unknown, not a guess
+    ],
+)
+def test_price_per_hour_comes_from_the_registry(
+    provider: str, model: str | None, price: float | None
+) -> None:
+    settings = make_settings(
+        DATABASE_URL,
+        stt_provider=provider,
+        stt_model=model,
+        deepgram_api_key=VENDOR_KEY,
+        assemblyai_api_key=VENDOR_KEY,
+    )
+
+    assert settings.stt_price_per_hour_usd is None
+    assert settings.stt_stream_price_per_hour_usd == price
+
+
+def test_price_per_hour_can_be_overridden() -> None:
+    settings = make_settings(
+        DATABASE_URL,
+        stt_provider="deepgram",
+        stt_model="nova-2",
+        deepgram_api_key=VENDOR_KEY,
+        stt_price_per_hour_usd=0.348,
+    )
+
+    assert settings.stt_stream_price_per_hour_usd == 0.348
+
+
+def test_price_per_hour_cannot_be_negative() -> None:
+    with pytest.raises(ValidationError, match="stt_price_per_hour_usd"):
+        make_settings(DATABASE_URL, stt_price_per_hour_usd=-0.01)
+
+
+def test_blank_price_counts_as_unset() -> None:
+    # `.env.example` ships `STT_PRICE_PER_HOUR_USD=`, which arrives as an empty string.
+    settings = make_settings(DATABASE_URL, stt_price_per_hour_usd=" ")
+
+    assert settings.stt_price_per_hour_usd is None
+    assert settings.stt_stream_price_per_hour_usd == 0.0

@@ -36,6 +36,7 @@ migrated it logs `database_not_ready` and exits.
 | `DEEPGRAM_API_KEY` | empty | Required when `STT_PROVIDER=deepgram`; startup fails without it. Never leaves the API. |
 | `STT_TOKEN_TTL_SECONDS` | `30` | Lifetime of the speech-to-text token handed to the desktop (1..3600; at most 600 with `assemblyai`, the vendor's limit). |
 | `STT_MODEL` / `STT_LANGUAGE` | unset / `en` | Returned to the desktop as stream settings. Unset `STT_MODEL` means the provider's English streaming model: `universal-streaming-english` (assemblyai), `nova-3` (deepgram), `fake`. Startup fails on the other vendor's model (`nova-*` with assemblyai, `universal-*` with deepgram). |
+| `STT_PRICE_PER_HOUR_USD` | unset | USD per hour of one open stream, returned to the desktop as `stream.price_per_hour_usd`. Unset means the vendor's list price for the model (`src/roger_api/stt_vendors.py`); a model with no list price there returns `null` and logs `stt_price_unknown` at startup. |
 | `STT_SAMPLE_RATE` / `STT_ENCODING` | `16000` / `linear16` | Returned to the desktop as stream settings. |
 | `DEFAULT_WORKSPACE_ID` | `805dd994-ff52-405c-a3cc-58f09b32a2dd` | The one workspace every M1 request resolves to. |
 | `DEFAULT_WORKSPACE_NAME` | `Linkt` | Used only when the workspace row is first created. |
@@ -50,7 +51,9 @@ The version reported by `/health` comes from the package metadata (`pyproject.to
 
 `POST /v1/stt/token` hands the desktop a short-lived vendor credential plus stream settings; the
 vendor key never leaves the API. Each vendor is one `SttTokenIssuer` in
-`src/roger_api/services/stt_tokens.py`, picked by `STT_PROVIDER`.
+`src/roger_api/services/stt_tokens.py` and one entry in the vendor registry,
+`src/roger_api/stt_vendors.py` (issuer, default model, model-name prefix, token TTL limit, list
+price per stream-hour), picked by `STT_PROVIDER`.
 
 AssemblyAI is Roger's vendor (owner decision, 2026-10-06: AssemblyAI lists Granola as a customer,
 live text costs about $0.15 an hour per stream, and it has generous free hours). The model
@@ -163,6 +166,7 @@ src/roger_api/
   main.py              ASGI entry point (`app = create_app()`)
   app.py               create_app(): lifespan, middleware, error handlers, routers, /mcp
   config.py            Settings (pydantic-settings); DatabaseSettings for Alembic
+  stt_vendors.py       speech-to-text vendor registry (issuer, default model, price)
   log.py               structlog setup (console in development, JSON in production)
   middleware.py        request id, access log, 500 envelope
   error_handlers.py    the error envelope for every other error

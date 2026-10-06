@@ -10,6 +10,11 @@ export interface SttStreamSettings {
   language: string;
   sampleRate: number;
   encoding: string;
+  /**
+   * USD per hour of this one stream while it is open, from the API (vendor prices stay
+   * server-side). Null when the API knows no price. Only used to estimate cost in logs.
+   */
+  pricePerHourUsd: number | null;
 }
 
 export interface OpenStreamOptions {

@@ -13,7 +13,7 @@ export type SttVendorFactory = (options: SttVendorOptions) => SpeechToText;
 
 /**
  * Every speech-to-text provider the desktop can run, by the id the API names in /v1/stt/token
- * (the API's STT_PROVIDER values; the two sides must list the same ids).
+ * (the API's registry is apps/api/src/roger_api/stt_vendors.py; both must list the same ids).
  * Adding one: "Add a speech-to-text vendor" in apps/desktop/README.md. A network vendor added here
  * without an entry in testing/conformanceVendors.ts fails the conformance suite, so it cannot ship
  * without proving it closes its sockets.

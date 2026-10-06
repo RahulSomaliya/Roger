@@ -72,6 +72,7 @@ export class SttConnection implements SttStream {
   private readonly closing = deferred();
   private readonly clock: () => number;
   private readonly sampleRate: number;
+  private readonly pricePerHourUsd: number | null;
   private readonly closeTimeoutMs: number;
   private connectTimer: NodeJS.Timeout | null;
   private finishTimer: NodeJS.Timeout | null = null;
@@ -92,6 +93,7 @@ export class SttConnection implements SttStream {
     this.logger = options.logger.child({ stream: options.stream.label });
     this.clock = options.clock;
     this.sampleRate = options.stream.settings.sampleRate;
+    this.pricePerHourUsd = options.stream.settings.pricePerHourUsd;
     this.closeTimeoutMs = options.closeTimeoutMs;
     // Throws SttConnectError on settings the vendor cannot take, before any socket exists.
     const target = this.protocol.target(options.stream);
@@ -389,7 +391,12 @@ export class SttConnection implements SttStream {
       );
     }
     this.currentState = 'closed';
-    this.logger.info('stt stream closed', { code, ...this.usage() });
+    const usage = this.usage();
+    this.logger.info('stt stream closed', {
+      code,
+      ...usage,
+      estimatedCostUsd: estimateCostUsd(usage.connectedMs, this.pricePerHourUsd),
+    });
     this.deliver({ type: 'closed', code, reason });
     this.closing.resolve();
   }
@@ -415,6 +422,12 @@ export class SttConnection implements SttStream {
     if (this.keepAliveTimer !== null) clearInterval(this.keepAliveTimer);
     this.keepAliveTimer = null;
   }
+}
+
+/** Open time at the API's price per stream-hour, to 1/10000 USD; null when the price is unknown. */
+function estimateCostUsd(connectedMs: number, pricePerHourUsd: number | null): number | null {
+  if (pricePerHourUsd === null) return null;
+  return Math.round((connectedMs / 3_600_000) * pricePerHourUsd * 10_000) / 10_000;
 }
 
 interface Deferred {

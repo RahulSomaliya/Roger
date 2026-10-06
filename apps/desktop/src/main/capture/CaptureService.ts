@@ -62,6 +62,7 @@ const FAKE_STREAM_SETTINGS: SttStreamSettings = {
   language: 'en',
   sampleRate: PCM_SAMPLE_RATE,
   encoding: PCM_ENCODING,
+  pricePerHourUsd: 0,
 };
 
 /** How often the audio flow is checked and chunk counters are pushed to the UI while recording. */
@@ -341,6 +342,7 @@ export class CaptureService {
         language: token.stream.language,
         sampleRate: token.stream.sample_rate,
         encoding: token.stream.encoding,
+        pricePerHourUsd: token.stream.price_per_hour_usd,
       },
     };
   }

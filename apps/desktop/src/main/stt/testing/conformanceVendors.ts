@@ -34,6 +34,7 @@ export const CONFORMANCE_VENDORS: readonly ConformanceVendor[] = [
       language: 'en',
       sampleRate: 16000,
       encoding: 'linear16',
+      pricePerHourUsd: 0.15,
     },
     readyMessage: JSON.stringify({ type: 'Begin', id: 'session-1', expires_at: 1772570132 }),
     finishMessages: [JSON.stringify({ type: 'Terminate' })],
@@ -66,7 +67,13 @@ export const CONFORMANCE_VENDORS: readonly ConformanceVendor[] = [
   },
   {
     provider: 'deepgram',
-    settings: { model: 'nova-3', language: 'en', sampleRate: 16000, encoding: 'linear16' },
+    settings: {
+      model: 'nova-3',
+      language: 'en',
+      sampleRate: 16000,
+      encoding: 'linear16',
+      pricePerHourUsd: 0.462,
+    },
     readyMessage: null,
     finishMessages: [JSON.stringify({ type: 'Finalize' }), JSON.stringify({ type: 'CloseStream' })],
     answerFinish: (socket) => {

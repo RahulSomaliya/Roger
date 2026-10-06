@@ -93,7 +93,13 @@ function harness(
       provider: 'scripted',
       access_token: 'tok',
       expires_in: 30,
-      stream: { model: 'm', language: 'en', sample_rate: 16000, encoding: 'linear16' },
+      stream: {
+        model: 'm',
+        language: 'en',
+        sample_rate: 16000,
+        encoding: 'linear16',
+        price_per_hour_usd: 0.15,
+      },
     }),
     createMeeting: vi.fn<UploadApi['createMeeting']>((input) =>
       Promise.resolve(meetingDto(input.id)),
@@ -310,7 +316,13 @@ describe('CaptureService', () => {
       provider: 'scripted',
       access_token: 'tok',
       expires_in: 30,
-      stream: { model: 'm', language: 'en', sample_rate: 48000, encoding: 'linear16' },
+      stream: {
+        model: 'm',
+        language: 'en',
+        sample_rate: 48000,
+        encoding: 'linear16',
+        price_per_hour_usd: null,
+      },
     });
     const status = await h.service.start();
     expect(status.phase).toBe('idle');
@@ -326,6 +338,20 @@ describe('CaptureService', () => {
     expect(status.phase).toBe('recording');
     expect(status.sttProvider).toBe('fake');
     expect(h.api.getSttToken).not.toHaveBeenCalled();
+    await h.service.stop();
+  });
+
+  it('hands the adapter the stream settings the API names, price included', async () => {
+    const h = harness();
+    await h.service.start();
+
+    expect(h.stt.opened[0]?.settings).toEqual({
+      model: 'm',
+      language: 'en',
+      sampleRate: 16000,
+      encoding: 'linear16',
+      pricePerHourUsd: 0.15,
+    });
     await h.service.stop();
   });
 

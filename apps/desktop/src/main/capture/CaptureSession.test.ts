@@ -12,7 +12,13 @@ import {
 import { CaptureSession, type CaptureSessionListeners } from './CaptureSession';
 
 const logger = createLogger({ level: 'error', format: 'json', sink: () => undefined });
-const settings = { model: 'm', language: 'en', sampleRate: 16000, encoding: 'linear16' };
+const settings = {
+  model: 'm',
+  language: 'en',
+  sampleRate: 16000,
+  encoding: 'linear16',
+  pricePerHourUsd: null,
+};
 
 class ScriptedStream implements SttStream {
   readonly emitter = new SttEventEmitter();

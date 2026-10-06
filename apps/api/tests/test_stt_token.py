@@ -19,15 +19,21 @@ from roger_api.services.stt_tokens import (
     DeepgramSttTokenIssuer,
     FakeSttTokenIssuer,
     SttCredential,
-    open_stt_token_issuer,
 )
+from roger_api.stt_vendors import open_stt_token_issuer
 from tests.conftest import make_settings
 from tests.helpers import AUTH_HEADERS, BASE_URL, assert_error
 
 DEEPGRAM_KEY = "dg-secret-key"
 ASSEMBLYAI_KEY = "aai-secret-key"
 # The stream settings the test app (STT_PROVIDER=fake, STT_MODEL unset) returns.
-STREAM = {"model": "fake", "language": "en", "sample_rate": 16000, "encoding": "linear16"}
+STREAM = {
+    "model": "fake",
+    "language": "en",
+    "sample_rate": 16000,
+    "encoding": "linear16",
+    "price_per_hour_usd": 0.0,
+}
 
 type Handler = Callable[[httpx.Request], httpx.Response]
 
@@ -143,6 +149,26 @@ def test_stream_settings_come_from_config(database_url: str) -> None:
         "model": "nova-2",
         "sample_rate": 48000,
     }
+
+
+def test_stream_price_is_the_override_when_set(database_url: str) -> None:
+    settings = make_settings(
+        database_url,
+        stt_provider="deepgram",
+        deepgram_api_key=DEEPGRAM_KEY,
+        stt_model="nova-2",
+        stt_price_per_hour_usd=0.348,
+    )
+
+    assert SttStreamSettings.from_settings(settings).price_per_hour_usd == 0.348
+
+
+def test_unknown_stream_price_is_null(database_url: str) -> None:
+    settings = make_settings(
+        database_url, stt_provider="deepgram", deepgram_api_key=DEEPGRAM_KEY, stt_model="nova-2"
+    )
+
+    assert SttStreamSettings.from_settings(settings).model_dump()["price_per_hour_usd"] is None
 
 
 async def test_factory_builds_the_configured_issuer(settings: Settings) -> None:
@@ -300,7 +326,8 @@ async def test_assemblyai_token_through_the_api(
         "access_token": "aai-temp-token",
         "expires_in": 30,
         # Our encoding name: the desktop adapter maps linear16 to AssemblyAI's pcm_s16le.
-        "stream": {**STREAM, "model": "universal-streaming-english"},
+        # The price is per hour of one open stream, silent or not; a meeting opens two.
+        "stream": {**STREAM, "model": "universal-streaming-english", "price_per_hour_usd": 0.15},
     }
     assert ASSEMBLYAI_KEY not in response.text
 

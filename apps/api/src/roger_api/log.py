@@ -6,11 +6,16 @@ processors, so every line carries the same fields, including the bound `request_
 
 import logging
 import sys
+from typing import TYPE_CHECKING
 
 import structlog
 from structlog.typing import EventDict, Processor, WrappedLogger
 
-from roger_api.config import Settings
+if TYPE_CHECKING:
+    # Only for the annotation, never at runtime: config imports the STT vendor registry, whose
+    # token issuers log through this module, so a runtime import here is an import cycle that
+    # fails at startup with "cannot import name 'Settings' from partially initialized module".
+    from roger_api.config import Settings
 
 
 def _drop_color_message(_: WrappedLogger, __: str, event_dict: EventDict) -> EventDict:
@@ -19,7 +24,7 @@ def _drop_color_message(_: WrappedLogger, __: str, event_dict: EventDict) -> Eve
     return event_dict
 
 
-def configure_logging(settings: Settings) -> None:
+def configure_logging(settings: "Settings") -> None:
     shared: list[Processor] = [
         structlog.contextvars.merge_contextvars,
         structlog.stdlib.add_log_level,

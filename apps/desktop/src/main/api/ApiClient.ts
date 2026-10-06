@@ -21,7 +21,14 @@ export interface SttTokenResponse {
   provider: string;
   access_token: string;
   expires_in: number;
-  stream: { model: string; language: string; sample_rate: number; encoding: string };
+  stream: {
+    model: string;
+    language: string;
+    sample_rate: number;
+    encoding: string;
+    /** USD per hour of one open stream; null when the API knows no price for the model. */
+    price_per_hour_usd: number | null;
+  };
 }
 
 export interface SegmentsAppendResult {

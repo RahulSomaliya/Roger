@@ -8,6 +8,12 @@ from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 from sqlalchemy.engine import make_url
 
 from roger_api import __version__
+from roger_api.domain import SttProvider
+
+# The vendor registry imports the token issuers, which log through roger_api.log. That module
+# (and stt_vendors.py, and services/stt_tokens.py) must import Settings only under TYPE_CHECKING:
+# a runtime import back into this module is a cycle that fails at startup.
+from roger_api.stt_vendors import STT_VENDORS, SttVendor
 
 # The monorepo keeps one `.env` at its root (see `.env.example`). Missing files are ignored, so
 # deployments that pass real environment variables are unaffected.
@@ -20,24 +26,6 @@ MIN_API_TOKEN_LENGTH = 16
 # enough to pass the length check, so a `.env` copied without editing would serve every transcript
 # behind a token anyone can read. Keep the example value starting with this prefix.
 ENV_EXAMPLE_PLACEHOLDER_PREFIX = "change-me"
-
-type SttProvider = Literal["fake", "deepgram", "assemblyai"]
-
-# The streaming model each provider uses when STT_MODEL is unset: its English streaming model.
-# AssemblyAI's is Universal-Streaming English, the $0.15/hour model the owner chose on 2026-10-06.
-# Its docs default to universal-3-6-pro instead: $0.45/hour, and it does not take `format_turns`
-# (the desktop adapter sends that only to universal-streaming-* models).
-DEFAULT_STT_MODELS: dict[SttProvider, str] = {
-    "fake": "fake",
-    "deepgram": "nova-3",
-    "assemblyai": "universal-streaming-english",
-}
-# Model-name prefixes only one vendor uses. `.env.example` shipped `STT_MODEL=nova-3` until
-# AssemblyAI became the default, so a copied `.env` switched to assemblyai would hand AssemblyAI a
-# Deepgram model, and fail only when someone pressed Start on the Mac.
-VENDOR_MODEL_PREFIXES: dict[SttProvider, str] = {"deepgram": "nova-", "assemblyai": "universal-"}
-# AssemblyAI's temporary token endpoint accepts `expires_in_seconds` from 1 to 600.
-ASSEMBLYAI_MAX_TOKEN_TTL_SECONDS = 600
 
 
 class DatabaseSettings(BaseSettings):
@@ -71,8 +59,11 @@ class Settings(DatabaseSettings):
     deepgram_api_key: SecretStr | None = None
     assemblyai_api_key: SecretStr | None = None
     stt_token_ttl_seconds: int = Field(default=30, ge=1, le=3600)
-    # None means the provider's default (DEFAULT_STT_MODELS); read `stt_stream_model`, not this.
+    # None means the provider's default (stt_vendors.py); read `stt_stream_model`, not this.
     stt_model: str | None = None
+    # None means the registry's list price for the provider and model; read
+    # `stt_stream_price_per_hour_usd`, not this.
+    stt_price_per_hour_usd: float | None = Field(default=None, ge=0)
     stt_language: str = "en"
     stt_sample_rate: int = Field(default=16000, gt=0)
     stt_encoding: str = "linear16"
@@ -99,10 +90,10 @@ class Settings(DatabaseSettings):
             )
         return value
 
-    @field_validator("stt_model", mode="before")
+    @field_validator("stt_model", "stt_price_per_hour_usd", mode="before")
     @classmethod
-    def _blank_model_is_unset(cls, value: object) -> object:
-        """`STT_MODEL=` in a `.env` arrives as an empty string."""
+    def _blank_is_unset(cls, value: object) -> object:
+        """`STT_MODEL=` or `STT_PRICE_PER_HOUR_USD=` in a `.env` arrives as an empty string."""
         if isinstance(value, str) and not value.strip():
             return None
         return value
@@ -122,21 +113,30 @@ class Settings(DatabaseSettings):
         key = self.stt_vendor_key
         if not (key and key.get_secret_value()):
             raise ValueError(f"{provider.upper()}_API_KEY is required when STT_PROVIDER={provider}")
-        if (
-            provider == "assemblyai"
-            and self.stt_token_ttl_seconds > ASSEMBLYAI_MAX_TOKEN_TTL_SECONDS
-        ):
+        vendor = self.stt_vendor
+        if self.stt_token_ttl_seconds > vendor.max_token_ttl_seconds:
             raise ValueError(
-                f"STT_TOKEN_TTL_SECONDS must be at most {ASSEMBLYAI_MAX_TOKEN_TTL_SECONDS} when "
-                "STT_PROVIDER=assemblyai (the vendor's limit for a temporary token)"
+                f"STT_TOKEN_TTL_SECONDS must be at most {vendor.max_token_ttl_seconds} when "
+                f"STT_PROVIDER={provider} (the vendor's limit for a temporary token)"
             )
-        for owner, prefix in VENDOR_MODEL_PREFIXES.items():
-            if owner != provider and self.stt_model and self.stt_model.startswith(prefix):
+        for owner in STT_VENDORS.values():
+            prefix = owner.model_prefix
+            if (
+                owner.provider != provider
+                and prefix is not None
+                and self.stt_model
+                and self.stt_model.startswith(prefix)
+            ):
                 raise ValueError(
-                    f"STT_MODEL={self.stt_model} is a {owner} model; remove STT_MODEL to use "
-                    f"{DEFAULT_STT_MODELS[provider]} with STT_PROVIDER={provider}"
+                    f"STT_MODEL={self.stt_model} is a {owner.provider} model; remove STT_MODEL to "
+                    f"use {vendor.default_model} with STT_PROVIDER={provider}"
                 )
         return self
+
+    @property
+    def stt_vendor(self) -> SttVendor:
+        """The registry entry of `stt_provider`."""
+        return STT_VENDORS[self.stt_provider]
 
     @property
     def stt_vendor_key(self) -> SecretStr | None:
@@ -152,7 +152,14 @@ class Settings(DatabaseSettings):
     @property
     def stt_stream_model(self) -> str:
         """The model the desktop asks the vendor for: STT_MODEL, else the provider's default."""
-        return self.stt_model or DEFAULT_STT_MODELS[self.stt_provider]
+        return self.stt_model or self.stt_vendor.default_model
+
+    @property
+    def stt_stream_price_per_hour_usd(self) -> float | None:
+        """USD per hour of one stream: STT_PRICE_PER_HOUR_USD, else the list price, else None."""
+        if self.stt_price_per_hour_usd is not None:
+            return self.stt_price_per_hour_usd
+        return self.stt_vendor.price_for(self.stt_stream_model)
 
     @property
     def app_version(self) -> str:

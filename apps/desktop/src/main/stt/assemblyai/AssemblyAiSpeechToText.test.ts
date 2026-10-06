@@ -16,6 +16,7 @@ const settings: SttStreamSettings = {
   language: 'en',
   sampleRate: 16000,
   encoding: 'linear16',
+  pricePerHourUsd: 0.15,
 };
 const CHUNK_100_MS = 3200;
 

@@ -11,6 +11,7 @@ const settings: SttStreamSettings = {
   language: 'en',
   sampleRate: 16000,
   encoding: 'linear16',
+  pricePerHourUsd: 0.15,
 };
 
 /** Ready on the handshake; the vendor closes the socket when it reads the finish message. */

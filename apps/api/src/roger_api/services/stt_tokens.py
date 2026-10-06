@@ -1,5 +1,8 @@
 """Short-lived speech-to-text credentials for the desktop app. Vendor keys stay on the API.
 
+One `SttTokenIssuer` per vendor; the registry (roger_api/stt_vendors.py) picks one by provider.
+This module must not import roger_api.config: config imports the registry, which imports this.
+
 AssemblyAI temporary tokens, per https://www.assemblyai.com/docs/streaming/api-spec/generate-streaming-token
 and https://www.assemblyai.com/docs/streaming/authenticate-with-a-temporary-token (read 2026-10-06):
 `GET https://streaming.assemblyai.com/v3/token?expires_in_seconds=N` with the raw key as
@@ -9,15 +12,14 @@ the desktop opens its mic and system streams with one. Sessions last up to 3 hou
 (`max_session_duration_seconds`, left at the vendor's default and maximum of 10800).
 """
 
-from collections.abc import AsyncIterator, Awaitable
-from contextlib import asynccontextmanager
+from collections.abc import Awaitable
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
 import httpx
 from pydantic import BaseModel, Field, ValidationError
 
-from roger_api.config import Settings, SttProvider
+from roger_api.domain import SttProvider
 from roger_api.errors import SttProviderError
 from roger_api.log import get_logger
 
@@ -138,22 +140,3 @@ class AssemblyAiSttTokenIssuer:
             access_token=token.token,
             expires_in=token.expires_in_seconds or self._ttl_seconds,
         )
-
-
-@asynccontextmanager
-async def open_stt_token_issuer(settings: Settings) -> AsyncIterator[SttTokenIssuer]:
-    """The issuer for `STT_PROVIDER`, holding any HTTP client it needs for the app's lifetime."""
-    provider = settings.stt_provider
-    if provider == "fake":
-        yield FakeSttTokenIssuer()
-        return
-    key = settings.stt_vendor_key
-    if key is None:  # Settings validation already guarantees this.
-        raise RuntimeError(f"{provider.upper()}_API_KEY is required when STT_PROVIDER={provider}")
-    api_key, ttl_seconds = key.get_secret_value(), settings.stt_token_ttl_seconds
-    async with httpx.AsyncClient(timeout=VENDOR_TIMEOUT) as http:
-        match provider:
-            case "deepgram":
-                yield DeepgramSttTokenIssuer(http, api_key=api_key, ttl_seconds=ttl_seconds)
-            case "assemblyai":
-                yield AssemblyAiSttTokenIssuer(http, api_key=api_key, ttl_seconds=ttl_seconds)

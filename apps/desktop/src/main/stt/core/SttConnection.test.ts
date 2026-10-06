@@ -20,6 +20,7 @@ const settings: SttStreamSettings = {
   language: 'en',
   sampleRate: 16000,
   encoding: 'linear16',
+  pricePerHourUsd: 0.15,
 };
 const CHUNK_100_MS = 3200;
 const FINISH = JSON.stringify({ type: 'Finish' });
@@ -381,6 +382,27 @@ describe('SttConnection', () => {
     expect(connection.usage()).toEqual({ connectedMs: 60_000, audioSentMs: 300, droppedChunks: 0 });
     const closedLine = lines.find((line) => line.message === 'stt stream closed');
     expect(closedLine?.fields).toMatchObject({ connectedMs: 60_000, audioSentMs: 300 });
+  });
+
+  it('logs what the closed stream cost at the price the API named', async () => {
+    const clock = manualClock(0);
+    const { connection } = await open({ clock: clock.now });
+    clock.set(60_000);
+    await connection.close();
+
+    const closedLine = lines.find((line) => line.message === 'stt stream closed');
+    // One minute open at $0.15 an hour, silent or not.
+    expect(closedLine?.fields).toMatchObject({ connectedMs: 60_000, estimatedCostUsd: 0.0025 });
+  });
+
+  it('logs no cost estimate when the price is unknown', async () => {
+    const { connection } = await open({
+      stream: { accessToken: 't', settings: { ...settings, pricePerHourUsd: null }, label: 'mic' },
+    });
+    await connection.close();
+
+    const closedLine = lines.find((line) => line.message === 'stt stream closed');
+    expect(closedLine?.fields).toMatchObject({ estimatedCostUsd: null });
   });
 
   it('never logs the token or the URL that carries it', async () => {

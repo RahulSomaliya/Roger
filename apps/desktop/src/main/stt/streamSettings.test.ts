@@ -8,6 +8,7 @@ const settings = (overrides: Partial<SttStreamSettings>): SttStreamSettings => (
   language: 'en',
   sampleRate: PCM_SAMPLE_RATE,
   encoding: PCM_ENCODING,
+  pricePerHourUsd: null,
   ...overrides,
 });
 
@@ -25,6 +26,7 @@ describe('streamSettingsMismatch', () => {
         language: 'en',
         sampleRate: 16_000,
         encoding: 'linear16',
+        pricePerHourUsd: 0.15,
       }),
     ).toBeNull();
   });

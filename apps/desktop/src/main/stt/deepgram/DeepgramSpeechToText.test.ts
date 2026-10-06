@@ -12,6 +12,7 @@ const settings: SttStreamSettings = {
   language: 'en',
   sampleRate: 16000,
   encoding: 'linear16',
+  pricePerHourUsd: 0.462,
 };
 
 interface ServerLog {
