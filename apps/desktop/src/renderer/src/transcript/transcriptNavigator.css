@@ -19,3 +19,21 @@
   border-radius: 6px;
   background: var(--cited-bg);
 }
+
+/*
+ * Room below the newest line while "Jump to live" shows. The pill floats over the log's bottom
+ * (transcript.css `.jump-to-live`: 12 px up, about 31 px tall), and a reveal pauses following, so
+ * the pill shows from the moment a chip is pressed until following resumes. The log cannot scroll
+ * its newest line any higher than its end, so without this room a chip for that line (a pause in
+ * the call, no interim below it) left it under the pill for as long as the panel was held. The
+ * reveal renders the pause before it scrolls (transcriptNavigator.ts), so the room is there in
+ * time. transcriptNavigator.test.ts fails if the pill grows past it.
+ *
+ * Only while the pill shows: following live, the newest line keeps its place at the bottom. When
+ * following resumes, the room goes in the same render as the pill and the panel's own scroll to
+ * the newest line comes right after (LiveTranscript.tsx). A call that ends with the pill up drops
+ * the room with it, and the view moves down by at most the room.
+ */
+.live-transcript:has(> .jump-to-live) > .live-transcript-lines {
+  padding-bottom: 52px;
+}

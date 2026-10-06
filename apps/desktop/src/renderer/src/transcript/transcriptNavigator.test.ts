@@ -1,6 +1,8 @@
 import { createElement, type ReactNode } from 'react';
 import { renderToString } from 'react-dom/server';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { cssDeclarations } from '../theme/cssDeclarations';
+import { rendererSource } from '../theme/rendererSources';
 import {
   CITED_HIGHLIGHT_MS,
   CitationNavigatorProvider,
@@ -334,5 +336,45 @@ describe('reveal', () => {
     expect(navigator.reveal(['removed'])).toBe('not_loaded');
     expect(log.steps).toHaveLength(steps);
     expect(log.cited()).toEqual(['s7']);
+  });
+});
+
+/** The declarations of the rule `selector` in `css`, a rule that holds no nested rule. */
+function ruleIn(css: string, selector: string, file: string): Map<string, string> {
+  const text = css.replace(/\/\*[\s\S]*?\*\//g, '');
+  const start = text.indexOf(`${selector} {`);
+  if (start === -1) throw new Error(`${file} has no \`${selector} { }\` rule`);
+  const body = text.slice(start + selector.length + 1, text.indexOf('}', start) + 1);
+  return new Map(cssDeclarations(body).map(({ property, value }) => [property, value]));
+}
+
+/** A length in px: the first one of a shorthand such as `padding: 6px 14px`. */
+function px(rule: Map<string, string>, property: string): number {
+  const value = /^(\d+(?:\.\d+)?)px\b/.exec(rule.get(property) ?? '')?.[1];
+  if (value === undefined) throw new Error(`${property} is not a length in px`);
+  return Number(value);
+}
+
+describe('transcriptNavigator.css', () => {
+  it('leaves room below the newest line for Jump to live while it shows', () => {
+    const pill = ruleIn(
+      rendererSource('src/transcript/transcript.css'),
+      '.jump-to-live',
+      'transcript.css',
+    );
+    const root = ruleIn(rendererSource('src/styles.css'), ':root', 'styles.css');
+    const room = ruleIn(
+      rendererSource('src/transcript/transcriptNavigator.css'),
+      '.live-transcript:has(> .jump-to-live) > .live-transcript-lines',
+      'transcriptNavigator.css',
+    );
+    // The pill's top, up from the log's bottom: its offset, its block padding twice, and its line
+    // (`font: inherit`, so the root's unitless line height times its own font size).
+    const lineHeight = Number(root.get('line-height'));
+    expect(lineHeight).toBeGreaterThan(0);
+    const pillTop =
+      px(pill, 'bottom') + 2 * px(pill, 'padding') + px(pill, 'font-size') * lineHeight;
+    // Scrolled to its end, the log's last line sits the room above its bottom: clear of the pill.
+    expect(px(room, 'padding-bottom') - pillTop).toBeGreaterThanOrEqual(6);
   });
 });

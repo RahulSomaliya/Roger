@@ -7,6 +7,7 @@ import {
   useState,
   type ReactNode,
 } from 'react';
+import { flushSync } from 'react-dom';
 import './transcriptNavigator.css';
 
 /**
@@ -28,7 +29,10 @@ export interface CitationNavigator {
 export interface TranscriptHandle {
   /** The element that scrolls. Every final line inside it carries `data-segment-id`. */
   container: HTMLElement;
-  /** Stop following live lines and show "Jump to live", so new lines do not pull the view away. */
+  /**
+   * Stop following live lines and show "Jump to live", so new lines do not pull the view away.
+   * The navigator calls it inside `flushSync`: the paused panel is on the page when it returns.
+   */
   pauseFollow(): void;
 }
 
@@ -142,8 +146,9 @@ function renderedLines(container: RevealContainer): RenderedLine[] {
 
 /**
  * Scrolls the log so the line's middle sits at the middle of its view, as near as its scroll goes
- * (the newest line stays at the bottom). Only the log scrolls here: `scrollIntoView` with
- * `block: 'center'` would also centre the line in the window, moving the whole page.
+ * (the newest line rises only as far as the room below it, transcriptNavigator.css). Only the log
+ * scrolls here: `scrollIntoView` with `block: 'center'` would also centre the line in the window,
+ * moving the whole page.
  */
 function centreInView(container: RevealContainer, line: RevealLine): void {
   const view = container.getBoundingClientRect();
@@ -159,7 +164,11 @@ function centreInView(container: RevealContainer, line: RevealLine): void {
  *
  * 1. Pause following, before anything scrolls: while following, the panel puts the newest line in
  *    view on every new line, which would pull the view straight back from the cited one. Paused
- *    (`held`), its own scroll to the bottom does not follow again (liveTranscriptModel.ts).
+ *    (`held`), its own scroll to the bottom does not follow again (liveTranscriptModel.ts). The
+ *    pause renders at once (`flushSync`): paused, the panel shows "Jump to live" over the log's
+ *    bottom, and transcriptNavigator.css gives the log room below its newest line, which the
+ *    scroll in step 3 needs to lift that line clear of the pill. A pause rendered after that
+ *    scroll would bring the room too late and leave the line under the pill.
  * 2. Show the transcript (the page's `showTranscript`, synchronous), so the lines have a layout.
  *    A narrow page hides the notes or chat pane for it, and with it the chip a keyboard user just
  *    pressed: Chromium then drops focus to <body>, the next Tab starts over at the top of the page
@@ -211,7 +220,9 @@ export function createCitationNavigator(
       const first = lineAt(plan.first);
       const focused = transcript.container.ownerDocument.activeElement;
 
-      transcript.pauseFollow();
+      flushSync(() => {
+        transcript.pauseFollow();
+      });
       showTranscript();
       if (focused !== null && focused.getClientRects().length === 0) {
         // The scroll below places the line; focus must not scroll the log to its own idea.

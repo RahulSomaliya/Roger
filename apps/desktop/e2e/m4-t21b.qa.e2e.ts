@@ -9,7 +9,7 @@ import * as qa from '../qa/driver';
 import type { TranscriptSegmentChange } from '../src/shared/capture';
 import { captureChannels } from '../src/shared/ipc/capture';
 import type { CitationAttrs } from '../src/shared/notes';
-import type { TranscriptSegment } from '../src/shared/transcript';
+import { SPEAKER_FOR_SOURCE, type TranscriptSegment } from '../src/shared/transcript';
 
 /*
  * Browser QA for M4-T21b, the citation navigator's reveal (qa/README.md): both themes, 1440 and
@@ -17,12 +17,12 @@ import type { TranscriptSegment } from '../src/shared/transcript';
  * pressed with Enter, pauses following, centres the line, tints it for 2 s while new lines arrive
  * below, and shows "Jump to live"; a chip citing two lines out of order centres the first in
  * transcript order, and a second reveal clears the first one's tint; a chip for the newest line
- * keeps it in view as lines keep coming. On a phone the chip brings the transcript pane forward
- * before it scrolls, and keyboard focus goes to the transcript, not to <body> with the hidden chip.
- * Failure
- * path: chips whose lines are gone (never in the transcript, hidden as echo) say "Line removed"
- * and leave the transcript and the pane alone; with hidden lines shown, the echo line's chip finds
- * it. And a past meeting.
+ * keeps it in view as lines keep coming, and in a pause (no interim below it) lifts it clear of
+ * "Jump to live". On a phone the chip brings the transcript pane forward before it scrolls, and
+ * keyboard focus goes to the transcript, not to <body> with the hidden chip. Failure path: chips
+ * whose lines are gone (never in the transcript, hidden as echo) say "Line removed" and leave the
+ * transcript and the pane alone; with hidden lines shown, the echo line's chip finds it. And a
+ * past meeting.
  *
  * Nothing mounts LiveTranscript or a chip in the app until M3-T9 and M4-T20, so this script mounts
  * the panel alone on the preview page, in the meeting page's frame and panes (app.css, meeting.css:
@@ -558,6 +558,71 @@ async function expectCentred(page: Page, id: string): Promise<void> {
   }
 }
 
+/**
+ * Ends the call's open turn and stops there: a final for the source whose interim shows, reaching
+ * past the interim's end, so no row is left below the newest line (liveTranscriptModel.ts clears a
+ * same-source interim a final reaches into). The fake shows the next line's interim after every
+ * line, so only this gives the log a newest line at its very end, as a real call has after each
+ * turn. Call it after qa.stopScenario. Returns the new line.
+ */
+async function endTheTurn(page: Page, meetingId: string): Promise<TranscriptSegment> {
+  const interim = await page.evaluate((log) => {
+    const row = document.querySelector(`${log} [data-interim]`);
+    if (row === null) return null;
+    return {
+      speaker: row.getAttribute('data-speaker'),
+      words: row.querySelector('.transcript-line-text')?.textContent ?? '',
+    };
+  }, LOG);
+  if (interim === null) throw new Error('No interim showing: the fake shows one after every line');
+  const source = interim.speaker === SPEAKER_FOR_SOURCE.mic ? 'mic' : 'system';
+  const lines = await storedLines(page, meetingId);
+  const last = lines.at(-1);
+  if (last === undefined) throw new Error(`The preview stores no line of ${meetingId}`);
+  // The fake starts a line 450 ms after the last and gives each word 330 ms (preview/scenarios.ts):
+  // five words more than the interim shows end after it.
+  const text = `${interim.words} and that is all from me`;
+  const startMs = last.endMs + 450;
+  const turn: TranscriptSegment = {
+    id: segmentIdForLine(meetingId, lines.length + 1),
+    meetingId,
+    source,
+    speaker: SPEAKER_FOR_SOURCE[source],
+    startMs,
+    endMs: startMs + text.split(/\s+/).length * 330,
+    text,
+    confidence: 0.92,
+    words: null,
+    createdAt: new Date().toISOString(),
+  };
+  await qa.emitEvent(page, captureChannels.TranscriptSegment, turn);
+  await page.waitForSelector(lineSelector(turn.id));
+  await page.waitForFunction(
+    (log) => document.querySelector(`${log} [data-interim]`) === null,
+    LOG,
+  );
+  return turn;
+}
+
+/**
+ * Fails unless line `id` lies wholly above "Jump to live", which floats over the log's bottom:
+ * expectVisible checks only the line's centre.
+ */
+async function expectAboveJumpToLive(page: Page, id: string): Promise<void> {
+  const gap = await page.evaluate(
+    ({ pillSelector, line }) => {
+      const pill = document.querySelector(pillSelector);
+      const row = document.querySelector(line);
+      if (pill === null || row === null) throw new Error(`No Jump to live or no ${line}`);
+      return pill.getBoundingClientRect().top - row.getBoundingClientRect().bottom;
+    },
+    { pillSelector: `${HARNESS} .jump-to-live`, line: lineSelector(id) },
+  );
+  if (gap < 0) {
+    throw new Error(`Jump to live covers the bottom ${(-gap).toFixed(1)} px of line ${id}`);
+  }
+}
+
 /** How long line `id` carried its latest complete `data-cited` mark, in ms; null if none ended. */
 const lastMarkMs = (page: Page, id: string): Promise<number | null> =>
   page.evaluate((segmentId) => {
@@ -830,6 +895,35 @@ describe.each(qa.QA_THEMES.flatMap((theme) => qa.QA_WIDTHS.map((width) => ({ the
           HARNESS,
         );
         expect(await distanceFromBottom(page)).toBeLessThanOrEqual(1);
+
+        // A pause in the call: the turn ends and nobody speaks, so the newest line has nothing
+        // below it and the log is at its very end. Its chip pauses following, which puts Jump to
+        // live over the log's bottom for as long as the panel is held: the line must sit above it.
+        await qa.stopScenario(page);
+        const quiet = await endTheTurn(page, LIVE_CALL.meetingId);
+        const linesAtPause = await storedLines(page, LIVE_CALL.meetingId);
+        await updateHarness(page, {
+          notes: [
+            note('quiet', 'The last thing said before the pause.', [quiet.id], linesAtPause),
+            ...liveCallNotes(linesAtPause),
+          ],
+        });
+        await clickChip(page, 'quiet');
+        await shootChecked(
+          preview,
+          'Reveal',
+          `newest-quiet-${tag}`,
+          'A pause in the call: a chip for the newest line, with no interim below it, lifts the tinted line clear of Jump to live',
+          async () => {
+            expect(await citedIds(page)).toEqual([quiet.id]);
+            expect(await following(page)).toBe(false);
+            expect(await page.locator(`${LOG} [data-interim]`).count()).toBe(0);
+            await qa.expectVisible(page, lineSelector(quiet.id), { within: LOG });
+            await qa.expectVisible(page, `${HARNESS} .jump-to-live`);
+            await expectAboveJumpToLive(page, quiet.id);
+          },
+        );
+        await expectStillCited(page, quiet.id, `newest-quiet-${tag}`);
         qa.expectNoConsoleErrors(preview);
       } finally {
         await preview.close();
