@@ -1,0 +1,149 @@
+{
+  "type": "doc",
+  "content": [
+    {
+      "type": "heading",
+      "attrs": { "level": 2 },
+      "content": [{ "type": "text", "text": "Decisions" }]
+    },
+    {
+      "type": "bulletList",
+      "content": [
+        {
+          "type": "listItem",
+          "content": [
+            {
+              "type": "paragraph",
+              "content": [
+                { "type": "text", "text": "Beta ships Friday " },
+                {
+                  "type": "citation",
+                  "attrs": {
+                    "segmentIds": ["fd9daa6d-24ad-4dec-8fca-01604dd531da"],
+                    "startMs": 192000,
+                    "label": "03:12",
+                    "support": "ok"
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "listItem",
+          "content": [
+            {
+              "type": "paragraph",
+              "content": [
+                { "type": "text", "text": "The pilot stays at $50k for the first year " },
+                {
+                  "type": "citation",
+                  "attrs": {
+                    "segmentIds": [
+                      "d78ca638-bc0d-4fcf-ae63-3272836dda46",
+                      "cd54116e-8ac8-4cb5-81aa-6ec0e0f448cf"
+                    ],
+                    "startMs": 305000,
+                    "label": "05:05",
+                    "support": "ok"
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "attrs": { "level": 2 },
+      "content": [{ "type": "text", "text": "Action items" }]
+    },
+    {
+      "type": "bulletList",
+      "content": [
+        {
+          "type": "listItem",
+          "content": [
+            {
+              "type": "paragraph",
+              "content": [
+                { "type": "text", "text": "Them: send the security questionnaire by Wednesday " },
+                {
+                  "type": "citation",
+                  "attrs": {
+                    "segmentIds": ["9b725c25-0942-484e-8415-75737cb5c3d2"],
+                    "startMs": 3725000,
+                    "label": "1:02:05",
+                    "support": "ok"
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "listItem",
+          "content": [
+            {
+              "type": "paragraph",
+              "content": [
+                { "type": "text", "text": "Me: book the follow-up for the 14th " },
+                {
+                  "type": "citation",
+                  "attrs": {
+                    "segmentIds": ["b6549dd3-db2d-42be-a543-fc47d0382df8"],
+                    "startMs": 610000,
+                    "label": "10:10",
+                    "support": "weak"
+                  }
+                },
+                {
+                  "type": "citation",
+                  "attrs": {
+                    "segmentIds": ["e5cd408c-8946-40de-bc02-89cda6d95252"],
+                    "startMs": 655000,
+                    "label": "10:55",
+                    "support": "weak"
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "attrs": { "level": 2 },
+      "content": [{ "type": "text", "text": "From your notes" }]
+    },
+    {
+      "type": "paragraph",
+      "content": [{ "type": "text", "text": "Not said on the call", "marks": [{ "type": "italic" }] }]
+    },
+    {
+      "type": "bulletList",
+      "content": [
+        {
+          "type": "listItem",
+          "content": [
+            {
+              "type": "paragraph",
+              "content": [{ "type": "text", "text": "Ask Acme about the Q3 renewal" }]
+            }
+          ]
+        },
+        {
+          "type": "listItem",
+          "content": [
+            {
+              "type": "paragraph",
+              "content": [{ "type": "text", "text": "Check the travel budget" }]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
