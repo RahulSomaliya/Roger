@@ -1,0 +1,160 @@
+{
+  "kind": "calendar#events",
+  "etag": "\"p32ofplf5q6gf20o\"",
+  "summary": "priya@linkt.ai",
+  "description": "",
+  "updated": "2026-10-06T03:12:44.218Z",
+  "timeZone": "Asia/Kolkata",
+  "accessRole": "owner",
+  "defaultReminders": [{ "method": "popup", "minutes": 10 }],
+  "items": [
+    {
+      "kind": "calendar#event",
+      "etag": "\"3456789012345678\"",
+      "id": "4k1offsite0001",
+      "status": "confirmed",
+      "htmlLink": "https://www.google.com/calendar/event?eid=NGsxb2Zmc2l0ZTAwMDEgcHJpeWFAbGlua3QuYWk",
+      "created": "2026-09-20T08:00:00.000Z",
+      "updated": "2026-09-20T08:00:00.000Z",
+      "summary": "Linkt offsite: Goa",
+      "creator": { "email": "priya@linkt.ai", "self": true },
+      "organizer": { "email": "priya@linkt.ai", "self": true },
+      "start": { "date": "2026-10-06" },
+      "end": { "date": "2026-10-08" },
+      "transparency": "transparent",
+      "iCalUID": "4k1offsite0001@google.com",
+      "sequence": 0,
+      "reminders": { "useDefault": false },
+      "eventType": "default"
+    },
+    {
+      "kind": "calendar#event",
+      "etag": "\"3456789012345679\"",
+      "id": "7q2standup0001_20261006T043000Z",
+      "status": "confirmed",
+      "htmlLink": "https://www.google.com/calendar/event?eid=N3Eyc3RhbmR1cDAwMDFfMjAyNjEwMDZUMDQzMDAwWiBwcml5YUBsaW5rdC5haQ",
+      "created": "2026-01-12T09:00:00.000Z",
+      "updated": "2026-10-05T17:40:02.118Z",
+      "summary": "Daily standup",
+      "creator": { "email": "jane@linkt.ai" },
+      "organizer": { "email": "jane@linkt.ai", "displayName": "Jane Doe" },
+      "start": { "dateTime": "2026-10-06T10:15:00+05:30", "timeZone": "Asia/Kolkata" },
+      "end": { "dateTime": "2026-10-06T10:30:00+05:30", "timeZone": "Asia/Kolkata" },
+      "recurringEventId": "7q2standup0001",
+      "originalStartTime": { "dateTime": "2026-10-06T10:00:00+05:30", "timeZone": "Asia/Kolkata" },
+      "iCalUID": "7q2standup0001@google.com",
+      "sequence": 3,
+      "attendees": [
+        {
+          "email": "jane@linkt.ai",
+          "displayName": "Jane Doe",
+          "organizer": true,
+          "responseStatus": "accepted"
+        },
+        { "email": "priya@linkt.ai", "self": true, "responseStatus": "accepted" },
+        { "email": "ali@linkt.ai", "displayName": "Ali Khan", "responseStatus": "tentative" },
+        { "email": "sam@linkt.ai", "responseStatus": "needsAction" },
+        {
+          "email": "c_1888abcdef0123456789@resource.calendar.google.com",
+          "displayName": "Bangalore-4-Huddle (4)",
+          "resource": true,
+          "responseStatus": "accepted"
+        }
+      ],
+      "hangoutLink": "https://meet.google.com/abc-defg-hij",
+      "conferenceData": {
+        "entryPoints": [
+          {
+            "entryPointType": "video",
+            "uri": "https://meet.google.com/abc-defg-hij",
+            "label": "meet.google.com/abc-defg-hij"
+          },
+          {
+            "entryPointType": "phone",
+            "uri": "tel:+1-555-0100",
+            "label": "+1 555-0100",
+            "pin": "123456789"
+          },
+          { "entryPointType": "more", "uri": "https://tel.meet/abc-defg-hij?pin=123456789" }
+        ],
+        "conferenceSolution": {
+          "key": { "type": "hangoutsMeet" },
+          "name": "Google Meet",
+          "iconUri": "https://fonts.gstatic.com/s/i/productlogos/meet_2020q4/v6/web-512dp/logo_meet_2020q4_color_2x_web_512dp.png"
+        },
+        "conferenceId": "abc-defg-hij"
+      },
+      "reminders": { "useDefault": true },
+      "eventType": "default"
+    },
+    {
+      "kind": "calendar#event",
+      "etag": "\"3456789012345680\"",
+      "id": "7q2standup0001_20261007T043000Z",
+      "status": "cancelled",
+      "recurringEventId": "7q2standup0001",
+      "originalStartTime": { "dateTime": "2026-10-07T10:00:00+05:30", "timeZone": "Asia/Kolkata" }
+    },
+    {
+      "kind": "calendar#event",
+      "etag": "\"3456789012345681\"",
+      "id": "9v3vendor0001",
+      "status": "confirmed",
+      "htmlLink": "https://www.google.com/calendar/event?eid=OXYzdmVuZG9yMDAwMQ",
+      "summary": "Vendor demo: Acme transcription",
+      "location": "Zoom: https://us02web.zoom.us/j/81234567890?pwd=AbC123",
+      "organizer": { "email": "sales@acme.example" },
+      "start": { "dateTime": "2026-10-06T06:30:00Z" },
+      "end": { "dateTime": "2026-10-06T07:00:00Z" },
+      "iCalUID": "9v3vendor0001@acme.example",
+      "attendees": [
+        {
+          "email": "sales@acme.example",
+          "displayName": "Acme Sales",
+          "organizer": true,
+          "responseStatus": "accepted"
+        },
+        { "email": "priya@linkt.ai", "self": true, "responseStatus": "declined" }
+      ],
+      "eventType": "default"
+    },
+    {
+      "kind": "calendar#event",
+      "etag": "\"3456789012345682\"",
+      "id": "2m4review0001",
+      "status": "tentative",
+      "htmlLink": "https://www.google.com/calendar/event?eid=Mm00cmV2aWV3MDAwMQ",
+      "summary": "  Design review  ",
+      "description": "Microsoft Teams meeting<br><b>Join on your computer, mobile app or room device</b><br><a href=\"https://teams.microsoft.com/l/meetup-join/19%3ameeting_ZmE0Y2Q%40thread.v2/0?context=%7b%22Tid%22%3a%22t1%22%7d&amp;btype=a&amp;role=a\">Click here to join the meeting</a><br>Meeting ID: 234 567 890 123",
+      "organizer": { "email": "priya@linkt.ai", "self": true },
+      "start": { "dateTime": "2026-10-06T14:00:00+05:30" },
+      "end": { "dateTime": "2026-10-06T15:00:00+05:30" },
+      "iCalUID": "040000008200E00074C5B7101A82E00800000000@microsoft.com",
+      "attendees": [
+        {
+          "email": "priya@linkt.ai",
+          "organizer": true,
+          "self": true,
+          "responseStatus": "accepted"
+        },
+        { "email": "ali@linkt.ai", "displayName": "Ali Khan", "responseStatus": "accepted" }
+      ],
+      "eventType": "default"
+    },
+    {
+      "kind": "calendar#event",
+      "etag": "\"3456789012345683\"",
+      "id": "5h7allhands0001",
+      "status": "confirmed",
+      "htmlLink": "https://www.google.com/calendar/event?eid=NWg3YWxsaGFuZHMwMDAx",
+      "description": "Agenda in the doc. Do not use https://meet.google.com.evil.io/abc-defg-hij, it is a phishing copy.",
+      "organizer": { "email": "ceo@linkt.ai", "displayName": "Linkt CEO" },
+      "start": { "dateTime": "2026-10-06T17:00:00+05:30" },
+      "end": { "dateTime": "2026-10-06T18:00:00+05:30" },
+      "iCalUID": "5h7allhands0001@google.com",
+      "attendeesOmitted": true,
+      "attendees": [{ "email": "priya@linkt.ai", "self": true, "responseStatus": "needsAction" }],
+      "eventType": "default"
+    }
+  ]
+}
