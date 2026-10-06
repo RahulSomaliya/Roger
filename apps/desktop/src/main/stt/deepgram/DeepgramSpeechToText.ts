@@ -28,12 +28,6 @@ const DEEPGRAM_CLOSE_REASONS: Readonly<Record<string, string>> = {
 
 export interface DeepgramProtocolOptions {
   baseUrl?: string;
-  /**
-   * Deepgram closes a socket that receives nothing for about 10 s (NET-0001); a KeepAlive every
-   * 5 s keeps a quiet stream open. That is a billed session held open on purpose, so the core
-   * sends it only while the stream is open, never once Stop or a failure began.
-   */
-  keepAliveMs?: number;
 }
 
 export type DeepgramOptions = WebSocketSttOptions & DeepgramProtocolOptions;
@@ -69,7 +63,10 @@ export function deepgramProtocol(options: DeepgramProtocolOptions = {}): SttProt
     readyOn: 'socket-open',
     // After CloseStream Deepgram sends its last results and Metadata, then closes the socket.
     finishedOn: 'vendor-close',
-    keepAlive: { message: DEEPGRAM_KEEP_ALIVE, intervalMs: options.keepAliveMs ?? 5_000 },
+    // Deepgram closes a socket that receives nothing for about 10 s (NET-0001); a KeepAlive every
+    // 5 s keeps a quiet stream open. That is a billed session held open on purpose, so the core
+    // sends it only while the stream is open, never once Stop or a failure began.
+    keepAlive: { message: DEEPGRAM_KEEP_ALIVE, intervalMs: 5_000 },
     session: () => ({
       encodeAudio: (pcm) => [pcm],
       // Finalize flushes buffered audio into final results; CloseStream then ends the session.

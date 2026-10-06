@@ -14,6 +14,8 @@ export interface WebSocketSttOptions {
   connectTimeoutMs?: number;
   /** Hard cap on close(): past it the socket is terminated. */
   closeTimeoutMs?: number;
+  /** Overrides the protocol's keep-alive interval (tests). No effect on a vendor without one. */
+  keepAliveMs?: number;
   clock?: () => number;
 }
 
@@ -24,6 +26,7 @@ export interface WebSocketSttOptions {
  */
 export class WebSocketSpeechToText implements SpeechToText {
   readonly provider: string;
+  private readonly protocol: SttProtocol;
   private readonly logger: Logger;
   private readonly connectTimeoutMs: number;
   private readonly closeTimeoutMs: number;
@@ -31,11 +34,13 @@ export class WebSocketSpeechToText implements SpeechToText {
   /** Every connection this adapter made, failed ones too, for usage(). Two per meeting. */
   private readonly connections: SttConnection[] = [];
 
-  constructor(
-    private readonly protocol: SttProtocol,
-    options: WebSocketSttOptions,
-  ) {
+  constructor(protocol: SttProtocol, options: WebSocketSttOptions) {
     this.provider = protocol.provider;
+    const keepAlive = protocol.keepAlive;
+    this.protocol =
+      keepAlive !== null && options.keepAliveMs !== undefined
+        ? { ...protocol, keepAlive: { ...keepAlive, intervalMs: options.keepAliveMs } }
+        : protocol;
     this.logger = options.logger;
     this.connectTimeoutMs = options.connectTimeoutMs ?? 10_000;
     this.closeTimeoutMs = options.closeTimeoutMs ?? 5_000;

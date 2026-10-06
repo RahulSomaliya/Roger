@@ -21,4 +21,10 @@ describe('createSpeechToText', () => {
   it('refuses a provider it has no adapter for', () => {
     expect(() => createSpeechToText('whisper', { logger })).toThrow(UnsupportedSttProviderError);
   });
+
+  it('refuses a provider id that only looks like a key of a plain object', () => {
+    expect(() => createSpeechToText('constructor', { logger })).toThrow(
+      UnsupportedSttProviderError,
+    );
+  });
 });

@@ -1,7 +1,5 @@
 import type { Logger } from '../logger';
-import { AssemblyAiSpeechToText } from './assemblyai/AssemblyAiSpeechToText';
-import { DeepgramSpeechToText } from './deepgram/DeepgramSpeechToText';
-import { FakeSpeechToText } from './fake/FakeSpeechToText';
+import { STT_VENDORS } from './registry';
 import type { SpeechToText } from './SpeechToText';
 
 export type SpeechToTextFactory = (provider: string) => SpeechToText;
@@ -15,16 +13,9 @@ export class UnsupportedSttProviderError extends Error {
   }
 }
 
-/** The API names the provider in its token response; this picks the matching adapter. */
+/** The API names the provider in its token response; the registry (registry.ts) has its adapter. */
 export function createSpeechToText(provider: string, deps: { logger: Logger }): SpeechToText {
-  switch (provider) {
-    case 'assemblyai':
-      return new AssemblyAiSpeechToText({ logger: deps.logger.child({ stt: 'assemblyai' }) });
-    case 'deepgram':
-      return new DeepgramSpeechToText({ logger: deps.logger.child({ stt: 'deepgram' }) });
-    case 'fake':
-      return new FakeSpeechToText();
-    default:
-      throw new UnsupportedSttProviderError(provider);
-  }
+  const create = STT_VENDORS.get(provider);
+  if (create === undefined) throw new UnsupportedSttProviderError(provider);
+  return create({ logger: deps.logger.child({ stt: provider }) });
 }
