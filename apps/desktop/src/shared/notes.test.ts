@@ -48,8 +48,9 @@ function docWithCitation(attrs: unknown): unknown {
 
 function fixtureDoc(): NoteDoc {
   const doc: unknown = fixture;
-  if (!isNoteDoc(doc))
+  if (!isNoteDoc(doc)) {
     throw new Error(`the API fixture is not a notes doc: ${noteDocProblem(doc)}`);
+  }
   return doc;
 }
 
