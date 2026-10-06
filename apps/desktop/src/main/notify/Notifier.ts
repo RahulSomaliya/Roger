@@ -109,6 +109,10 @@ export class Notifier {
     // A spell that ended is forgotten: one that comes back is a new spell even if dated the same
     // (WarningSpells dates it in audio time), and the set stays as small as the warnings on screen.
     this.handled = new Set([...this.handled].filter((spell) => live.has(spell)));
+    // Focus is asked only while a badge is up. Every status passes here, and the runtime's tests
+    // (createCaptureRuntime.test.ts, ipc.test.ts) mock `electron` without BrowserWindow, so a
+    // check on every status throws there.
+    if (this.badgedFor.size === 0) return;
     const focused = ports.isFocused();
     if (live.size === 0 || focused) this.unbadge('warning');
     if (focused) this.unbadge('one-off');

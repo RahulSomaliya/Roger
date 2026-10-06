@@ -251,6 +251,20 @@ describe('Notifier: warnings', () => {
     expect(h.ports.badges).toEqual(['!', '']);
   });
 
+  it('asks nothing of Electron on a status with no loud warning and no badge', () => {
+    // Every status passes here (one per upload tick), and the runtime's tests mock `electron`
+    // with `desktopCapturer` only: a focus check per status throws there.
+    const { ports, api } = fakePorts();
+    const isFocused = vi.fn(() => false);
+    const notifier = new Notifier({ ports: { ...api, isFocused }, logger });
+    notifier.updateWarnings([]);
+    notifier.updateWarnings([
+      warning({ kind: 'call-audio-silent', source: 'system', loud: false }),
+    ]);
+    expect(isFocused).not.toHaveBeenCalled();
+    expect(ports.posted).toEqual([]);
+  });
+
   it('clears the badge once no loud warning is left', () => {
     const h = harness();
     h.ports.failWith = 'denied';
