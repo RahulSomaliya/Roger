@@ -23,6 +23,7 @@ async def test_openapi_documents_the_contract_routes(anonymous_client: httpx.Asy
         "/v1/meetings/{meeting_id}/end",
         "/v1/meetings/{meeting_id}/transcript",
         "/v1/stt/token",
+        "/v1/vocabulary",
     }
 
 

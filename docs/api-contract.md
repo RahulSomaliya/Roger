@@ -203,7 +203,44 @@ A vendor that refuses, fails, times out or answers with something unreadable is 
 
 ### Vocabulary
 
-Not built yet. Owner: M3-T2, which writes its routes here, with their `409`s.
+The workspace's jargon list: names and terms the speech-to-text vendor should spell right
+("Linkt", "Roger"). One list per workspace, kept as the user spelled each term.
+
+#### `GET /v1/vocabulary`
+
+Response: `200 {"terms": ["Linkt", "Roger"]}`, sorted ignoring case; `{"terms": []}` when the
+workspace has none.
+
+#### `PUT /v1/vocabulary`
+
+Replaces the whole list. Idempotent: re-sending the same list changes nothing. `{"terms": []}`
+clears it.
+
+Request:
+
+```json
+{ "terms": ["Roger", " Linkt ", "LINKT"] }
+```
+
+Each term is trimmed. Terms that then differ only in case are one term: the first spelling sent is
+kept and the rest are dropped, never refused. A term already stored takes the spelling sent.
+Response: `200 {"terms": ["Linkt", "Roger"]}`, the list as stored, in `GET`'s order.
+
+Limits. Breaking one is a `422 validation_error` whose message names the field (`body.terms`,
+or `body.terms[3]` for one term), and nothing is stored:
+
+- at most 100 terms, counted as sent, before duplicates are dropped;
+- each term 1 to 50 characters after trimming;
+- at most 800 characters in all, the trimmed terms' lengths summed;
+- no control characters inside a term (Unicode category Cc: U+0000 to U+001F, U+007F to U+009F).
+
+Characters are Unicode code points, not UTF-16 units: in JavaScript count `[...term].length`, not
+`term.length`. The limits are the strictest vendor's (AssemblyAI takes at most 100 keyterms of 50
+characters; Deepgram refuses a request over 500 tokens, which 800 characters approximates). The
+desktop editor applies the same limits before it saves (M3-T8).
+
+There is no `409`: a `PUT` replaces whatever is stored. Two `PUT`s for one workspace take turns,
+so the stored list is always one of the lists sent, never a mix.
 
 ### STT usage
 
@@ -286,7 +323,13 @@ transcript_segments  (id uuid pk, meeting_id uuid fk on delete cascade, workspac
 Phase 2 tables. Each line is replaced by its owner's tables, in the form above, in the commit that
 fills its migration:
 
-- Vocabulary (`vocabulary_terms`, revision `0002`): M3-T2.
+- Vocabulary (revision `0002`, M3-T2):
+
+  ```sql
+  vocabulary_terms     (id uuid pk, workspace_id uuid fk, term text check (char_length(term) between 1 and 50),
+                        created_at timestamptz)
+                       unique index (workspace_id, lower(term))
+  ```
 
 - Notes (`meeting_notes`, `llm_runs`, `chat_messages`, revision `0003`): M4-T1.
 
