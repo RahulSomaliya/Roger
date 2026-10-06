@@ -156,9 +156,16 @@ export class CalendarSync {
     this.notifyEvents();
   }
 
-  /** `powerMonitor` resume: the network may have changed and the copy may be hours old. */
+  /**
+   * `powerMonitor` resume: the network may have changed and the copy may be hours old. A sync that
+   * may not ask (a refused grant) checks the hour here instead. A timer counts only the time the
+   * Mac was awake (libuv's clock stops in sleep: read from its source, not yet seen on a sleeping
+   * Mac), so the stale timer is late by the whole sleep, and the menu bar, Home and the stale card
+   * would wait up to an hour more before calling an 8-hour-old copy stale.
+   */
   onWake(): void {
     if (this.canRequest()) void this.refresh('wake');
+    else this.checkStale();
   }
 
   /** The main window gained focus: the user is looking, but at most one request per 30 s. */
@@ -336,7 +343,7 @@ export class CalendarSync {
    * hour, a request decides first, and only a request that fails marks it: after a sleep or a
    * relaunch the hour passed while nothing could ask, and a mark that the next answer clears a
    * second later would put a "Calendar not updated" card up at every wake (one per stale spell,
-   * M5-T9b). A refused grant asks nothing, so it marks at the hour.
+   * M5-T9b). A refused grant asks nothing, so it marks at the hour (on a wake too: `onWake`).
    */
   private checkStale(): void {
     this.clearStaleTimer();

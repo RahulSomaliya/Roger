@@ -541,6 +541,31 @@ describe('CalendarSync', () => {
       expect(states.some((state) => state.staleSince !== null)).toBe(false);
       sync.stop();
     });
+
+    it('marks a refused copy stale on wake when the hour passed in a sleep', async () => {
+      const { sync, listEvents } = harness();
+      listEvents.mockResolvedValueOnce(page([])).mockRejectedValue(refused());
+      sync.start({ previousRunLastTickAt: null });
+      await vi.advanceTimersByTimeAsync(CALENDAR_POLL_INTERVAL_MS);
+      expect(sync.getState()).toMatchObject({ reconnectRequired: true, staleSince: null });
+      const states: CalendarSyncState[] = [];
+      sync.onStateChange((state) => states.push(state));
+
+      // Asleep from minute 10 to hour 8. vi.setSystemTime keeps each timer's remaining wait, as a
+      // sleep does (a timer counts awake time only), so the stale timer is still 50 min off.
+      await vi.advanceTimersByTimeAsync(5 * MINUTE);
+      vi.setSystemTime(START + 8 * HOUR);
+      sync.onWake();
+
+      expect(sync.getState()).toMatchObject({
+        reconnectRequired: true,
+        staleSince: iso(START + CALENDAR_STALE_AFTER_MS),
+      });
+      expect(states.at(-1)?.staleSince).toBe(iso(START + CALENDAR_STALE_AFTER_MS));
+      // A refused grant still asks nothing.
+      expect(listEvents).toHaveBeenCalledTimes(2);
+      sync.stop();
+    });
   });
 
   it('drops an answer that lands after a disconnect, and polls no more', async () => {
