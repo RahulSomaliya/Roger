@@ -84,6 +84,11 @@ class ScriptedSpeechToText implements SpeechToText {
   /** Applied to every stream this double opens. */
   finalOnClose: string | null = null;
   constructor(private readonly clock: () => number) {}
+  /** The real factory makes one adapter per Start; this double is reused, so its meter restarts. */
+  beginMeeting(): this {
+    this.all.length = 0;
+    return this;
+  }
   /** Metered like a vendor: open time on the harness clock, 100 ms per 3200-byte chunk. */
   usage(label?: string): SttUsage {
     return sumUsage(
@@ -151,7 +156,7 @@ function harness(
     store,
     api,
     uploader,
-    createSpeechToText: () => stt,
+    createSpeechToText: () => stt.beginMeeting(),
     ensureMicrophoneAccess: () => Promise.resolve(overrides.mic ?? 'granted'),
     logger: overrides.logger ?? logger,
     sttProviderOverride: overrides.override ?? null,
@@ -898,6 +903,8 @@ describe('CaptureService reopen budget', () => {
     expect(refused.error).toContain('the next may open in 50 s');
     expect(h.stt.opened).toHaveLength(4);
     expect(h.store.meetings.size).toBe(0);
+    // The two meetings that ran keep their usage; the refused one opened nothing to keep.
+    expect(h.store.sttUsage.size).toBe(2);
   });
 });
 

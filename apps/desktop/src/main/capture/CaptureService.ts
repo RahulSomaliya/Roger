@@ -344,7 +344,9 @@ export class CaptureService {
       try {
         if (session) await session.close();
         // A failed connect that reached the handshake may be billed: keep its numbers too.
-        this.recordMeter(meetingId, 'start-failed', null);
+        if ((this.stt?.usage().sessionsOpened ?? 0) > 0) {
+          this.recordMeter(meetingId, 'start-failed', null);
+        }
         if (meetingCreated) store.deleteMeetingIfEmpty(meetingId);
       } catch (cleanupError) {
         logger.error('cleanup after failed start failed', {

@@ -247,7 +247,8 @@ export class CaptureSession {
       link.current = null;
       this.dropHeld(link);
     }
-    // A reopen still connecting closes its stream itself once it lands (it is stale now).
+    // A reopen still connecting closes its stream itself once it lands (it is stale now). The wait
+    // is bounded by the API client's timeout and the adapter's connect timeout (10 s each).
     await Promise.all([...this.reopening]);
     await Promise.all([...this.handles].map((handle) => this.retire(handle)));
   }
