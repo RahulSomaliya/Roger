@@ -18,8 +18,12 @@ import Foundation
 //              `no_audio` warning says so too).
 // stderr carries `warning` and `error` events as `tap` writes them (Protocol.swift). Exit codes are
 // `tap`'s: 0 after a result line, and 0 with no result after a termination signal or a closed
-// stdout (both deliberate); 1 after an `error` event (no tap could be built); 64 for a bad command
-// line.
+// stdout (both deliberate); 1 after an `error` event; 64 for a bad command line. An `error` is no
+// answer about the permission: no tap could be built or its route watched, or `route_changed`:
+// the output device or the tap's format changed while it listened, before it heard anything
+// (AirPods connecting, a sample-rate switch). A tap that changed under the probe can go deaf, so
+// its silence would be a false peak 0; the probe ends at once and main probes again. A change
+// after something was heard keeps the result.
 //
 // Unlike `tap` it neither reads stdin nor watches its parent: it tears its tap down after at most
 // 10 s whatever happens, so no tap it builds outlives Roger by longer than that.
@@ -97,6 +101,8 @@ final class PeakProbe: @unchecked Sendable {
   private let pollInterval: TimeInterval
   private let uptime: () -> TimeInterval
   private let cancelled = Locked(false)
+  /// The first route change seen while the tap was built, set on `queue`.
+  private let routeChange = Locked<RestartReason?>(nil)
   private var meter = PeakMeter()
 
   init(
@@ -120,11 +126,23 @@ final class PeakProbe: @unchecked Sendable {
   }
 
   /// Call once. `report` writes a line to stdout: the `listening` line goes through it as soon as
-  /// the tap runs. Returns what was heard, or nil once cancelled; throws the tap's failure or
-  /// `report`'s.
+  /// the tap runs. Returns what was heard, or nil once cancelled; throws the tap's failure,
+  /// `report`'s, or `route_changed` when the route changed before anything was heard.
   func run(report: (String) throws -> Void) throws -> ProbeResult? {
-    defer { queue.sync { device.teardown() } }
+    defer {
+      queue.sync {
+        device.stopWatching()
+        device.teardown()
+      }
+    }
     _ = try queue.sync { try device.build() }
+    // Never drop this watch. On a tap format change (AirPods connecting, a sample-rate switch) the
+    // tap's own listener closes its input and leaves the rebuild to whoever watches
+    // (SystemAudioTap.formatListener); unwatched, the tap goes deaf mid-listen and the probe
+    // answers peak 0, which main reads as "pending" or "not allowed" for a granted permission.
+    try queue.sync {
+      try device.watchRoute { [routeChange] reason in routeChange.withValue { $0 = $0 ?? reason } }
+    }
     if cancelled.value { return nil }
     try report(ProbeOutput.listening(seconds: seconds).jsonLine)
 
@@ -133,7 +151,7 @@ final class PeakProbe: @unchecked Sendable {
     // Timed on the uptime clock, as FrameWriter's stats are: the wall clock can step back (set by
     // hand, or by NTP after a wake) and would stretch the listening by as much.
     let deadline = uptime() + TimeInterval(seconds)
-    while !cancelled.value && uptime() < deadline {
+    while !cancelled.value && routeChange.value == nil && uptime() < deadline {
       drain(into: buffer)
       Thread.sleep(forTimeInterval: pollInterval)
     }
@@ -142,6 +160,16 @@ final class PeakProbe: @unchecked Sendable {
     drain(into: buffer)
 
     let heard = meter.result
+    // Not rebuilt and heard again, as `tap` would: main plays its sound once, at the listening
+    // line, so a rebuilt tap would most likely listen to silence and answer the same wrong peak 0.
+    // Heard before the change still means granted.
+    if let change = routeChange.value, heard.peak == 0 {
+      throw HelperFailure(
+        code: "route_changed",
+        message: "the audio route changed (\(change.rawValue)) while the probe listened, before "
+          + "it heard anything: silence from that tap says nothing about the permission; probe "
+          + "again")
+    }
     if heard.audioMs == 0 {
       events.emit(
         .warning(

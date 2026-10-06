@@ -887,11 +887,12 @@ private func sessionCases(_ suite: inout SelfTestSuite) {
   }
 }
 
-/// A tap that records what the session asks of it and fails builds on demand.
+/// A tap that records what the session asks of it and fails builds, or the route watch, on demand.
 private final class FakeTapDevice: TapDevice, @unchecked Sendable {
   static let format = TapFormat(sampleRate: 48_000, channels: 1, interleaved: true)
   let log = Locked<[String]>([])
   let failNextBuilds = Locked(0)
+  let failWatch = Locked(false)
   private let onChange = Locked<((RestartReason) -> Void)?>(nil)
   private let queue: DispatchQueue
 
@@ -914,6 +915,11 @@ private final class FakeTapDevice: TapDevice, @unchecked Sendable {
   func teardown() { log.withValue { $0.append("teardown") } }
 
   func watchRoute(onChange: @escaping (RestartReason) -> Void) throws {
+    if failWatch.value {
+      log.withValue { $0.append("watch failed") }
+      throw HelperFailure(
+        code: "route_watch_failed", message: "fake route watch refused", status: -50)
+    }
     log.withValue { $0.append("watch") }
     self.onChange.withValue { $0 = onChange }
   }
@@ -923,7 +929,10 @@ private final class FakeTapDevice: TapDevice, @unchecked Sendable {
     onChange.withValue { $0 = nil }
   }
 
-  /// What a Core Audio property listener does: call back on the control queue.
+  /// What a Core Audio property listener does: call back on the control queue. The real tap's
+  /// format listener also closes the tap's input first (SystemAudioTap.formatListener), so after a
+  /// `.tapFormatChanged` nothing more arrives until a rebuild; the cases here write no audio after
+  /// one.
   func routeChanged(_ reason: RestartReason) {
     queue.async { [onChange] in onChange.value?(reason) }
   }
@@ -1011,6 +1020,9 @@ private final class SessionHarness {
 // MARK: - Probe (with a fake device: no Core Audio)
 
 private func probeCases(_ suite: inout SelfTestSuite) {
+  /// What a probe that got as far as listening asks of its tap, in order.
+  let probeLog = ["build", "watch", "stop watching", "teardown"]
+
   suite.run("probe options: 2 s by default, 1 to 10 whole seconds, anything else refused") { t in
     t.expectEqual(try ProbeOptions(arguments: []), ProbeOptions(seconds: 2), "default")
     t.expectEqual(try ProbeOptions(arguments: ["--seconds", "10"]).seconds, 10, "explicit")
@@ -1070,7 +1082,8 @@ private func probeCases(_ suite: inout SelfTestSuite) {
       return
     }
     t.expectEqual(heard, ProbeResult(peak: 8_192, audioMs: 250), "peak and length of what it heard")
-    t.expectEqual(probe.device.log.value, ["build", "teardown"], "torn down before it answers")
+    t.expectEqual(
+      probe.device.log.value, probeLog, "watches the route, and is torn down before it answers")
     t.expect(probe.events.all.isEmpty, "no warning")
   }
 
@@ -1130,7 +1143,7 @@ private func probeCases(_ suite: inout SelfTestSuite) {
       return
     }
     t.expectEqual(heard, nil, "no result")
-    t.expectEqual(probe.device.log.value, ["build", "teardown"], "torn down")
+    t.expectEqual(probe.device.log.value, probeLog, "torn down")
   }
 
   suite.run("probe: a closed stdout ends it at once, torn down") { t in
@@ -1141,7 +1154,69 @@ private func probeCases(_ suite: inout SelfTestSuite) {
       return
     }
     t.expectEqual(error as? OutputError, .closed, "the write's own error")
-    t.expectEqual(probe.device.log.value, ["build", "teardown"], "torn down")
+    t.expectEqual(probe.device.log.value, probeLog, "torn down")
+  }
+
+  // AirPods connecting or a sample-rate switch mid-listen: the real tap's format listener closes
+  // its input (TapInput), so the probe would sit out its seconds on a deaf tap and answer peak 0,
+  // which main reads as "pending" or "not allowed" although the permission is granted.
+  suite.run("probe: a route change with nothing heard yet is no answer: route_changed, at once") {
+    t in
+    for reason in [RestartReason.tapFormatChanged, .outputDeviceChanged] {
+      let probe = ProbeHarness(seconds: 10)
+      probe.start()
+      t.expect(probe.waitForListening(), "\(reason): listening")
+      writeToRing(probe.ring, [Float](repeating: 0, count: 4_800), rate: 48_000)
+      probe.device.routeChanged(reason)
+      t.expect(
+        waitUntil(seconds: 1) { probe.finished }, "\(reason): ends within a poll, not after 10 s")
+      guard case .failure(let error)? = probe.finish() else {
+        t.fail("\(reason): answered anyway: \(String(describing: probe.finish()))")
+        continue
+      }
+      let failure = error as? HelperFailure
+      t.expectEqual(failure?.code, "route_changed", "\(reason): the error code main reads")
+      t.expect(
+        failure?.message.contains(reason.rawValue) == true,
+        "\(reason): names the change: \(failure?.message ?? "\(error)")")
+      t.expectEqual(
+        probe.lines.value, [ProbeOutput.listening(seconds: 10).jsonLine],
+        "\(reason): no result line")
+      t.expectEqual(probe.device.log.value, probeLog, "\(reason): torn down")
+    }
+  }
+
+  suite.run("probe: a route change after the sound was heard keeps the answer, at once") { t in
+    let probe = ProbeHarness(seconds: 10)
+    probe.start()
+    t.expect(probe.waitForListening(), "listening")
+    writeToRing(probe.ring, [Float](repeating: 0.25, count: 4_800), rate: 48_000)
+    probe.device.routeChanged(.tapFormatChanged)
+    t.expect(waitUntil(seconds: 1) { probe.finished }, "ends within a poll, not after 10 s")
+    guard case .success(let heard)? = probe.finish() else {
+      t.fail("no result: \(String(describing: probe.finish()))")
+      return
+    }
+    t.expectEqual(
+      heard, ProbeResult(peak: 8_192, audioMs: 100),
+      "heard is granted, whatever the route did after")
+    t.expectEqual(probe.device.log.value, probeLog, "torn down")
+    t.expect(probe.events.all.isEmpty, "no warning: the answer stands")
+  }
+
+  suite.run("probe: a route it cannot watch is the error; no listening line, nothing left") { t in
+    let probe = ProbeHarness()
+    probe.device.failWatch.withValue { $0 = true }
+    probe.start()
+    guard case .failure(let error)? = probe.finish() else {
+      t.fail("did not fail: \(String(describing: probe.finish()))")
+      return
+    }
+    t.expectEqual((error as? HelperFailure)?.code, "route_watch_failed", "the watch's own failure")
+    t.expect(probe.lines.value.isEmpty, "never said it listens")
+    t.expectEqual(
+      probe.device.log.value, ["build", "watch failed", "stop watching", "teardown"],
+      "nothing left built")
   }
 }
 
