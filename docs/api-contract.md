@@ -405,7 +405,24 @@ fills its migration:
                  index (meeting_id, created_at)
   ```
 
-- Calendar (`calendar_connections`, `meeting_attendees`, the new `meetings` columns, revision
-  `0004`): M5-T1.
+- Calendar (revision `0004`, M5-T1). The `pgcrypto` extension (a downgrade leaves it in place);
+  `refresh_token` holds `pgp_sym_encrypt(token, CALENDAR_TOKEN_KEY)`, never the token.
+
+  ```sql
+  calendar_connections (id uuid pk, workspace_id uuid fk, user_id uuid null,
+                        provider text check in ('google','fake'), account_email text, scopes text,
+                        refresh_token bytea null, status text check in ('active','reconnect_required'),
+                        last_error text null, connected_at timestamptz, created_at, updated_at)
+                       unique nulls not distinct (workspace_id, user_id)
+  meetings             + start_source text default 'manual'
+                           check in ('manual','notification','home','tray','call_detected'),
+                         calendar_provider text null, calendar_event_id text null,
+                         calendar_ical_uid text null, calendar_recurring_event_id text null,
+                         scheduled_start_at timestamptz null, scheduled_end_at timestamptz null
+  meeting_attendees    (id uuid pk, workspace_id uuid fk, meeting_id uuid fk on delete cascade,
+                        position int, email text, display_name text null, response_status text,
+                        is_self bool, is_organizer bool)
+                       unique (meeting_id, position)
+  ```
 
 - STT usage (`stt_usage`, revision `0005`): M3-T19a.
