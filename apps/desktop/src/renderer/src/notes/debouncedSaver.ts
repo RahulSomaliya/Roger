@@ -32,7 +32,10 @@ export type SaverState =
 const PAGE_END_EVENTS = ['pagehide', 'beforeunload'] as const;
 
 export interface DebouncedSaverOptions {
-  /** The doc to save, read when the save starts: the editor's content. */
+  /**
+   * The doc to save, read when the save starts: the editor's content. Throws when the content is
+   * no doc main would store (too deep, too large), which shows as a refused save.
+   */
   read: () => NoteDoc;
   /** Saves it; resolves once main has written notes.sqlite (`saveNote`). */
   write: (doc: NoteDoc) => Promise<void>;
@@ -124,7 +127,7 @@ export class DebouncedSaver {
     const through = this.edits;
     this.sentThrough = through;
     // Started before any await, so a save from `pagehide` leaves while the page still exists.
-    const saving = this.options.write(this.options.read()).then(
+    const saving = this.start().then(
       () => {
         this.savedThrough = Math.max(this.savedThrough, through);
       },
@@ -142,6 +145,15 @@ export class DebouncedSaver {
     });
     this.inFlight.add(settled);
     this.report();
+  }
+
+  /** Reads and writes the doc; a doc the editor cannot hand over fails like a refused save. */
+  private start(): Promise<void> {
+    try {
+      return this.options.write(this.options.read());
+    } catch (error) {
+      return Promise.reject(error instanceof Error ? error : new Error(String(error)));
+    }
   }
 
   private state(): SaverState {

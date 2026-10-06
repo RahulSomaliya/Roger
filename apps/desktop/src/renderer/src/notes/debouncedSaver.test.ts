@@ -230,6 +230,30 @@ describe('DebouncedSaver', () => {
     expect(saver.unsaved).toBe(false);
   });
 
+  it('shows a doc the editor cannot hand over as a refused save, and keeps the edits', async () => {
+    const writes = slowWrites();
+    const states: SaverState[] = [];
+    let tooDeep = true;
+    const saver = new DebouncedSaver({
+      read: () => {
+        if (tooDeep) throw new Error('nested deeper than 32 levels');
+        return docSaying('fixed');
+      },
+      write: writes.write,
+      onState: (state) => states.push(state),
+    });
+    saver.edited();
+    await saver.flush();
+    expect(writes.written).toEqual([]);
+    expect(states.at(-1)).toEqual({ phase: 'failed', message: 'nested deeper than 32 levels' });
+    expect(saver.unsaved).toBe(true);
+    tooDeep = false;
+    saver.edited();
+    saver.blurred();
+    await writes.land();
+    expect(states.at(-1)).toEqual({ phase: 'saved' });
+  });
+
   it("shows main's message without Electron's IPC wrapper", async () => {
     const { saver, states, writes, type } = setUp();
     type('x');
