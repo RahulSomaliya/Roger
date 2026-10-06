@@ -57,11 +57,64 @@ describe('the Benchmark section of .env.example', () => {
   });
 });
 
+/**
+ * The numbered list that starts at `lines[0]`, up to its first blank line: one entry per rule, its
+ * wrapping undone, so rewrapping either copy is not drift and rewording one is. A rule starts at a
+ * number with at most one space before it (` 9.` and `10.` in the code comment); its wrapped lines
+ * are indented three spaces or more in both copies, so a number that wraps to the start of a line
+ * is not taken for a new rule.
+ */
+function numberedRules(lines: string[]): string[] {
+  const rules: string[] = [];
+  for (const line of lines) {
+    if (line.trim() === '') break;
+    if (/^ ?\d+\. /.test(line)) {
+      rules.push(line.trim());
+      continue;
+    }
+    const rule = rules.pop();
+    if (rule === undefined) throw new Error(`a numbered list must start with a rule, not: ${line}`);
+    rules.push(`${rule} ${line.trim()}`);
+  }
+  return rules;
+}
+
+/** The rules of the first numbered list after the line `isHeading` picks. */
+function rulesUnder(
+  lines: string[],
+  isHeading: (line: string) => boolean,
+  where: string,
+): string[] {
+  const heading = lines.findIndex(isHeading);
+  if (heading === -1) throw new Error(`${where}: no heading for version ${NORMALISER_VERSION}`);
+  const first = lines.findIndex((line, i) => i > heading && /^ ?1\. /.test(line));
+  if (first === -1) throw new Error(`${where}: no numbered list after its version heading`);
+  return numberedRules(lines.slice(first));
+}
+
 describe('docs/research/stt-benchmark.md', () => {
-  it('lists the normaliser rules of the version the bench scores with', () => {
-    // normalise.ts bumps NORMALISER_VERSION whenever a rule changes; the doc's rules must follow.
-    expect(read('../../../docs/research/stt-benchmark.md')).toContain(
-      `## Normaliser, version ${NORMALISER_VERSION}`,
+  it('lists the rules normalise.ts applies, under the version the bench scores with', () => {
+    // The source of truth is normalise.ts's header comment, which numbers the rules in the order
+    // the code applies them. A changed rule bumps NORMALISER_VERSION there; comparing the lists,
+    // not only the doc's heading, catches a doc whose heading moved to the new version while its
+    // rules stayed on the old one, and a rule reworded in one place only.
+    const code = read('./core/normalise.ts')
+      .split('\n')
+      .map((line) => line.replace(/^\s*\* ?/, ''));
+    const doc = read('../../../docs/research/stt-benchmark.md').split('\n');
+
+    const codeRules = rulesUnder(
+      code,
+      (line) => line.startsWith(`Version ${NORMALISER_VERSION}, in the order applied`),
+      'normalise.ts header comment',
     );
+    const docRules = rulesUnder(
+      doc,
+      (line) => line === `## Normaliser, version ${NORMALISER_VERSION}`,
+      'docs/research/stt-benchmark.md',
+    );
+
+    expect(codeRules.length).toBeGreaterThan(0);
+    expect(docRules).toEqual(codeRules);
   });
 });
