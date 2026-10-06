@@ -18,6 +18,27 @@ import {
 /** What the fake decoder fills an m4a chunk with, per stream, so its samples can be told apart. */
 const M4A_MARK = { mic: 1111, system: 2222 } as const;
 
+/**
+ * Runs `scenario` with the process in `timeZone`, proving the switch took effect (the repo's rule:
+ * a TZ switch that did nothing passes in silence). recorded_on is the local day of the fixture's
+ * started_at (09:00Z), so any expected date depends on the zone.
+ */
+async function inTimeZone<T>(
+  timeZone: string,
+  octoberOffsetMinutes: number,
+  scenario: () => Promise<T>,
+): Promise<T> {
+  const previous = process.env.TZ;
+  process.env.TZ = timeZone;
+  try {
+    expect(new Date(Date.UTC(2026, 9, 6)).getTimezoneOffset()).toBe(octoberOffsetMinutes);
+    return await scenario();
+  } finally {
+    if (previous === undefined) delete process.env.TZ;
+    else process.env.TZ = previous;
+  }
+}
+
 describe('clip', () => {
   let scratch = '';
   let benchDir = '';
@@ -76,7 +97,9 @@ describe('clip', () => {
   });
 
   it('cuts exact sample windows from both streams and fills the gap with silence', async () => {
-    const item = await clip(options(), { assertFileVault: fileVaultOn, decode });
+    const item = await inTimeZone('Europe/London', -60, () =>
+      clip(options(), { assertFileVault: fileVaultOn, decode }),
+    );
 
     for (const source of ['mic', 'system'] as const) {
       const samples = await readWav(join(benchDir, 'items', 'tone-1', `${source}.wav`));
@@ -109,6 +132,15 @@ describe('clip', () => {
       draftRuns: [],
     });
     expect(await readItem(benchDir, 'tone-1')).toEqual(item);
+  });
+
+  it("records the meeting's local day, not its UTC day", async () => {
+    // 09:00Z on 2026-10-06 is 23:00 on 2026-10-05 in Honolulu (UTC-10, no daylight saving).
+    const item = await inTimeZone('Pacific/Honolulu', 600, () =>
+      clip(options(), { assertFileVault: fileVaultOn, decode }),
+    );
+
+    expect(item.recordedOn).toBe('2026-10-05');
   });
 
   it('skips backup rows marked deleted, leaving their audio out as a gap', async () => {
