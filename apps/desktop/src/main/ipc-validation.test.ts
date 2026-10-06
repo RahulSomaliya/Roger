@@ -1,4 +1,7 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
+import type { CalendarAttendee, MeetingCalendarEvent } from '../shared/calendar';
+import { START_SOURCES } from '../shared/capture';
 import { SETTINGS_PANE_IDS } from '../shared/ipc/setup';
 import {
   isUuidV4,
@@ -9,6 +12,7 @@ import {
   parseMeetingRequest,
   parseSegmentRequest,
   parseSettingsPaneRequest,
+  parseStartCaptureRequest,
 } from './ipc-validation';
 import { SETTINGS_PANES } from './settingsPanes';
 
@@ -175,5 +179,187 @@ describe('parseSettingsPaneRequest', () => {
     }
     expect(parseSettingsPaneRequest('microphone')).toBeNull();
     expect(parseSettingsPaneRequest(null)).toBeNull();
+  });
+});
+
+describe('parseStartCaptureRequest', () => {
+  const attendee = (n: number): CalendarAttendee => ({
+    email: `person${n}@linkt.ai`,
+    displayName: `Person ${n}`,
+    responseStatus: 'accepted',
+    isSelf: n === 0,
+    isOrganizer: n === 1,
+  });
+  const event: MeetingCalendarEvent = {
+    provider: 'google',
+    eventId: 'abc123_20261007T093000Z',
+    icalUid: 'abc123@google.com',
+    recurringEventId: 'abc123',
+    scheduledStart: '2026-10-07T09:30:00.000Z',
+    scheduledEnd: '2026-10-07T10:00:00.000Z',
+    attendees: [attendee(0), attendee(1)],
+  };
+  const withEvent = (changes: Record<string, unknown>): unknown => ({
+    source: 'notification',
+    calendarEvent: { ...event, ...changes },
+  });
+
+  it('reads no request at all as a plain manual start', () => {
+    expect(parseStartCaptureRequest(undefined)).toEqual({});
+    expect(parseStartCaptureRequest({})).toEqual({});
+  });
+
+  it('passes on the source, title and event link, and nothing else the page sent', () => {
+    expect(
+      parseStartCaptureRequest({
+        source: 'notification',
+        title: 'Weekly sync',
+        calendarEvent: { ...event, extra: 'x', attendees: [{ ...attendee(0), extra: 'y' }] },
+        resume: { meetingId: '2f1d9c4e-8a3b-4c5d-9e6f-7a8b9c0d1e2f' },
+      }),
+    ).toEqual({
+      source: 'notification',
+      title: 'Weekly sync',
+      calendarEvent: { ...event, attendees: [attendee(0)] },
+    });
+    // Left out, the optional ids and a display name read as null, as the API stores them.
+    const { icalUid: _ical, recurringEventId: _series, ...bare } = event;
+    expect(
+      parseStartCaptureRequest({
+        calendarEvent: {
+          ...bare,
+          attendees: [
+            { email: 'a@b.c', responseStatus: 'tentative', isSelf: false, isOrganizer: false },
+          ],
+        },
+      }),
+    ).toEqual({
+      calendarEvent: {
+        ...bare,
+        icalUid: null,
+        recurringEventId: null,
+        attendees: [
+          {
+            email: 'a@b.c',
+            displayName: null,
+            responseStatus: 'tentative',
+            isSelf: false,
+            isOrganizer: false,
+          },
+        ],
+      },
+    });
+    expect(parseStartCaptureRequest({ calendarEvent: null })).toEqual({});
+  });
+
+  it('accepts every start source, call_detected included, and refuses any other', () => {
+    for (const source of START_SOURCES) {
+      expect(parseStartCaptureRequest({ source })).toEqual({ source });
+    }
+    for (const source of ['calendar', 'Manual', '', 'toString', 3, null]) {
+      expect(() => parseStartCaptureRequest({ source })).toThrow(
+        'invalid start request: source is not a start source',
+      );
+    }
+  });
+
+  it('names the same five sources as the API contract', () => {
+    const contract = readFileSync(
+      new URL('../../../../docs/api-contract.md', import.meta.url),
+      'utf8',
+    );
+    const line = /^type StartSource = (.+);$/m.exec(contract)?.[1] ?? '';
+    expect(line.split(' | ').map((name) => JSON.parse(name) as unknown)).toEqual([
+      ...START_SOURCES,
+    ]);
+  });
+
+  // The API stores at most 500 characters of a title once trimmed (MeetingTitle) and refuses the
+  // whole create past that, transcript included: refused here, where the start can still say why.
+  it('refuses a title over 500 characters once trimmed, counted as the API counts them', () => {
+    const title = 'a'.repeat(500);
+    expect(parseStartCaptureRequest({ title: `  ${title}  ` })).toEqual({ title: `  ${title}  ` });
+    // Python counts code points: 500 emoji are 1000 UTF-16 units and still fit.
+    const emoji = '\u{1F600}'.repeat(500);
+    expect(parseStartCaptureRequest({ title: emoji })).toEqual({ title: emoji });
+    expect(() => parseStartCaptureRequest({ title: `${title}b` })).toThrow(
+      'invalid start request: title is over 500 characters',
+    );
+    expect(() => parseStartCaptureRequest({ title: 42 })).toThrow(
+      'invalid start request: title is not text',
+    );
+  });
+
+  it('refuses an event link POST /v1/meetings would refuse with a 422', () => {
+    const refusals: [unknown, string][] = [
+      [{ calendarEvent: 'nope' }, 'calendarEvent is not an object'],
+      [withEvent({ provider: 'outlook' }), 'calendarEvent.provider is not google or fake'],
+      [withEvent({ eventId: '' }), 'calendarEvent.eventId is blank'],
+      // The API drops U+0000 before it trims and counts, so an id of nothing else is blank too.
+      [withEvent({ eventId: ' \u0000 ' }), 'calendarEvent.eventId is blank'],
+      [withEvent({ eventId: 'x'.repeat(2049) }), 'calendarEvent.eventId is over 2048 characters'],
+      [withEvent({ eventId: 7 }), 'calendarEvent.eventId is not text'],
+      [withEvent({ icalUid: 'u'.repeat(2049) }), 'calendarEvent.icalUid is over 2048 characters'],
+      [withEvent({ recurringEventId: 5 }), 'calendarEvent.recurringEventId is not text'],
+      [
+        withEvent({ scheduledStart: '2026-10-07T09:30:00' }),
+        'calendarEvent.scheduledStart is not an instant with a zone',
+      ],
+      [
+        withEvent({ scheduledEnd: 'tomorrow' }),
+        'calendarEvent.scheduledEnd is not an instant with a zone',
+      ],
+      [
+        withEvent({ scheduledEnd: null }),
+        'calendarEvent.scheduledEnd is not an instant with a zone',
+      ],
+      [withEvent({ attendees: 'x' }), 'calendarEvent.attendees is not a list'],
+      [
+        withEvent({ attendees: Array.from({ length: 201 }, (_, n) => attendee(n)) }),
+        'calendarEvent.attendees has over 200 people',
+      ],
+      [
+        withEvent({ attendees: [attendee(0), null] }),
+        'calendarEvent.attendees[1] is not an object',
+      ],
+      [
+        withEvent({ attendees: [{ ...attendee(0), email: ' ' }] }),
+        'calendarEvent.attendees[0].email is blank',
+      ],
+      [
+        withEvent({ attendees: [{ ...attendee(0), displayName: 'd'.repeat(2049) }] }),
+        'calendarEvent.attendees[0].displayName is over 2048 characters',
+      ],
+      [
+        withEvent({ attendees: [{ ...attendee(0), responseStatus: 'maybe' }] }),
+        'calendarEvent.attendees[0].responseStatus is not a response',
+      ],
+      [
+        withEvent({ attendees: [{ ...attendee(0), isSelf: 'yes' }] }),
+        'calendarEvent.attendees[0].isSelf is not true or false',
+      ],
+      [
+        withEvent({ attendees: [{ ...attendee(0), isOrganizer: undefined }] }),
+        'calendarEvent.attendees[0].isOrganizer is not true or false',
+      ],
+    ];
+    for (const [payload, why] of refusals) {
+      expect(() => parseStartCaptureRequest(payload), why).toThrow(`invalid start request: ${why}`);
+    }
+    // 200 people, ids at their limit and instants with an offset all pass.
+    const full = withEvent({
+      eventId: 'x'.repeat(2048),
+      scheduledStart: '2026-10-07T11:30:00+02:00',
+      attendees: Array.from({ length: 200 }, (_, n) => attendee(n)),
+    });
+    expect(parseStartCaptureRequest(full)).toEqual(full);
+  });
+
+  it('refuses a request that is not an object', () => {
+    for (const payload of [null, 'manual', 3, []]) {
+      expect(() => parseStartCaptureRequest(payload)).toThrow(
+        'invalid start request: not an object',
+      );
+    }
   });
 });

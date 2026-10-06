@@ -6,8 +6,10 @@ import {
   CALL_AUDIO_SILENT_WARNING_MS,
   HELPER_HANG_KILL_MS,
   idleCaptureStatus,
+  isStartSource,
   MIC_DEAD_WARNING_MS,
   NO_AUDIO_WARNING_MS,
+  START_SOURCES,
 } from './capture';
 
 describe('the capture warning thresholds', () => {
@@ -58,5 +60,17 @@ describe('idleCaptureStatus', () => {
     expect(Object.keys(status.sources.mic).sort()).toEqual(
       ['health', 'chunks', 'lastChunkAt', 'message'].sort(),
     );
+  });
+});
+
+describe('start sources', () => {
+  // The API contract's StartSource, its Postgres check and roger.sqlite's CHECK (migration 5) list
+  // the same five; ipc-validation.test.ts compares the contract's line with START_SOURCES.
+  it('are the five the API stores, and nothing else passes for one', () => {
+    expect([...START_SOURCES]).toEqual(['manual', 'notification', 'home', 'tray', 'call_detected']);
+    for (const source of START_SOURCES) expect(isStartSource(source)).toBe(true);
+    for (const value of ['calendar', 'Manual', ' manual', '', 'toString', null, undefined, 3]) {
+      expect(isStartSource(value)).toBe(false);
+    }
   });
 });

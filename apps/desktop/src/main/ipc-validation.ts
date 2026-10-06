@@ -1,3 +1,15 @@
+import {
+  type CalendarAttendee,
+  MAX_MEETING_ATTENDEES,
+  type MeetingCalendarEvent,
+  parseInstant,
+  type ResponseStatus,
+} from '../shared/calendar';
+import {
+  isStartSource,
+  MAX_MEETING_TITLE_LENGTH,
+  type StartCaptureRequest,
+} from '../shared/capture';
 import type { AudioSourceStateMessage } from '../shared/ipc';
 import type { MeetingRequest, SegmentRequest } from '../shared/ipc/capture';
 import { SETTINGS_PANE_IDS, type SettingsPaneRequest } from '../shared/ipc/setup';
@@ -109,4 +121,149 @@ export function parseSettingsPaneRequest(payload: unknown): SettingsPaneRequest 
   const { pane } = payload as Record<string, unknown>;
   const known = SETTINGS_PANE_IDS.find((id) => id === pane);
   return known === undefined ? null : { pane: known };
+}
+
+/**
+ * The longest text field of a meeting's calendar link the API stores, in characters once trimmed:
+ * `MAX_CALENDAR_TEXT_LENGTH` in apps/api/src/roger_api/schemas/meetings.py. Change the two together.
+ */
+export const MAX_CALENDAR_TEXT_LENGTH = 2048;
+
+const RESPONSE_STATUSES: readonly ResponseStatus[] = [
+  'accepted',
+  'tentative',
+  'declined',
+  'needs_action',
+];
+
+/**
+ * A Start's request (StartCaptureRequest), from the window's `capture:start` or main's own
+ * `CaptureService.requestStart`. Every field meets what `POST /v1/meetings` accepts (API contract):
+ * the uploader sends them with the meeting's create, and a create the API refuses keeps the whole
+ * meeting, its transcript included, off the server; refused here, the start says why at once.
+ * No payload is a plain manual Start (`startCapture()` sends none). Throws naming the field, unlike
+ * the parsers above, which answer null: a request with this many fields should say which was wrong.
+ * Values are passed on as sent; the API trims and cleans them as it stores them.
+ */
+export function parseStartCaptureRequest(payload: unknown): StartCaptureRequest {
+  if (payload === undefined) return {};
+  const fields = record(payload, null);
+  const request: StartCaptureRequest = {};
+  if (fields.source !== undefined) {
+    if (!isStartSource(fields.source)) refuse('source is not a start source');
+    request.source = fields.source;
+  }
+  if (fields.title !== undefined) {
+    request.title = text(fields.title, 'title', { max: MAX_MEETING_TITLE_LENGTH, blank: true });
+  }
+  if (fields.calendarEvent !== undefined && fields.calendarEvent !== null) {
+    request.calendarEvent = meetingCalendarEvent(fields.calendarEvent);
+  }
+  return request;
+}
+
+function meetingCalendarEvent(value: unknown): MeetingCalendarEvent {
+  const fields = record(value, 'calendarEvent');
+  const { provider } = fields;
+  if (provider !== 'google' && provider !== 'fake') {
+    refuse('calendarEvent.provider is not google or fake');
+  }
+  const attendees = list(fields.attendees, 'calendarEvent.attendees');
+  if (attendees.length > MAX_MEETING_ATTENDEES) {
+    refuse(`calendarEvent.attendees has over ${MAX_MEETING_ATTENDEES} people`);
+  }
+  return {
+    provider,
+    eventId: calendarText(fields.eventId, 'calendarEvent.eventId'),
+    icalUid: optionalCalendarText(fields.icalUid, 'calendarEvent.icalUid'),
+    recurringEventId: optionalCalendarText(
+      fields.recurringEventId,
+      'calendarEvent.recurringEventId',
+    ),
+    scheduledStart: instant(fields.scheduledStart, 'calendarEvent.scheduledStart'),
+    scheduledEnd: instant(fields.scheduledEnd, 'calendarEvent.scheduledEnd'),
+    attendees: attendees.map((each, index) =>
+      calendarAttendee(each, `calendarEvent.attendees[${index}]`),
+    ),
+  };
+}
+
+function calendarAttendee(value: unknown, name: string): CalendarAttendee {
+  const fields = record(value, name);
+  const { responseStatus, isSelf, isOrganizer } = fields;
+  const response = RESPONSE_STATUSES.find((status) => status === responseStatus);
+  if (response === undefined) refuse(`${name}.responseStatus is not a response`);
+  if (typeof isSelf !== 'boolean') refuse(`${name}.isSelf is not true or false`);
+  if (typeof isOrganizer !== 'boolean') refuse(`${name}.isOrganizer is not true or false`);
+  return {
+    email: calendarText(fields.email, `${name}.email`),
+    displayName: optionalCalendarText(fields.displayName, `${name}.displayName`),
+    responseStatus: response,
+    isSelf,
+    isOrganizer,
+  };
+}
+
+function calendarText(value: unknown, name: string): string {
+  return text(value, name, { max: MAX_CALENDAR_TEXT_LENGTH, blank: false });
+}
+
+/** Left out or null reads as null, as the API stores it; it stores a blank one as null too. */
+function optionalCalendarText(value: unknown, name: string): string | null {
+  if (value === undefined || value === null) return null;
+  return text(value, name, { max: MAX_CALENDAR_TEXT_LENGTH, blank: true });
+}
+
+/**
+ * Text measured as the API measures it before it stores it: U+0000 dropped (Postgres refuses it),
+ * then trimmed, then counted in code points as Python's `len` counts (`Array.from`, never
+ * `.length`: an emoji is one character to the API and two UTF-16 units here). JavaScript's trim
+ * and Python's strip differ only on control characters no calendar or person writes.
+ */
+function text(value: unknown, name: string, rules: { max: number; blank: boolean }): string {
+  if (typeof value !== 'string') refuse(`${name} is not text`);
+  const length = Array.from(value.replaceAll('\u0000', '').trim()).length;
+  if (length === 0 && !rules.blank) refuse(`${name} is blank`);
+  if (length > rules.max) refuse(`${name} is over ${rules.max} characters`);
+  return value;
+}
+
+/** An instant with a zone, as the API requires: one without would be read in the Mac's zone. */
+function instant(value: unknown, name: string): string {
+  if (typeof value !== 'string' || !isInstant(value)) {
+    refuse(`${name} is not an instant with a zone`);
+  }
+  return value;
+}
+
+/**
+ * parseInstant as a yes or no. Its error quotes the value, which is the page's text and would
+ * reach main's log through the refusal; the field's name in the refusal says enough.
+ */
+function isInstant(value: string): boolean {
+  try {
+    parseInstant(value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** `name` null: the request itself. */
+function record(value: unknown, name: string | null): Record<string, unknown> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    refuse(name === null ? 'not an object' : `${name} is not an object`);
+  }
+  // Checked just above: an object that is not an array, read field by field as unknown.
+  return value as Record<string, unknown>;
+}
+
+function list(value: unknown, name: string): readonly unknown[] {
+  if (!Array.isArray(value)) refuse(`${name} is not a list`);
+  // Checked just above; each item is read as unknown.
+  return value as readonly unknown[];
+}
+
+function refuse(why: string): never {
+  throw new Error(`invalid start request: ${why}`);
 }

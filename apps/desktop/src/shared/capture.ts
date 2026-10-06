@@ -1,4 +1,4 @@
-import type { CallApp } from './calendar';
+import type { CallApp, MeetingCalendarEvent } from './calendar';
 import type { AudioSource } from './transcript';
 
 /** The capture state machine owned by the main process. */
@@ -354,6 +354,57 @@ export interface CaptureReport {
   backup: BackupStatus;
 }
 
+/**
+ * How a recording was started, stored with its meeting (`meetings.start_source` in roger.sqlite and
+ * Postgres; the API contract's `StartSource`, whose line ipc-validation.test.ts compares with this
+ * list). The CHECK of roger.sqlite's migration 5 and the API's `0004_calendar` list the same five,
+ * and a migration is never edited: a sixth value needs a new migration on both sides.
+ * - manual: a Start that names nothing else, the default
+ * - notification: a click on the calendar prompt (M5); the exit check's streak counts only these
+ * - home: a start from Home (M5-T12)
+ * - tray: a start from the menu bar (M5-T11)
+ * - call_detected: Take notes on the call-detected card (M2's detection, on M5's panel)
+ */
+export const START_SOURCES = ['manual', 'notification', 'home', 'tray', 'call_detected'] as const;
+
+export type StartSource = (typeof START_SOURCES)[number];
+
+export function isStartSource(value: unknown): value is StartSource {
+  return START_SOURCES.some((source) => source === value);
+}
+
+/**
+ * The longest meeting title the API stores, in characters (code points, as Python counts) once
+ * trimmed: `MeetingTitle` in apps/api/src/roger_api/schemas/meetings.py. Change the two together.
+ */
+export const MAX_MEETING_TITLE_LENGTH = 500;
+
+/**
+ * What a Start asks for beyond "record" (M5): how it was started, the title and the calendar event
+ * the note is for. Every field is optional; an empty request is a plain manual Start. Main checks a
+ * request field by field before it runs (main/ipc-validation.ts, parseStartCaptureRequest), the
+ * window's and its own (CaptureService.requestStart) alike, against what `POST /v1/meetings`
+ * accepts: the uploader sends these fields with the meeting's create, and a create the API refuses
+ * keeps the whole meeting, its transcript included, off the server.
+ */
+export interface StartCaptureRequest {
+  /** Default `manual`. */
+  source?: StartSource;
+  /**
+   * At most MAX_MEETING_TITLE_LENGTH characters once trimmed, or the start is refused: a request
+   * built from a calendar event's title, which has no such limit, cuts it to fit first. Blank or
+   * left out, main names the meeting after its start, "Meeting 6 Oct 2026 09:30"
+   * (defaultMeetingTitle in main/capture/CaptureService.ts).
+   */
+  title?: string;
+  /**
+   * The calendar event the note is for (`toMeetingCalendarEvent`, which keeps the API's 200
+   * attendees). Left out or null: none, unless main's enricher links one (M5-T9c, "Manual start
+   * near a meeting").
+   */
+  calendarEvent?: MeetingCalendarEvent | null;
+}
+
 export interface CaptureStatus {
   phase: CapturePhase;
   meetingId: string | null;
@@ -374,8 +425,8 @@ export interface CaptureStatus {
   /** This meeting's speech-to-text use while recording; the last meeting's after Stop. */
   meter: SttMeterStatus | null;
   /**
-   * Why Roger stopped the last recording on its own (no speech, the length cap, quit, sleep, the
-   * window closing or crashing), or null. Cleared by the next Start.
+   * Why Roger stopped the last recording on its own (no speech, the length cap, sleep, a window
+   * that could not reload), or null: capture/stopReasons.ts, stopNotice. Cleared by the next Start.
    */
   notice: string | null;
 
