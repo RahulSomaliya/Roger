@@ -800,6 +800,55 @@ async def test_message_id_of_another_workspace_is_a_conflict(
     assert await chat_runs(app.state.database) == []
 
 
+async def test_message_id_of_an_answer_is_a_conflict(
+    app: FastAPI, client: httpx.AsyncClient
+) -> None:
+    meeting = await add_meeting(client, LINES)
+    answer = done_message(events_of(await ask(client, meeting.id, "When?")))
+    before = await thread(client, meeting.id)
+
+    response = await ask(client, meeting.id, "When?", UUID(answer["id"]))
+
+    # Never read as a question: no answer to the answer is stored, replayed or paid for.
+    assert_error(response, 409, "conflict")
+    assert await thread(client, meeting.id) == before
+    assert len(await chat_runs(app.state.database)) == 1
+
+
+async def test_a_new_question_sent_twice_at_once_is_answered_once(open_api: OpenApi) -> None:
+    model = ScriptedNotesModel(ModelScript(steps=("Friday [L1].",)))
+    async with asyncio.timeout(WAIT_S), open_api(model) as api:
+        meeting = await add_meeting(api.client, LINES)
+        question_id = uuid4()
+
+        async def claim_again() -> None:
+            async with api.database.session() as session:
+                with pytest.raises(ConflictError, match="twice at once"):
+                    await claim_in(api, session, meeting.id, question_id)
+
+        async with api.database.session() as session:
+            first = await claim_in(api, session, meeting.id, question_id)
+            # The second finds no question stored yet, then waits on the first's uncommitted one
+            # as it stores its own.
+            second = asyncio.create_task(claim_again())
+            await until_blocked(api.database, second)
+            await session.commit()
+        await second
+        stream = await chat.start_answer(get_llm_runtime_of(api.app), first)
+        events = [(event.name, dict(event.data)) async for event in stream.events()]
+        items = await thread(api.client, meeting.id)
+        runs = await chat_runs(api.database)
+
+    # One question, one answer, one run: the second sending stored and paid for nothing.
+    assert done_message(events)["text"] == "Friday [L1]."
+    assert [(item["id"], item["role"]) for item in items] == [
+        (str(question_id), "user"),
+        (done_message(events)["id"], "assistant"),
+    ]
+    assert len(runs) == 1
+    assert len(model.requests) == 1
+
+
 async def test_a_chat_answer_never_blocks_an_ai_notes_save(open_api: OpenApi) -> None:
     hold = asyncio.Event()
     model = ScriptedNotesModel(ModelScript(steps=(hold, "Friday [L1].")))
