@@ -1,11 +1,20 @@
-import { stat, writeFile } from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
+import { rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Locator, Page } from 'playwright-core';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { GalleryManifest } from '../qa/driver';
 import type { CapturePhase } from '../src/shared/capture';
-import { launchRoger, type LaunchOptions, LOOKS, type RogerRun, shoot } from './harness';
+import {
+  APP_DIR,
+  launchRoger,
+  type LaunchOptions,
+  type Look,
+  LOOKS,
+  type RogerRun,
+  shoot,
+} from './harness';
 
 /**
  * The Electron smoke test (M2-T13): the real app, unpackaged, from New note to Stop. Chromium's
@@ -76,6 +85,54 @@ async function shownLines(page: Page): Promise<ShownLine[]> {
   }, FAKE_LINE);
 }
 
+/**
+ * How many of a speaker's lines a person could see: the line has a size, its centre is inside the
+ * viewport, and `document.elementFromPoint` there is the line or inside it. Counting the matches
+ * alone also counts a line scrolled out of the transcript or drawn under another element.
+ */
+function visibleLines(page: Page, speaker: Speaker): Promise<number> {
+  return linesOf(page, speaker).evaluateAll(
+    (lines) =>
+      lines.filter((line) => {
+        const box = line.getBoundingClientRect();
+        if (box.width === 0 || box.height === 0) return false;
+        const x = box.left + box.width / 2;
+        const y = box.top + box.height / 2;
+        if (x < 0 || y < 0 || x >= window.innerWidth || y >= window.innerHeight) return false;
+        const top = document.elementFromPoint(x, y);
+        return top !== null && (top === line || line.contains(top));
+      }).length,
+  );
+}
+
+/**
+ * What a shot of the saved meeting must show, checked on the page as shot: capture idle after
+ * Stop, and each side's lines where a person could see them. Returns how many of each it saw.
+ */
+async function expectBothSidesShown(run: RogerRun, look: Look): Promise<Record<Speaker, number>> {
+  const where = `${look.theme} at ${look.width} px`;
+  const status = await run.page.evaluate(() => window.roger.getCaptureStatus());
+  expect(status.phase, withLog(run, `Capture is not idle in the ${where} shot`)).toBe('idle');
+  const seen = {
+    Me: await visibleLines(run.page, 'Me'),
+    Them: await visibleLines(run.page, 'Them'),
+  };
+  for (const speaker of ['Me', 'Them'] as const) {
+    expect(seen[speaker], `No "${speaker}" line a person could see in ${where}`).toBeGreaterThan(0);
+  }
+  return seen;
+}
+
+/** The gallery's provenance, read from git: a branch typed in here goes stale once the task merges. */
+function checkoutMeta(): Record<string, string> {
+  const git = (...args: string[]): string =>
+    execFileSync('git', ['-C', APP_DIR, ...args], { encoding: 'utf8' }).trim();
+  return {
+    Branch: git('rev-parse', '--abbrev-ref', 'HEAD'),
+    Commit: git('rev-parse', '--short', 'HEAD'),
+  };
+}
+
 /** On failure, the end of main's log says what Roger saw. */
 function withLog(run: RogerRun, message: string): string {
   return `${message}\nRoger's log:\n${run.logs.slice(-40).join('\n')}`;
@@ -108,6 +165,11 @@ describe('a recording', () => {
     // the microphone's lines as echoes of the call's. This test checks the pipeline, not it.
     config: { echoFilter: false },
   });
+  // Set once the recording test passed every check: only then does the page show a saved meeting
+  // for the shots to prove. Vitest runs the shots after a failed recording test too (no bail), and
+  // `-t shoots` runs them alone, over Home. On an object, not a `let`: `no-unnecessary-condition`
+  // trusts a narrowing that only another test's callback undoes (CLAUDE.md failure log).
+  const recorded = { saved: false };
 
   it('shows both sides within 10 s of Start, and Stop saves every line', async () => {
     const run = roger();
@@ -166,26 +228,35 @@ describe('a recording', () => {
       withLog(run, 'The TCC gate was not answered by e2e mode'),
     ).toBe(true);
     expect(run.logs.filter((line) => line.includes('refused to'))).toEqual([]);
+    recorded.saved = true;
   });
 
-  // The screenshot helper M2-T19 and M2-T20 shoot the real app with: each look applies and lands.
+  // The screenshot helper M2-T19 and M2-T20 shoot the real app with: each look applies and lands,
+  // and each caption says what its check saw on the page as shot.
   it('shoots the saved meeting in both themes, wide and narrow', async () => {
     const run = roger();
     const dir = process.env.ROGER_QA_OUT ?? join(tmpdir(), 'roger-qa', 'm2-t13');
+    // A red run leaves no manifest: an earlier run's shots.json would read as this run's evidence.
+    await rm(join(dir, 'shots.json'), { force: true });
+    if (!recorded.saved) {
+      throw new Error(
+        'No saved meeting to shoot: the recording test did not pass (or was filtered out)',
+      );
+    }
     const manifest: GalleryManifest = {
       title: 'M2-T13 Electron smoke test',
       subtitle:
         'The saved meeting after New note and Stop, in the real app (fake mic, helper, STT)',
-      meta: { Task: 'M2-T13', Branch: 'p2/m2-t13' },
+      meta: { Task: 'M2-T13', ...checkoutMeta() },
       groups: [{ name: 'Saved meeting', shots: [] }],
     };
     for (const look of LOOKS) {
       const file = join(dir, `meeting-${look.theme}-${look.width}.png`);
-      await shoot(run, file, look);
+      const seen = await shoot(run, file, look, () => expectBothSidesShown(run, look));
       expect((await stat(file)).size).toBeGreaterThan(0);
       manifest.groups[0]?.shots.push({
         file,
-        caption: `${look.theme}, ${look.width} px: both sides' lines after Stop`,
+        caption: `${look.theme}, ${look.width} px, idle after Stop: ${seen.Me} Me and ${seen.Them} Them lines on screen`,
         check: 'pass',
       });
     }

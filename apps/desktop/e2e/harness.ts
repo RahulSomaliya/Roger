@@ -435,12 +435,21 @@ export async function setLook(run: RogerRun, look: Look): Promise<void> {
 }
 
 /**
- * Shoots the window in a look into `path` (a PNG; its folder is made). For M2-T19 and M2-T20's
- * QA in the real app. As qa/driver.ts does: the page column grows until it stops scrolling (the
- * shell is one screen tall), finite animations finish first, and never `fullPage`, which re-runs
- * fill-mode animations inside the capture.
+ * Shoots the window in a look into `path` (a PNG; its folder is made), for M2-T19 and M2-T20's QA
+ * in the real app, and returns what `check` found. `check` runs on the page as it will be shot
+ * (look applied, column fitted, animations done), and the shot is taken only if it passes: a
+ * gallery caption states what its check saw, never what the test expected. With no check, M2-T13's
+ * shots were marked pass and captioned "both sides' lines after Stop" over a page still recording,
+ * and over Home when the test ran alone. As qa/driver.ts does: the page column grows until it
+ * stops scrolling (the shell is one screen tall), finite animations finish first, and never
+ * `fullPage`, which re-runs fill-mode animations inside the capture.
  */
-export async function shoot(run: RogerRun, path: string, look: Look): Promise<void> {
+export async function shoot<Found>(
+  run: RogerRun,
+  path: string,
+  look: Look,
+  check: (page: Page) => Promise<Found>,
+): Promise<Found> {
   await setLook(run, look);
   await run.page.waitForFunction(() =>
     document
@@ -452,6 +461,8 @@ export async function shoot(run: RogerRun, path: string, look: Look): Promise<vo
       ),
   );
   await fitShellPage(run.page);
+  const found = await check(run.page);
   await mkdir(dirname(path), { recursive: true });
   await run.page.screenshot({ path, animations: 'disabled', caret: 'hide' });
+  return found;
 }
