@@ -70,7 +70,22 @@ final lines into `SqliteTranscriptStore` → `TranscriptUploader` → `POST /v1/
 ## Speech-to-text vendors
 
 Adapters implement `SpeechToText` in `src/main/stt/SpeechToText.ts`. The API's `/v1/stt/token`
-response names the provider; `createSpeechToText` picks the adapter. Shipping adapters:
+response names the provider; `createSpeechToText` looks it up in the registry,
+`src/main/stt/registry.ts`.
+
+Vendors bill a session for as long as its socket is open (AssemblyAI by the second, silent or not),
+so no adapter manages a socket. A websocket vendor only describes its protocol (`SttProtocol` in
+`src/main/stt/core/SttProtocol.ts`: URL and auth, ready signal, audio framing, keep-alive, how to
+read a message, the finish sequence and its completion signal, what close codes mean).
+`SttConnection` (`src/main/stt/core/SttConnection.ts`) runs the one lifecycle for all of them:
+connecting → open → finishing → closed, one connect timeout over the handshake and the ready signal,
+audio dropped and counted outside open, Stop sends the finish sequence and terminates any socket
+still open after a hard timeout (5 s) whatever the vendor does, close is idempotent, a vendor close
+mid-call is one error then one "closed", keep-alive only while open. It meters each stream
+(connected ms from the handshake, audio ms sent) and logs both with an estimated cost at the price
+the API names (`stream.price_per_hour_usd`) when the stream closes.
+`src/main/stt/conformance.test.ts` runs the same contract against every registered network vendor
+and a local fake vendor, and fails if any test leaves a socket open. Shipping adapters:
 
 - `assemblyai`: Roger's vendor since 2026-10-06 (owner decision). Universal-Streaming v3
   websocket; the API's temporary token goes in the `token` query parameter. Audio is sent as
@@ -86,6 +101,37 @@ response names the provider; `createSpeechToText` picks the adapter. Shipping ad
   API, KeepAlive every 5 s, Finalize + CloseStream on stop.
 - `fake`: no network. Emits one line per two seconds of non-silent audio. Used by tests and by
   `ROGER_STT_PROVIDER=fake`.
+
+### Add a speech-to-text vendor
+
+Both apps change together, in one commit with `docs/api-contract.md` (house rule 8).
+
+Desktop:
+
+1. One protocol file, `src/main/stt/<vendor>/<Vendor>SpeechToText.ts`: a `<vendor>Protocol()`
+   returning an `SttProtocol`, and a class that only passes it to `WebSocketSpeechToText`. Put the
+   wire parser in `messages.ts` beside it, reading every field from `unknown` (`src/main/stt/json.ts`)
+   and returning `invalid` rather than throwing. Never open, time or close a socket there.
+2. Map Roger's `linear16` / 16000 Hz to the vendor's names, and cite the vendor docs you relied on,
+   with the date read, in the file header (close codes, rate limits, billing).
+3. One line in `src/main/stt/registry.ts`.
+4. One entry in `src/main/stt/testing/conformanceVendors.ts`: how the vendor says ready, its finish
+   messages and answer, a final line, a real mid-call close. Then `pnpm test`: the conformance
+   suite fails until the vendor closes every socket on every path.
+
+API:
+
+5. One `SttTokenIssuer` in `apps/api/src/roger_api/services/stt_tokens.py` that mints a
+   short-lived token (the vendor key never leaves the API), with tests on `httpx.MockTransport`.
+6. The provider id in `SttProvider` (`apps/api/src/roger_api/domain.py`), its key setting
+   (`<VENDOR>_API_KEY`) and a case in `Settings.stt_vendor_key` (`config.py`).
+7. One entry in `STT_VENDORS` (`apps/api/src/roger_api/stt_vendors.py`): issuer, default model,
+   model-name prefix, the vendor's token TTL limit, and the list price per stream-hour by model,
+   with the pricing URL and the date read. Say whether the vendor bills open time or audio sent.
+8. `.env.example`, `apps/api/README.md` and the provider table in `docs/api-contract.md`.
+
+Before relying on it: know the vendor's sessions-per-minute limit (every Start opens two) and
+what it bills for a silent stream.
 
 ## macOS notes
 

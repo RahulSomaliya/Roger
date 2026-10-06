@@ -53,7 +53,9 @@ The version reported by `/health` comes from the package metadata (`pyproject.to
 vendor key never leaves the API. Each vendor is one `SttTokenIssuer` in
 `src/roger_api/services/stt_tokens.py` and one entry in the vendor registry,
 `src/roger_api/stt_vendors.py` (issuer, default model, model-name prefix, token TTL limit, list
-price per stream-hour), picked by `STT_PROVIDER`.
+price per stream-hour), picked by `STT_PROVIDER`. To add a vendor, follow "Add a speech-to-text
+vendor" in [`apps/desktop/README.md`](../desktop/README.md#add-a-speech-to-text-vendor): the
+desktop and the API change together.
 
 AssemblyAI is Roger's vendor (owner decision, 2026-10-06: AssemblyAI lists Granola as a customer,
 live text costs about $0.15 an hour per stream, and it has generous free hours). The model
