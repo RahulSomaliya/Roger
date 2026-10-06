@@ -1,0 +1,110 @@
+{
+  "meetingId": "9b2e6f10-7c4d-4a5b-8e3f-61a0c2d9e874",
+  "title": "Northwind renewal: scope and pricing",
+  "sttProvider": "assemblyai",
+  "vendorName": "AssemblyAI",
+  "pricePerStreamHourUsd": 0.15,
+  "lines": [
+    {
+      "source": "system",
+      "text": "Thanks for making the time, I know the end of the quarter is hectic for you."
+    },
+    { "source": "mic", "text": "Of course. Happy to be here." },
+    {
+      "source": "system",
+      "text": "So the main thing on our side is the renewal. Legal wants the new data processing addendum signed before the fourteenth, and procurement wants to understand why the per-seat price moved."
+    },
+    {
+      "source": "mic",
+      "text": "Understood. Let's start with the price, since that's the bigger question."
+    },
+    {
+      "source": "mic",
+      "text": "Last year you had forty seats on the starter plan. This year you're at a hundred and twelve, and about thirty of those are in the Rotterdam office, which pushed you into the team tier."
+    },
+    { "source": "system", "text": "Right, that's what I expected." },
+    {
+      "source": "system",
+      "text": "Is there any flexibility on the team tier for seats that are mostly read-only?"
+    },
+    {
+      "source": "mic",
+      "text": "There is. Viewers who only read notes and never record don't count as seats, so if half the Rotterdam people are viewers, you'd be back under a hundred."
+    },
+    { "source": "system", "text": "Oh, that's good to know. I'll check with Anneliese." },
+    { "source": "mic", "text": "Anneliese Vandenbroucke-Haverkamp, from operations?" },
+    { "source": "system", "text": "That's her, yes. She owns the seat list." },
+    { "source": "mic", "text": "Great. I'll send her the seat export so she can tag the viewers." },
+    { "source": "system", "text": "Perfect." },
+    {
+      "source": "system",
+      "text": "Second thing is security. Our CISO asked whether call audio ever leaves the laptop."
+    },
+    {
+      "source": "mic",
+      "text": "Audio goes to the speech-to-text vendor while the call is running, and only for transcription. We've opted out of training on every vendor, and the audio backup on the Mac is deleted after seven days."
+    },
+    { "source": "system", "text": "And the transcripts?" },
+    {
+      "source": "mic",
+      "text": "Transcripts live in our Postgres, scoped to your workspace. Every query filters by workspace, and nothing reads across them."
+    },
+    { "source": "system", "text": "Okay. Can you put that in writing for the addendum?" },
+    { "source": "mic", "text": "Yes, I'll have the wording to you by Thursday." },
+    { "source": "system", "text": "Thursday works." },
+    {
+      "source": "system",
+      "text": "Third, and this is more of a wish: the team loves the notes, but they'd like action items pushed to Slack automatically after each call."
+    },
+    {
+      "source": "mic",
+      "text": "That's on the roadmap, though not this quarter. Today you can copy the action items, or ask Claude through the MCP connector to pull them for any call."
+    },
+    {
+      "source": "system",
+      "text": "We've been doing the Claude thing, actually. It works surprisingly well."
+    },
+    { "source": "mic", "text": "Good to hear. What do people ask it most?" },
+    {
+      "source": "system",
+      "text": "Mostly 'what did the client say about the timeline', and then they want the exact quote with the timestamp."
+    },
+    { "source": "mic", "text": "That's exactly the use case we built it for." },
+    { "source": "system", "text": "Yeah." },
+    {
+      "source": "system",
+      "text": "Okay, so on pricing: if Anneliese gets the viewer list to you by Friday, can you send a revised quote early next week?"
+    },
+    { "source": "mic", "text": "Yes. Monday at the latest." },
+    {
+      "source": "system",
+      "text": "And just so I can tell procurement: the revised quote would be on the team tier at the viewer-adjusted count, with the twelve percent multi-year discount if we sign for two years?"
+    },
+    { "source": "mic", "text": "Correct, twelve percent for two years, fifteen for three." },
+    { "source": "system", "text": "Fifteen for three. Noted." },
+    { "source": "mic", "text": "Anything else on your list?" },
+    {
+      "source": "system",
+      "text": "Just one: can the renewal date move from the first of November to the first of December, to line up with our fiscal year? Our finance team is very particular about that."
+    },
+    {
+      "source": "mic",
+      "text": "I don't see why not. I'll confirm with our finance person and put it in the quote."
+    },
+    { "source": "system", "text": "Great." },
+    { "source": "mic", "text": "So, to recap the actions." },
+    { "source": "mic", "text": "I send Anneliese the seat export today." },
+    { "source": "mic", "text": "Anneliese tags the viewers by Friday." },
+    {
+      "source": "mic",
+      "text": "I send the security wording for the addendum by Thursday, and the revised quote by Monday."
+    },
+    {
+      "source": "system",
+      "text": "And I'll get the addendum to legal as soon as I have your wording."
+    },
+    { "source": "mic", "text": "Perfect. Did I miss anything?" },
+    { "source": "system", "text": "No, I think that's everything. Thanks so much." },
+    { "source": "mic", "text": "Thank you. Talk soon." }
+  ]
+}
