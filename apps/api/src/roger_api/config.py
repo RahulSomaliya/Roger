@@ -70,7 +70,7 @@ class Settings(NotesSettings, CalendarSettings, DatabaseSettings):
     # startup by name. Without the field, `extra="ignore"` drops it in silence and the API runs
     # the preset's model while the `.env` says another (M3 bake-off configurations would lie).
     stt_model: None = None
-    # None means the registry's list price for the preset's model; read
+    # A rate without keyterms. None means the registry's list price for the preset's model; read
     # `stt_stream_price_per_hour_usd`, not this.
     stt_price_per_hour_usd: float | None = Field(default=None, ge=0)
     stt_language: str = "en"
@@ -174,7 +174,12 @@ class Settings(NotesSettings, CalendarSettings, DatabaseSettings):
 
     @property
     def stt_stream_price_per_hour_usd(self) -> float | None:
-        """USD per hour of one stream: STT_PRICE_PER_HOUR_USD, else the list price, else None."""
+        """USD per hour of one stream opened with no keyterms: STT_PRICE_PER_HOUR_USD, else the
+        list price of the preset's model, else None.
+
+        A stream that carries the workspace's jargon list pays the vendor's keyterm surcharge on
+        top (schemas/stt.py adds it), so STT_PRICE_PER_HOUR_USD is never an all-in rate: one
+        would count the surcharge twice on every stream with a list."""
         if self.stt_price_per_hour_usd is not None:
             return self.stt_price_per_hour_usd
         return self.stt_vendor.price_for(self.stt_stream_model)

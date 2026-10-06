@@ -37,7 +37,7 @@ migrated it logs `database_not_ready` and exits.
 | `SONIOX_API_KEY` | empty | Required when `STT_PROVIDER=soniox`; startup fails without it. Never leaves the API. |
 | `STT_TOKEN_TTL_SECONDS` | `30` | Lifetime of the speech-to-text token handed to the desktop (1..3600; at most 600 with the AssemblyAI presets, the vendor's limit). |
 | `STT_MODEL` | retired | The preset names the model. Startup fails while `STT_MODEL` has a value and names it; delete the line (a blank `STT_MODEL=` still counts as unset). |
-| `STT_PRICE_PER_HOUR_USD` | unset | USD per hour of one open stream, returned to the desktop as `stream.price_per_hour_usd`. Unset means the list price of the preset's model (`src/roger_api/stt_vendors.py`); set it for a negotiated rate. A model with no list price returns `null` and logs `stt_price_unknown` at startup. |
+| `STT_PRICE_PER_HOUR_USD` | unset | USD per hour of one open stream without keyterms, returned to the desktop as `stream.price_per_hour_usd_without_keyterms`. Unset means the list price of the preset's model (`src/roger_api/stt_vendors.py`); set it for a negotiated rate. When the workspace has a jargon list, `stream.price_per_hour_usd` is this plus the vendor's keyterm surcharge for the model, so never set an all-in rate here: it would count the surcharge twice. A model with no list price returns `null` and logs `stt_price_unknown` at startup. |
 | `STT_LANGUAGE` / `STT_SAMPLE_RATE` / `STT_ENCODING` | `en` / `16000` / `linear16` | Returned to the desktop as stream settings. |
 | `DEFAULT_WORKSPACE_ID` | `805dd994-ff52-405c-a3cc-58f09b32a2dd` | The one workspace every M1 request resolves to. |
 | `DEFAULT_WORKSPACE_NAME` | `Linkt` | Used only when the workspace row is first created. |
