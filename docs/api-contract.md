@@ -201,6 +201,34 @@ and the desktop uses its built-in fake adapter (useful for development without a
 A vendor that refuses, fails, times out or answers with something unreadable is a
 `502 stt_provider_error`. The vendor key is never in a response or a log line.
 
+### Vocabulary
+
+Not built yet. Owner: M3-T2, which writes its routes here, with their `409`s.
+
+### STT usage
+
+Not built yet. Owner: M3-T19a, which writes its routes here, with their `409`s.
+
+### Note templates
+
+Not built yet. Owner: M4-T3, which writes its routes here, with their `409`s.
+
+### Notes
+
+Not built yet. Owner: M4-T6, which writes its routes here, with their `409`s.
+
+### Notes runs and streaming
+
+Not built yet. Owner: M4-T8, which writes its routes here, with their `409`s.
+
+### Chat
+
+Not built yet. Owner: M4-T10, which writes its routes here, with their `409`s.
+
+### Calendar
+
+Not built yet. Owner: M5-T3, which writes its routes here, with their `409`s.
+
 ## MCP
 
 Endpoint: `POST /mcp` and `GET /mcp` (MCP Streamable HTTP, stateless). Same bearer token.
@@ -254,3 +282,15 @@ transcript_segments  (id uuid pk, meeting_id uuid fk on delete cascade, workspac
                       text text, confidence real null, words jsonb null, created_at timestamptz)
                      index (meeting_id, start_ms)
 ```
+
+Phase 2 tables. Each line is replaced by its owner's tables, in the form above, in the commit that
+fills its migration:
+
+- Vocabulary (`vocabulary_terms`, revision `0002`): M3-T2.
+
+- Notes (`meeting_notes`, `llm_runs`, `chat_messages`, revision `0003`): M4-T1.
+
+- Calendar (`calendar_connections`, `meeting_attendees`, the new `meetings` columns, revision
+  `0004`): M5-T1.
+
+- STT usage (`stt_usage`, revision `0005`): M3-T19a.
