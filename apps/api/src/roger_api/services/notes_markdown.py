@@ -46,8 +46,9 @@ class NoteBlock:
     """The block as the prompt shows it: heading marks, list marker and quote marks kept, because
     the user's structure says what matters to them."""
     text: str
-    """The content alone. Check a line's numbers against this, never `markdown`: the `3.` of an
-    ordered list item is not a number the user wrote."""
+    """The words alone. Check a line's numbers and words against this, never `markdown`: the `3.`
+    of an ordered list item, a link's target, a code fence's language and a pasted chip's time are
+    not things the user wrote."""
 
 
 def render_markdown(doc: Mapping[str, object]) -> str:
@@ -138,7 +139,10 @@ class _Block:
     """Prefixes the first line: indentation, quote marks, list marker, heading marks."""
     hang: str
     """Prefixes every later line: indentation and quote marks."""
+    body: str
+    """The content as Markdown."""
     text: str
+    """The content as plain words (see `NoteBlock.text`)."""
     joined: bool
     """Inside a list: one newline from the block before it, not a blank line."""
     numbered: bool = True
@@ -146,7 +150,7 @@ class _Block:
 
     @property
     def markdown(self) -> str:
-        first, *rest = self.text.split("\n")
+        first, *rest = self.body.split("\n")
         later = (self.hang + line if line else self.hang.rstrip() for line in rest)
         return "\n".join([self.lead + first, *later])
 
@@ -165,7 +169,7 @@ def _walk(nodes: Iterable[_Node], hang: str, *, joined: bool) -> Iterator[_Block
     container) read as one paragraph."""
     for is_inline, group in groupby(nodes, key=lambda node: node.type in _INLINE_TYPES):
         if is_inline:
-            yield from _text_block(hang, hang, _inline(group), joined=joined)
+            yield from _text_block(hang, hang, tuple(group), joined=joined)
         else:
             for node in group:
                 yield from _walk_node(node, hang, joined=joined)
@@ -174,18 +178,19 @@ def _walk(nodes: Iterable[_Node], hang: str, *, joined: bool) -> Iterator[_Block
 def _walk_node(node: _Node, hang: str, *, joined: bool) -> Iterator[_Block]:
     match node.type:
         case "paragraph":
-            yield from _text_block(hang, hang, _inline(node.content), joined=joined)
+            yield from _text_block(hang, hang, node.content, joined=joined)
         case "heading":
             marks = "#" * _heading_level(node.attrs)
-            yield from _text_block(f"{hang}{marks} ", hang, _inline(node.content), joined=joined)
+            yield from _text_block(f"{hang}{marks} ", hang, node.content, joined=joined)
         case "codeBlock":
             code = "".join(child.text for child in node.content)
             if code.strip():
                 fence = _fence(code, shortest=3)
                 language = _string(node.attrs.get("language"))
-                yield _Block(hang, hang, f"{fence}{language}\n{code}\n{fence}", joined)
+                body = f"{fence}{language}\n{code}\n{fence}"
+                yield _Block(hang, hang, body=body, text=code, joined=joined)
         case "horizontalRule":
-            yield _Block(hang, hang, "---", joined, numbered=False)
+            yield _Block(hang, hang, body="---", text="", joined=joined, numbered=False)
         case "blockquote":
             yield from _walk(node.content, f"{hang}> ", joined=joined)
         case "bulletList" | "orderedList":
@@ -216,10 +221,11 @@ def _walk_list(node: _Node, hang: str, *, joined: bool) -> Iterator[_Block]:
             number += 1
 
 
-def _text_block(lead: str, hang: str, text: str, *, joined: bool) -> Iterator[_Block]:
-    text = text.strip()
-    if text:
-        yield _Block(lead, hang, text, joined)
+def _text_block(lead: str, hang: str, nodes: Sequence[_Node], *, joined: bool) -> Iterator[_Block]:
+    body = _inline(nodes, plain=False).strip()
+    if body:
+        text = _inline(nodes, plain=True).strip()
+        yield _Block(lead, hang, body=body, text=text, joined=joined)
 
 
 def _heading_level(attrs: Mapping[str, object]) -> int:
@@ -230,33 +236,41 @@ def _heading_level(attrs: Mapping[str, object]) -> int:
 # --- Inline content ----------------------------------------------------------------------------
 
 
-def _inline(nodes: Iterable[_Node]) -> str:
-    """Inline nodes as Markdown. A source time is kept one space apart from the words around it."""
+def _inline(nodes: Iterable[_Node], *, plain: bool) -> str:
+    """Inline nodes as Markdown, or with `plain` as the words alone: no mark delimiters, link
+    targets or source times (see `NoteBlock.text`).
+
+    A source time is kept one space apart from the words around it. A chip that shows nothing (in
+    plain words, or with no time to show) still parts them: `12`, a chip, `seats` must not become
+    `12seats`, a word nobody wrote.
+    """
     out = ""
     after_source = False
     for node in nodes:
         is_source = node.type == "citation"
-        piece = _inline_piece(node)
-        if not piece:
-            continue
-        if (is_source or after_source) and out and not out[-1].isspace() and not piece[0].isspace():
+        piece = _inline_piece(node, plain=plain)
+        spaced = is_source or after_source
+        if spaced and out and piece and not out[-1].isspace() and not piece[0].isspace():
             out += " "
         out += piece
-        after_source = is_source
+        if is_source:
+            after_source = True
+        elif piece:
+            after_source = False
     return out
 
 
-def _inline_piece(node: _Node) -> str:
+def _inline_piece(node: _Node, *, plain: bool) -> str:
     match node.type:
         case "text":
-            return _marked(node.text, node.marks)
+            return node.text if plain else _marked(node.text, node.marks)
         case "hardBreak":
             return "\n"
         case "citation":
-            return _source_time(node.attrs)
+            return "" if plain else _source_time(node.attrs)
         case _:
             # An unknown inline node keeps its text.
-            return _inline(node.content)
+            return _inline(node.content, plain=plain)
 
 
 def _source_time(attrs: Mapping[str, object]) -> str:
@@ -312,10 +326,8 @@ def _from_your_notes_index(nodes: Sequence[_Node]) -> int | None:
     wanted = FROM_YOUR_NOTES_HEADING.casefold()
     for index in range(len(nodes) - 1, -1, -1):
         node = nodes[index]
-        if node.type == "heading" and " ".join(_plain(node).split()).casefold() == wanted:
+        if node.type != "heading":
+            continue
+        if " ".join(_inline(node.content, plain=True).split()).casefold() == wanted:
             return index
     return None
-
-
-def _plain(node: _Node) -> str:
-    return node.text + "".join(_plain(child) for child in node.content)

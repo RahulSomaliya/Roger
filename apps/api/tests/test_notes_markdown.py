@@ -289,15 +289,52 @@ def test_user_notes_split_into_numbered_blocks() -> None:
 
     assert split_note_blocks(user_doc) == (
         NoteBlock(ref="N1", markdown="## Pricing", text="Pricing"),
-        NoteBlock(
-            ref="N2", markdown="They want *annual* billing", text="They want *annual* billing"
-        ),
+        NoteBlock(ref="N2", markdown="They want *annual* billing", text="They want annual billing"),
         NoteBlock(ref="N3", markdown="- Discount ask", text="Discount ask"),
         NoteBlock(ref="N4", markdown="  - Maybe 10%", text="Maybe 10%"),
         NoteBlock(ref="N5", markdown="- Send quote", text="Send quote"),
         NoteBlock(ref="N6", markdown="1. Call legal", text="Call legal"),
         NoteBlock(ref="N7", markdown="> Budget is fixed", text="Budget is fixed"),
     )
+
+
+# A block's text is what the support check reads as the user's own words and numbers. A link's
+# target, a code fence's language and a pasted chip's time are none of those: with them, the URL's
+# 75000 backs "deck budget is $75k" and the chip's 12 backs "12 seats", which the user never wrote.
+@pytest.mark.parametrize(
+    ("block", "markdown", "words"),
+    [
+        pytest.param(
+            paragraph("Deck ", text("budget", link("https://docs.example/d/2024/q3-75000"))),
+            "Deck [budget](https://docs.example/d/2024/q3-75000)",
+            "Deck budget",
+            id="link-target",
+        ),
+        pytest.param(
+            {"type": "codeBlock", "attrs": {"language": "html5"}, "content": [text("x = 1")]},
+            "```html5\nx = 1\n```",
+            "x = 1",
+            id="code-fence-and-language",
+        ),
+        pytest.param(
+            paragraph("Renewal ", citation(725_000)), "Renewal [00:12:05]", "Renewal", id="chip"
+        ),
+        pytest.param(
+            paragraph("Renewal", citation(725_000), "for ten seats"),
+            "Renewal [00:12:05] for ten seats",
+            "Renewal for ten seats",
+            id="chip-between-words",
+        ),
+        pytest.param(
+            paragraph(text("Ship", "bold"), " ", text("now", "strike"), " ", text("v2", "code")),
+            "**Ship** ~~now~~ `v2`",
+            "Ship now v2",
+            id="mark-delimiters",
+        ),
+    ],
+)
+def test_note_block_text_is_the_words_alone(block: Json, markdown: str, words: str) -> None:
+    assert split_note_blocks(doc(block)) == (NoteBlock(ref="N1", markdown=markdown, text=words),)
 
 
 def test_empty_user_notes_have_no_blocks() -> None:
