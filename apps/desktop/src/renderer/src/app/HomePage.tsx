@@ -1,3 +1,4 @@
+import { meetingPhase } from './captureMeeting';
 import { formatClockTime, UNTITLED_MEETING } from './labels';
 import { isSlotEmpty, SlotOutlet } from './SlotOutlet';
 import { useShell } from './ShellContext';
@@ -5,7 +6,8 @@ import { useShell } from './ShellContext';
 /** Home: the recording in progress, then the `home` slot (M2's kept-audio card, M5's Today). */
 export function HomePage() {
   const { capture, captureMeeting, navigate } = useShell();
-  const recording = (capture.status?.phase ?? 'idle') !== 'idle' && captureMeeting !== null;
+  const recording =
+    captureMeeting !== null && meetingPhase(captureMeeting, capture.status) !== 'idle';
   return (
     <div className="page">
       <header className="page-header">

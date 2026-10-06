@@ -1,3 +1,4 @@
+import { meetingPhase } from './captureMeeting';
 import { formatClockTime, UNTITLED_MEETING } from './labels';
 import { useShell } from './ShellContext';
 
@@ -8,7 +9,7 @@ import { useShell } from './ShellContext';
  */
 export function RecentMeetings() {
   const { route, navigate, capture, captureMeeting } = useShell();
-  const recording = (capture.status?.phase ?? 'idle') !== 'idle';
+  const recording = meetingPhase(captureMeeting, capture.status) !== 'idle';
   return (
     <section className="sidebar-section" aria-labelledby="recent-meetings">
       <h2 id="recent-meetings" className="sidebar-heading">

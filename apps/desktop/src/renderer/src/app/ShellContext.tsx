@@ -13,7 +13,10 @@ export interface Shell {
    * and the call audio, so it must outlive every page. Never call useCapture anywhere else.
    */
   readonly capture: CaptureView;
-  /** The meeting `capture` describes: recording, or the last one after Stop (captureMeeting.ts). */
+  /**
+   * The meeting `capture` describes: recording, or the last one after Stop and while the next one
+   * starts. Whether it is recording: meetingPhase (captureMeeting.ts), never main's phase alone.
+   */
   readonly captureMeeting: CaptureMeeting | null;
   /** "New note": starts a recording and, once it records, opens its meeting. */
   readonly startNewNote: () => void;

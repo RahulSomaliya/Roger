@@ -1,3 +1,4 @@
+import { meetingPhase } from '../app/captureMeeting';
 import { useShell } from '../app/ShellContext';
 import { formatClockTime, PHASE_LABEL, UNTITLED_MEETING } from '../app/labels';
 import { StatusPanel } from '../components/StatusPanel';
@@ -13,6 +14,8 @@ export function MeetingPage({ meetingId }: { meetingId: string }) {
   const { capture, captureMeeting, stopRecording } = useShell();
   const { status, segments, interim, busy } = capture;
 
+  // Also on screen for a moment on the last meeting's page after New note: main names the new
+  // meeting (and useCapture clears these lines) before start() resolves and ShellContext opens it.
   if (captureMeeting?.id !== meetingId) {
     return (
       <div className="page">
@@ -26,7 +29,9 @@ export function MeetingPage({ meetingId }: { meetingId: string }) {
     );
   }
 
-  const phase = status?.phase ?? 'idle';
+  // This meeting's phase, not main's: while the next recording starts this page still shows the
+  // last meeting's lines, and main's 'starting' is not about them (meetingPhase).
+  const phase = meetingPhase(captureMeeting, status);
   const recording = phase === 'recording';
   return (
     <div className="meeting-page">

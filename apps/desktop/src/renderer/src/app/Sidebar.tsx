@@ -1,3 +1,4 @@
+import { meetingPhase } from './captureMeeting';
 import { PHASE_LABEL } from './labels';
 import { RecentMeetings } from './RecentMeetings';
 import { HOME, type Route } from './router';
@@ -33,13 +34,15 @@ export function Sidebar() {
 }
 
 /**
- * "New note" while idle. While a recording runs (or starts, or stops) the same place shows its
- * state and opens its meeting, where Stop is: one recording at a time.
+ * "New note" while idle. While a meeting records or stops, the same place shows that and opens
+ * the meeting, where Stop is: one recording at a time. While a recording starts main names no
+ * meeting yet (meetingPhase), so the button only shows main's phase, disabled.
  */
 function RecordingAction() {
   const { navigate, capture, captureMeeting, startNewNote } = useShell();
   const phase = capture.status?.phase ?? 'idle';
-  if (phase !== 'idle' && captureMeeting !== null) {
+  const livePhase = meetingPhase(captureMeeting, capture.status);
+  if (livePhase !== 'idle' && captureMeeting !== null) {
     return (
       <button
         type="button"
@@ -49,7 +52,7 @@ function RecordingAction() {
         }}
       >
         <span className="recording-dot" aria-hidden="true" />
-        {PHASE_LABEL[phase]}
+        {PHASE_LABEL[livePhase]}
       </button>
     );
   }
