@@ -1,8 +1,10 @@
+from collections.abc import Mapping, Sequence
 from typing import Annotated, Self
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from roger_api.db.models_calendar import MeetingAttendee
 from roger_api.domain import MAX_SEGMENTS_PER_APPEND, AudioSource
 from roger_api.schemas.common import Confidence, NonEmptyText, OffsetMs, UtcDatetime
 from roger_api.schemas.meetings import MeetingOut
@@ -63,8 +65,11 @@ class TranscriptOut(BaseModel):
     segments: list[SegmentOut]
 
     @classmethod
-    def from_transcript(cls, transcript: Transcript) -> Self:
+    def from_transcript(
+        cls, transcript: Transcript, attendees: Mapping[UUID, Sequence[MeetingAttendee]]
+    ) -> Self:
+        """`attendees` as `MeetingOut.from_record` takes them."""
         return cls(
-            meeting=MeetingOut.from_record(transcript.meeting),
+            meeting=MeetingOut.from_record(transcript.meeting, attendees),
             segments=[SegmentOut.model_validate(segment) for segment in transcript.segments],
         )

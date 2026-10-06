@@ -48,6 +48,8 @@ async def test_create_is_201_then_200_for_the_same_id(client: httpx.AsyncClient)
         "started_at",
         "ended_at",
         "segment_count",
+        "start_source",
+        "calendar_event",
         "created_at",
         "updated_at",
     }
