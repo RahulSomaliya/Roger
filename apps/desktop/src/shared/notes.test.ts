@@ -169,17 +169,77 @@ describe('notes docs', () => {
     ).toBeNull();
   });
 
-  it(`accepts a doc nested ${MAX_NOTE_DOC_DEPTH} levels deep and refuses one level more`, () => {
-    // Levels count every object and array: the doc is 1, its content list 2, a top node 3, and
-    // each blockquote around a node adds its object and its content list.
-    function nested(blockquotes: number): unknown {
-      let node: unknown = { type: 'paragraph', content: [] };
+  describe('depth', () => {
+    // Levels follow the doc's tree: the doc is 1 and each node one below the node holding it (a
+    // `content` list sits on its node's level). Inside a node, every other object or array is one
+    // level below its parent. The API's 422 (M4-T6) must count no more strictly.
+    const TOO_DEEP = `nested deeper than ${MAX_NOTE_DOC_DEPTH} levels`;
+    const LINKED: NoteNode = {
+      type: 'text',
+      text: 'the brief',
+      marks: [{ type: 'link', attrs: { href: 'https://example.com/brief', target: '_blank' } }],
+    };
+
+    /** A paragraph holding `text`, inside `blockquotes` blockquotes. */
+    function quoted(blockquotes: number, text: NoteNode): unknown {
+      let node: NoteNode = { type: 'paragraph', content: [text] };
       for (let i = 0; i < blockquotes; i += 1) node = { type: 'blockquote', content: [node] };
       return { type: 'doc', content: [node] };
     }
-    // 14 blockquotes put the paragraph at level 31 and its empty content list at 32.
-    expect(noteDocProblem(nested(14))).toBeNull();
-    expect(noteDocProblem(nested(15))).toMatch(/deeper than 32/);
+
+    it('accepts a doc 32 levels deep and refuses one 33 deep', () => {
+      // The plan's limit; both fixtures below are counted for 32, so changing it fails them.
+      expect(MAX_NOTE_DOC_DEPTH).toBe(32);
+      // Blockquotes at 2 to b + 1, the paragraph at b + 2, its text node at b + 3.
+      expect(noteDocProblem(quoted(29, { type: 'text', text: 'x' }))).toBeNull();
+      expect(noteDocProblem(quoted(30, { type: 'text', text: 'x' }))).toBe(TOO_DEEP);
+    });
+
+    it('counts the objects and arrays of marks and attrs as levels', () => {
+      // The text node at b + 3, its marks list at b + 4, the link at b + 5, its attrs at b + 6.
+      expect(noteDocProblem(quoted(26, LINKED))).toBeNull();
+      expect(noteDocProblem(quoted(27, LINKED))).toBe(TOO_DEEP);
+    });
+
+    it('saves a bullet list a user tabbed 13 levels deep, a link in its deepest item', () => {
+      // StarterKit sinks a list item on Tab with no cap. Counting every JSON object and array
+      // refused the 7th level, and with it every later save of that note.
+      let list: NoteNode = {
+        type: 'bulletList',
+        content: [{ type: 'listItem', content: [{ type: 'paragraph', content: [LINKED] }] }],
+      };
+      for (let level = 2; level <= 13; level += 1) {
+        const point: NoteNode = { type: 'paragraph', content: [{ type: 'text', text: 'point' }] };
+        list = { type: 'bulletList', content: [{ type: 'listItem', content: [point, list] }] };
+      }
+      // The 13th list at 26, its item 27, paragraph 28, text 29, marks 30, link 31, attrs 32.
+      expect(noteDocProblem({ type: 'doc', content: [list] })).toBeNull();
+    });
+
+    it('refuses a doc nested thousands deep, by nodes or inside attrs, without recursing', () => {
+      const deepNodes: unknown = { type: 'paragraph' };
+      const deepArrays: unknown[] = [];
+      // A `content` key inside attrs still costs its objects a level each.
+      const deepContentKeys: Record<string, unknown> = {};
+      let node = deepNodes;
+      let array = deepArrays;
+      let object = deepContentKeys;
+      for (let i = 0; i < 100_000; i += 1) {
+        node = { type: 'blockquote', content: [node] };
+        const innerArray: unknown[] = [];
+        array.push(innerArray);
+        array = innerArray;
+        const innerObject: Record<string, unknown> = {};
+        object.content = [innerObject];
+        object = innerObject;
+      }
+      const docs: unknown[] = [
+        { type: 'doc', content: [node] },
+        { type: 'doc', content: [{ type: 'paragraph', attrs: { values: deepArrays } }] },
+        { type: 'doc', content: [{ type: 'paragraph', attrs: deepContentKeys }] },
+      ];
+      for (const doc of docs) expect(noteDocProblem(doc)).toBe(TOO_DEEP);
+    });
   });
 
   it(`refuses a doc over ${MAX_NOTE_DOC_BYTES} bytes of JSON, counted in UTF-8`, () => {

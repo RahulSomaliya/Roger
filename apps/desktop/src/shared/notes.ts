@@ -75,6 +75,12 @@ export const NOT_SAID_ON_THE_CALL = 'Not said on the call';
  * leniently, never more strictly.
  */
 export const MAX_NOTE_DOC_BYTES = 512 * 1024;
+/**
+ * Levels follow the doc's tree, never every JSON container: StarterKit sinks a list item on Tab
+ * with no cap, and counting every object and array (four per list level) refused a 7th list
+ * level, and with it every later save of that note. Counted by node, a link in a list 13 deep
+ * still fits (`notes.test.ts`, "depth").
+ */
 export const MAX_NOTE_DOC_DEPTH = 32;
 
 /** Keys that reach prototypes when a doc becomes DOM attributes (GHSA-cp6q-959q-f8rh). */
@@ -89,8 +95,9 @@ const SEGMENT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12
  * with a type, its `content` a list of nodes, `text` a string, `attrs` an object, `marks` a list
  * of typed marks; citation attrs (`isCitationAttrs`); only values JSON carries as they are; no
  * `__proto__`, `constructor` or `prototype` key anywhere; at most MAX_NOTE_DOC_DEPTH levels, the
- * doc being level 1 and every object or array one level below its parent; at most
- * MAX_NOTE_DOC_BYTES of JSON in UTF-8.
+ * doc being level 1 and every object or array one level below its parent, except a list under a
+ * `content` key, which sits on the level of the object holding it (so a node is one level below
+ * the node holding it); at most MAX_NOTE_DOC_BYTES of JSON in UTF-8.
  */
 export function noteDocProblem(value: unknown): string | null {
   if (!isPlainObject(value) || value.type !== 'doc') return 'not a TipTap doc';
@@ -142,11 +149,18 @@ function jsonProblem(doc: Record<string, unknown>): string | null {
     const isArray = Array.isArray(value);
     if (!isArray && !isPlainObject(value)) return 'holds a value JSON cannot carry';
     if (level > MAX_NOTE_DOC_DEPTH) return `nested deeper than ${MAX_NOTE_DOC_DEPTH} levels`;
-    if (!isArray) {
-      const forbidden = Object.keys(value).find((key) => FORBIDDEN_KEYS.has(key));
-      if (forbidden !== undefined) return `holds a "${forbidden}" key`;
+    if (isArray) {
+      for (const child of Object.values(value)) stack.push({ value: child, level: level + 1 });
+      continue;
     }
-    for (const child of Object.values(value)) stack.push({ value: child, level: level + 1 });
+    const forbidden = Object.keys(value).find((key) => FORBIDDEN_KEYS.has(key));
+    if (forbidden !== undefined) return `holds a "${forbidden}" key`;
+    // Any `content` key, not only a node's: simpler to match in the API, and still bounded,
+    // because every object costs a level, so the JSON nests at most twice MAX_NOTE_DOC_DEPTH.
+    for (const [key, child] of Object.entries(value)) {
+      const free = key === 'content' && Array.isArray(child);
+      stack.push({ value: child, level: free ? level : level + 1 });
+    }
   }
   return null;
 }
