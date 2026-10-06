@@ -88,9 +88,12 @@ export interface NotesApi {
   resolveNoteConflict(request: ResolveNoteConflictRequest): Promise<LocalNote>;
   listNoteTemplates(): Promise<NoteTemplate[]>;
   /**
-   * The Generate button, or the answer to "Which kind of call was this?": a pending generate
-   * waiting for a template takes this one and keeps its run id; otherwise main writes a new one.
-   * Rejects while a run is streaming.
+   * The Generate button, Retry, or the answer to "Which kind of call was this?". A pending
+   * generate that has not failed (waiting for a template, lines or notes) takes this template and
+   * keeps its run id and reason: an attempt may already have reached the API, and a new id would
+   * start a second paid run. A failed one, or none, gets a new run id with reason `button`: the
+   * API replays a finished run's result to a re-sent id, the same failure again. Rejects while a
+   * run is streaming.
    */
   generateNotes(request: GenerateNotesRequest): Promise<PendingGenerateState>;
   /** Stops the meeting's run (its stream ends with a `cancelled` error) or drops a waiting one. */

@@ -153,6 +153,30 @@ describe('the notes fake', () => {
     ).resolves.toEqual({ ...asking, templateId: 'client_call', status: { phase: 'running' } });
   });
 
+  it('keeps the run id and reason of a generate waiting for lines or notes', async () => {
+    // An attempt may already have reached the API (a crash, a stale-version 409): a new id would
+    // start a second paid run.
+    const { hub, notes } = setUp();
+    const waits: PendingGenerateState['status'][] = [
+      { phase: 'waiting_for_lines', waitingLines: 12 },
+      { phase: 'waiting_for_notes', cause: 'offline' },
+    ];
+    for (const status of waits) {
+      const waiting: PendingGenerateState = {
+        meetingId: MEETING,
+        runId: '0b5a3c2d-1e4f-4a6b-8c7d-9e0f1a2b3c4d',
+        templateId: 'standup',
+        reason: 'after_stop',
+        createdAt: '2026-10-06T10:30:00.000Z',
+        status,
+      };
+      hub.emit(notesChannels.NotesPendingGenerateChanged, { meetingId: MEETING, pending: waiting });
+      await expect(
+        notes.generateNotes({ meetingId: MEETING, templateId: 'general' }),
+      ).resolves.toEqual({ ...waiting, templateId: 'general', status: { phase: 'running' } });
+    }
+  });
+
   it('retries a failed generate under a new run id, never the failed one', async () => {
     // The API replays a finished run's stored result to a re-sent run id: the failure again.
     const { hub, notes } = setUp();
