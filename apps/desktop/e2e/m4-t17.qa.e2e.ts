@@ -21,8 +21,8 @@ import {
 /*
  * Browser QA for M4-T17's notes editor (qa/README.md): both themes, 1440 and 390 wide, long
  * realistic notes with citation chips, typing into empty notes, the Tab cap on deep lists, a
- * conflict, a doc the editor cannot hold, and a save that fails; then, once, the quit flush, the
- * pagehide save and read-only AI notes.
+ * conflict, a doc the editor cannot hold (alone, and as a conflict's other version), and a save
+ * that fails; then, once, the quit flush, the pagehide save and read-only AI notes.
  *
  * Nothing mounts NoteEditor in the app until M4-T20, so this script mounts "My notes" and "AI
  * notes" alone on the preview's `empty-mac` page, inside the navigator provider the meeting page
@@ -585,7 +585,7 @@ afterAll(async () => {
       Harness: 'NoteEditor mounted alone on the preview page until M4-T20 mounts it',
       Data: 'An hour-long client call: rough notes three lists deep with a long link, AI notes with 12 chips',
     },
-    'Long notes, chips, typing and saving, the Tab cap, a conflict, an unshowable doc and a failed save',
+    'Long notes, chips, typing and saving, the Tab cap, a conflict, an unshowable doc (alone and in a conflict) and a failed save',
   );
   process.stdout.write(
     `\nM4-T17 QA: ${results.map(({ shot, check }) => `${shot} ${check}`).join(', ')}\n${manifest}\n`,
@@ -819,6 +819,63 @@ describe.each(qa.QA_THEMES.flatMap((theme) => qa.QA_WIDTHS.map((width) => ({ the
             expect(await page.locator(contentOf(MY_NOTES)).count()).toBe(0);
             await scrollToMiddle(page, contentOf(AI_NOTES));
             await qa.expectVisible(page, contentOf(AI_NOTES));
+          },
+        );
+      } finally {
+        await preview.close();
+      }
+    });
+
+    it('keeps Use mine when the other version is a doc it cannot hold', async () => {
+      const preview = await run.open({ scenario: 'empty-mac', theme, width });
+      const { page } = preview;
+      try {
+        // A 409 brought a doc this build cannot hold (a newer Roger wrote it), and main kept the
+        // user's own notes as the copy.
+        await openNotes(
+          page,
+          [stored('user', UNSHOWABLE, { sync: 'conflict', conflictCopy: MY_COPY, baseVersion: 5 })],
+          [pane('user')],
+        );
+        await shootChecked(
+          preview,
+          'A doc the editor cannot hold',
+          `unshowable-conflict-${tag}`,
+          'A conflict whose other version the editor cannot hold: no editor, but "Two versions", a banner that says Roger cannot show that version, Use mine and Keep the other version',
+          async () => {
+            await qa.expectVisible(page, `${editorOf(MY_NOTES)} .note-conflict`);
+            await qa.expectVisible(page, `${editorOf(MY_NOTES)} .note-button-primary`);
+            expect(await statusOf(page, MY_NOTES)).toBe('Two versions');
+            expect(await page.textContent(`${editorOf(MY_NOTES)} .note-conflict-text`)).toContain(
+              'Roger cannot show that version',
+            );
+            expect(
+              await page.textContent(
+                `${editorOf(MY_NOTES)} .note-conflict .note-button:not(.note-button-primary)`,
+              ),
+            ).toBe('Keep the other version');
+            await qa.expectVisible(page, `${editorOf(MY_NOTES)} .note-editor-error`);
+            expect(await page.locator(contentOf(MY_NOTES)).count()).toBe(0);
+            await expectTokenColour(page, `${editorOf(MY_NOTES)} .note-conflict-text`, '--ink');
+          },
+        );
+
+        await page.click(`${editorOf(MY_NOTES)} .note-button-primary`);
+        await page.waitForSelector(contentOf(MY_NOTES));
+        await qa.settle(page);
+        await shootChecked(
+          preview,
+          'A doc the editor cannot hold',
+          `unshowable-use-mine-${tag}`,
+          "After Use mine: the editor opens on the user's own notes, with no banner and no problem, saved on this Mac",
+          async () => {
+            await qa.expectVisible(page, contentOf(MY_NOTES));
+            expect(await page.textContent(contentOf(MY_NOTES))).toContain(
+              'Ask about the Q3 renewal date',
+            );
+            expect(await page.locator(`${editorOf(MY_NOTES)} .note-conflict`).count()).toBe(0);
+            expect(await page.locator(`${editorOf(MY_NOTES)} .note-editor-error`).count()).toBe(0);
+            expect(await statusOf(page, MY_NOTES)).toBe('Saved on this Mac');
           },
         );
       } finally {

@@ -1,6 +1,12 @@
 import { EditorContent, type EditorEvents, useEditor } from '@tiptap/react';
 import { useEffect, useState } from 'react';
-import { isNoteDoc, type NoteDoc, noteDocProblem, type NoteKind } from '../../../shared/notes';
+import {
+  isNoteDoc,
+  type LocalNote,
+  type NoteDoc,
+  noteDocProblem,
+  type NoteKind,
+} from '../../../shared/notes';
 import { citationChipView } from './CitationChip';
 import { noteExtensions } from './citationNode';
 import { ConflictBanner } from './ConflictBanner';
@@ -77,9 +83,17 @@ export function NoteEditor({
   }
   if (state.docProblem !== null) {
     // No editor at all: one that showed this doc would drop what its schema cannot hold, and the
-    // next save would store the doc without it.
+    // next save would store the doc without it. The save state and the conflict choice stay: a
+    // 409 can bring a doc this build cannot show (a newer Roger wrote it) while main keeps the
+    // user's own notes as the copy, and "Use mine" is the only way back to them.
     return (
       <section className="note-editor" aria-label={label}>
+        <NoteStateBar
+          document={document}
+          note={state.note}
+          saverState={NO_EDITOR}
+          docShown={false}
+        />
         <p className="error note-editor-error" role="alert">
           Roger cannot show these notes, so it leaves them as they are: {state.docProblem}
         </p>
@@ -186,10 +200,33 @@ function LoadedNoteEditor({
     editor.setEditable(!readOnly, false);
   }, [editor, readOnly]);
 
-  const status = describeSaveStatus(saverState, state.note?.sync ?? null);
-  const conflict = state.note !== null && state.note.conflictCopy !== null;
   return (
     <section className="note-editor" aria-label={label}>
+      <NoteStateBar document={document} note={state.note} saverState={saverState} docShown />
+      <EditorContent editor={editor} className="note-editor-body" />
+    </section>
+  );
+}
+
+/** With no editor open there is nothing of the user's to save: the state is main's alone. */
+const NO_EDITOR: SaverState = { phase: 'saved' };
+
+interface NoteStateBarProps {
+  document: NoteDocument;
+  note: LocalNote | null;
+  saverState: SaverState;
+  /** Whether the editor shows `note.doc`; false when it cannot (`docProblem`). */
+  docShown: boolean;
+}
+
+/**
+ * Above the doc: its one save state, a refused save's reason, and the choice between two versions
+ * while main keeps a conflict copy.
+ */
+function NoteStateBar({ document, note, saverState, docShown }: NoteStateBarProps) {
+  const status = describeSaveStatus(saverState, note?.sync ?? null);
+  return (
+    <>
       <div className="note-editor-bar">
         {status === null ? null : (
           <p className={`note-status note-status-${status.tone}`} title={status.detail}>
@@ -202,8 +239,12 @@ function LoadedNoteEditor({
           {status.detail}
         </p>
       ) : null}
-      {conflict ? <ConflictBanner onResolve={(keep) => document.resolveConflict(keep)} /> : null}
-      <EditorContent editor={editor} className="note-editor-body" />
-    </section>
+      {note !== null && note.conflictCopy !== null ? (
+        <ConflictBanner
+          otherVersion={docShown ? 'shown' : 'unshowable'}
+          onResolve={(keep) => document.resolveConflict(keep)}
+        />
+      ) : null}
+    </>
   );
 }

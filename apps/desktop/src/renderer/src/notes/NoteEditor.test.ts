@@ -1,7 +1,7 @@
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
-import type { NoteDoc, NoteNode } from '../../../shared/notes';
+import type { LocalNote, NoteDoc, NoteNode } from '../../../shared/notes';
 import { docForSave, NoteEditor } from './NoteEditor';
 import type { NoteDocumentHandle, NoteDocumentState } from './useNoteDocument';
 
@@ -36,6 +36,25 @@ const render = (): string =>
       label: 'My notes',
     }),
   );
+
+/** The note as main holds it; its doc is never drawn here (the tests that use it have a problem). */
+function storedNote(overrides: Partial<LocalNote> = {}): LocalNote {
+  return {
+    meetingId: '3f6c2a90-1b7e-4c1d-9a55-2e8f0b6d4c11',
+    kind: 'user',
+    doc: { type: 'doc', content: [] },
+    revisionId: null,
+    dirty: false,
+    baseVersion: 5,
+    templateId: null,
+    lastRunId: null,
+    generatedVersion: null,
+    conflictCopy: null,
+    sync: 'synced',
+    updatedAt: '2026-10-06T10:00:00.000Z',
+    ...overrides,
+  };
+}
 
 /** A doc whose one item sits `depth` bullet lists deep and holds a bold word. */
 function deepDoc(depth: number): NoteDoc {
@@ -98,5 +117,28 @@ describe('NoteEditor', () => {
     expect(html).toContain('Roger cannot show these notes, so it leaves them as they are');
     expect(html).toContain('Invalid content for node listItem');
     expect(html).not.toContain('contenteditable');
+  });
+
+  it("still offers Use mine when main kept the user's notes beside a doc it cannot hold", () => {
+    // A 409 brought a server doc this build's schema refuses (written by a newer Roger); main
+    // keeps the user's own notes, which the editor can show, as the conflict copy.
+    withState({
+      docProblem: 'Invalid content for node listItem: <>',
+      note: storedNote({ sync: 'conflict', conflictCopy: deepDoc(1) }),
+    });
+    const html = render();
+    expect(html).toContain('>Two versions<');
+    expect(html).toContain('Roger cannot show that version');
+    expect(html).toContain('>Use mine</button>');
+    expect(html).toContain('>Keep the other version</button>');
+    expect(html).toContain('Roger cannot show these notes, so it leaves them as they are');
+    expect(html).not.toContain('contenteditable');
+  });
+
+  it('shows the sync state of a doc it cannot hold, as for any other note', () => {
+    withState({ docProblem: 'Invalid content for node listItem: <>', note: storedNote() });
+    const html = render();
+    expect(html).toContain('>Synced<');
+    expect(html).not.toContain('note-conflict');
   });
 });
