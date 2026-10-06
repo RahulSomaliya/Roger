@@ -52,7 +52,7 @@ export const FLAT_LEVEL_UNDER_FLOOR_DB = 40;
  */
 export const CALL_AUDIO_NEVER_HEARD_WARNING_MS = 20_000;
 
-/** Call audio digital silence mid-call: shown on screen at this (D3; a quiet call looks the same). */
+/** Call audio digital silence mid-call: on screen at this (D3; a quiet call looks the same). */
 export const CALL_AUDIO_SILENT_WARNING_MS = 8_000;
 
 /** The same silence turns loud at this while the mic hears speech (D3)... */
@@ -216,7 +216,7 @@ export interface CaptureNotice {
   message: string;
 }
 
-/** How call audio reaches main: the `roger-audio` helper's Core Audio tap, or Electron's fallback. */
+/** How call audio reaches main: the `roger-audio` helper's Core Audio tap, or Electron's path. */
 export type SystemCaptureMode = 'tap' | 'electron';
 
 /**
@@ -255,7 +255,7 @@ export interface BackupStatus {
   state: BackupState;
   /** Bytes of this meeting's audio on disk. */
   bytes: number;
-  /** ISO 8601 instant, UTC, when the audio is deleted; null while recording or when none is kept. */
+  /** ISO 8601 instant, UTC, when the audio is deleted; null while recording or if none is kept. */
   keepUntil: string | null;
   /**
    * True while a gap of this meeting waits for its re-run: the audio stays past retention until the
@@ -283,7 +283,7 @@ export interface RerunStatus {
   meetingId: string;
   /** Waiting for a slot in the open budget's per-minute window, or streaming a gap's audio. */
   state: 'waiting' | 'running';
-  /** Gaps this run takes on, and how many of them are done (recovered, or given up with a reason). */
+  /** Gaps this run takes on, and how many are done (recovered, or given up with a reason). */
   gaps: number;
   finished: number;
 }
@@ -388,7 +388,7 @@ export interface CaptureStatus {
 
   /** What is wrong now, loud or quiet (M2-T11). */
   warnings?: CaptureWarning[];
-  /** What Roger recovered from on its own this recording (device switch, helper restart, resume). */
+  /** What Roger recovered from on its own this recording (device switch, helper restart). */
   notices?: CaptureNotice[];
   /** How call audio is captured this recording (M2-T10); null when idle. */
   systemCapture?: SystemCaptureMode | null;

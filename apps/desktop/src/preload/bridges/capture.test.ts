@@ -49,7 +49,7 @@ describe('the capture bridge', () => {
     ]);
   });
 
-  it("asks main for a meeting's report, re-run, audio delete and unhide on their channels", async () => {
+  it('asks main for a report, a re-run, a delete and an unhide on their channels', async () => {
     await captureBridge.getCaptureReport({ meetingId: MEETING });
     await captureBridge.rerunGaps({ meetingId: MEETING });
     await captureBridge.deleteMeetingAudio({ meetingId: MEETING });
