@@ -1,9 +1,18 @@
-// Stub from P2-F1; owned by M3-T8.
-import type { VocabularyApi } from '../../shared/ipc/vocabulary';
+import {
+  vocabularyChannels,
+  type VocabularyApi,
+  type VocabularySetRequest,
+} from '../../shared/ipc/vocabulary';
+import { invoke } from '../bridge';
 
 /**
- * The vocabulary feature's part of `window.roger`, built from the helpers in ../bridge.ts. It
- * implements src/shared/ipc/vocabulary.ts: a member added there fails the type check until it is
- * here.
+ * The jargon list's part of `window.roger`. Main checks the list again before it reaches the API
+ * (main/vocabulary/vocabularyIpc.ts).
  */
-export const vocabularyBridge: VocabularyApi = {};
+export const vocabularyBridge: VocabularyApi = {
+  getVocabulary: () => invoke(vocabularyChannels.VocabularyGet),
+  setVocabulary: (terms) => {
+    const request: VocabularySetRequest = { terms };
+    return invoke(vocabularyChannels.VocabularySet, request);
+  },
+};
