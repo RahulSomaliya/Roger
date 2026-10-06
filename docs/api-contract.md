@@ -641,7 +641,9 @@ hours of talk), the run first drafts notes for overlapping windows of whole line
 drafts in one last pass. Only that last pass sends `section`, `item`, `from_notes` and `dropped`
 events, so after `run` the stream may carry nothing but `: ping` comments for minutes. Citations
 still name lines of the whole transcript. The run's `prompt_version` ends in `+long-v1`, and its
-tokens and cost add up every pass.
+tokens and cost add up every pass. The one exception: when every line fits one window, the prompt
+is long because of the user's notes, and the run is one pass as below the budget, with the plain
+`prompt_version` and its events sent as each line is checked.
 
 Each window's prompt repeats the rules, the template and the user's notes, and holds as many lines
 as keep it within the budget, at most 60,000 tokens of them. It is over the budget only when it
