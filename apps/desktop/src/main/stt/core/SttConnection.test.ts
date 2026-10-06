@@ -7,7 +7,7 @@ import {
   SilentTcpServer,
   waitFor,
 } from '../testing/fakeVendorServer';
-import { SttConnection, type SttConnectionOptions } from './SttConnection';
+import { SttConnection, type SttConnectionOptions, type SttWireRecord } from './SttConnection';
 import {
   describeCloseWith,
   type SttConnectRefusal,
@@ -505,6 +505,80 @@ describe('SttConnection', () => {
     const { connection } = await open();
     await connection.close();
     expect(JSON.stringify(lines)).not.toContain('secret-token');
+  });
+
+  describe('the wire tap', () => {
+    /** A vendor that takes the token in the query, under any name and in any encoding. */
+    function tokenInQuery(token: string): SttProtocol {
+      const toy = toyProtocol(vendor.baseUrl);
+      const encoded = encodeURIComponent(token);
+      return {
+        ...toy,
+        target: (stream) => ({
+          url:
+            `${vendor.baseUrl}/listen?model=${stream.settings.model}&access=${encoded}` +
+            `&auth=Bearer%20${encoded}&raw=${token}&lang=en`,
+          headers: {},
+        }),
+      };
+    }
+
+    it('gets the query with every parameter that carries the token left out', async () => {
+      const token = 'se/cr+et';
+      const tapped: SttWireRecord[] = [];
+      const { connection } = await open({
+        protocol: tokenInQuery(token),
+        stream: { accessToken: token, settings, label: 'system' },
+        wireTap: (record) => tapped.push(record),
+      });
+      await connection.close();
+
+      expect(tapped[0]).toEqual({ kind: 'connect', label: 'system', query: 'model=toy-1&lang=en' });
+      expect(JSON.stringify(tapped)).not.toContain('se/cr');
+      expect(JSON.stringify(tapped)).not.toContain(encodeURIComponent('se/cr'));
+    });
+
+    it('sees nothing of a stream it was not given to', async () => {
+      const tapped: SttWireRecord[] = [];
+      const tapless = await open();
+      const tappedStream = await open({ wireTap: (record) => tapped.push(record) });
+      tapless.connection.send(new Uint8Array(CHUNK_100_MS));
+      await tapless.connection.close();
+      await tappedStream.connection.close();
+
+      expect(tapped.filter((record) => record.kind === 'binary')).toEqual([]);
+      expect(tapped.filter((record) => record.kind === 'connect')).toHaveLength(1);
+    });
+
+    it('turns a tap that throws into one non-fatal error, and the stream goes on without it', async () => {
+      vendor.script.onBinary = (connection, frame) => {
+        if (frame === 2) connection.socket.send(JSON.stringify({ type: 'final', text: 'kept' }));
+      };
+      let calls = 0;
+      const { connection, events } = await open({
+        wireTap: (record) => {
+          calls += 1;
+          if (record.kind === 'binary') throw new Error('disk full');
+        },
+      });
+      const callsBeforeAudio = calls;
+
+      connection.send(new Uint8Array(CHUNK_100_MS));
+      connection.send(new Uint8Array(CHUNK_100_MS));
+      await waitFor(() => events.some((event) => event.type === 'final'));
+      await connection.close();
+
+      expect(events.map((event) => event.type)).toEqual(['error', 'final', 'final', 'closed']);
+      expect(events[0]).toEqual({
+        type: 'error',
+        message: 'Toy wire tap failed: disk full',
+        fatal: false,
+      });
+      // Switched off at its first failure: a recording with holes would pass for the whole wire.
+      expect(calls).toBe(callsBeforeAudio + 1);
+      expect(vendor.last().binaryFrames).toEqual([CHUNK_100_MS, CHUNK_100_MS]);
+      expect(lines.find((line) => line.message === 'stt wire tap failed')?.level).toBe('error');
+    });
   });
 
   /**

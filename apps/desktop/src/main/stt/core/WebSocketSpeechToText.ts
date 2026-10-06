@@ -2,7 +2,7 @@ import { DEFAULT_COST_GUARDS } from '../../costGuards';
 import type { Logger } from '../../logger';
 import type { OpenStreamOptions, SpeechToText, SttStream } from '../SpeechToText';
 import { sumUsage, type SttUsage } from '../usage';
-import { SttConnection } from './SttConnection';
+import { SttConnection, type SttWireTap } from './SttConnection';
 import type { SttProtocol } from './SttProtocol';
 
 export interface WebSocketSttOptions {
@@ -22,6 +22,14 @@ export interface WebSocketSttOptions {
    * a wall-clock step forward sends a backlog at once (SttConnectionOptions.paceClock).
    */
   paceClock?: () => number;
+  /**
+   * The benchmark's wire tap (M3-T11): every message of every stream this adapter opens, both
+   * ways, and each connect's query with the token left out (SttWireRecord). `bench run` stores the
+   * query in run.json; `bench canary --save-wire` writes the vendor's messages as the wire fixtures
+   * (stt/assemblyai/fixtures/). Only the bench passes one: the app never records the wire, which
+   * holds transcript text.
+   */
+  wireTap?: SttWireTap;
 }
 
 /**
@@ -40,6 +48,7 @@ export class WebSocketSpeechToText implements SpeechToText {
   private readonly keepAliveForMs: number;
   private readonly clock: () => number;
   private readonly paceClock: () => number;
+  private readonly wireTap: SttWireTap | null;
   /**
    * Every connection this adapter made, failed ones too, for usage(). CaptureService makes one
    * adapter per meeting, so this is one meeting's sessions: two at Start, plus any reopens.
@@ -60,6 +69,7 @@ export class WebSocketSpeechToText implements SpeechToText {
     this.keepAliveForMs = options.keepAliveForMs ?? DEFAULT_COST_GUARDS.sttStallCloseMs;
     this.clock = options.clock ?? (() => Date.now());
     this.paceClock = options.paceClock ?? (() => performance.now());
+    this.wireTap = options.wireTap ?? null;
   }
 
   async openStream(options: OpenStreamOptions): Promise<SttStream> {
@@ -72,6 +82,7 @@ export class WebSocketSpeechToText implements SpeechToText {
       keepAliveForMs: this.keepAliveForMs,
       clock: this.clock,
       paceClock: this.paceClock,
+      wireTap: this.wireTap,
     });
     this.connections.push(connection);
     await connection.whenOpen();
