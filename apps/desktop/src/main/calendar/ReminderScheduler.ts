@@ -95,7 +95,8 @@ export interface ReminderLaunch {
  * timer per meeting. Each tick:
  * 1. writes the run heartbeat (`runs`), opening a new row after a wake;
  * 2. logs `missed`, with its reason, for each prompt-worthy call whose window (to start + 10 min)
- *    has closed with no `prompts` row;
+ *    has closed with no `prompts` row; at the start of a stretch (a launch, a wake), not until the
+ *    first refresh in it has settled (`copySweep`);
  * 3. offers the calls now due, after refreshing a copy older than 2 min (waiting at most 5 s), so
  *    a call cancelled a minute ago gets no prompt;
  * 4. holds `prevent-app-suspension` from 2 min before the next due prompt until it shows: with the
@@ -103,8 +104,8 @@ export interface ReminderLaunch {
  *    ago".
  *
  * At launch it settles the rows the last run left open (`app_exit`), opens this run's row, and
- * logs the calls missed while Roger was not running: from the previous run's copy at the first
- * tick, and from the catch-up fetch (`CalendarSync.onCatchUp`) for the rest.
+ * logs the calls missed while Roger was not running: from the catch-up fetch
+ * (`CalendarSync.onCatchUp`), and from the copy once the launch refresh has settled.
  */
 export class ReminderScheduler {
   private readonly clock: () => Date;
@@ -115,6 +116,21 @@ export class ReminderScheduler {
   private lastBeatMs: number | null = null;
   /** A fresh check before a prompt is on its way; ticks meanwhile leave the offer to it. */
   private showing = false;
+  /** The scheduler's one ask for a fresh copy on its way (`freshen`). */
+  private freshening: Promise<boolean> | null = null;
+  /**
+   * Whether ticks sweep the copy for `missed` rows. Each stretch (a launch, a wake, a gap no wake
+   * reported) starts `held`: the copy is the one from before, possibly hours old, and may still
+   * hold a call cancelled, declined or moved meanwhile. `missed` rows are never overwritten
+   * (PromptLog.recordMissed) and a moved call gets a new key, so a row swept from that copy would
+   * restart the streak on a call that never happened, and only because Roger slept or quit. The
+   * stretch's first tick asks for a fresh copy (`asking`, sharing the sync's launch or wake
+   * refresh) and the sweep opens once that ask settles. A failed refresh opens it too: the copy is
+   * then the best evidence left, as for a Roger that ran with the API down, and waiting longer
+   * would let calls fall out of the copy (36 h back) unlogged. The catch-up is never held: it is
+   * a fresh answer.
+   */
+  private copySweep: 'open' | 'held' | 'asking' = 'held';
   private blockerId: number | null = null;
   /**
    * Keys offered in this run, for the account in `offeredFor`. PromptService's shown row stops a
@@ -151,7 +167,8 @@ export class ReminderScheduler {
    * written (the catch-up fetch starts from it), and the catch-up is only emitted to listeners
    * already subscribed. The first tick runs on the next turn of the event loop, after the sync's
    * launch refresh is on its way, so a prompt due at launch waits for that refresh (5 s at most)
-   * instead of finding a sync that has not started and prompting from a copy hours old.
+   * instead of finding a sync that has not started and prompting from a copy hours old. The copy
+   * sweep waits for it too, and for the catch-up it runs first (`copySweep`).
    *
    * Settles the previous run's open rows before PromptService can show anything this run.
    */
@@ -164,7 +181,7 @@ export class ReminderScheduler {
     if (settled.startFailed > 0 || settled.expired > 0) {
       this.options.logger.info('prompts left open by the last run settled', settled);
     }
-    log.openRun(at);
+    this.openStretch(at);
     this.lastBeatMs = this.nowMs();
     this.running = true;
     this.options.powerMonitor.on('resume', this.onResume);
@@ -196,7 +213,8 @@ export class ReminderScheduler {
    * tick, so one that spanned the sleep would log a call due while the lid was shut as `policy`
    * (or `api_stale`) instead of `not_running`, and the owner would tune rules that never ran.
    * Timers count only awake time (the CLAUDE.md failure log), so the wake ticks now rather than
-   * waiting out the old timer.
+   * waiting out the old timer. That tick sweeps nothing from the copy, which is from before the
+   * sleep, until the wake refresh has settled (`copySweep`).
    */
   private readonly onResume = (): void => {
     if (!this.running) return;
@@ -239,7 +257,7 @@ export class ReminderScheduler {
     const newStretch =
       this.woke || last === null || nowMs < last || nowMs - last >= RUN_SPLIT_GAP_MS;
     if (newStretch) {
-      this.options.log.openRun(this.nowIso());
+      this.openStretch(this.nowIso());
       this.options.logger.info('reminder run resumed', {
         lastTickAt: last === null ? null : new Date(last).toISOString(),
         wake: this.woke,
@@ -249,6 +267,16 @@ export class ReminderScheduler {
     }
     this.woke = false;
     this.lastBeatMs = nowMs;
+  }
+
+  /**
+   * Open the stretch's `runs` row and hold the copy sweep (`copySweep`). An ask already on its way
+   * stays the one the sweep waits for: it settles after this moment, as a new ask would, since the
+   * sync shares one request among its triggers.
+   */
+  private openStretch(at: string): void {
+    this.options.log.openRun(at);
+    if (this.copySweep === 'open') this.copySweep = 'held';
   }
 
   private review(): void {
@@ -263,12 +291,36 @@ export class ReminderScheduler {
     const lead = this.options.leadMinutes();
     const events = this.options.cache.listEvents();
     this.noteRules(events, nowMs, lead);
-    this.sweepMissed(account, events, nowMs, lead);
+    if (this.copySweep === 'open') this.sweepMissed(account, events, nowMs, lead);
+    else if (this.copySweep === 'held') void this.openSweepOnceFresh();
     const pending = this.pendingEvents(account, events, nowMs, lead);
     if (pending.some((event) => isDue(event, nowMs, lead))) this.showDue();
     this.holdBlocker(pending, nowMs, lead);
     // Last, so a catch-up that keeps failing never holds up an offer or the blocker.
     this.sweepCatchUp(account, nowMs, lead);
+  }
+
+  /**
+   * Ask for a fresh copy and open the copy sweep once the answer settles, fresh or not. No timeout
+   * of its own: `ensureFresh` settles when its requests do, and each has the API client's timeout.
+   * An ask that never settled would stop every copy sweep for the rest of the run.
+   */
+  private async openSweepOnceFresh(): Promise<void> {
+    this.copySweep = 'asking';
+    try {
+      const fresh = await this.freshen();
+      if (!fresh) {
+        this.options.logger.warn(
+          'calendar copy could not be refreshed; missed calls are logged from it',
+        );
+      }
+    } catch (error) {
+      this.options.logger.error('calendar refresh failed; missed calls are logged from the copy', {
+        error: errorMessage(error),
+      });
+    } finally {
+      this.copySweep = 'open';
+    }
   }
 
   /** Log `missed` for the catch-up still owed, then forget it; a throw keeps it owed. */
@@ -400,11 +452,25 @@ export class ReminderScheduler {
     }
   }
 
+  /**
+   * Ask the sync for a copy at most 2 min old. One ask at a time: a prompt and the sweep hold share
+   * it, as the sync shares one request among its own triggers.
+   */
+  private freshen(): Promise<boolean> {
+    if (this.freshening === null) {
+      const asked = this.options.sync.ensureFresh(PROMPT_FRESH_WITHIN_MS).finally(() => {
+        if (this.freshening === asked) this.freshening = null;
+      });
+      this.freshening = asked;
+    }
+    return this.freshening;
+  }
+
   /** Never throws for a slow or failed refresh: the copy is still the best answer there is. */
   private async refreshCopy(): Promise<void> {
     try {
       const fresh = await withTimeout(
-        this.options.sync.ensureFresh(PROMPT_FRESH_WITHIN_MS),
+        this.freshen(),
         PROMPT_FRESH_WAIT_MS,
         'calendar refresh before a prompt',
       );

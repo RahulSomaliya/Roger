@@ -148,6 +148,22 @@ function harness(options: HarnessOptions = {}) {
   };
 }
 
+/** A sync whose refreshes settle only when the test lands them, oldest ask first. */
+function heldRefreshes() {
+  const asks: ((fresh: boolean) => void)[] = [];
+  return {
+    ensureFresh: () =>
+      new Promise<boolean>((resolve) => {
+        asks.push(resolve);
+      }),
+    land: (fresh: boolean) => {
+      const settle = asks.shift();
+      if (settle === undefined) throw new Error('no refresh was asked for');
+      settle(fresh);
+    },
+  };
+}
+
 /** Run timers to `minutes` after START (a whole number of ticks lands on each 10 s mark). */
 async function advanceTo(minutes: number): Promise<void> {
   await vi.advanceTimersByTimeAsync(START + minutes * MINUTE - Date.now());
@@ -231,8 +247,8 @@ describe('ReminderScheduler', () => {
   it('refreshes a stale copy before showing: a call cancelled meanwhile gets no prompt', async () => {
     const h = harness({
       ensureFresh: () => {
-        // The answer no longer holds the call.
-        h.setEvents([]);
+        // Cancelled at 08:02: an answer from then on no longer holds the call.
+        if (Date.now() >= START + 2 * MINUTE) h.setEvents([]);
         return Promise.resolve(true);
       },
     });
@@ -329,17 +345,73 @@ describe('ReminderScheduler', () => {
     vi.setSystemTime(START + 2 * HOUR);
     h.powerMonitor.emit('resume');
 
-    expect(h.log.get(ACCOUNT, promptKey(standup))).toMatchObject({
-      action: 'missed',
-      reason: 'not_running',
-      detail: null,
-      decidedAt: iso(START + 2 * HOUR),
-    });
     expect(h.runs()).toEqual([
       { startedAt: iso(START), lastTickAt: iso(START + MINUTE) },
       { startedAt: iso(START + 2 * HOUR), lastTickAt: iso(START + 2 * HOUR) },
     ]);
+    // The copy is from before the sleep: the wake refresh lands first, the next tick logs.
+    expect(h.log.get(ACCOUNT, promptKey(standup))).toBeNull();
+    await vi.advanceTimersByTimeAsync(REMINDER_TICK_MS);
+
+    expect(h.log.get(ACCOUNT, promptKey(standup))).toMatchObject({
+      action: 'missed',
+      reason: 'not_running',
+      detail: null,
+      decidedAt: iso(START + 2 * HOUR + REMINDER_TICK_MS),
+    });
     expect(h.offeredKeys()).toEqual([]);
+    h.scheduler.stop();
+  });
+
+  it('after a wake, logs nothing from the copy until the refresh lands: a call declined meanwhile gets no row', async () => {
+    const refreshes = heldRefreshes();
+    const h = harness({ ensureFresh: refreshes.ensureFresh });
+    const standup = call('standup', 30);
+    h.setEvents([standup]);
+    h.scheduler.start();
+    await advanceTo(0);
+    refreshes.land(true);
+    await advanceTo(1);
+
+    // Asleep from 08:01 to 10:00; the user declined the 08:30 call meanwhile.
+    vi.setSystemTime(START + 2 * HOUR);
+    h.powerMonitor.emit('resume');
+    await vi.advanceTimersByTimeAsync(3 * REMINDER_TICK_MS);
+    expect(h.log.get(ACCOUNT, promptKey(standup))).toBeNull();
+
+    h.setEvents([call('standup', 30, { selfResponse: 'declined' })]);
+    refreshes.land(true);
+    await vi.advanceTimersByTimeAsync(REMINDER_TICK_MS);
+
+    expect(h.log.get(ACCOUNT, promptKey(standup))).toBeNull();
+    h.scheduler.stop();
+  });
+
+  it('after a wake whose refresh fails, logs from the copy: it is the best evidence left', async () => {
+    const refreshes = heldRefreshes();
+    const h = harness({ ensureFresh: refreshes.ensureFresh });
+    const standup = call('standup', 30);
+    h.setEvents([standup]);
+    h.scheduler.start();
+    await advanceTo(0);
+    refreshes.land(true);
+    await advanceTo(1);
+
+    vi.setSystemTime(START + 2 * HOUR);
+    h.powerMonitor.emit('resume');
+    refreshes.land(false);
+    await vi.advanceTimersByTimeAsync(REMINDER_TICK_MS);
+
+    expect(h.log.get(ACCOUNT, promptKey(standup))).toMatchObject({
+      action: 'missed',
+      reason: 'not_running',
+    });
+    expect(h.lines).toContainEqual(
+      expect.objectContaining({
+        level: 'warn',
+        message: 'calendar copy could not be refreshed; missed calls are logged from it',
+      }),
+    );
     h.scheduler.stop();
   });
 
@@ -368,8 +440,10 @@ describe('ReminderScheduler', () => {
 
     vi.setSystemTime(START + 2 * HOUR);
     await vi.advanceTimersByTimeAsync(REMINDER_TICK_MS);
-
     expect(h.runs()).toHaveLength(2);
+    // A new stretch like any wake: the next tick logs, from the refreshed copy.
+    await vi.advanceTimersByTimeAsync(REMINDER_TICK_MS);
+
     expect(h.log.get(ACCOUNT, promptKey(standup))).toMatchObject({ reason: 'not_running' });
     h.scheduler.stop();
   });
@@ -399,7 +473,7 @@ describe('ReminderScheduler', () => {
     h.setEvents([meanwhile]);
 
     h.scheduler.start();
-    await advanceTo(0);
+    await advanceTo(1);
 
     expect(h.log.get(ACCOUNT, promptKey(meanwhile))).toMatchObject({
       action: 'missed',
@@ -458,30 +532,42 @@ describe('ReminderScheduler', () => {
     h.scheduler.stop();
   });
 
-  it('at launch, logs the calls missed while Roger was not running, from the copy and the catch-up', async () => {
-    const h = harness();
+  it('at launch, logs the calls missed while Roger was not running from the catch-up, and from the copy only once refreshed', async () => {
+    const refreshes = heldRefreshes();
+    const h = harness({ ensureFresh: refreshes.ensureFresh });
     const cached = call('cached', -3 * 60);
-    h.setEvents([cached]);
+    // In the copy the last run left, and cancelled while Roger was not running.
+    const cancelled = call('cancelled', -150);
+    h.setEvents([cached, cancelled]);
     h.log.openRun(iso(START - 5 * HOUR));
     h.log.heartbeat(iso(START - 4 * HOUR));
 
     expect(h.scheduler.start()).toEqual({ previousRunLastTickAt: iso(START - 4 * HOUR) });
     await advanceTo(0);
-    expect(h.log.get(ACCOUNT, promptKey(cached))).toMatchObject({
-      action: 'missed',
-      reason: 'not_running',
-    });
+    expect(h.log.loggedKeys(ACCOUNT, [promptKey(cached), promptKey(cancelled)])).toEqual(new Set());
 
-    // Only the catch-up fetch saw this one: it was never in the copy.
+    // The catch-up lands before the refresh (CalendarSync.attempt). Only it saw `uncached`.
     const uncached = call('uncached', -2 * 60);
-    h.emitCatchUp([uncached, cached, call('open', 5)]);
+    const open = call('open', 5);
+    h.emitCatchUp([uncached, cached, open]);
 
     expect(h.log.get(ACCOUNT, promptKey(uncached))).toMatchObject({
       action: 'missed',
       reason: 'not_running',
     });
+    expect(h.log.get(ACCOUNT, promptKey(cached))).toMatchObject({
+      action: 'missed',
+      reason: 'not_running',
+    });
     // Still in its window: the tick offers it once it is due.
-    expect(h.log.get(ACCOUNT, promptKey(call('open', 5)))).toBeNull();
+    expect(h.log.get(ACCOUNT, promptKey(open))).toBeNull();
+
+    h.setEvents([cached, open]);
+    refreshes.land(true);
+    await advanceTo(1);
+
+    expect(h.log.get(ACCOUNT, promptKey(cancelled))).toBeNull();
+    expect(h.log.get(ACCOUNT, promptKey(open))).toBeNull();
     h.scheduler.stop();
   });
 

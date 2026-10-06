@@ -264,7 +264,12 @@ export class PromptLog {
     return false;
   }
 
-  /** The event passed its window with no row. Returns false when a row arrived meanwhile. */
+  /**
+   * The event passed its window with no row. Returns false when a row arrived meanwhile. The row is
+   * final (nothing overwrites or deletes it), so never pass an event from a copy a refresh on its
+   * way could still correct: one left from before a sleep or a quit may hold a call cancelled,
+   * declined or moved since, and the streak would restart on it (ReminderScheduler `copySweep`).
+   */
   recordMissed({ accountEmail, event, reason, detail, at }: MissedPrompt): boolean {
     const result = this.statements.insertMissed.run({
       account: requireAccount(accountEmail),
