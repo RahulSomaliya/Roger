@@ -154,7 +154,8 @@ final class PeakProbe: @unchecked Sendable {
 
   private func drain(into buffer: UnsafeMutableBufferPointer<Float>) {
     while let span = ring.read(into: buffer) {
-      meter.add(UnsafeBufferPointer(rebasing: buffer[0..<span.frameCount]), sampleRate: span.sampleRate)
+      meter.add(
+        UnsafeBufferPointer(rebasing: buffer[0..<span.frameCount]), sampleRate: span.sampleRate)
     }
   }
 }
