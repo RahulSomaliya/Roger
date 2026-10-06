@@ -156,9 +156,11 @@ its owner ("Stub from P2-F1; owned by M4-T13").
   - Scripts: `test:mac`, `test:e2e`, `preview:renderer` and `bench` (it builds to
     `bench/dist/cli.js`).
   - `engines.node` becomes `>=22.13.0`.
-  - Install with pnpm only. This Mac's pnpm has `minimum-release-age=10080` (7 days), so TipTap
-    3.31.4 (published 2026-09-30) is refused until 2026-10-07. `~/.npmrc` pins npm to 2026-05-06,
-    so never use `npm install`.
+  - Install with pnpm only. `~/.npmrc` pins npm to 2026-05-06, so never use `npm install`. This
+    Mac's global pnpm rc sets `minimum-release-age=10080`, but pnpm 10.28 does NOT enforce it
+    (P2-F3, 2026-10-06: `^3.31.0` resolved to a 6-day-old 3.31.4). Check every new lockfile
+    version's age by hand. `pnpm-workspace.yaml` overrides pin `@tiptap/extension-bubble-menu` and
+    `@tiptap/extension-floating-menu` to the same version as the five TipTap packages.
   - Re-check `npm view <pkg> time` and the weekly downloads for each package at install time, and
     write the numbers in the commit message.
 - **Vitest configs.** `vitest.config.ts` includes `src/**`, `bench/**` and `preview/**` tests, and
@@ -166,9 +168,11 @@ its owner ("Stub from P2-F1; owned by M4-T13").
   (with `passWithNoTests`).
 - **Type check and lint.** `tsconfig.node.json` includes `bench/**`, `e2e/**`, `vitest.*.ts` and
   `vite.preview.config.ts`. `tsconfig.web.json` includes `preview/**`. `eslint.config.mjs` gets
-  node globals for `bench/**` and `e2e/**` and browser globals for `preview/**`. No new tsconfig
-  file and no change to the type-check script. This replaces M3-T10's `tsconfig.bench.json`,
-  eslint and type-check edits.
+  node globals for `bench/**` and `e2e/**` and browser globals for `preview/**`. As built:
+  `e2e/**` and `qa/**` live in a new `tsconfig.e2e.json` (Node plus DOM types, because
+  `page.evaluate` callbacks run in the page) that the type-check script also runs; DOM stays out
+  of `tsconfig.node.json`. Node scripts under `test/` should be `.mjs`. This replaces M3-T10's
+  `tsconfig.bench.json`, eslint and type-check edits.
 - **Root `Makefile`:**
   - A `TEST_DB` variable: `make check TEST_DB=roger_test_m3_t2` exports `TEST_DATABASE_URL` for
     `test-api`.

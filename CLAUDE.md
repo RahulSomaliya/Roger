@@ -133,3 +133,8 @@ Each line is a trap someone already hit. Add one when you hit a new one.
 - A vitest test can switch time zones with `process.env.TZ`, but assert
   `new Date(...).getTimezoneOffset()` inside the switch, or a TZ test passes when the switch did
   nothing (M5-T8).
+- pnpm 10.28 here does NOT enforce the global `minimum-release-age=10080`: `@tiptap/core@^3.31.0`
+  resolved to a 6-day-old 3.31.4 (P2-F3, 2026-10-06). After any `pnpm add`, check each new
+  lockfile version's publish date (`npm view <pkg> time`). `@tiptap/react` pulls its bubble and
+  floating menus with `^` while they need the exact same `@tiptap/core`: the overrides in
+  `pnpm-workspace.yaml` pin them, so bump them together with the five TipTap packages.
