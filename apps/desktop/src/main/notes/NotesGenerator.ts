@@ -351,9 +351,13 @@ export class NotesGenerator {
    * `NotesSync.flushMeeting`. Two rules keep this listener off that loop. Only a generate that
    * waits for its notes re-checks, and while an attempt runs (its flush and pull included)
    * nothing waits and `check` starts no second attempt, so the flush's own changes do nothing.
-   * And only a change that can unblock a run re-checks: a stored note, or a save by the user
-   * (which also ends a conflict with "Use mine"); NotesSync's failing retries write `syncing` and
-   * `offline`, which never do.
+   * And only a change that can unblock a run re-checks: a stored note (`synced`), or
+   * `saved_locally`, which a save by the user writes (it also ends a conflict with "Use mine").
+   * A retry the API refused writes `saved_locally` too (a `401`, a `422`, a `409` its copy did not
+   * explain): it wakes a waiting generate, whose flush asks once more and is refused again. That
+   * costs one request per NotesSync backoff window (2 s, doubling to 30 s), and never loops, by
+   * the first rule; NotesSync's backoff check does not cover a refused note. A retry that found
+   * the API away writes `syncing` and `offline`, which never re-check.
    */
   private noteChanged(note: LocalNote): void {
     if (note.sync !== 'synced' && note.sync !== 'saved_locally') return;
