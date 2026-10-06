@@ -5,8 +5,6 @@ import { LIVE_CALL, LIVE_CALL_FIRST_LINES, PAST_MEETING } from '../preview/scena
 import * as qa from '../qa/driver';
 import { idleCaptureStatus } from '../src/shared/capture';
 import { IpcChannel } from '../src/shared/ipc';
-import type { CaptureApi } from '../src/shared/ipc/capture';
-import type { MeetingsApi } from '../src/shared/ipc/meetings';
 
 /**
  * M4-S4's browser QA: the meeting page and the sidebar's recent meetings, in both themes at 1440
@@ -33,11 +31,6 @@ declare global {
     __storeReads?: StoreReads;
     /** Whether a meeting page ever showed an empty transcript while this watch ran. */
     __emptyTranscriptSeen?: boolean;
-    /**
-     * The preview's fake, as far as this script reads it. The renderer types the whole of it in
-     * src/renderer/src/roger.d.ts, which this Node program (tsconfig.e2e.json) does not include.
-     */
-    roger?: Pick<CaptureApi, 'getCaptureStatus'> & MeetingsApi;
   }
 }
 
@@ -86,7 +79,6 @@ async function openFromSidebar(page: Page, title: string): Promise<void> {
 async function countStoreReads(page: Page): Promise<void> {
   await page.evaluate(() => {
     const roger = window.roger;
-    if (roger === undefined) throw new Error('No window.roger: not the preview page');
     const reads: StoreReads = { list: 0, get: 0 };
     const list = roger.listMeetings.bind(roger);
     const get = roger.getMeeting.bind(roger);
@@ -151,7 +143,6 @@ it(
       // own task. Neither the sidebar nor the page reads the store again for one.
       await countStoreReads(page);
       const idle = await page.evaluate(() => {
-        if (window.roger === undefined) throw new Error('No window.roger: not the preview page');
         return window.roger.getCaptureStatus();
       });
       for (let pass = 1; pass <= 5; pass += 1) {
@@ -234,7 +225,6 @@ it(
       await qa.settle(page);
       expect(await lineCount(page)).toBe(linesBeforeStop);
       const stopped = await page.evaluate(() => {
-        if (window.roger === undefined) throw new Error('No window.roger: not the preview page');
         return window.roger.getCaptureStatus();
       });
       await qa.emitEvent(page, IpcChannel.CaptureStatusChanged, {

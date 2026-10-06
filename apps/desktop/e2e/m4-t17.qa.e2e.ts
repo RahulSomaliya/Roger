@@ -5,7 +5,6 @@ import type * as ReactDomClient from 'react-dom/client';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { PAST_MEETING, segmentIdForLine } from '../preview/scenarios';
 import * as qa from '../qa/driver';
-import type { RogerApi } from '../src/shared/ipc';
 import { notesChannels, type NotesFlush } from '../src/shared/ipc/notes';
 import {
   CITATION_NODE_TYPE,
@@ -58,8 +57,6 @@ interface NotesHarness {
 
 declare global {
   interface Window {
-    /** The preview's fake (preview/main.tsx), as src/renderer/src/roger.d.ts types it. */
-    roger: RogerApi;
     __m4t17?: { modules: unknown[]; harness?: NotesHarness; acks: NotesFlush[] };
   }
 }

@@ -232,3 +232,7 @@ Each line is a trap someone already hit. Add one when you hit a new one.
   load on a same-document navigation, a hash change or a `replaceState` (seen in Chrome; Electron
   not yet checked). The shell keeps its route in `sessionStorage` (`app/router.ts`). The
   controller drops this line once M2-T12 removes the stop (M4-S1).
+- `tsconfig.e2e.json` compiles every `e2e/` QA script as ONE program: two scripts that each declare
+  `Window.roger` with a different type pass alone in their worktrees and fail together after the
+  merge (TS2687/TS2717). `window.roger` is typed once in `e2e/previewWindow.d.ts`; a script names
+  its own page globals (`__m4t17`, `__abWatch`) and never redeclares `roger` (wave 2, 2026-10-07).
