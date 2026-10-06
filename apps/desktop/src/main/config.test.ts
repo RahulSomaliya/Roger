@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { DEFAULT_API_URL, loadConfig, readConfigFile } from './config';
+import { DEFAULT_COST_GUARDS } from './costGuards';
 
 describe('loadConfig', () => {
   it('falls back to defaults when nothing is set', () => {
@@ -12,7 +13,20 @@ describe('loadConfig', () => {
       apiToken: null,
       sttProviderOverride: null,
       logLevel: 'info',
+      costGuards: DEFAULT_COST_GUARDS,
+      errors: [],
     });
+  });
+
+  it('reads the cost guards and reports the ones it refuses', () => {
+    const config = loadConfig(
+      { ROGER_NO_SPEECH_STOP_SECONDS: 'soon' },
+      { costGuards: { sttStallCloseSeconds: 60 } },
+    );
+    expect(config.costGuards.sttStallCloseMs).toBe(60_000);
+    expect(config.errors).toEqual([
+      'ROGER_NO_SPEECH_STOP_SECONDS must be a whole number from 60 to 14400 (got "soon")',
+    ]);
   });
 
   it('prefers environment variables over the config file and trims trailing slashes', () => {
@@ -59,10 +73,16 @@ describe('readConfigFile', () => {
     expect(result.error).toBe(`${path} is not valid JSON`);
   });
 
-  it('keeps only known string keys', () => {
+  it('keeps only known string keys, and the cost guard keys for loadConfig to check', () => {
     const dir = mkdtempSync(join(tmpdir(), 'roger-config-'));
     const path = join(dir, 'config.json');
-    writeFileSync(path, JSON.stringify({ apiToken: 'abc', apiUrl: 42, extra: true }));
-    expect(readConfigFile(path).config).toEqual({ apiToken: 'abc' });
+    writeFileSync(
+      path,
+      JSON.stringify({ apiToken: 'abc', apiUrl: 42, extra: true, sttOpensPerMinute: 'x' }),
+    );
+    expect(readConfigFile(path).config).toEqual({
+      apiToken: 'abc',
+      costGuards: { sttOpensPerMinute: 'x' },
+    });
   });
 });

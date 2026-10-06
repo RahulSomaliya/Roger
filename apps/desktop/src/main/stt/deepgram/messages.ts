@@ -1,4 +1,5 @@
 import type { TranscriptWord } from '../../../shared/transcript';
+import { firstString, isFiniteNumber, isRecord } from '../json';
 import type { SttEvent } from '../SpeechToText';
 
 /**
@@ -16,7 +17,11 @@ import type { SttEvent } from '../SpeechToText';
 
 export type ParsedDeepgramMessage =
   /** `warning` names data that was dropped while keeping the event, for the adapter to log. */
-  | { kind: 'event'; event: SttEvent; warning?: string }
+  | {
+      kind: 'event';
+      event: Extract<SttEvent, { type: 'interim' | 'final' | 'error' }>;
+      warning?: string;
+    }
   | { kind: 'ignored'; messageType: string }
   | { kind: 'invalid'; reason: string };
 
@@ -66,7 +71,7 @@ function resultsToEvent(results: Record<string, unknown>): ParsedDeepgramMessage
     return { kind: 'event', event: { type: 'interim', text, startMs, endMs } };
   }
   const words = parseWords(alternative.words);
-  const event: SttEvent = {
+  const event: Extract<SttEvent, { type: 'final' }> = {
     type: 'final',
     text,
     startMs,
@@ -103,18 +108,6 @@ function parseWords(value: unknown): TranscriptWord[] | null {
 
 function secondsToMs(seconds: number): number {
   return Math.round(seconds * 1000);
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function isFiniteNumber(value: unknown): value is number {
-  return typeof value === 'number' && Number.isFinite(value);
-}
-
-function firstString(...values: unknown[]): string | undefined {
-  return values.find((value): value is string => typeof value === 'string');
 }
 
 /** Client → server control messages. */

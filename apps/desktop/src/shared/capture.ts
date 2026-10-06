@@ -31,7 +31,14 @@ export interface SourceStatus {
   message: string | null;
 }
 
-export type SttStreamState = 'closed' | 'connecting' | 'open' | 'error';
+/**
+ * A source's speech-to-text session. Only `connecting` and `open` hold a socket the vendor bills.
+ * - closed: none (before Start, after Stop, or the source failed or ended)
+ * - paused: closed because the source sent no audio for the stall window; its next chunk reopens it
+ * - retrying: the vendor ended it, or the open budget is full; reopens with audio after a wait
+ * - error: ended and will not reopen this meeting; `streamMessages` says why
+ */
+export type SttStreamState = 'closed' | 'connecting' | 'open' | 'paused' | 'retrying' | 'error';
 
 export interface UploadStatus {
   state: 'idle' | 'uploading' | 'backoff';
@@ -44,6 +51,22 @@ export interface UploadStatus {
   nextAttemptAt: number | null;
 }
 
+/** Speech-to-text use as the vendor bills it: the time sessions are open, silent or not. */
+export interface SttMeter {
+  sessionsOpened: number;
+  connectedMs: number;
+  audioSentMs: number;
+  /** Open time at the API's price per stream-hour; null when the price is unknown. */
+  estimatedCostUsd: number | null;
+}
+
+export interface SttMeterStatus {
+  /** For people, e.g. "AssemblyAI". */
+  vendorName: string;
+  total: SttMeter;
+  sources: Record<AudioSource, SttMeter>;
+}
+
 export interface CaptureStatus {
   phase: CapturePhase;
   meetingId: string | null;
@@ -52,6 +75,8 @@ export interface CaptureStatus {
   sttProvider: string | null;
   sources: Record<AudioSource, SourceStatus>;
   streams: Record<AudioSource, SttStreamState>;
+  /** Why a source's session is not open (paused, failed), or null. */
+  streamMessages: Record<AudioSource, string | null>;
   /** Final segments stored locally in this session. */
   segmentsStored: number;
   /** Final segments this session that the local store refused (shown live, not saved). */
@@ -59,6 +84,13 @@ export interface CaptureStatus {
   upload: UploadStatus;
   /** Last error worth showing the user, or null. */
   error: string | null;
+  /** This meeting's speech-to-text use while recording; the last meeting's after Stop. */
+  meter: SttMeterStatus | null;
+  /**
+   * Why Roger stopped the last recording on its own (no speech, the length cap, quit, sleep, the
+   * window closing or crashing), or null. Cleared by the next Start.
+   */
+  notice: string | null;
 }
 
 export function emptySourceStatus(): SourceStatus {
@@ -73,9 +105,12 @@ export function idleCaptureStatus(upload: UploadStatus): CaptureStatus {
     sttProvider: null,
     sources: { mic: emptySourceStatus(), system: emptySourceStatus() },
     streams: { mic: 'closed', system: 'closed' },
+    streamMessages: { mic: null, system: null },
     segmentsStored: 0,
     segmentsUnsaved: 0,
     upload,
     error: null,
+    meter: null,
+    notice: null,
   };
 }

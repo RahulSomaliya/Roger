@@ -8,6 +8,8 @@ import {
   type CapturePhase,
   type CaptureStatus,
   type SourceStatus,
+  type SttMeter,
+  type SttMeterStatus,
   type SttStreamState,
 } from '../../shared/capture';
 import { PCM_ENCODING, PCM_SAMPLE_RATE } from '../../shared/ipc';
@@ -19,16 +21,20 @@ import {
   type TranscriptSegment,
 } from '../../shared/transcript';
 import type { SttTokenApi } from '../api/ApiClient';
+import { type CostGuards, DEFAULT_COST_GUARDS } from '../costGuards';
 import { errorMessage, type Logger } from '../logger';
 import type { MicrophoneAccess } from '../permissions';
 import type { TranscriptStore } from '../store/TranscriptStore';
 import type { SpeechToTextFactory } from '../stt/createSpeechToText';
-import type { SttStreamSettings } from '../stt/SpeechToText';
+import type { SpeechToText, SttStreamSettings } from '../stt/SpeechToText';
+import type { SttUsage } from '../stt/usage';
 import { streamSettingsMismatch } from '../stt/streamSettings';
 import type { TranscriptUploader } from '../upload/TranscriptUploader';
 import { Emitter } from '../util/emitter';
 import { withTimeout } from '../util/time';
-import { CaptureSession } from './CaptureSession';
+import { CaptureSession, type StreamCredentials } from './CaptureSession';
+import { SttOpenBudget } from './SttOpenBudget';
+import { type StopReason, stopNotice } from './stopReasons';
 
 export interface CaptureServiceOptions {
   store: TranscriptStore;
@@ -43,12 +49,18 @@ export interface CaptureServiceOptions {
   startupError: string | null;
   /** How long Stop waits for the uploader to drain before giving up (lines stay local). */
   stopFlushTimeoutMs?: number;
+  /** Bounds on billed speech-to-text time (costGuards.ts). Defaults to the defaults. */
+  guards?: CostGuards;
   clock?: () => number;
 }
 
 export interface StopOptions {
   /** Wait for the uploader to drain. Off when quitting: the uploader resumes on next launch. */
   flushUploads?: boolean;
+  /** Why it stops (default `user`): logged and kept with the meeting's usage; see stopNotice. */
+  reason?: StopReason;
+  /** Extra words for the notice, e.g. how the renderer crashed. */
+  detail?: string;
 }
 
 interface CaptureEvents extends Record<string, unknown> {
@@ -62,12 +74,19 @@ const FAKE_STREAM_SETTINGS: SttStreamSettings = {
   language: 'en',
   sampleRate: PCM_SAMPLE_RATE,
   encoding: PCM_ENCODING,
+  pricePerHourUsd: 0,
 };
 
 /** How often the audio flow is checked and chunk counters are pushed to the UI while recording. */
 const MONITOR_INTERVAL_MS = 500;
 
 const SPEAKER_TITLE: Record<AudioSource, string> = { mic: 'Me', system: 'Them' };
+
+interface StreamRetry {
+  reason: string;
+  /** Clock time the source may reopen, with its next chunk. */
+  retryAtMs: number;
+}
 
 /**
  * The capture state machine: idle → starting → recording → stopping → idle. One session at a time;
@@ -77,8 +96,18 @@ const SPEAKER_TITLE: Record<AudioSource, string> = { mic: 'Me', system: 'Them' }
 export class CaptureService {
   private readonly events = new Emitter<CaptureEvents>();
   private readonly clock: () => number;
-  private phase: CapturePhase = 'idle';
+  private readonly guards: CostGuards;
+  /**
+   * Every vendor session open passes here (cost guard G3). It outlives meetings on purpose: the
+   * vendor's per-minute limit counts per account, so Start, Stop, Start spends one window.
+   */
+  private readonly budget: SttOpenBudget;
+  private currentPhase: CapturePhase = 'idle';
   private session: CaptureSession | null = null;
+  /** The meeting's adapter: its usage() is the meter. */
+  private stt: SpeechToText | null = null;
+  /** The last meeting's meter, shown after Stop until the next Start. */
+  private lastMeter: SttMeterStatus | null = null;
   private sttProvider: string | null = null;
   private startedAt: string | null = null;
   private sources: Record<AudioSource, SourceStatus> = {
@@ -86,15 +115,28 @@ export class CaptureService {
     system: emptySourceStatus(),
   };
   private streams: Record<AudioSource, SttStreamState> = { mic: 'closed', system: 'closed' };
+  private streamMessages: Record<AudioSource, string | null> = { mic: null, system: null };
+  /** The error text each source's last failure set, so its recovery can clear exactly that. */
+  private streamErrors: Record<AudioSource, string | null> = { mic: null, system: null };
+  /** Each source's failure while it waits to reconnect, so the monitor can count the wait down. */
+  private streamRetries: Record<AudioSource, StreamRetry | null> = { mic: null, system: null };
   private error: string | null = null;
+  private notice: string | null = null;
   private segmentsUnsaved = 0;
   private transition: Promise<CaptureStatus> | null = null;
   private monitorTimer: NodeJS.Timeout | null = null;
   /** Clock time the session started recording; the no-audio check counts from it until a chunk. */
   private recordingSinceMs: number | null = null;
+  /** Clock time of the last final line from either source; the no-speech stop counts from it. */
+  private lastFinalAtMs: number | null = null;
 
   constructor(private readonly options: CaptureServiceOptions) {
     this.clock = options.clock ?? (() => Date.now());
+    this.guards = options.guards ?? DEFAULT_COST_GUARDS;
+    this.budget = new SttOpenBudget(
+      { perMinute: this.guards.sttOpensPerMinute, perMeeting: this.guards.sttOpensPerMeeting },
+      this.clock,
+    );
     this.error = options.startupError;
     options.uploader.onStatus(() => {
       this.emitStatus();
@@ -108,28 +150,41 @@ export class CaptureService {
     return this.events.on(event, listener);
   }
 
+  /** The phase alone: cheap, and it never reads the store (getStatus does, for upload counts). */
+  get phase(): CapturePhase {
+    return this.currentPhase;
+  }
+
   getStatus(): CaptureStatus {
     const upload = this.options.uploader.getStatus();
-    if (this.phase === 'idle' && !this.session) {
-      return { ...idleCaptureStatus(upload), error: this.error };
+    if (this.currentPhase === 'idle' && !this.session) {
+      return {
+        ...idleCaptureStatus(upload),
+        error: this.error,
+        meter: this.lastMeter,
+        notice: this.notice,
+      };
     }
     return {
-      phase: this.phase,
+      phase: this.currentPhase,
       meetingId: this.session?.meetingId ?? null,
       startedAt: this.startedAt,
       sttProvider: this.sttProvider,
       sources: { mic: { ...this.sources.mic }, system: { ...this.sources.system } },
       streams: { ...this.streams },
+      streamMessages: { ...this.streamMessages },
       segmentsStored: this.session?.storedSegmentCount ?? 0,
       segmentsUnsaved: this.segmentsUnsaved,
       upload,
       error: this.error,
+      meter: this.stt === null ? this.lastMeter : meterStatus(this.stt),
+      notice: this.notice,
     };
   }
 
   start(): Promise<CaptureStatus> {
     if (this.transition) return this.transition;
-    if (this.phase !== 'idle') return Promise.resolve(this.getStatus());
+    if (this.currentPhase !== 'idle') return Promise.resolve(this.getStatus());
     this.transition = this.doStart().finally(() => {
       this.transition = null;
     });
@@ -138,7 +193,7 @@ export class CaptureService {
 
   stop(options: StopOptions = {}): Promise<CaptureStatus> {
     if (this.transition) return this.transition.then(() => this.stop(options));
-    if (this.phase !== 'recording') return Promise.resolve(this.getStatus());
+    if (this.currentPhase !== 'recording') return Promise.resolve(this.getStatus());
     this.transition = this.doStop(options).finally(() => {
       this.transition = null;
     });
@@ -146,7 +201,7 @@ export class CaptureService {
   }
 
   pushAudio(source: AudioSource, pcm: Uint8Array): void {
-    if (this.phase !== 'recording' || !this.session) return;
+    if (this.currentPhase !== 'recording' || !this.session) return;
     const status = this.sources[source];
     const now = this.clock();
     if (status.health === 'stalled') {
@@ -167,7 +222,7 @@ export class CaptureService {
   }
 
   reportSourceState(source: AudioSource, state: AudioSourceState, message: string | null): void {
-    if (this.phase === 'idle') return;
+    if (this.currentPhase === 'idle') return;
     const status = this.sources[source];
     if (state === 'active') {
       // "The track is live" is not "audio flows": only a chunk may clear a stalled source.
@@ -179,7 +234,9 @@ export class CaptureService {
     status.message = message;
     const meetingId = this.session?.meetingId ?? null;
     this.options.logger.warn('audio source problem', { source, state, message, meetingId });
-    if (state === 'ended' && this.phase === 'recording') {
+    // Its vendor session would bill silence until Stop: close it now; the other source goes on.
+    this.session?.closeSource(source, message ?? `the audio source reported ${state}`);
+    if (state === 'ended' && this.currentPhase === 'recording') {
       // A track that ends mid-call never comes back; only a new session reopens the device.
       this.error = `${AUDIO_SOURCE_LABEL[source]} stopped: ${message ?? 'the audio track ended'}. Press Stop, then Start again.`;
     }
@@ -193,7 +250,10 @@ export class CaptureService {
     }
     const { logger, store } = this.options;
     this.error = null;
+    this.notice = null;
+    this.lastMeter = null;
     this.resetSessionState();
+    this.budget.beginMeeting();
     this.setPhase('starting');
     const startedAtMs = this.clock();
     const meetingId = randomUUID();
@@ -210,6 +270,7 @@ export class CaptureService {
       const mismatch = streamSettingsMismatch(settings);
       if (mismatch !== null) throw new Error(mismatch);
       const stt = this.options.createSpeechToText(provider);
+      this.stt = stt;
       this.sttProvider = provider;
       this.startedAt = new Date(startedAtMs).toISOString();
       store.createMeeting({
@@ -224,26 +285,51 @@ export class CaptureService {
         stt,
         accessToken,
         settings,
+        refreshCredentials: () => this.freshCredentials(provider),
+        reopenBufferMs: this.guards.sttReopenBufferMs,
+        budget: this.budget,
+        reopenBackoffMs: this.guards.sttReopenBackoffMs,
+        reopenBackoffMaxMs: this.guards.sttReopenBackoffMaxMs,
         store,
         logger: logger.child({ meetingId }),
         clock: this.clock,
         listeners: {
           onSegment: (segment) => {
+            this.lastFinalAtMs = this.clock();
             this.events.emit('segment', segment);
             this.emitStatus();
           },
           onInterim: (interim) => {
             this.events.emit('interim', interim);
           },
-          onStreamState: (source, state) => {
+          onStreamState: (source, state, message) => {
             this.streams[source] = state;
+            this.streamMessages[source] = message;
+            if (state === 'open') this.streamRetries[source] = null;
+            if (
+              state === 'open' &&
+              this.error !== null &&
+              this.error === this.streamErrors[source]
+            ) {
+              // Back again: the error that said it stopped is no longer true.
+              this.error = null;
+            }
             this.emitStatus();
           },
-          onStreamFailure: (source, reason) => {
-            this.streams[source] = 'error';
-            this.error = `Transcription of ${SPEAKER_TITLE[source]} (${SPEAKER_FOR_SOURCE[source]}) stopped: ${reason}. Press Stop, then Start again.`;
-            logger.error('speech-to-text stream failed mid-call', { meetingId, source, reason });
+          onStreamFailure: (source, reason, retryAtMs) => {
+            this.streamRetries[source] = retryAtMs === null ? null : { reason, retryAtMs };
+            this.error = this.streamFailureText(source, reason, retryAtMs);
+            this.streamErrors[source] = this.error;
+            logger.error('speech-to-text stream failed mid-call', {
+              meetingId,
+              source,
+              reason,
+              reopens: retryAtMs !== null,
+            });
             this.emitStatus();
+          },
+          onStreamClosed: (source) => {
+            this.recordMeter(meetingId, null, source);
           },
           onSaveFailure: (source, reason) => {
             // Recording goes on. The likely causes (disk full, the file locked past SQLite's 5 s
@@ -268,6 +354,10 @@ export class CaptureService {
       logger.error('capture start failed', { meetingId, error: this.error });
       try {
         if (session) await session.close();
+        // A failed connect that reached the handshake may be billed: keep its numbers too.
+        if ((this.stt?.usage().sessionsOpened ?? 0) > 0) {
+          this.recordMeter(meetingId, 'start-failed', null);
+        }
         if (meetingCreated) store.deleteMeetingIfEmpty(meetingId);
       } catch (cleanupError) {
         logger.error('cleanup after failed start failed', {
@@ -284,6 +374,7 @@ export class CaptureService {
 
   private async doStop(options: StopOptions): Promise<CaptureStatus> {
     const { logger, store, uploader, stopFlushTimeoutMs = 15_000 } = this.options;
+    const reason = options.reason ?? 'user';
     const session = this.session;
     this.setPhase('stopping');
     this.stopMonitor();
@@ -291,6 +382,8 @@ export class CaptureService {
       if (session) {
         await session.close();
         const meetingId = session.meetingId;
+        this.recordMeter(meetingId, reason, null);
+        if (this.stt !== null) this.lastMeter = meterStatus(this.stt);
         // A meeting with no line was never sent to Postgres: TranscriptUploader.syncMeeting creates
         // it only once it holds one, and lines are never deleted, so this delete cannot race an
         // upload. If the uploader ever creates meetings earlier again, this leaves Postgres a
@@ -311,12 +404,17 @@ export class CaptureService {
             logger.warn('upload did not finish on stop', { error: errorMessage(error) });
           }
         }
-        logger.info('capture stopped', { meetingId, segments: session.storedSegmentCount });
+        logger.info('capture stopped', {
+          meetingId,
+          segments: session.storedSegmentCount,
+          reason,
+        });
       }
     } catch (error) {
       this.error = errorMessage(error);
-      logger.error('capture stop failed', { error: this.error });
+      logger.error('capture stop failed', { error: this.error, reason });
     } finally {
+      this.notice = stopNotice(reason, new Date(this.clock()), this.guards, options.detail ?? null);
       this.session = null;
       this.resetSessionState();
       this.setPhase('idle');
@@ -341,21 +439,45 @@ export class CaptureService {
         language: token.stream.language,
         sampleRate: token.stream.sample_rate,
         encoding: token.stream.encoding,
+        // Missing from an older API: unknown, so the meter says "cost unknown", not "$NaN".
+        pricePerHourUsd: token.stream.price_per_hour_usd ?? null,
       },
     };
+  }
+
+  /**
+   * Credentials for a reopen, mid-meeting. The vendor and the audio format must be the ones the
+   * meeting started with: the session's adapter cannot switch vendor, and another format would be
+   * transcribed as garbage with no error.
+   */
+  private async freshCredentials(provider: string): Promise<StreamCredentials> {
+    const { provider: issued, accessToken, settings } = await this.resolveStt();
+    if (issued !== provider) {
+      throw new Error(
+        `the API now names speech-to-text provider "${issued}", not "${provider}"; press Stop, then Start to switch`,
+      );
+    }
+    const mismatch = streamSettingsMismatch(settings);
+    if (mismatch !== null) throw new Error(mismatch);
+    return { accessToken, settings };
   }
 
   private resetSessionState(): void {
     this.sources = { mic: emptySourceStatus(), system: emptySourceStatus() };
     this.streams = { mic: 'closed', system: 'closed' };
+    this.streamMessages = { mic: null, system: null };
+    this.streamErrors = { mic: null, system: null };
+    this.streamRetries = { mic: null, system: null };
+    this.stt = null;
     this.sttProvider = null;
     this.startedAt = null;
     this.recordingSinceMs = null;
+    this.lastFinalAtMs = null;
     this.segmentsUnsaved = 0;
   }
 
   private setPhase(phase: CapturePhase): void {
-    this.phase = phase;
+    this.currentPhase = phase;
     this.emitStatus();
   }
 
@@ -363,6 +485,8 @@ export class CaptureService {
     this.stopMonitor();
     this.monitorTimer = setInterval(() => {
       this.checkAudioFlow();
+      this.checkForgottenStop();
+      this.refreshRetryCountdowns();
       this.emitStatus();
     }, MONITOR_INTERVAL_MS);
   }
@@ -379,15 +503,27 @@ export class CaptureService {
    * still sends chunks of zeros, as system audio without its macOS permission most likely does,
    * and is M2's silence warning (see pushAudio). Sources already `ended` or in `error` keep that
    * more specific state.
+   *
+   * Cost guard G2: past sttStallCloseMs with no chunk, the source's vendor session closes (it
+   * bills silence otherwise, $0.15 an hour on AssemblyAI) and reopens with its next chunk.
    */
   private checkAudioFlow(): void {
-    if (this.phase !== 'recording' || this.recordingSinceMs === null) return;
+    if (this.currentPhase !== 'recording' || this.recordingSinceMs === null) return;
     const now = this.clock();
     for (const source of AUDIO_SOURCES) {
       const status = this.sources[source];
-      if (status.health !== 'pending' && status.health !== 'active') continue;
+      if (
+        status.health !== 'pending' &&
+        status.health !== 'active' &&
+        status.health !== 'stalled'
+      ) {
+        continue;
+      }
       const silentForMs = now - (status.lastChunkAt ?? this.recordingSinceMs);
-      if (silentForMs < NO_AUDIO_WARNING_MS) continue;
+      if (silentForMs >= this.guards.sttStallCloseMs) {
+        this.session?.pauseSource(source, silentForMs);
+      }
+      if (status.health === 'stalled' || silentForMs < NO_AUDIO_WARNING_MS) continue;
       status.health = 'stalled';
       this.options.logger.warn('no audio from source', {
         source,
@@ -397,9 +533,122 @@ export class CaptureService {
     }
   }
 
+  /** What the banner says about a source's failed stream; `retryAtMs` null: it will not reopen. */
+  private streamFailureText(source: AudioSource, reason: string, retryAtMs: number | null): string {
+    const waitMs = retryAtMs === null ? 0 : retryAtMs - this.clock();
+    const next =
+      retryAtMs === null
+        ? 'Press Stop, then Start again.'
+        : waitMs > 0
+          ? `Reconnecting when its audio flows, in ${Math.ceil(waitMs / 1000)} s.`
+          : 'Reconnecting when its audio flows.';
+    return `Transcription of ${SPEAKER_TITLE[source]} (${SPEAKER_FOR_SOURCE[source]}) stopped: ${reason}. ${next}`;
+  }
+
+  /**
+   * The reconnect wait, counted down while the banner shows it. Written once at the failure, "in
+   * 2 s" (up to "in 60 s" after failures in a row) stayed on screen for as long as the other source
+   * talked, while nothing was being attempted: a source reopens only with its next chunk, never on
+   * a timer (CaptureSession.pushAudio), so once the wait is over it waits for audio, not seconds.
+   */
+  private refreshRetryCountdowns(): void {
+    for (const source of AUDIO_SOURCES) {
+      const retry = this.streamRetries[source];
+      // Another error took the banner since: leave it alone.
+      if (retry === null || this.error !== this.streamErrors[source]) continue;
+      this.error = this.streamFailureText(source, retry.reason, retry.retryAtMs);
+      this.streamErrors[source] = this.error;
+      if (retry.retryAtMs <= this.clock()) this.streamRetries[source] = null; // nothing left to count
+    }
+  }
+
+  /**
+   * Cost guard G5: a Stop nobody pressed. With silence still flowing (a muted mic, call audio
+   * without its permission) the stall close never fires and both sessions bill, $0.30 an hour on
+   * AssemblyAI, for as long as the app stays open: overnight is $4.20. So a recording with no final
+   * line from either source for noSpeechStopMs stops, and any recording stops at maxRecordingMs,
+   * both through the normal stop (last lines saved, sessions finished and closed).
+   */
+  private checkForgottenStop(): void {
+    if (this.currentPhase !== 'recording' || this.recordingSinceMs === null) return;
+    const now = this.clock();
+    const recordingForMs = now - this.recordingSinceMs;
+    const quietForMs = now - (this.lastFinalAtMs ?? this.recordingSinceMs);
+    let reason: StopReason | null = null;
+    if (recordingForMs >= this.guards.maxRecordingMs) reason = 'max-duration';
+    else if (quietForMs >= this.guards.noSpeechStopMs) reason = 'no-speech';
+    if (reason === null) return;
+    this.options.logger.warn('stopping a recording nobody stopped', {
+      meetingId: this.session?.meetingId ?? null,
+      reason,
+      recordingForMs,
+      quietForMs,
+    });
+    void this.stop({ reason });
+  }
+
+  /**
+   * Logs the meeting's speech-to-text use and keeps it in the local store (cost guard G7): after
+   * every stream that closes mid-meeting, and once at Stop with the reason. Saving at each close
+   * keeps most of it should the app die before Stop.
+   */
+  private recordMeter(
+    meetingId: string,
+    stopReason: StopReason | 'start-failed' | null,
+    closedSource: AudioSource | null,
+  ): void {
+    const { stt, sttProvider: provider } = this;
+    if (stt === null || provider === null) return;
+    const total = stt.usage();
+    const bySource = { mic: stt.usage('mic'), system: stt.usage('system') };
+    const { logger, store } = this.options;
+    logger.info(stopReason === null ? 'stt meter' : 'stt meter at stop', {
+      meetingId,
+      provider,
+      closedSource,
+      stopReason,
+      total,
+      mic: bySource.mic,
+      system: bySource.system,
+    });
+    try {
+      store.saveSttUsage({
+        meetingId,
+        provider,
+        total,
+        bySource,
+        stopReason,
+        updatedAt: new Date(this.clock()).toISOString(),
+      });
+    } catch (error) {
+      // The log line above keeps the numbers; recording goes on.
+      logger.error('speech-to-text usage not saved locally', {
+        meetingId,
+        error: errorMessage(error),
+      });
+    }
+  }
+
   private emitStatus(): void {
     this.events.emit('status', this.getStatus());
   }
+}
+
+function meterStatus(stt: SpeechToText): SttMeterStatus {
+  return {
+    vendorName: stt.vendorName,
+    total: toMeter(stt.usage()),
+    sources: { mic: toMeter(stt.usage('mic')), system: toMeter(stt.usage('system')) },
+  };
+}
+
+function toMeter({
+  sessionsOpened,
+  connectedMs,
+  audioSentMs,
+  estimatedCostUsd,
+}: SttUsage): SttMeter {
+  return { sessionsOpened, connectedMs, audioSentMs, estimatedCostUsd };
 }
 
 export function defaultMeetingTitle(startedAt: Date): string {

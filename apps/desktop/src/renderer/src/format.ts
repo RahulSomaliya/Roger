@@ -1,9 +1,12 @@
 import {
+  AUDIO_SOURCE_LABEL,
   NO_AUDIO_WARNING_MS,
   type SourceHealth,
+  type SttMeterStatus,
   type SttStreamState,
   type UploadStatus,
 } from '../../shared/capture';
+import { AUDIO_SOURCES } from '../../shared/transcript';
 
 /** `hh:mm:ss` for an offset in milliseconds. */
 export function formatOffset(ms: number): string {
@@ -29,14 +32,26 @@ export function describeHealth(health: SourceHealth, chunks: number): string {
   }
 }
 
-export function describeStream(state: SttStreamState): string {
+/** A session's state as people read it: "transcribing" only while its source sends audio. */
+export function describeStream(state: SttStreamState, health: SourceHealth): string {
   switch (state) {
     case 'closed':
-      return 'closed';
+      // No vendor session: before Start, after Stop, or the source failed or ended.
+      return 'not connected';
     case 'connecting':
       return 'connecting';
     case 'open':
+      // Open but fed nothing: billed, not transcribing. It closes after the stall window.
+      if (health === 'pending') return 'connected, no audio yet';
+      if (health === 'stalled') return 'connected, no audio';
       return 'transcribing';
+    case 'paused':
+      return 'paused, no audio';
+    case 'retrying':
+      // A reopen starts only with the source's next chunk: with none arriving, none is attempted.
+      if (health === 'pending' || health === 'stalled')
+        return 'not connected, reconnects with audio';
+      return 'reconnecting';
     case 'error':
       return 'error';
   }
@@ -54,4 +69,58 @@ export function describeUpload(upload: UploadStatus): string {
   }
   if (upload.pending > 0) return `${upload.pending} lines uploading${rejected}`;
   return `all lines uploaded${rejected}`;
+}
+
+/** `45s`, `12m 30s`, `1h 02m`: how long a speech-to-text session was open. */
+export function formatDuration(ms: number): string {
+  const total = Math.max(0, Math.floor(ms / 1000));
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const seconds = total % 60;
+  if (hours > 0) return `${hours}h ${String(minutes).padStart(2, '0')}m`;
+  if (minutes > 0) return `${minutes}m ${String(seconds).padStart(2, '0')}s`;
+  return `${seconds}s`;
+}
+
+/**
+ * A source's connected time for its row: summed over every session it opened this meeting, so once
+ * its session closed it is time it was connected ("not connected · 12s connected" contradicted
+ * itself). Null before any session opened.
+ */
+export function describeSourceConnected(state: SttStreamState, connectedMs: number): string | null {
+  if (connectedMs <= 0) return null;
+  // formatDuration floors to whole seconds; a session open under one still counts.
+  const time = connectedMs < 1000 ? 'under 1s' : formatDuration(connectedMs);
+  return state === 'open' || state === 'connecting' ? `${time} connected` : `was connected ${time}`;
+}
+
+/** An estimate from the API's list price, so never shown as exact. */
+export function describeCost(usd: number | null): string {
+  if (usd === null) return 'cost unknown';
+  if (usd === 0) return 'no cost';
+  if (usd < 0.005) return 'under $0.01';
+  return `about $${usd.toFixed(2)}`;
+}
+
+/**
+ * The status line: what the vendor bills for this meeting so far (open time, silent or not). The
+ * time sums both sources' sessions, each billed on its own, so a 12m 30s call with both open
+ * reads "25m 00s connected".
+ */
+export function describeMeter(meter: SttMeterStatus): string {
+  const { total } = meter;
+  return `${meter.vendorName} · ${formatDuration(total.connectedMs)} connected · ${describeCost(total.estimatedCostUsd)}`;
+}
+
+/** The rest of the meter, for the line's tooltip. */
+export function meterDetails(meter: SttMeterStatus): string {
+  const { total } = meter;
+  const sessions = `${total.sessionsOpened} session${total.sessionsOpened === 1 ? '' : 's'} opened`;
+  const perSource = AUDIO_SOURCES.map((source) => {
+    const used = meter.sources[source];
+    return `${AUDIO_SOURCE_LABEL[source]}: ${formatDuration(used.connectedMs)} connected, ${describeCost(used.estimatedCostUsd)}.`;
+  });
+  return [`${sessions} · ${formatDuration(total.audioSentMs)} of audio sent.`, ...perSource].join(
+    ' ',
+  );
 }

@@ -19,12 +19,15 @@ speech-to-text, saved on the Mac, uploaded to Postgres through the API, read bac
 
 - Electron app with one Start and Stop button, a status line and the live transcript.
 - Mic and system audio captured as two separate streams (mic = Me, system = Them).
-- Speech-to-text behind a `SpeechToText` interface: a Deepgram streaming adapter and a fake adapter
-  for development and tests. Vendor key stays on the API; the desktop gets a short-lived token.
+- Speech-to-text behind a `SpeechToText` interface: an AssemblyAI streaming adapter (the vendor
+  since 2026-10-06), a Deepgram streaming adapter (the second adapter) and a fake adapter for
+  development and tests. Vendor key stays on the API; the desktop gets a short-lived token.
 - Transcript lines saved to local SQLite the moment they are final, then uploaded in batches with
   retry. Postgres is the source of truth.
 - API: meetings, segments, transcript read, STT token, health. Alembic migrations.
 - MCP server in the API: one tool, `get_transcript`.
+- Cost guards on the live speech-to-text connection (owner ask, 2026-10-06): no session stays open
+  that nobody needs, every open is limited, and what it cost is visible.
 - Tests and lint on both sides, green under `make check`.
 
 ## Out of scope
@@ -41,8 +44,10 @@ speech-to-text, saved on the Mac, uploaded to Postgres through the API, read bac
 | Where audio is turned into PCM | Renderer, one `AudioContext({sampleRate: 16000})` per stream feeding an `AudioWorklet` that emits Int16 chunks of 1600 samples (100 ms). The worklet module is compiled by its own tsconfig and only ever loaded through `addModule`; page code shares a side-effect-free contract module with it. | `MediaRecorder` with WebM | Vendors want raw linear16 at 16 kHz; letting Chromium resample avoids a hand-written resampler. Pattern from openwhispr. |
 | Where STT and persistence live | Main process | Renderer | Main owns secrets, sockets and files. Renderer stays display-only (house rule 5). |
 | STT event shape | Our own `SttEvent` union (`interim`, `final`, `error`, `closed`), vendor messages parsed inside the adapter | Pass vendor JSON through | One normalised shape keeps the session, store and UI vendor-free (anarlog's `StreamResponse`). |
-| STT vendor for M1 | Deepgram nova-3 streaming (`linear16`, 16 kHz, `interim_results`, `KeepAlive` every 5 s, `Finalize` then `CloseStream` on stop) | AssemblyAI, OpenAI Realtime | Documented short-lived token grant and a simple binary websocket. Bake-off is M3. |
+| STT vendor for M1 | AssemblyAI Universal-Streaming English (v3 websocket, `pcm_s16le` at 16 kHz in 50 to 1000 ms messages, `format_turns` with one saved line per turn, temporary token as the `token` query parameter, `Terminate` then wait for `Termination` on stop). Owner decision, 2026-10-06; Deepgram nova-3 until then. | Deepgram nova-3 (kept as the second adapter: `interim_results`, `KeepAlive` every 5 s, `Finalize` then `CloseStream` on stop), OpenAI Realtime | The owner's reasons: AssemblyAI lists Granola as a customer, live text is about $0.15 an hour per stream (billed for the time the stream is open), and the free hours are generous. Documented temporary tokens and a simple binary websocket. Bake-off is M3. |
 | Token flow | `POST /v1/stt/token` returns provider + 30 s token + stream settings | Key in the desktop `.env` | House rule 3. Also makes "swap vendor" an API config change. |
+| STT connection lifecycle | One core for every websocket vendor (`SttConnection`); an adapter only describes its protocol (`SttProtocol`); a registry of vendors on each side; a conformance suite every vendor must pass, failing on any socket left open | A socket lifecycle per adapter | Owner ask, 2026-10-06: changing provider must be easy and opening and closing careful. Vendors bill open time, so a lifecycle per adapter leaks per adapter. |
+| STT cost guards | A failed or ended source closes its session at once; a source silent for 30 s closes it and reopens with audio, a fresh token and a 3 s held buffer; vendor failures reopen after a doubling backoff; every open (Start's included, both sources) passes one limiter, 4 a minute and 30 a meeting; a recording stops after 15 minutes with no final line, at 4 hours, and on quit (5 s bound), sleep, window close, crash or reload; AssemblyAI streams set `inactivity_timeout` 120 s and the API asks for the 3-hour cap explicitly; Deepgram's KeepAlive runs only while audio flows. Numbers in `apps/desktop/src/main/costGuards.ts`, overridable, validated. Usage metered per source and meeting: status line, logs, SQLite `stt_usage`. | Silence-gated streaming (a session open only while someone speaks, with a pre-roll buffer) | Owner ask, 2026-10-06: be super conservative with cost. AssemblyAI bills every open second, $0.15 an hour per stream, two a meeting; a forgotten recording overnight was about $4.20. Gating on speech needs voice detection and a pre-roll to keep first words: M2/M3. |
 | Local safety copy | `node:sqlite` (built into Electron 44's Node), WAL, append-only `segments` rows with `synced_at` | `better-sqlite3` | No native rebuild, no ABI mismatch between vitest and Electron. |
 | Upload | `TranscriptUploader` polls unsynced rows every 2 s, batches up to 200, exponential backoff on failure, marks `synced_at` | Upload each segment as it arrives | Fewer requests, same guarantee: nothing is lost locally. |
 | Ids | Desktop generates UUIDv4 for meetings and segments; the API inserts and ignores ids it already has | Server ids | Retries and replays are safe (house rule 7). |
@@ -68,8 +73,11 @@ getDisplayMedia ───┤ worklet  ├─ SttStream(mic)  ──┐  final �
 - [x] `apps/desktop`: shared IPC contract and transcript types.
 - [x] `apps/desktop`: renderer capture (mic + system) with worklet and chunk IPC; Start/Stop UI.
 - [x] `apps/desktop`: `SpeechToText` interface, Deepgram adapter (ws), fake adapter, message parsing tests.
+- [x] AssemblyAI as the vendor (2026-10-06): API token issuer, desktop adapter and parser, contract.
 - [x] `apps/desktop`: `CaptureSession` state machine, SQLite store, uploader, API client with tests.
 - [x] `apps/desktop`: electron-builder config with `NSMicrophoneUsageDescription` and `NSAudioCaptureUsageDescription`.
+- [x] Shared STT lifecycle, vendor registries, conformance suite, price per stream-hour (2026-10-06).
+- [x] STT cost guards and metering (2026-10-06): see the design row and `apps/desktop/README.md`.
 - [ ] Exit check on a real call (needs a Mac).
 
 ## Tests
@@ -77,15 +85,21 @@ getDisplayMedia ───┤ worklet  ├─ SttStream(mic)  ──┐  final �
 | What | Test |
 | --- | --- |
 | API auth on every non-public route, meetings, idempotent segments, transcript ordering, end, health | `apps/api/tests/test_auth.py`, `test_meetings.py`, `test_health.py` |
-| STT token issuing (fake and Deepgram via mocked HTTP) | `apps/api/tests/test_stt_token.py` |
+| STT token issuing (fake, AssemblyAI and Deepgram via mocked HTTP); provider settings | `apps/api/tests/test_stt_token.py`, `test_config.py` |
 | MCP tool through the SDK client, both handshakes; the text read never selects word timings | `apps/api/tests/test_mcp.py` |
 | PCM conversion and chunking | `apps/desktop/src/shared/pcm.test.ts`, `src/renderer/src/audio/PcmChunker.test.ts` |
 | Deepgram message parsing to `SttEvent` | `apps/desktop/src/main/stt/deepgram/messages.test.ts` |
 | Deepgram adapter against a local fake websocket server | `apps/desktop/src/main/stt/deepgram/DeepgramSpeechToText.test.ts` |
+| AssemblyAI message parsing to `SttEvent`; audio message sizing (50 to 1000 ms) | `apps/desktop/src/main/stt/assemblyai/messages.test.ts`, `AudioFrameSizer.test.ts` |
+| AssemblyAI adapter against a local fake websocket server (token auth, one line per turn, Terminate, failures) | `apps/desktop/src/main/stt/assemblyai/AssemblyAiSpeechToText.test.ts` |
 | Capture state machine, partial-open cleanup, mid-call stream failure, finals during close | `apps/desktop/src/main/capture/CaptureService.test.ts`, `CaptureSession.test.ts` |
-| SQLite store append, unsynced query, mark synced, rejected lines, crash recovery, restart | `apps/desktop/src/main/store/SqliteTranscriptStore.test.ts` |
+| Shared STT lifecycle (timeouts, forced close, keep-alive only while audio flows, metering) and every vendor's conformance, with a leaked-socket check after each test | `apps/desktop/src/main/stt/core/SttConnection.test.ts`, `WebSocketSpeechToText.test.ts`, `src/main/stt/conformance.test.ts`, `createSpeechToText.test.ts` |
+| Cost guards: settings and their validation; the open limiter on a fake clock; a failed source closing its own session in the same tick; stall close and reopen with a fresh token, held audio and meeting-relative offsets; reopen backoff and the per-minute and per-meeting limits; no-speech and 4-hour auto-stop; metering in the status, logs and store | `apps/desktop/src/main/costGuards.test.ts`, `src/main/capture/SttOpenBudget.test.ts`, `CaptureService.test.ts`, `CaptureSession.test.ts`, `stopReasons.test.ts` |
+| Stop on quit (bounded wait), sleep, window close, renderer crash and reload | `apps/desktop/src/main/lifecycle.test.ts` |
+| SQLite store append, unsynced query, mark synced, rejected lines, crash recovery, restart, per-meeting STT usage and its migration | `apps/desktop/src/main/store/SqliteTranscriptStore.test.ts` |
 | Uploader batching, retry, ordering, 422 quarantine, lost-meeting resync | `apps/desktop/src/main/upload/TranscriptUploader.test.ts` |
 | Renderer payload validation (odd-length and oversized chunks) | `apps/desktop/src/main/ipc-validation.test.ts` |
+| Renderer capture follows main: a source still starting stops when main goes idle, a start never runs on top of a capture (fake devices) | `apps/desktop/src/renderer/src/audio/AudioCaptureController.test.ts` |
 | API client request shapes and error mapping | `apps/desktop/src/main/api/ApiClient.test.ts` |
 
 ## Risks
@@ -93,7 +107,12 @@ getDisplayMedia ───┤ worklet  ├─ SttStream(mic)  ──┐  final �
 | Risk | Signal | Response |
 | --- | --- | --- |
 | Electron's system audio path shows a Screen Recording prompt or delivers a dead track | Track `readyState` is `ended` at start, or zero chunks from the system stream in 5 s | The UI shows "no system audio". Plan B is a Swift helper behind the same `SystemAudioSource` seam (M2). |
-| Deepgram token TTL (30 s) expires before the socket opens on slow networks | 401 on connect | Fetch the token right before connecting; the API TTL is a setting. |
+| The STT token (30 s) expires before the sockets open on slow networks | 401 on connect (Deepgram), close 1008 before `Begin` (AssemblyAI) | Fetch the token right before connecting; the API TTL is a setting. |
+| AssemblyAI ends every session after 3 hours (the API asks for that cap explicitly) | Error 3008 and close mid-call | Roger reopens a fresh session after 2 s, through the open limiter; the few seconds in between are not transcribed (no audio backup until M2). A recording stops at 4 hours anyway. |
+| AssemblyAI lets a free account start only 5 sessions a minute ([rate limits](https://www.assemblyai.com/docs/streaming/rate-limits), 2026-10-06), and every Start opens two | The vendor refuses after the handshake with "Too many concurrent sessions" (close 1008 or 3009; the vendor's pages disagree) | Roger's own limiter allows 4 opens a minute across meetings and both sources, so a third quick Start is refused before any socket, saying when to try; reopens spend the same budget. |
+| AssemblyAI bills the time a session is open, not the audio sent | A dead or silent system stream costs as much as a live one: about $0.30 per call hour for both | The cost guards: a failed source closes at once, a silent one after 30 s, no final line for 15 minutes stops the recording, 4 hours stops any; the status line shows the running cost. |
+| The reopen flush trips AssemblyAI's faster-than-real-time rule | A reopened stream closes with 3007 right after it opens | The held audio is capped at 3 s; lower `sttReopenBufferSeconds`, or pace the flush (M2). |
+| The Mac sleeps in the middle of a stop | The socket stays half-open on the vendor's side | `inactivity_timeout` (120 s) closes it there; the finish timer terminates Roger's side on wake. |
 | API down mid-call | Uploader backoff visible in status line ("12 lines waiting") | Rows stay local with `synced_at NULL`; uploader resumes. Meeting `end` is retried too. |
 | Vendor message format drifts | Parsing tests fail; unknown message types are logged, not fatal | Adapter isolates the shape. |
 
@@ -103,10 +122,12 @@ The M1 wrap-up left these alone on purpose. Each has an owner.
 
 | Gap | What happens today | Owner |
 | --- | --- | --- |
-| Deepgram reconnect after a network blip | A dropped socket ends that stream for the rest of the call, with a visible failure. Lines already final stay saved. | M2 |
+| Audio while a speech-to-text session reconnects (a network blip, AssemblyAI's 3-hour cap) | The session reopens after its backoff, but only the last 3 s of audio are held, so speech during the wait is not transcribed. Lines already final stay saved. | M2 (audio backup and replay) |
+| Silence-gated streaming with a pre-roll buffer | A session stays open, billed, through silence while chunks flow (only a source that sends nothing closes, after 30 s; the 15-minute no-speech stop bounds the rest). Opening only while someone speaks needs voice detection and a pre-roll so first words are kept. | M2/M3 |
+| Speech-to-text usage upload | Each meeting's usage stays in the Mac's `stt_usage` table and the logs. | M3 |
 | Warning when a live stream carries only silence | A stream that hears nothing still looks live. | M2 |
 | MCP transcript slicing | `get_transcript` returns the whole call in one block, so a long enough call can exceed an MCP client's output cap. | M7 |
-| Automated tests for the renderer capture code | `getUserMedia`, `getDisplayMedia` and the worklet wiring are only checked by a real call. | M2 |
+| Automated tests for the renderer capture code | `getUserMedia`, `getDisplayMedia` and the worklet wiring are only checked by a real call. The controller's start and stop rules run against fake devices. | M2 |
 | Lockfile packages published less than 7 days before 2026-10-05 | electron 44.5.1, mcp 2.3.0, vitest 5.0.3, eslint 10.12.0 and others are inside the usual quarantine window. | Re-check at the next dependency bump |
 
 ## Exit check log
@@ -143,8 +164,11 @@ should-fixes, all fixed with regression tests.
 - In dev mode the terminal is the app macOS checks, and no common terminal carries
   `NSAudioCaptureUsageDescription`, so call audio must be tested from the installed app.
 
-**Pending: the real-call check.** A 30-minute Google Meet call with `STT_PROVIDER=deepgram` and a
-Deepgram key on the API, then Claude quoting a line from it through MCP. Record the line here.
+**Pending: the real-call check.** A 30-minute Google Meet call with `STT_PROVIDER=assemblyai` and
+an AssemblyAI key on the API (owner decision, 2026-10-06: AssemblyAI replaces Deepgram as the
+vendor for this check because it lists Granola as a customer, live text is about $0.15 per hour and
+the free hours are generous; Deepgram stays as the second adapter), then Claude quoting a line from
+it through MCP. Record the line here.
 
 ## Review
 

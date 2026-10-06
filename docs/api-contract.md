@@ -152,21 +152,49 @@ Response: `200 { "meeting": Meeting, "segments": TranscriptSegment[] }` ordered 
 
 The API holds the speech-to-text vendor key and hands the desktop a short-lived credential plus the
 stream settings. The desktop picks its `SpeechToText` adapter from `provider`. Changing vendor is a
-config change on the API.
+config change on the API (`STT_PROVIDER`). Both sides keep a vendor registry with the same provider
+ids (`apps/api/src/roger_api/stt_vendors.py`, `apps/desktop/src/main/stt/registry.ts`).
+
+| `provider` | `access_token` | `expires_in` | Default `stream.model` | Its `stream.price_per_hour_usd` |
+| --- | --- | --- | --- | --- |
+| `assemblyai` (Roger's vendor since 2026-10-06; `deepgram` is the second adapter) | AssemblyAI temporary streaming token; the desktop sends it as the `token` query parameter | Seconds left to open the stream (1..600). One token opens both streams; a session then runs up to 3 hours, a cap the API asks for explicitly on every token (`max_session_duration_seconds=10800`), after which AssemblyAI closes it with 3008. | `universal-streaming-english` | `0.15` |
+| `deepgram` | Deepgram grant (JWT); the desktop sends it as `Authorization: Bearer` | Seconds the grant is valid | `nova-3` | `0.462` |
+| `fake` | `""` | `0` | `fake` | `0` |
 
 Response:
 
 ```json
 {
-  "provider": "deepgram",
-  "access_token": "eyJ...",
+  "provider": "assemblyai",
+  "access_token": "<AssemblyAI temporary token>",
   "expires_in": 30,
-  "stream": { "model": "nova-3", "language": "en", "sample_rate": 16000, "encoding": "linear16" }
+  "stream": {
+    "model": "universal-streaming-english",
+    "language": "en",
+    "sample_rate": 16000,
+    "encoding": "linear16",
+    "price_per_hour_usd": 0.15
+  }
 }
 ```
 
+`stream.model` is `STT_MODEL`, or the provider's default above when it is unset. `stream.encoding`
+is Roger's own name for 16-bit signed little-endian mono PCM (`linear16`) whatever the vendor; each
+desktop adapter maps it to its vendor's name (AssemblyAI calls it `pcm_s16le`). The desktop
+refuses to start when `sample_rate` and `encoding` are not the `16000` / `linear16` it sends.
+
+`stream.price_per_hour_usd` is what one open stream of `stream.model` costs per hour in USD: the
+vendor's list price from the API's registry, or `STT_PRICE_PER_HOUR_USD` when set, or `null` when
+the API knows no price for that model (it then logs `stt_price_unknown` at startup). It is per
+stream and per hour the stream is open: a meeting opens two streams, and AssemblyAI bills the open
+time, silent or not. The desktop uses it to estimate what a stream cost and never hardcodes vendor
+prices.
+
 With `STT_PROVIDER=fake` the response is `{"provider": "fake", "access_token": "", "expires_in": 0, "stream": {...}}`
 and the desktop uses its built-in fake adapter (useful for development without a vendor key).
+
+A vendor that refuses, fails, times out or answers with something unreadable is a
+`502 stt_provider_error`. The vendor key is never in a response or a log line.
 
 ## MCP
 

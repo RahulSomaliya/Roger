@@ -3,7 +3,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { createLogger } from '../../logger';
 import { SttConnectError, type SttEvent, type SttStreamSettings } from '../SpeechToText';
-import { buildListenUrl, DeepgramSpeechToText, rawDataToString } from './DeepgramSpeechToText';
+import { rawDataToString } from '../websocket';
+import { buildListenUrl, DeepgramSpeechToText } from './DeepgramSpeechToText';
 
 const logger = createLogger({ level: 'error', format: 'json', sink: () => undefined });
 const settings: SttStreamSettings = {
@@ -11,6 +12,7 @@ const settings: SttStreamSettings = {
   language: 'en',
   sampleRate: 16000,
   encoding: 'linear16',
+  pricePerHourUsd: 0.462,
 };
 
 interface ServerLog {
@@ -136,6 +138,32 @@ describe('DeepgramSpeechToText', () => {
       .catch((e: unknown) => e);
     expect(error).toBeInstanceOf(SttConnectError);
     expect((error as SttConnectError).statusCode).toBe(401);
+  });
+
+  it('says what a Deepgram close reason means when it ends the stream mid-call', async () => {
+    server.removeAllListeners('connection');
+    server.on('connection', (socket: WebSocket) => {
+      socket.on('message', () => {
+        socket.close(1011, 'NET-0001');
+      });
+    });
+    const stt = new DeepgramSpeechToText({ logger, baseUrl });
+    const stream = await stt.openStream({ accessToken: 't', settings, label: 'system' });
+    const events: SttEvent[] = [];
+    stream.on((event) => events.push(event));
+
+    stream.send(new Uint8Array(3200));
+    await waitFor(() => events.some((e) => e.type === 'closed'));
+    expect(events).toEqual([
+      {
+        type: 'error',
+        message:
+          'Deepgram closed the stream (code 1011: NET-0001, no audio or KeepAlive reached ' +
+          'Deepgram in time)',
+        fatal: true,
+      },
+      { type: 'closed', code: 1011, reason: 'NET-0001' },
+    ]);
   });
 
   it('closes even when the vendor never answers CloseStream', async () => {

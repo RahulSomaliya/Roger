@@ -52,6 +52,12 @@ export function App() {
         </div>
       ) : null}
 
+      {status?.notice ? (
+        <div role="status" className="notice">
+          {status.notice}
+        </div>
+      ) : null}
+
       {status ? <StatusPanel status={status} /> : null}
 
       <TranscriptView segments={segments} interim={interim} recording={recording} />

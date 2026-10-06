@@ -1,11 +1,14 @@
 import { DatabaseSync, type SQLOutputValue, type StatementSync } from 'node:sqlite';
 import {
   isAudioSource,
+  type AudioSource,
   type TranscriptSegment,
   type TranscriptWord,
 } from '../../shared/transcript';
+import type { SttUsage } from '../stt/usage';
 import type {
   LocalMeeting,
+  MeetingSttUsage,
   NewLocalMeeting,
   RemoteState,
   TranscriptStore,
@@ -48,6 +51,22 @@ const MIGRATIONS: readonly string[] = [
   ALTER TABLE segments ADD COLUMN rejected_reason TEXT;
   CREATE INDEX segments_rejected ON segments (rejected_at) WHERE rejected_at IS NOT NULL;
   `,
+  // Speech-to-text usage per meeting (cost guard G7). No foreign key on purpose: a meeting
+  // deleted for having no lines still had billed sessions, and this row keeps them.
+  `
+  CREATE TABLE stt_usage (
+    meeting_id TEXT PRIMARY KEY,
+    provider TEXT NOT NULL,
+    sessions_opened INTEGER NOT NULL,
+    connected_ms INTEGER NOT NULL,
+    audio_sent_ms INTEGER NOT NULL,
+    dropped_chunks INTEGER NOT NULL,
+    estimated_cost_usd REAL,
+    by_source_json TEXT NOT NULL,
+    stop_reason TEXT,
+    updated_at TEXT NOT NULL
+  );
+  `,
 ];
 
 type Row = Record<string, SQLOutputValue>;
@@ -70,6 +89,8 @@ export class SqliteTranscriptStore implements TranscriptStore {
     countUnsynced: StatementSync;
     countRejected: StatementSync;
     countSegments: StatementSync;
+    saveSttUsage: StatementSync;
+    getSttUsage: StatementSync;
   };
 
   /** `path` may be `:memory:` for tests. */
@@ -133,6 +154,23 @@ export class SqliteTranscriptStore implements TranscriptStore {
         `SELECT COUNT(*) AS n FROM segments WHERE rejected_at IS NOT NULL`,
       ),
       countSegments: this.db.prepare(`SELECT COUNT(*) AS n FROM segments WHERE meeting_id = ?`),
+      saveSttUsage: this.db.prepare(
+        `INSERT INTO stt_usage
+           (meeting_id, provider, sessions_opened, connected_ms, audio_sent_ms, dropped_chunks,
+            estimated_cost_usd, by_source_json, stop_reason, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT (meeting_id) DO UPDATE SET
+           provider = excluded.provider,
+           sessions_opened = excluded.sessions_opened,
+           connected_ms = excluded.connected_ms,
+           audio_sent_ms = excluded.audio_sent_ms,
+           dropped_chunks = excluded.dropped_chunks,
+           estimated_cost_usd = excluded.estimated_cost_usd,
+           by_source_json = excluded.by_source_json,
+           stop_reason = excluded.stop_reason,
+           updated_at = excluded.updated_at`,
+      ),
+      getSttUsage: this.db.prepare(`SELECT * FROM stt_usage WHERE meeting_id = ?`),
     };
   }
 
@@ -212,6 +250,27 @@ export class SqliteTranscriptStore implements TranscriptStore {
     return Number(this.statements.countSegments.get(meetingId)?.n ?? 0);
   }
 
+  saveSttUsage(usage: MeetingSttUsage): void {
+    const { total } = usage;
+    this.statements.saveSttUsage.run(
+      usage.meetingId,
+      usage.provider,
+      total.sessionsOpened,
+      total.connectedMs,
+      total.audioSentMs,
+      total.droppedChunks,
+      total.estimatedCostUsd,
+      JSON.stringify(usage.bySource),
+      usage.stopReason,
+      usage.updatedAt,
+    );
+  }
+
+  getSttUsage(meetingId: string): MeetingSttUsage | null {
+    const row = this.statements.getSttUsage.get(meetingId);
+    return row ? rowToSttUsage(row) : null;
+  }
+
   close(): void {
     this.db.close();
   }
@@ -270,6 +329,26 @@ function rowToSegment(row: Row): TranscriptSegment {
       row.confidence === null || row.confidence === undefined ? null : Number(row.confidence),
     words: parseWords(row.words_json),
     createdAt: text(row, 'created_at'),
+  };
+}
+
+function rowToSttUsage(row: Row): MeetingSttUsage {
+  const cost = row.estimated_cost_usd;
+  return {
+    meetingId: text(row, 'meeting_id'),
+    provider: text(row, 'provider'),
+    total: {
+      sessionsOpened: Number(row.sessions_opened),
+      connectedMs: Number(row.connected_ms),
+      audioSentMs: Number(row.audio_sent_ms),
+      droppedChunks: Number(row.dropped_chunks),
+      estimatedCostUsd: cost === null || cost === undefined ? null : Number(cost),
+    },
+    // Written by saveSttUsage from a typed Record<AudioSource, SttUsage>; the cast restores it.
+    bySource: JSON.parse(text(row, 'by_source_json')) as Record<AudioSource, SttUsage>,
+    stopReason:
+      row.stop_reason === null || row.stop_reason === undefined ? null : text(row, 'stop_reason'),
+    updatedAt: text(row, 'updated_at'),
   };
 }
 
