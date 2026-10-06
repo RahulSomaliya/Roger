@@ -8,7 +8,11 @@
     "src/main/**/*.ts",
     "src/preload/**/*.ts",
     "src/shared/**/*.ts",
+    "bench/**/*.ts",
+    "e2e/**/*.ts",
+    "qa/**/*.ts",
     "electron.vite.config.ts",
-    "vitest.config.ts"
+    "vite.preview.config.ts",
+    "vitest.*.ts"
   ]
 }

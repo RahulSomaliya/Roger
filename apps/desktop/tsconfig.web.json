@@ -5,6 +5,12 @@
     "jsx": "react-jsx",
     "types": ["vite/client"]
   },
-  "include": ["src/renderer/**/*.ts", "src/renderer/**/*.tsx", "src/shared/**/*.ts"],
+  "include": [
+    "src/renderer/**/*.ts",
+    "src/renderer/**/*.tsx",
+    "src/shared/**/*.ts",
+    "preview/**/*.ts",
+    "preview/**/*.tsx"
+  ],
   "exclude": ["src/renderer/src/audio/pcm-worklet.ts", "src/renderer/src/audio/audioworklet.d.ts"]
 }

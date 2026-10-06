@@ -28,11 +28,20 @@ export default defineConfig([
     },
   },
   {
-    files: ['src/main/**/*.ts', 'src/preload/**/*.ts'],
+    // `bench` (the STT benchmark CLI), `e2e` (the Electron smoke test) and `qa` (the browser QA
+    // driver) run under Node.
+    files: [
+      'src/main/**/*.ts',
+      'src/preload/**/*.ts',
+      'bench/**/*.ts',
+      'e2e/**/*.ts',
+      'qa/**/*.ts',
+    ],
     languageOptions: { globals: globals.node },
   },
   {
-    files: ['src/renderer/**/*.{ts,tsx}'],
+    // `preview` is the renderer harness: the renderer's React code with a fake `window.roger`.
+    files: ['src/renderer/**/*.{ts,tsx}', 'preview/**/*.{ts,tsx}'],
     languageOptions: { globals: globals.browser },
     plugins: { 'react-hooks': reactHooks },
     rules: reactHooks.configs.flat.recommended.rules,
