@@ -183,11 +183,8 @@ describe.concurrent('TapSystemAudio', () => {
     const [state] = capture.states;
     expect(state).toMatchObject({ source: 'system', state: 'error' });
     expect(state!.message).toContain('8000 Hz');
-    expect(onlyWarning(status())).toMatchObject({
-      kind: 'source-ended',
-      source: 'system',
-      loud: true,
-    });
+    // The loud warning is M2-T11's, made from this health (see fail() in TapSystemAudio.ts).
+    expect(status().warnings).toBeUndefined();
     expect(events()).toEqual(['helper-format-refused']);
     await sleep(300);
     expect(capture.pushed).toEqual([]);
@@ -195,7 +192,7 @@ describe.concurrent('TapSystemAudio', () => {
     expect(messages().filter((message) => message === 'audio helper started')).toHaveLength(1);
   });
 
-  it('reports call audio failed, loudly, once the helper is out of restarts', async (context) => {
+  it('reports call audio failed once the helper is out of restarts', async (context) => {
     const { tap, capture, status, events } = harness(context, 'crash-after=1');
     tap.start(RECORDING);
     await vi.waitFor(
@@ -209,9 +206,7 @@ describe.concurrent('TapSystemAudio', () => {
     expect(state!.message).toBe(
       'the call audio helper stopped 6 times in a row (last: exit 1, tap_failed)',
     );
-    const warning = onlyWarning(status());
-    expect(warning).toMatchObject({ kind: 'source-ended', source: 'system', loud: true });
-    expect(warning!.message).toContain('Press Stop, then Start again');
+    expect(status().warnings).toBeUndefined();
     expect(events()).toEqual([...Array<string>(5).fill('helper-restarted'), 'helper-failed']);
     // Each run sent audio before it crashed; capture got it all.
     expect(capture.pushed.length).toBeGreaterThanOrEqual(6);
@@ -226,7 +221,7 @@ describe.concurrent('TapSystemAudio', () => {
     });
     const path = join(dir, 'roger-audio');
     writeFileSync(path, Buffer.from([0xde, 0xad, 0xbe, 0xef, 0, 1, 2, 3]), { mode: 0o755 });
-    const { tap, capture, events } = harness(context, '', {
+    const { tap, capture, status, events } = harness(context, '', {
       selection: { mode: 'tap', helper: { origin: 'bundle', path } },
     });
     expect(() => {
@@ -241,6 +236,9 @@ describe.concurrent('TapSystemAudio', () => {
       message: `the call audio helper stopped 6 times in a row (last: could not start ${path}: spawn ENOEXEC)`,
     });
     expect(events()).toEqual([...Array<string>(5).fill('helper-restarted'), 'helper-failed']);
+    // No run sent audio, so the restarts' "Roger is restarting it" held until the failure: it is
+    // over now, and the failure's own warning is M2-T11's.
+    expect(status().warnings).toBeUndefined();
   });
 
   // `pkill -STOP roger-audio` in the exit check: Roger warns, kills and restarts it.
@@ -386,7 +384,7 @@ describe.concurrent('TapSystemAudio', () => {
         message: 'there is no call audio helper: no audio helper at /x/roger-audio',
       },
     ]);
-    expect(onlyWarning(status())).toMatchObject({ kind: 'source-ended', loud: true });
+    expect(status().warnings).toBeUndefined();
     expect(events()).toEqual(['helper-missing']);
     await expect(tap.stop()).resolves.toBeUndefined();
     expect(messages()).not.toContain('audio helper started');

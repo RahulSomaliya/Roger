@@ -164,10 +164,9 @@ describe.concurrent('createSystemAudio', () => {
     });
     const status = capture.getStatus();
     expect(status.streams.system).toBe('closed');
-    expect(status.warnings?.find((warning) => warning.kind === 'source-ended')).toMatchObject({
-      source: 'system',
-      loud: true,
-    });
+    // The reason M2-T11's SignalMonitor turns into the loud warning; the tap adds none of its own.
+    expect(status.sources.system.message).toContain('8000 Hz');
+    expect(status.warnings).toBeUndefined();
   });
 
   it('waits at quit for the helper to stop', async (context) => {

@@ -94,14 +94,15 @@ interface TapRecording {
  * goes through the same door (house rule 6 keeps the two sources apart).
  *
  * What it adds to the status: `systemCapture: tap`, `systemAudioVerified`, a loud warning while
- * the helper is down (`helper-hung` after the watchdog killed it, `source-ended` after a crash)
+ * the helper restarts (`helper-hung` after the watchdog killed it, `source-ended` after a crash)
  * that clears when its audio is back, a `helper-restarted` notice, and every restart, rebuild and
  * failure as a capture event for the capture report.
  *
- * A helper out of restarts is reported through `capture.reportSourceState('system', 'error')`, the
- * path the renderer uses for a track that failed, so the landed cost guard G1 closes call audio's
- * vendor session at once. Between restarts it reports nothing: a restart that leaves no chunk for
- * the stall window is paused by G2 like any stall, and reopens on the first chunk after.
+ * A helper out of restarts, refused for its format or missing is reported through
+ * `capture.reportSourceState('system', 'error')`, the path the renderer uses for a track that
+ * failed, so the landed cost guard G1 closes call audio's vendor session at once, and M2-T11 warns
+ * from that health (see `fail`). Between restarts it reports nothing: a restart that leaves no
+ * chunk for the stall window is paused by G2 like any stall, and reopens on the first chunk after.
  */
 export class TapSystemAudio implements SystemAudioSource {
   readonly mode = 'tap';
@@ -371,19 +372,23 @@ export class TapSystemAudio implements SystemAudioSource {
     this.options.capture.refreshStatus();
   }
 
-  /** Call audio is off for this recording: G1 closes its vendor session, and the warning is loud. */
+  /**
+   * Call audio is off for this recording: G1 closes its vendor session. reportSourceState also
+   * sends the status, so a restart's warning cleared here leaves at once.
+   */
   private fail(recording: TapRecording, reason: string): void {
     recording.failed = true;
     recording.waiting = [];
     recording.restartPending = false;
+    // No warning of its own, and the restart spell's is over. M2-T11's SignalMonitor
+    // (capture/warnings.ts) turns this source's `error` health into the loud `source-ended`
+    // warning, "Call audio (them) stopped: <reason>. Press Stop, then Start again.", and
+    // CaptureService adds up every contributor's warnings as they come: a second one here showed
+    // the cut twice in the banner. Each caller's `reason` is read inside that sentence.
+    recording.warning = null;
     void recording.helper?.stop();
     this.options.logger.error('call audio failed', { meetingId: recording.meetingId, reason });
-    recording.warning = this.warning(
-      'source-ended',
-      `Call audio stopped: ${reason}. Press Stop, then Start again.`,
-    );
     this.options.capture.reportSourceState('system', 'error', reason);
-    this.options.capture.refreshStatus();
   }
 
   private warning(kind: CaptureWarningKind, message: string): CaptureWarning {
