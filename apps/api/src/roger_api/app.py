@@ -24,6 +24,8 @@ from roger_api.routers import (
     stt_usage,
     vocabulary,
 )
+from roger_api.services.calendar.runtime import open_calendar_runtime
+from roger_api.services.llm_runs import open_llm_runtime
 from roger_api.services.workspaces import ensure_workspace
 from roger_api.stt_vendors import open_stt_token_issuer
 
@@ -65,8 +67,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         try:
             await _prepare_database(database, settings)
-            async with open_stt_token_issuer(settings) as issuer, mcp.session_manager.run():
+            # Each runtime is opened once here and closed in reverse order before the database.
+            # Its owner (M4-T7, M5-T3) builds it in its own module, with the FastAPI getter that
+            # reads it from app.state, so this block does not change again in Phase 2.
+            async with (
+                open_stt_token_issuer(settings) as issuer,
+                open_llm_runtime(settings) as llm_runtime,
+                open_calendar_runtime(settings) as calendar_runtime,
+                mcp.session_manager.run(),
+            ):
                 app.state.stt_token_issuer = issuer
+                app.state.llm_runtime = llm_runtime
+                app.state.calendar_runtime = calendar_runtime
                 logger.info(
                     "api_started",
                     version=settings.app_version,
