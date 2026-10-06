@@ -106,6 +106,7 @@ describe('NoteDocument', () => {
       note: ai,
       error: null,
       docGeneration: 1,
+      docProblem: null,
     });
   });
 
@@ -235,6 +236,20 @@ describe('NoteDocument', () => {
     expect(document.getState()).toEqual(
       expect.objectContaining({ note: note({ sync: 'synced' }), docGeneration: generation }),
     );
+  });
+
+  it('says why the editor cannot show a doc main holds, once per doc to show', async () => {
+    const { main, document } = open();
+    // StarterKit's list item starts with a paragraph: shown, the editor would drop this one.
+    const unshowable: NoteDoc = {
+      type: 'doc',
+      content: [{ type: 'bulletList', content: [{ type: 'listItem', content: [] }] }],
+    };
+    await main.answerLoad({ user: note({ doc: unshowable }) });
+    expect(document.getState().status).toBe('ready');
+    expect(document.getState().docProblem).toMatch(/listItem/);
+    main.emit(note({ doc: docSaying('fixed elsewhere'), revisionId: 'rev-7' }));
+    expect(document.getState().docProblem).toBeNull();
   });
 
   it('ignores changes to other meetings and to the other kind', async () => {

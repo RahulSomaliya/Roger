@@ -3,6 +3,7 @@ import type { NotesApi, ResolveNoteConflictRequest } from '../../../shared/ipc/n
 import type { Unsubscribe } from '../../../shared/ipc/unsubscribe';
 import type { LocalNote, NoteDoc, NoteKind } from '../../../shared/notes';
 import { describeError } from '../app/describeError';
+import { noteDocSchemaProblem } from './citationNode';
 
 /**
  * One note of a meeting (My notes or AI notes) as an open editor sees it: loaded from main's
@@ -28,6 +29,12 @@ export interface NoteDocumentState {
    * the editor's own save coming back and not the doc it already shows.
    */
   docGeneration: number;
+  /**
+   * Why the editor cannot show `note.doc` as it is (its schema would drop parts of it, and the
+   * next save would store the doc without them), or null. Checked once per doc to show, never
+   * on every render: the check builds the whole doc.
+   */
+  docProblem: string | null;
 }
 
 export type NoteDocumentApi = Pick<
@@ -41,6 +48,7 @@ export class NoteDocument {
     note: null,
     error: null,
     docGeneration: 0,
+    docProblem: null,
   };
   private readonly listeners = new Set<() => void>();
   /** Revisions this editor saved: their changes are its own saves coming back. */
@@ -131,6 +139,7 @@ export class NoteDocument {
           note,
           error: null,
           docGeneration: this.state.docGeneration + 1,
+          docProblem: note === null ? null : noteDocSchemaProblem(note.doc),
         });
       },
       (error: unknown) => {
@@ -158,7 +167,13 @@ export class NoteDocument {
       return;
     }
     this.shownDoc = doc;
-    this.set({ status, note, error: null, docGeneration: this.state.docGeneration + 1 });
+    this.set({
+      status,
+      note,
+      error: null,
+      docGeneration: this.state.docGeneration + 1,
+      docProblem: noteDocSchemaProblem(note.doc),
+    });
   }
 
   private set(next: NoteDocumentState): void {
