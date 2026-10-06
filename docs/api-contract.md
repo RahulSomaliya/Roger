@@ -635,6 +635,14 @@ that ends with neither `done` nor `error` (a dropped connection, or a re-send th
 cannot follow) means the run may still finish: poll `GET .../runs/{run_id}` until it ends or its
 `heartbeat_at` is 2 minutes old, then read the notes.
 
+Long calls: when the prompt (the rules, the template, the user's notes and every transcript line,
+estimated as characters / 4) is over `NOTES_MAX_INPUT_TOKENS` (default 200,000 tokens, about 10
+hours of talk), the run first drafts notes for overlapping windows of whole lines, then merges the
+drafts in one last pass. Only that last pass sends `section`, `item`, `from_notes` and `dropped`
+events, so after `run` the stream may carry nothing but `: ping` comments for minutes. Citations
+still name lines of the whole transcript. The run's `prompt_version` ends in `+long-v1`, and its
+tokens and cost add up every pass.
+
 The AI notes doc (`done`'s `note.doc`, and the run's `output_doc`): for each section that kept a
 line, in the order the model wrote them, a level-2 heading and a bullet list. A template section's
 heading is written as the template has it, whatever case the model used; a heading the template

@@ -33,7 +33,7 @@ from fastapi import APIRouter, Depends, Query
 from fastapi.sse import EventSourceResponse, ServerSentEvent
 
 from roger_api.auth import PrincipalDep
-from roger_api.dependencies import DatabaseDep, SessionDep
+from roger_api.dependencies import DatabaseDep, SessionDep, SettingsDep
 from roger_api.domain import RunKind
 from roger_api.routers.responses import ERROR_RESPONSES, NOT_FOUND
 from roger_api.schemas.common import ErrorEnvelope
@@ -75,6 +75,7 @@ async def claim_notes_run(
     body: NotesGenerate,
     database: DatabaseDep,
     runtime: LlmRuntimeDep,
+    settings: SettingsDep,
 ) -> NotesRunStream:
     """Claims and starts the run, or finds the one a re-sent `run_id` names (see the traps)."""
     return await notes_generation.start_notes_run(
@@ -86,6 +87,7 @@ async def claim_notes_run(
         template=body.template,
         user_notes_version=body.user_notes_version,
         ai_base_version=body.ai_base_version,
+        max_input_tokens=settings.notes_max_input_tokens,
     )
 
 
