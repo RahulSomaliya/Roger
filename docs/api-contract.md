@@ -67,16 +67,8 @@ interface Meeting {
   updated_at: string;
 }
 
-type ResponseStatus = "accepted" | "tentative" | "declined" | "needs_action";
-
-interface CalendarAttendee {
-  email: string;
-  display_name: string | null;
-  response_status: ResponseStatus;
-  is_self: boolean;
-  is_organizer: boolean;          // rooms and other resources are never listed
-}
-
+// `CalendarAttendee` and its `ResponseStatus` are defined once, under Calendar (Endpoints), and
+// shared with `CalendarEvent`. Never copy them here: two copies drift apart.
 interface MeetingCalendarEvent {
   provider: "google" | "fake";
   event_id: string;                // the instance id for a recurring event

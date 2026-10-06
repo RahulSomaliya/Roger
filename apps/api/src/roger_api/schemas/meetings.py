@@ -61,7 +61,10 @@ OptionalCalendarText = Annotated[CalendarText | None, BeforeValidator(_blank_is_
 
 
 class CalendarAttendee(BaseModel):
-    """A person on the invite, as the calendar listed them. Rooms are never attendees."""
+    """A person on the invite, as the calendar listed them. Rooms are never attendees.
+
+    The contract's `CalendarAttendee`, defined under Calendar in docs/api-contract.md and also
+    served on calendar events by schemas/calendar.py: change the two models together."""
 
     model_config = ConfigDict(from_attributes=True)
 
