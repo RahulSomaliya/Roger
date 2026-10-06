@@ -30,8 +30,17 @@ export interface NotifierOptions {
   clock?: () => number;
 }
 
-/** The dock badge while a warning could not be posted. */
+/** The dock badge while a notification could not be posted (BadgeCause says which). */
 const FAILED_BADGE = '!';
+
+/**
+ * Why the dock shows FAILED_BADGE. A warning's lasts while a loud warning does and Roger is out of
+ * focus: the status repeats the warning, and the banner shows it. A one-off's (M2-T17b's "the
+ * call ended", M2-T19's test) lasts until Roger is in focus: no status repeats what it said, and
+ * the statuses that follow (one every upload tick, 2 s) hold no warning, so clearing it with the
+ * warnings would wipe it before anyone saw it.
+ */
+type BadgeCause = 'warning' | 'one-off';
 
 /**
  * Where warnings reach a user who is not looking at Roger (M2 design, "Where warnings reach the
@@ -50,32 +59,25 @@ export class Notifier {
   private handled = new Set<string>();
   /** When each kind and source last posted (the rate limit's key). */
   private readonly lastPostedAtMs = new Map<string, number>();
-  private badged = false;
+  private readonly badgedFor = new Set<BadgeCause>();
 
   constructor(private readonly options: NotifierOptions) {
     this.clock = options.clock ?? (() => Date.now());
   }
 
-  /** Posts one notification now. If macOS refuses it, the dock bounces and shows a badge. */
+  /**
+   * Posts one notification now. If macOS refuses it, the dock bounces and shows a badge until
+   * Roger is in focus.
+   */
   notify(content: NotificationContent, fields: LogFields = {}): void {
-    const { ports, logger } = this.options;
-    logger.info('posting a notification', { ...fields, title: content.title });
-    ports.show(content, (error) => {
-      logger.warn('notification failed; bouncing the dock instead', {
-        ...fields,
-        title: content.title,
-        error,
-      });
-      ports.bounceDock();
-      ports.setDockBadge(FAILED_BADGE);
-      this.badged = true;
-    });
+    this.post(content, fields, 'one-off');
   }
 
   /**
    * Follows the status's warnings (`CaptureStatus.warnings`, every feature's): call it with each
    * status. A loud spell posts once, the first time it is seen while Roger is not in focus; a
    * spell that began while Roger was in focus posts when Roger leaves focus, if it still lasts.
+   * It is also when the Notifier looks at focus to clear the dock badge (BadgeCause).
    */
   updateWarnings(warnings: readonly CaptureWarning[]): void {
     const { ports, logger } = this.options;
@@ -98,17 +100,39 @@ export class Notifier {
         continue;
       }
       this.lastPostedAtMs.set(key, now);
-      this.notify(
+      this.post(
         { title: warningTitle(warning), body: warning.message },
         { kind: warning.kind, source: warning.source },
+        'warning',
       );
     }
     // A spell that ended is forgotten: one that comes back is a new spell even if dated the same
     // (WarningSpells dates it in audio time), and the set stays as small as the warnings on screen.
     this.handled = new Set([...this.handled].filter((spell) => live.has(spell)));
-    if (this.badged && (live.size === 0 || ports.isFocused())) {
-      ports.setDockBadge('');
-      this.badged = false;
+    const focused = ports.isFocused();
+    if (live.size === 0 || focused) this.unbadge('warning');
+    if (focused) this.unbadge('one-off');
+  }
+
+  private post(content: NotificationContent, fields: LogFields, cause: BadgeCause): void {
+    const { ports, logger } = this.options;
+    logger.info('posting a notification', { ...fields, title: content.title });
+    ports.show(content, (error) => {
+      logger.warn('notification failed; bouncing the dock instead', {
+        ...fields,
+        title: content.title,
+        error,
+      });
+      ports.bounceDock();
+      if (this.badgedFor.size === 0) ports.setDockBadge(FAILED_BADGE);
+      this.badgedFor.add(cause);
+    });
+  }
+
+  /** The badge goes once no cause is left. */
+  private unbadge(cause: BadgeCause): void {
+    if (this.badgedFor.delete(cause) && this.badgedFor.size === 0) {
+      this.options.ports.setDockBadge('');
     }
   }
 }

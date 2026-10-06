@@ -275,6 +275,35 @@ describe('Notifier.notify', () => {
     expect(h.ports.bounces).toBe(1);
     expect(h.ports.badges).toEqual(['!']);
   });
+
+  it('keeps the badge of a failed one-off until Roger is in focus, whatever the warnings do', () => {
+    const h = harness();
+    h.ports.failWith = 'denied';
+    h.notifier.notify({ title: 'Stopped', body: 'The call in Zoom ended.' });
+    // The statuses after Stop hold no warning, and one comes at every upload tick (2 s).
+    h.notifier.updateWarnings([]);
+    h.at(2_000);
+    h.notifier.updateWarnings([]);
+    expect(h.ports.badges).toEqual(['!']);
+    h.ports.focused = true;
+    h.at(4_000);
+    h.notifier.updateWarnings([]);
+    expect(h.ports.badges).toEqual(['!', '']);
+  });
+
+  it('keeps one badge while a failed warning or a failed one-off still has it', () => {
+    const h = harness();
+    h.ports.failWith = 'denied';
+    h.notifier.updateWarnings([warning()]);
+    h.notifier.notify({ title: 'Stopped', body: 'The call in Zoom ended.' });
+    expect(h.ports.badges).toEqual(['!']);
+    // The warning ended; the one-off is still unseen.
+    h.notifier.updateWarnings([]);
+    expect(h.ports.badges).toEqual(['!']);
+    h.ports.focused = true;
+    h.notifier.updateWarnings([]);
+    expect(h.ports.badges).toEqual(['!', '']);
+  });
 });
 
 describe('electronNotifierPorts', () => {
