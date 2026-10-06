@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { featureChannels } from '../src/shared/ipc';
-import { installPreviewControl, PREFS_GET_ALL_CHANNEL, PreviewHub, reachesApi } from './control';
+import {
+  fromApi,
+  installPreviewControl,
+  PREFS_GET_ALL_CHANNEL,
+  PreviewHub,
+  reachesApi,
+} from './control';
+import { FakeHub } from './fakes/hub';
 import { parsePreviewQuery, previewSearch } from './scenarios';
 
 /** A frame in Node: the next macrotask, after every pending microtask. */
@@ -57,6 +64,27 @@ describe('PreviewHub', () => {
     await expect(hub.request('capture:get-status', () => 'idle')).resolves.toBe('idle');
     hub.setApiOffline(false);
     await expect(hub.request('chat:send', () => 'answer')).resolves.toBe('answer');
+  });
+
+  // The seam with M4-T13's notes fake: main keeps the notes themselves in notes.sqlite, but the
+  // template list the "Which kind of call was this?" card shows comes only from the API.
+  it('fails an answer a fake marks as coming from the API while offline, naming its route', async () => {
+    const hub = new PreviewHub();
+    const templates = fromApi('GET /v1/note-templates', () => ['general', 'standup']);
+    await expect(hub.request('notes:templates', templates)).resolves.toEqual([
+      'general',
+      'standup',
+    ]);
+    hub.setApiOffline(true);
+    await expect(hub.request('notes:templates', templates)).rejects.toThrow(
+      "Error invoking remote method 'notes:templates': ApiError: GET /v1/note-templates failed: connect ECONNREFUSED 127.0.0.1:8000",
+    );
+    await expect(hub.request('notes:save', () => 'saved')).resolves.toBe('saved');
+    // Outside the preview (a fake's own tests run on FakeHub), the mark changes nothing.
+    await expect(new FakeHub().request('notes:templates', templates)).resolves.toEqual([
+      'general',
+      'standup',
+    ]);
   });
 
   // The seam with M3-T8 and M4-T13: the offline scenario knows their channels by name only.

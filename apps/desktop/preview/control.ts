@@ -26,9 +26,15 @@ export const PREFS_GET_ALL_CHANNEL = 'prefs:get-all';
 /**
  * Features whose every request main answers from the Roger API: the jargon list (M3-T8,
  * `vocabulary:get` and `vocabulary:set`) and chat, whose history and answers live only in
- * Postgres. Matched by name, so a channel those features add later fails offline too. Notes,
- * meetings, preferences and capture answer from main's own state and keep working offline: their
- * screens learn the API is away from status events, which a script pushes with `emit`.
+ * Postgres. Matched by name, so a channel those features add later fails offline too. Meetings,
+ * preferences and capture answer from main's own state and keep working offline: their screens
+ * learn the API is away from status events, which a script pushes with `emit`.
+ *
+ * Notes are both. Main keeps each meeting's docs in notes.sqlite, so loading and saving them works
+ * offline, but the template list (`GET /v1/note-templates`) and a run's stored docs ("Restore
+ * previous notes", `GET /v1/meetings/{id}/runs/{run_id}`) exist only in the API: notesClient
+ * (M4-T14) fetches them live. The notes fake marks those answers with fromApi(), or the offline
+ * scenario shows a template picker full of templates where the app shows an ApiError.
  */
 const API_CHANNEL_PREFIXES = ['vocabulary:', 'chat:'] as const;
 
@@ -40,6 +46,26 @@ const SETTLE_ROUNDS = 50;
 
 export function reachesApi(channel: string): boolean {
   return API_CHANNEL_PREFIXES.some((prefix) => channel.startsWith(prefix));
+}
+
+/** Answers marked by fromApi(), with the route main calls for each. */
+const apiRoutes = new WeakMap<() => unknown, string>();
+
+/**
+ * Marks a fake's answer as one main fetches from the Roger API on `route` (method and path, such
+ * as `GET /v1/note-templates`), for a feature whose other requests main answers from its own state.
+ * While the API is offline, PreviewHub fails a request with this answer as main's ApiError for that
+ * route. The mark rides on the answer, not the channel, so a fake marks it from its own file:
+ * `hub.request(channel, fromApi(route, () => templates))`. On a plain FakeHub it changes nothing.
+ */
+export function fromApi<T>(route: string, answer: () => T): () => T {
+  apiRoutes.set(answer, route);
+  return answer;
+}
+
+/** The route main calls for this request, or null when main answers it from its own state. */
+function apiRoute(channel: string, answer: () => unknown): string | null {
+  return apiRoutes.get(answer) ?? (reachesApi(channel) ? channel : null);
 }
 
 /**
@@ -100,7 +126,10 @@ export class PreviewHub extends FakeHub {
     this.queuedFailures.push({ name, message });
   }
 
-  /** While offline, every request that main answers from the Roger API fails (reachesApi). */
+  /**
+   * While offline, every request that main answers from the Roger API fails: a channel of an
+   * API-only feature (reachesApi), or an answer a fake marked with fromApi().
+   */
   setApiOffline(offline: boolean): void {
     this.apiOffline = offline;
   }
@@ -111,11 +140,12 @@ export class PreviewHub extends FakeHub {
   }
 
   override request<T>(channel: string, answer: () => T): Promise<T> {
+    const route = this.apiOffline ? apiRoute(channel, answer) : null;
     const failure =
       this.queuedFailures.shift() ??
-      (this.apiOffline && reachesApi(channel)
-        ? { name: 'ApiError' as const, message: apiUnreachableMessage(channel) }
-        : null);
+      (route === null
+        ? null
+        : { name: 'ApiError' as const, message: apiUnreachableMessage(route) });
     const reply =
       failure === null
         ? super.request(channel, this.stored(channel, answer))

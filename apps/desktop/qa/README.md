@@ -19,12 +19,12 @@ so it shows exactly what the app shows. Query parameters:
 | `scenario` | `empty-mac` (the default), `past-meeting`, `live-call`, `api-offline`                                   |
 | `theme`    | `light` or `dark`, given to the app as its stored `theme` preference; leave it out to follow the system |
 
-| Scenario       | Main's state                                                                                                                                                     |
-| -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `empty-mac`    | Roger has never recorded here: idle, nothing to upload                                                                                                           |
-| `past-meeting` | A standup that has ended (`preview/fixtures/past-meeting.json`): its lines, all uploaded, the meter kept after Stop                                              |
-| `live-call`    | A client call recording: 500 lines at once, then one every 200 ms with an interim before it, until Stop                                                          |
-| `api-offline`  | The past meeting waiting to upload (the uploader backing off), Start failing on the speech-to-text token, and vocabulary and chat requests failing with ApiError |
+| Scenario       | Main's state                                                                                                                                                                                  |
+| -------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `empty-mac`    | Roger has never recorded here: idle, nothing to upload                                                                                                                                        |
+| `past-meeting` | A standup that has ended (`preview/fixtures/past-meeting.json`): its lines, all uploaded, the meter kept after Stop                                                                           |
+| `live-call`    | A client call recording: 500 lines at once, then one every 200 ms with an interim before it, until Stop                                                                                       |
+| `api-offline`  | The past meeting waiting to upload (the uploader backing off), Start failing on the speech-to-text token, and API requests (vocabulary, chat, answers marked `fromApi`) failing with ApiError |
 
 `<html data-state>` is `loading`, then `ready` once the scenario is drawn, or `error` with the
 reason in `data-error`. Line N of a scenario meeting has a fixed id, `segmentIdForLine(meetingId,
@@ -32,13 +32,13 @@ N)` from `preview/scenarios.ts`, so a script can cite "line 40" of the live call
 
 `window.__rogerPreview` drives the page from a script or DevTools:
 
-| Member                           | What it does                                                                                           |
-| -------------------------------- | ------------------------------------------------------------------------------------------------------ |
-| `emit(channel, payload)`         | Sends a main → renderer event on a real channel (`IpcChannel`), unchecked: send what the contract says |
-| `failNextRequest(message, name)` | The next request rejects as if main's handler threw `name: message` (`Error`, or `ApiError`)           |
-| `setApiOffline(offline)`         | Requests main answers from the Roger API (`vocabulary:*`, `chat:*`) fail with ApiError, or work again  |
-| `stopScenario()`                 | Stops the scenario's timers (the live call's new lines) for a fixed frame                              |
-| `settled()`                      | Resolves once requests are answered, subscriptions done and the page drawn                             |
+| Member                           | What it does                                                                                                                    |
+| -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `emit(channel, payload)`         | Sends a main → renderer event on a real channel (`IpcChannel`), unchecked: send what the contract says                          |
+| `failNextRequest(message, name)` | The next request rejects as if main's handler threw `name: message` (`Error`, or `ApiError`)                                    |
+| `setApiOffline(offline)`         | Requests main answers from the Roger API (`vocabulary:*`, `chat:*`, answers marked `fromApi`) fail with ApiError, or work again |
+| `stopScenario()`                 | Stops the scenario's timers (the live call's new lines) for a fixed frame                                                       |
+| `settled()`                      | Resolves once requests are answered, subscriptions done and the page drawn                                                      |
 
 **Errors cross IPC as text.** Electron sends the error's string, so `ipcRenderer.invoke` rejects
 with a plain `Error`: `Error invoking remote method 'vocabulary:get': ApiError: <message>`. Renderer
@@ -51,6 +51,14 @@ answers reads (the meetings list, a meeting's lines) can record what the scenari
 hub, as main's store records what it sends. The offline API fails the `vocabulary:` and `chat:`
 channels (`API_CHANNEL_PREFIXES` in `preview/control.ts`), the two features whose every request
 goes to the API; `preview/control.test.ts` fails if one of their channels lacks the prefix.
+
+**A feature that is partly online marks its API answers.** Notes work offline from `notes.sqlite`,
+but main fetches the template list (`GET /v1/note-templates`) and a run's stored docs live, so the
+notes fake answers those through `fromApi` from `preview/control.ts`:
+`hub.request(channel, fromApi('GET /v1/note-templates', () => templates))`. Offline, that request
+fails as main's ApiError for the route; unmarked, the offline scenario shows a filled template
+picker where the app shows an error. `failNextRequest` is no stand-in: it fails whichever request
+comes next.
 
 ## A QA script
 
