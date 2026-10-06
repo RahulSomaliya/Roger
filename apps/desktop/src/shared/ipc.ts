@@ -78,6 +78,12 @@ type AllOf<U> = (U extends unknown ? (part: U) => void : never) extends (part: i
  * What the renderer sees as `window.roger`: every part at once. Built from the map, not written
  * as `CaptureApi & SetupApi & ...`, because the stubs are all `object` until their owners fill
  * them, and lint refuses an intersection that repeats a type.
+ *
+ * Only the composers take it whole: roger.d.ts, preload/index.ts and preview/fakeRoger.ts. Other
+ * code, and every test double, types against its own feature's part (AudioCaptureController takes
+ * CaptureApi). Typed RogerApi, a fake of one feature fails the type check as soon as any other
+ * feature adds a member, in a file that feature does not own. Today it would still compile,
+ * because the stubs add nothing.
  */
 export type RogerApi = AllOf<RogerApiParts[keyof RogerApiParts]>;
 
