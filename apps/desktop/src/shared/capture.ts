@@ -382,13 +382,13 @@ export interface CaptureStatus {
   // M2's fields (M2-T2). Every one is optional on purpose: main fills each through M2-T4's status
   // contributors as its feature lands (T10, T11, T14b, T15, T16, T17a, T18, T23), and a status
   // built without them stays valid meanwhile: CaptureService's recording status (an object
-  // literal), every test's, and the preview fixtures that M4-S3 writes in the same wave. Made
-  // required, each would fail the type check in files their owners do not own. A missing field
-  // reads as its empty value: no warnings, no notices, nothing known.
+  // literal), every test's, and the preview fixtures that M4-S3 writes in the same wave. A
+  // required field would fail the type check in all of those, files other tasks own. A missing
+  // field reads as its empty value: no warnings, no notices, nothing known.
 
   /** What is wrong now, loud or quiet (M2-T11). */
   warnings?: CaptureWarning[];
-  /** What Roger recovered from on its own this recording (device switch, helper restart). */
+  /** What Roger recovered from on its own this recording, a crash resume included. */
   notices?: CaptureNotice[];
   /** How call audio is captured this recording (M2-T10); null when idle. */
   systemCapture?: SystemCaptureMode | null;
