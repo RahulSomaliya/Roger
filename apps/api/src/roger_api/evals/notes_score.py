@@ -31,6 +31,7 @@ _WHOLE_WORD_BELOW = 4
 
 _TOKEN = re.compile(r"[^\W_]+(?:'[^\W_]+)*")
 _DIGIT = re.compile(r"[0-9]")
+_HEADING_MARKS = re.compile(r"#{1,6} ")
 # The colon that ends an action item's owner ("Priya: share ..."), never one inside a time ("3:00").
 _OWNER_END = re.compile(r":(?![0-9])")
 # Words that say nothing about what was agreed. Numbers are compared apart, by `check_support`.
@@ -156,7 +157,9 @@ def _flagged(line: CitedLine) -> FlaggedOut:
 
 
 def _is_heading(block: NoteBlock) -> bool:
-    return block.markdown.startswith("#")
+    # The marks `render_markdown` writes for a heading node. Never a bare "#": text is not escaped,
+    # so the paragraph "#1 risk is the vendor contract" starts with one and is a point.
+    return _HEADING_MARKS.match(block.markdown) is not None
 
 
 def _numbers(text: str) -> tuple[str, ...]:

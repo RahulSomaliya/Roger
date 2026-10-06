@@ -299,6 +299,39 @@ async def test_flagged_lines_and_numbers_are_counted_against_their_cited_lines()
     assert counted(scores.user_note_coverage) == (1, 1)
 
 
+async def test_a_note_paragraph_that_opens_with_a_hash_is_a_point_not_a_heading() -> None:
+    # Markdown text is never escaped (notes_markdown.py), so "#1 risk" renders as "#1 risk"; only
+    # a heading node gets "## ". TipTap makes a heading only of "#" and a space, too.
+    def paragraph(text: str) -> Json:
+        return {"type": "paragraph", "content": [{"type": "text", "text": text}]}
+
+    user_notes = {
+        "type": "doc",
+        "content": [
+            {
+                "type": "heading",
+                "attrs": {"level": 2},
+                "content": [{"type": "text", "text": "Risks"}],
+            },
+            paragraph("#1 risk is the vendor contract"),
+            paragraph("#launch channel gets the recap"),
+        ],
+    }
+    case = inline_case("Beta ships on Friday.", user_notes=user_notes)
+
+    report = await run_eval(
+        [case],
+        scripted("- The vendor contract is the top risk [N2]\n"),
+        provider="fake",
+        reasoning="off",
+    )
+
+    scores = report.cases[0].scores
+    assert scores is not None
+    assert counted(scores.user_note_coverage) == (1, 2)
+    assert scores.missed_notes == ["#launch channel gets the recap"]
+
+
 async def test_judge_counts_the_lines_it_calls_unsupported() -> None:
     case = inline_case("Beta ships on Friday.", "Pricing stays where it is.")
     notes = scripted(
