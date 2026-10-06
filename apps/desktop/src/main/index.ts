@@ -51,7 +51,7 @@ async function main(): Promise<void> {
       value: config.sttProviderOverride,
     });
   }
-  // Set by the window creation below; every IPC registrar trusts only this window's page.
+  // Set by the window creation below; the main window's IPC registrars trust only its page.
   let window: BrowserWindow | null = null;
   // Every Roger API client's connection (api/http.ts). Without a token each call is refused, and
   // the runtime below reports why and blocks Start.

@@ -3,8 +3,10 @@ import type { Logger } from '../logger';
 /**
  * Who may use an IPC channel. Every feature's registrar (src/main/ipc.ts for capture, and each
  * feature's own `*Ipc.ts`) registers through handleTrusted and onTrusted, never through ipcMain
- * directly: a handler registered without the check answers any page, including one a navigation
- * or an injected frame put in the window. No Electron import, so registrars test under Node.
+ * directly: a handler registered without the check answers every window, the prompt panel
+ * included. The check is by window (webContents), not by frame or URL; window.ts keeps each
+ * window on the app's own page (will-navigate, page-policy.ts). No Electron import, so
+ * registrars test under Node.
  */
 
 /** The part of an IPC event this reads: which page sent it. */
