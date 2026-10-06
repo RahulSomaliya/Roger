@@ -5,9 +5,9 @@ short-lived token (the issuer), its limit on the token lifetime, and its list pr
 preset (`STT_PRESETS`) is what `STT_PROVIDER` names: one vendor and one of its models. Another
 model is another preset row, so every configuration is one `.env` line from every other.
 `config.Settings` validates against both and `/v1/stt/token` answers from them. The desktop's
-registry (apps/desktop/src/main/stt/registry.ts) lists the same vendor ids and never sees a
-preset (tests/test_stt_providers.py checks both). Adding a vendor: "Add a speech-to-text vendor"
-in apps/desktop/README.md.
+registry (apps/desktop/src/main/stt/registry.ts) lists the same vendor ids, but for one whose
+adapter is still to come, and never sees a preset (tests/test_stt_providers.py checks both).
+Adding a vendor: "Add a speech-to-text vendor" in apps/desktop/README.md.
 
 Prices are USD per hour of ONE open stream, from the vendor's published list price. A meeting
 opens two streams (mic and system audio), and AssemblyAI bills the time a stream is open, silent

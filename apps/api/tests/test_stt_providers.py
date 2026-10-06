@@ -170,13 +170,23 @@ def desktop_stt_provider_ids() -> set[str]:
     return set(re.findall(r"\[\s*'([^']+)',", entries.group(1)))
 
 
+# API vendors the desktop cannot run yet. The plan lands Soniox in two waves
+# (docs/plans/phase-2-build-order.md): its issuer and preset in M3-T14 (wave 3), its desktop adapter
+# in M3-T15 (wave 5). Neither task owns this file, and an exact match would turn every gate red in
+# between. Until then STT_PROVIDER=soniox fails Start on the Mac (UnsupportedSttProviderError).
+# Remove the entry once registry.ts lists soniox; if M3-T15 is dropped, the API's soniox goes too.
+AWAITING_A_DESKTOP_ADAPTER = frozenset({"soniox"})
+
+
 def test_every_preset_names_a_registered_vendor() -> None:
     # config.py validates STT_PROVIDER against the Literal and reads the mapping: they must agree.
     assert set(get_args(SttPresetId.__value__)) == set(STT_PRESETS)
     assert {row.vendor for row in STT_PRESETS.values()} <= set(STT_VENDORS)
     # The token's `provider` is the vendor, and the desktop picks its adapter by that id: an id
     # missing there fails Start on the Mac, not at the API's startup.
-    assert desktop_stt_provider_ids() == set(STT_VENDORS)
+    desktop = desktop_stt_provider_ids()
+    assert desktop <= set(STT_VENDORS)
+    assert set(STT_VENDORS) - desktop <= AWAITING_A_DESKTOP_ADAPTER
 
 
 def test_every_preset_model_has_a_list_price() -> None:
