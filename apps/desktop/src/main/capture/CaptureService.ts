@@ -75,6 +75,7 @@ const FAKE_STREAM_SETTINGS: SttStreamSettings = {
   sampleRate: PCM_SAMPLE_RATE,
   encoding: PCM_ENCODING,
   pricePerHourUsd: 0,
+  keyterms: [],
 };
 
 /** How often the audio flow is checked and chunk counters are pushed to the UI while recording. */
@@ -441,6 +442,8 @@ export class CaptureService {
         encoding: token.stream.encoding,
         // Missing from an older API: unknown, so the meter says "cost unknown", not "$NaN".
         pricePerHourUsd: token.stream.price_per_hour_usd ?? null,
+        // Read per token, never cached: a reopen's fresh token carries the list as edited since.
+        keyterms: token.stream.keyterms,
       },
     };
   }

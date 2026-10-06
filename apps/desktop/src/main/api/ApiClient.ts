@@ -39,8 +39,19 @@ export interface SttTokenResponse {
      * meter and the status line read "about $NaN".
      */
     price_per_hour_usd?: number | null;
+    /**
+     * The workspace's jargon list for the vendor, [] when it has none. Never missing here, unlike
+     * the price: getSttToken fills [] for an API older than the list, which omits it (the response
+     * is cast, so it would arrive as undefined).
+     */
+    keyterms: string[];
   };
 }
+
+/** The token response as it arrives: an API older than the jargon list sends no `keyterms`. */
+type SttTokenWire = Omit<SttTokenResponse, 'stream'> & {
+  stream: Omit<SttTokenResponse['stream'], 'keyterms'> & { keyterms?: string[] };
+};
 
 export interface SegmentsAppendResult {
   accepted: number;
@@ -54,8 +65,9 @@ export class ApiClient {
     this.request = createApiRequest(connection);
   }
 
-  getSttToken(): Promise<SttTokenResponse> {
-    return this.request<SttTokenResponse>('POST', '/v1/stt/token');
+  async getSttToken(): Promise<SttTokenResponse> {
+    const token = await this.request<SttTokenWire>('POST', '/v1/stt/token');
+    return { ...token, stream: { ...token.stream, keyterms: token.stream.keyterms ?? [] } };
   }
 
   createMeeting(input: { id: string; title: string; startedAt: string }): Promise<MeetingDto> {
