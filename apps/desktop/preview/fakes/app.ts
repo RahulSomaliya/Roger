@@ -1,12 +1,16 @@
-// Stub from P2-F1; owned by M4-S1.
-import type { AppApi } from '../../src/shared/ipc/app';
+import { appChannels, type AppApi } from '../../src/shared/ipc/app';
+import type { FakeHub } from './hub';
 
 /**
- * The app shell feature's part of the preview's `window.roger`. It implements
- * src/shared/ipc/app.ts: a member added there fails the type check until it is here. Take the hub
- * (`hub: FakeHub`, ./hub.ts; fakeRoger.ts already passes it) once a member needs it: answer
- * requests through `hub.request` and send events with `hub.emit`, so scenarios can drive them.
+ * The app shell's part of the preview's `window.roger`. There is no main process to hold routes
+ * until the page is ready, so a scenario opens a route with
+ * `hub.emit(appChannels.AppNavigate, 'settings')` once the page has rendered, or loads the page
+ * with that route's hash (`#/settings`, see src/renderer/src/app/router.ts).
  */
-export function createAppFake(): AppApi {
-  return {};
+export function createAppFake(hub: FakeHub): AppApi {
+  return {
+    // Main's queue (src/main/navigation.ts) has nothing to deliver here; the hub sends at once.
+    appReady: () => undefined,
+    onNavigate: (listener) => hub.on(appChannels.AppNavigate, listener),
+  };
 }

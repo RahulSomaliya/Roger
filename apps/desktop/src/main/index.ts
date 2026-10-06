@@ -1,15 +1,17 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { parseEnv } from 'node:util';
-import { app, dialog, ipcMain, powerMonitor, session, type BrowserWindow } from 'electron';
+import { app, dialog, ipcMain, Menu, powerMonitor, session, type BrowserWindow } from 'electron';
 import { APP_PREFERENCES } from '../shared/preferences';
 import { ApiClient } from './api/ApiClient';
 import type { ApiConnection } from './api/http';
+import { buildAppMenu } from './appMenu';
 import { CaptureService } from './capture/CaptureService';
 import { loadConfig, readConfigFile } from './config';
 import { registerIpcHandlers } from './ipc';
 import { RecordingLifecycle, watchApp, watchWindow } from './lifecycle';
 import { createLogger, errorMessage } from './logger';
+import { registerNavigation } from './navigation';
 import { ensureMicrophoneAccess } from './permissions';
 import { PreferencesStore } from './preferences/PreferencesStore';
 import { registerPreferencesIpc } from './preferences/preferences-ipc';
@@ -168,6 +170,24 @@ async function main(): Promise<void> {
   else logger.error(missingToken);
 
   // [slot M4-S1] navigation and the app menu
+
+  // A route main opens in the page (app:navigate) waits here until the page says app:ready.
+  const navigation = registerNavigation({
+    ipcMain,
+    getWindow: () => window,
+    logger: logger.child({ component: 'navigation' }),
+  });
+  const appMenu = buildAppMenu({
+    appName: app.name,
+    open: (route) => {
+      navigation.navigate(route);
+      if (window === null) return;
+      if (window.isMinimized()) window.restore();
+      window.show();
+      window.focus();
+    },
+  });
+  Menu.setApplicationMenu(Menu.buildFromTemplate(appMenu));
 
   // [slot M4-S4b] meetings IPC
 
