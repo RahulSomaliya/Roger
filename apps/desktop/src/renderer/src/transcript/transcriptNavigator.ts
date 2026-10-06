@@ -105,6 +105,11 @@ export interface RevealLine {
   scrollIntoView(options: ScrollIntoViewOptions): void;
 }
 
+/** The element with keyboard focus, as a reveal reads it: an Element has no box while hidden. */
+export interface RevealFocused {
+  getClientRects(): { readonly length: number };
+}
+
 /** The part of the transcript's scroll container a reveal reads and scrolls: an HTMLElement's. */
 export interface RevealContainer {
   querySelectorAll(selectors: string): Iterable<RevealLine>;
@@ -112,6 +117,8 @@ export interface RevealContainer {
   readonly clientTop: number;
   readonly clientHeight: number;
   scrollTop: number;
+  readonly ownerDocument: { readonly activeElement: RevealFocused | null };
+  focus(options: FocusOptions): void;
 }
 
 /** A registered transcript as a reveal uses it: a TranscriptHandle, narrowed so Node can test it. */
@@ -154,6 +161,10 @@ function centreInView(container: RevealContainer, line: RevealLine): void {
  *    view on every new line, which would pull the view straight back from the cited one. Paused
  *    (`held`), its own scroll to the bottom does not follow again (liveTranscriptModel.ts).
  * 2. Show the transcript (the page's `showTranscript`, synchronous), so the lines have a layout.
+ *    A narrow page hides the notes or chat pane for it, and with it the chip a keyboard user just
+ *    pressed: Chromium then drops focus to <body>, the next Tab starts over at the top of the page
+ *    and a screen reader says nothing. So when the element that had focus lost its box, focus
+ *    moves to the log, as the panel's own "Jump to live" does. A chip still in view keeps it.
  * 3. Scroll the first line in transcript order to the middle of the log, then bring it into the
  *    window if the page itself scrolls (meeting.css lets a short window scroll the page under a
  *    region's minimum height). `nearest` leaves the page alone while the line is in the window.
@@ -198,9 +209,14 @@ export function createCitationNavigator(
         return rendered.line;
       };
       const first = lineAt(plan.first);
+      const focused = transcript.container.ownerDocument.activeElement;
 
       transcript.pauseFollow();
       showTranscript();
+      if (focused !== null && focused.getClientRects().length === 0) {
+        // The scroll below places the line; focus must not scroll the log to its own idea.
+        transcript.container.focus({ preventScroll: true });
+      }
       centreInView(transcript.container, first);
       first.scrollIntoView({ block: 'nearest', inline: 'nearest' });
 

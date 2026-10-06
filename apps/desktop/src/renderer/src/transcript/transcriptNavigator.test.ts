@@ -156,9 +156,23 @@ class FakeLine implements RevealLine {
   }
 }
 
+/**
+ * The chip that had keyboard focus when it was pressed, as the page's `activeElement`: it has a
+ * box until the page hides the pane it sits in (a narrow window showing the transcript instead).
+ */
+class FakeChip {
+  shown = true;
+
+  getClientRects(): { length: number } {
+    return { length: this.shown ? 1 : 0 };
+  }
+}
+
 interface FakeLog {
   transcript: RevealTranscript;
   container: RevealContainer;
+  /** The element with keyboard focus before the reveal. */
+  chip: FakeChip;
   /** What the reveal did to the transcript and the page, in order. */
   steps: string[];
   /** The ids of the lines marked `data-cited`, in transcript order. */
@@ -178,11 +192,16 @@ function fakeLog(count: number, scrollTop = 0): FakeLog {
     (_, index) =>
       new FakeLine(`s${String(index + 1)}`, () => VIEW_TOP + index * LINE_PX - top, steps),
   );
+  const chip = new FakeChip();
   const container: RevealContainer = {
     querySelectorAll: () => lines,
     getBoundingClientRect: () => ({ top: VIEW_TOP }),
     clientTop: 0,
     clientHeight: VIEW_PX,
+    ownerDocument: { activeElement: chip },
+    focus: (options) => {
+      steps.push(`focus the log (preventScroll ${String(options.preventScroll)})`);
+    },
     get scrollTop() {
       return top;
     },
@@ -199,16 +218,21 @@ function fakeLog(count: number, scrollTop = 0): FakeLog {
       },
     },
     container,
+    chip,
     steps,
     cited: () =>
       lines.filter((line) => line.getAttribute('data-cited') !== null).map((line) => line.id),
   };
 }
 
-/** The navigator over one transcript, with a page that records when it shows the transcript. */
-function navigatorOver(log: FakeLog): CitationNavigator {
+/**
+ * The navigator over one transcript, with a page that records when it shows the transcript. A
+ * narrow page shows one pane at a time, so showing the transcript hides the chip's pane.
+ */
+function navigatorOver(log: FakeLog, page: 'wide' | 'narrow' = 'wide'): CitationNavigator {
   return createCitationNavigator({ current: () => log.transcript }, () => {
     log.steps.push('show transcript');
+    if (page === 'narrow') log.chip.shown = false;
   });
 }
 
@@ -238,6 +262,28 @@ describe('reveal', () => {
       'scroll to 60',
       'bring s6 into the window (nearest)',
     ]);
+  });
+
+  it('moves keyboard focus to the log when showing the transcript hid the chip', () => {
+    const log = fakeLog(20, 300);
+
+    expect(navigatorOver(log, 'narrow').reveal(['s6'])).toBe('shown');
+    // Left on a chip in a hidden pane, focus would fall to <body>, and the next Tab would start
+    // over at the top of the page.
+    expect(log.steps).toEqual([
+      'pause follow',
+      'show transcript',
+      'focus the log (preventScroll true)',
+      'scroll to 60',
+      'bring s6 into the window (nearest)',
+    ]);
+  });
+
+  it('leaves keyboard focus on a chip that stays in view', () => {
+    const log = fakeLog(20, 300);
+
+    navigatorOver(log, 'wide').reveal(['s6']);
+    expect(log.steps.filter((step) => step.startsWith('focus'))).toEqual([]);
   });
 
   it('centres the first wanted line in transcript order and marks every wanted line', () => {

@@ -13,11 +13,13 @@ import type { TranscriptSegment } from '../src/shared/transcript';
 
 /*
  * Browser QA for M4-T21b, the citation navigator's reveal (qa/README.md): both themes, 1440 and
- * 390 wide. On the preview's 500-line live call, with a line every 200 ms: a chip for line 40
- * pauses following, centres the line, tints it for 2 s while new lines arrive below, and shows
- * "Jump to live"; a chip citing two lines out of order centres the first in transcript order, and
- * a second reveal clears the first one's tint; a chip for the newest line keeps it in view as lines
- * keep coming. On a phone the chip brings the transcript pane forward before it scrolls. Failure
+ * 390 wide. On the preview's 500-line live call, with a line every 200 ms: a chip for line 40,
+ * pressed with Enter, pauses following, centres the line, tints it for 2 s while new lines arrive
+ * below, and shows "Jump to live"; a chip citing two lines out of order centres the first in
+ * transcript order, and a second reveal clears the first one's tint; a chip for the newest line
+ * keeps it in view as lines keep coming. On a phone the chip brings the transcript pane forward
+ * before it scrolls, and keyboard focus goes to the transcript, not to <body> with the hidden chip.
+ * Failure
  * path: chips whose lines are gone (never in the transcript, hidden as echo) say "Line removed"
  * and leave the transcript and the pane alone; with hidden lines shown, the echo line's chip finds
  * it. And a past meeting.
@@ -488,13 +490,37 @@ const shownPane = (page: Page): Promise<string | null> =>
     );
   }, HARNESS);
 
-/** Clicks a chip, bringing the notes forward first when a narrow page shows the transcript. */
-async function clickChip(page: Page, key: string): Promise<void> {
+/** Brings the notes forward when a narrow page shows the transcript, so a chip can be reached. */
+async function showNotes(page: Page): Promise<void> {
   if ((await shownPane(page)) === 'transcript') {
     await page.click(`${HARNESS} .meeting-pane-button[aria-controls="meeting-pane-notes"]`);
   }
+}
+
+async function clickChip(page: Page, key: string): Promise<void> {
+  await showNotes(page);
   await page.click(chipSelector(key));
 }
+
+/** Presses a chip from the keyboard: focus on it, then Enter, as a Tab user reaches it. */
+async function pressChip(page: Page, key: string): Promise<void> {
+  await showNotes(page);
+  await page.focus(chipSelector(key));
+  await page.keyboard.press('Enter');
+}
+
+/** Where keyboard focus is: the transcript log, the chip `key`, or the focused element's tag. */
+const focusedOn = (page: Page, key: string): Promise<string> =>
+  page.evaluate(
+    ({ log, chip }) => {
+      const focused = document.activeElement;
+      if (focused === null) return 'nothing';
+      if (focused === document.querySelector(log)) return 'the transcript log';
+      if (focused === document.querySelector(chip)) return 'the chip';
+      return `<${focused.tagName.toLowerCase()}>`;
+    },
+    { log: LOG, chip: chipSelector(key) },
+  );
 
 /** Pixels between the log's view and its last line: 0 when it shows the newest line. */
 const distanceFromBottom = (page: Page): Promise<number> =>
@@ -664,18 +690,22 @@ describe.each(qa.QA_THEMES.flatMap((theme) => qa.QA_WIDTHS.map((width) => ({ the
           },
         );
 
-        // A chip for line 40, far above the live end.
+        // A chip for line 40, far above the live end, pressed from the keyboard.
         const target = liveLine(40);
-        await clickChip(page, 'line-40');
+        await pressChip(page, 'line-40');
         const rowsAtReveal = await rowsIn(page);
         const topAtReveal = await scrollTopOf(page);
         await shootChecked(
           preview,
           'Reveal',
           `reveal-${tag}`,
-          `Chip for line 40 clicked mid-call: ${narrow ? 'the transcript pane comes forward, ' : ''}line 40 sits mid-view, tinted, following pauses and Jump to live shows`,
+          `Chip for line 40 pressed with Enter mid-call: ${narrow ? 'the transcript pane comes forward and takes keyboard focus from the hidden chip, ' : ''}line 40 sits mid-view, tinted, following pauses and Jump to live shows`,
           async () => {
             expect(await citedIds(page)).toEqual([target]);
+            // On a phone the chip's pane is hidden: focus must not fall to <body>.
+            expect(await focusedOn(page, 'line-40')).toBe(
+              narrow ? 'the transcript log' : 'the chip',
+            );
             expect(await following(page)).toBe(false);
             expect(await shownPane(page)).toBe(narrow ? 'transcript' : null);
             await expectCentred(page, target);
