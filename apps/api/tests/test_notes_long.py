@@ -2,9 +2,10 @@
 windows of whole lines, then merged by one reduce pass (M4 plan, Design: "Long calls").
 
 The DB-free core runs on `ScriptedNotesModel`, one script per pass, in order: each window, then the
-reduce. `BUDGET` is NOTES_MAX_INPUT_TOKENS' floor, so a window holds 1,000 tokens of lines (4,000
-characters, about 70 of these) and `LINE_COUNT` lines make several windows. The last test goes
-through the route, so the budget there is the one in the settings.
+reduce. `BUDGET` is twice NOTES_MAX_INPUT_TOKENS' floor: a window's whole prompt stays within it,
+and the rules take about 500 of its tokens, so a window holds about 80 of these lines and
+`LINE_COUNT` lines make several windows. The last test goes through the route, so the budget there
+is the one in the settings.
 """
 
 import json
@@ -22,6 +23,7 @@ from roger_api.app import create_app
 from roger_api.config_notes import NotesSettings
 from roger_api.db.engine import Database
 from roger_api.db.models_notes import LlmRun
+from roger_api.note_templates import find_note_template
 from roger_api.schemas.note_templates import NoteTemplate, NoteTemplateSection
 from roger_api.services import llm_runs
 from roger_api.services.citations import SourceLine
@@ -60,9 +62,12 @@ from tests.helpers import (
     segment_payload,
 )
 
-BUDGET = 1_000
+BUDGET = 2_000
 LINE_COUNT = 200
 CHARS_PER_TOKEN = 4
+# A window's closing line ("This is part 2 of 4 of the call: lines L58 to L140 of 200.") is counted
+# with every number as long as the line count, so a window can stop this many characters short.
+CLOSING_SLACK = 4 * (len(str(LINE_COUNT)) - 1)
 
 
 def template(*headings: str) -> NoteTemplate:
@@ -118,6 +123,11 @@ def names(events: Sequence[RunEvent]) -> list[str]:
 def chars(lines: Sequence[str]) -> int:
     """The characters `lines` take in a prompt, one line break after each."""
     return sum(len(text) + 1 for text in lines)
+
+
+def prompt_chars(request: ModelRequest) -> int:
+    """The characters of the request's rules and sources, as `estimated_tokens` counts them."""
+    return sum(len(message.parts[0].text) for message in request.messages)
 
 
 async def run_long(
@@ -195,23 +205,31 @@ def test_the_default_budget_is_the_settings_default() -> None:
 
 
 async def test_over_budget_splits_on_whole_lines_with_overlap() -> None:
-    sources = long_sources()
+    # Notes as a working call has them: every window repeats them, so they take room from its lines.
+    sources = long_sources(
+        *(block(number, f"Ask about item {number} of the plan") for number in range(1, 13))
+    )
     windows = plan_windows(sources, BUDGET)
     assert len(windows) >= 3
 
     _, _, model = await run_long(sources, *drafts(len(windows)), "")
 
     every_line = [transcript_line(number, line) for number, line in enumerate(sources.lines, 1)]
-    shown = [fenced(request, "transcript") for request in model.requests[:-1]]
-    assert len(shown) == len(windows)
-    window_chars = BUDGET * CHARS_PER_TOKEN
-    for window, lines in zip(windows, shown, strict=True):
+    requests = model.requests[:-1]
+    assert len(requests) == len(windows)
+    budget_chars = BUDGET * CHARS_PER_TOKEN
+    for window, request in zip(windows, requests, strict=True):
+        lines = fenced(request, "transcript")
         # Whole lines, in order, numbered as in the whole transcript.
         assert lines == every_line[window.first - 1 : window.last]
-        # As many as a window holds (characters / 4), and not one more.
-        assert chars(lines) <= window_chars
+        # As many as keep the whole prompt (rules, template, notes, lines) within the budget,
+        # estimated as characters / 4: a model whose context is the budget reads every window.
+        assert prompt_chars(request) <= budget_chars
         if window.last < LINE_COUNT:
-            assert chars([*lines, every_line[window.last]]) > window_chars
+            # And not one more.
+            assert prompt_chars(request) + chars([every_line[window.last]]) > (
+                budget_chars - CLOSING_SLACK
+            )
     # Together they hold every line, each window repeating the last 20 of the one before.
     assert (windows[0].first, windows[-1].last) == (1, LINE_COUNT)
     for previous, current in pairwise(windows):
@@ -231,8 +249,28 @@ async def test_a_window_names_its_part_of_the_call() -> None:
     assert f"L{second.first} to L{second.last} of {LINE_COUNT}" in closing
 
 
+def test_notes_that_fill_the_budget_still_leave_a_window_a_quarter_of_it() -> None:
+    # Over the budget before a single line: no window can be within it. Windows of what is left
+    # (nothing) would be one paid call per line, each repeating the notes; a quarter of the budget
+    # keeps the calls few, and each window's transcript bounded.
+    sources = long_sources(block(1, "word " * 2_500))
+    notes_only = NotesSources(sources.template, (), sources.note_blocks)
+    assert estimated_tokens(notes_only.prompt()) > BUDGET
+
+    windows = plan_windows(sources, BUDGET)
+
+    every_line = [transcript_line(number, line) for number, line in enumerate(sources.lines, 1)]
+    quarter = BUDGET * CHARS_PER_TOKEN // 4
+    assert len(windows) >= 2
+    for window in windows:
+        lines = every_line[window.first - 1 : window.last]
+        assert chars(lines) <= quarter
+        if window.last < LINE_COUNT:
+            assert chars([*lines, every_line[window.last]]) > quarter
+
+
 def test_overlap_shrinks_so_a_window_always_reaches_new_lines() -> None:
-    # A line as long as a whole window: the window before it repeats none of its lines, or the
+    # A line longer than a whole window: the window before it repeats none of its lines, or the
     # next window would hold only lines already read and never get past it.
     lines = (
         *transcript(30),
@@ -256,7 +294,7 @@ def test_overlap_shrinks_so_a_window_always_reaches_new_lines() -> None:
 def test_overlap_is_at_most_half_a_window() -> None:
     # Windows of about 30 lines: repeating 20 of them would read most lines three times over.
     wordy = tuple(
-        SourceLine(uuid4(), 5_000 * number, "them", f"{said(number)} " * 2)
+        SourceLine(uuid4(), 5_000 * number, "them", f"{said(number)} " * 4)
         for number in range(1, 301)
     )
     sources = NotesSources(template("Summary"), wordy, ())
@@ -265,7 +303,8 @@ def test_overlap_is_at_most_half_a_window() -> None:
 
     for previous, current in pairwise(windows):
         size = previous.last - previous.first + 1
-        assert previous.last - current.first + 1 == min(WINDOW_OVERLAP_LINES, size // 2)
+        assert size < 2 * WINDOW_OVERLAP_LINES
+        assert previous.last - current.first + 1 == size // 2
 
 
 async def test_refs_stay_global_across_windows() -> None:
@@ -483,9 +522,10 @@ async def test_the_route_splits_at_the_configured_budget(
     """NOTES_MAX_INPUT_TOKENS reaches the switch, the run stores the long prompt version, and its
     usage adds up every pass. A meeting whose lines fit one window stays one pass."""
     lines = transcript(LINE_COUNT)
-    # The windows depend on the lines alone: the route's template only adds to a prompt that is
-    # over the budget either way.
-    windows = plan_windows(NotesSources(template("Summary"), lines, ()), BUDGET)
+    # The windows the route plans: its template's text takes room from every window's lines.
+    general = find_note_template("general")
+    assert general is not None
+    windows = plan_windows(NotesSources(general, lines, ()), BUDGET)
     late = windows[1].last
     answer = f"## Summary\n- {said(late)} [L{late}]\n"
     passes = [*drafts(len(windows), second=answer), answer]

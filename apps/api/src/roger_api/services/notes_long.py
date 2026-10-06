@@ -5,14 +5,15 @@ steps, after meetily's summary processor (`summary/processor.rs:255-403`; ideas 
 NOTES_MAX_INPUT_TOKENS (estimated as characters / 4; the default, 200,000, is about 10 hours of
 talk). Over it, `plan_windows` cuts the transcript and `generate_long_notes` writes the notes:
 
-1. Map. Each window of whole lines (at most MAP_WINDOW_TOKENS of transcript, starting
-   WINDOW_OVERLAP_LINES lines before the window before it ended, so a point made across a boundary
-   is whole in one of them) gets a prompt of its own: the template, the user's notes and its lines,
-   numbered as in the whole transcript. Refs stay global: `L2417` names the same line in every
-   pass and in the run's ref map. The answer is checked as any notes line is, except that a ref
-   to a line outside the window is removed: the model never saw that line. A window's notes are a
-   draft for the reduce, never the run's notes: no event of theirs reaches the client, and their
-   removed lines are not the user's "Removed lines".
+1. Map. Each window of whole lines (as many as keep its prompt within the budget, at most
+   MAP_WINDOW_TOKENS of transcript, starting WINDOW_OVERLAP_LINES lines before the window before it
+   ended, so a point made across a boundary is whole in one of them) gets a prompt of its own: the
+   template, the user's notes and its lines, numbered as in the whole transcript. Refs stay
+   global: `L2417` names the same line in every pass and in the run's ref map. The answer is
+   checked as any notes line is, except that a ref to a line outside the window is removed: the
+   model never saw that line. A window's notes are a draft for the reduce, never the run's notes:
+   no event of theirs reaches the client, and their removed lines are not the user's "Removed
+   lines".
 2. Reduce. One pass merges the drafts into the notes. Its prompt holds the template, the user's
    notes, every draft's kept lines with their refs, and the transcript lines those lines cite and
    no others. Its lines stream as a one-pass run's do, and it may cite only lines a draft cites:
@@ -21,8 +22,15 @@ talk). Over it, `plan_windows` cuts the transcript and `generate_long_notes` wri
 Traps:
 - The characters / 4 estimate is a budget guard only, never usage: the run stores what the vendor
   reports for every pass, added up (`llm_runs._sum_usage`).
-- A window's lines never take more than the budget either (`_window_chars`): NOTES_MAX_INPUT_TOKENS
-  set under MAP_WINDOW_TOKENS for a smaller model would otherwise get windows it cannot read.
+- A window's whole prompt stays within the budget, not only its lines (`_window_chars` takes off
+  `_window_overhead`): every window repeats the rules, the template and all of the user's notes.
+  Capping the lines alone at the budget made every full window over it, so NOTES_MAX_INPUT_TOKENS
+  lowered to fit a 32k model got a vendor 400 on the first window. A window is still over it in
+  two cases: it holds one line longer than the room (`_cut`), or the rest of its prompt takes over
+  three quarters of the budget. Its lines then still get a quarter (`_MIN_WINDOW_SHARE`): windows
+  of what is left would be a paid call per line or two, each repeating those notes.
+- The reduce's prompt is not measured: it holds the template, the notes, every draft (each at most
+  NOTES_MAX_OUTPUT_TOKENS) and the lines they cite, so with many windows it can be over the budget.
 - The overlap never stops a window from reaching new lines (`_cut`): repeating 20 lines that,
   with the next line, do not fit would make a window of lines already read, then another, each a
   paid model call.
@@ -71,8 +79,12 @@ logger = get_logger(__name__)
 # compare a map-then-reduce run with a one-pass one. Bump the suffix with any change to the rules or
 # the layout below.
 LONG_PROMPT_VERSION = f"{PROMPT_VERSION}+long-v1"
-# The transcript a window holds, estimated as below (M4 plan, Design: "Long calls").
+# The most transcript a window holds, estimated as below (M4 plan, Design: "Long calls"). Less when
+# the budget leaves less (`_window_chars`).
 MAP_WINDOW_TOKENS = 60_000
+# A window's lines take at least the budget divided by this, a quarter, however long the rest of
+# its prompt (module traps).
+_MIN_WINDOW_SHARE = 4
 # The lines a window repeats from the one before it, at most half of that window (`_cut`).
 WINDOW_OVERLAP_LINES = 20
 # The estimate: characters / 4.
@@ -110,16 +122,30 @@ def plan_windows(sources: NotesSources, max_input_tokens: int) -> tuple[LineWind
         len(transcript_line(number, line)) + 1  # its line break in the prompt
         for number, line in enumerate(sources.lines, start=1)
     ]
-    cuts = _cut(sizes, _window_chars(max_input_tokens))
+    cuts = _cut(sizes, _window_chars(sources, max_input_tokens))
     if len(cuts) < 2:
         return ()
     return tuple(LineWindow(first=start + 1, last=end) for start, end in cuts)
 
 
-def _window_chars(max_input_tokens: int) -> int:
-    # Never over the budget (the module's traps): a budget set under MAP_WINDOW_TOKENS is a model
-    # that reads less at once.
-    return min(MAP_WINDOW_TOKENS, max_input_tokens) * _CHARS_PER_TOKEN
+def _window_chars(sources: NotesSources, max_input_tokens: int) -> int:
+    """The characters of lines a window holds: what the budget leaves once the rest of the
+    window's prompt is in, at most MAP_WINDOW_TOKENS, and never under a quarter of the budget
+    (module traps)."""
+    budget = max_input_tokens * _CHARS_PER_TOKEN
+    room = budget - _window_overhead(sources)
+    return min(MAP_WINDOW_TOKENS * _CHARS_PER_TOKEN, max(room, budget // _MIN_WINDOW_SHARE))
+
+
+def _window_overhead(sources: NotesSources) -> int:
+    """The characters of a window's prompt that are not its lines: the rules, the template, the
+    user's notes, the fences and the closing line. That line's numbers are counted as long as the
+    line count, their longest: a call has no more windows than lines."""
+    count = len(sources.lines)
+    empty = _part_prompt(sources, [], part=count, parts=count, span=LineWindow(count, count))
+    # `_fenced` joins with line breaks, so each line adds its length plus one, as `plan_windows`
+    # counts it: this plus a window's line sizes is its prompt's size, never less.
+    return len(empty.system) + len(empty.user)
 
 
 def _cut(sizes: Sequence[int], window_chars: int) -> list[tuple[int, int]]:
@@ -299,12 +325,20 @@ def _window_prompt(sources: NotesSources, windows: Sequence[LineWindow], index: 
     """The template, the user's notes and window `index`'s lines, numbered as in the whole call."""
     window = windows[index]
     lines = [transcript_line(number, sources.lines[number - 1]) for number in window.numbers]
+    return _part_prompt(sources, lines, part=index + 1, parts=len(windows), span=window)
+
+
+def _part_prompt(
+    sources: NotesSources, lines: list[str], *, part: int, parts: int, span: LineWindow
+) -> NotesPrompt:
+    """A window's prompt around `lines`. One builder for the prompt sent and the one measured
+    (`_window_overhead`): a second copy that drifted would size windows for a prompt never sent."""
     user = "\n\n".join(
         [
             _fenced("template", _template_lines(sources.template)),
             _my_notes(sources),
             _fenced("transcript", lines),
-            f"This is part {index + 1} of {len(windows)} of the call: lines {_span(window)} of "
+            f"This is part {part} of {parts} of the call: lines {_span(span)} of "
             f"{len(sources.lines)}. Write the draft notes for this part now, following the rules.",
         ]
     )

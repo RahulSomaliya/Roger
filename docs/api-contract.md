@@ -643,6 +643,13 @@ events, so after `run` the stream may carry nothing but `: ping` comments for mi
 still name lines of the whole transcript. The run's `prompt_version` ends in `+long-v1`, and its
 tokens and cost add up every pass.
 
+Each window's prompt repeats the rules, the template and the user's notes, and holds as many lines
+as keep it within the budget, at most 60,000 tokens of them. It is over the budget only when it
+holds one line longer than that room, or when the rest of its prompt takes over three quarters of
+the budget: its lines still get a quarter, so the run never becomes one paid call per line. The
+last pass's prompt (the template, the notes, every draft and the lines the drafts cite) is not
+measured against the budget.
+
 The AI notes doc (`done`'s `note.doc`, and the run's `output_doc`): for each section that kept a
 line, in the order the model wrote them, a level-2 heading and a bullet list. A template section's
 heading is written as the template has it, whatever case the model used; a heading the template
