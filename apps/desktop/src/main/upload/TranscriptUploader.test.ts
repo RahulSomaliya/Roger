@@ -558,18 +558,15 @@ describe('TranscriptUploader: no stranded lines (M2)', () => {
       order.push('create');
       return Promise.resolve(meetingDto(input.id));
     });
-    const uploader = new TranscriptUploader({
-      store,
-      api,
-      logger,
-      clock: relaunched,
-      // Stands in for the echo sink's settleAll (M2-T14b): each hold is checked once against the
-      // stored call-audio lines, then released. Async, so a hook that is not awaited shows here.
-      beforeFirstTick: async () => {
-        await Promise.resolve();
-        order.push('settle');
-        store.releaseSegments(store.listHeldSegments().map((s) => s.id));
-      },
+    // Built first and given the hook later, as main does: index.ts builds the uploader before the
+    // capture runtime, whose M2-T14b slot sets the hook, then starts it.
+    const uploader = new TranscriptUploader({ store, api, logger, clock: relaunched });
+    // Stands in for the echo sink's settleAll (M2-T14b): each hold is checked once against the
+    // stored call-audio lines, then released. Async, so a hook that is not awaited shows here.
+    uploader.setBeforeFirstTick(async () => {
+      await Promise.resolve();
+      order.push('settle');
+      store.releaseSegments(store.listHeldSegments().map((s) => s.id));
     });
     uploader.start();
     await vi.advanceTimersByTimeAsync(0);
@@ -597,10 +594,10 @@ describe('TranscriptUploader: no stranded lines (M2)', () => {
       logger: warnLogger,
       intervalMs: 1000,
       baseBackoffMs: 500,
-      beforeFirstTick: () => {
-        settles += 1;
-        if (settles === 1) throw new Error('database is locked');
-      },
+    });
+    uploader.setBeforeFirstTick(() => {
+      settles += 1;
+      if (settles === 1) throw new Error('database is locked');
     });
     uploader.start();
 
@@ -630,19 +627,59 @@ describe('TranscriptUploader: no stranded lines (M2)', () => {
     });
     store.createMeeting({ id: 'm1', title: 'T', startedAt: '2026-10-05T10:00:00Z' });
     store.appendSegment(segment('m1', 0));
-    const uploader = new TranscriptUploader({
-      store,
-      api,
-      logger,
-      beforeFirstTick: () => {
-        order.push('settle');
-      },
+    const uploader = new TranscriptUploader({ store, api, logger });
+    uploader.setBeforeFirstTick(() => {
+      order.push('settle');
     });
 
     await uploader.flush();
     store.appendSegment(segment('m1', 1));
     await uploader.flush();
     expect(order).toEqual(['settle', 'append', 'append']);
+  });
+
+  it('refuses a beforeFirstTick set once the first tick has started, or a second one', async () => {
+    const tooLate = /set before the uploader's first tick, which has started/;
+    const settle = (): void => undefined;
+
+    // Started, and its first tick ran: a hook set now could not run before it.
+    const started = new TranscriptUploader({
+      store: new InMemoryTranscriptStore(),
+      api: fakeApi(),
+      logger,
+    });
+    started.start();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(() => {
+      started.setBeforeFirstTick(settle);
+    }).toThrow(tooLate);
+    started.stop();
+
+    // A flush that comes first starts the first tick at once, before it settles.
+    const flushed = new TranscriptUploader({
+      store: new InMemoryTranscriptStore(),
+      api: fakeApi(),
+      logger,
+    });
+    const flushing = flushed.flush();
+    expect(() => {
+      flushed.setBeforeFirstTick(settle);
+    }).toThrow(tooLate);
+    await flushing;
+
+    // Started but its 0 ms timer has not fired: still in time.
+    const pending = new TranscriptUploader({
+      store: new InMemoryTranscriptStore(),
+      api: fakeApi(),
+      logger,
+    });
+    pending.start();
+    pending.setBeforeFirstTick(settle);
+    // One hook: a second would silently replace the first.
+    expect(() => {
+      pending.setBeforeFirstTick(settle);
+    }).toThrow(/already set/);
+    pending.stop();
   });
 
   it('marks a batch sent before the request, so an echo decision landing mid-upload is refused', async () => {

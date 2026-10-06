@@ -5,7 +5,7 @@ import { errorMessage, type Logger } from '../logger';
 import type { LocalMeeting, TranscriptStore } from '../store/TranscriptStore';
 import { Emitter } from '../util/emitter';
 
-/** What runs before the uploader's first tick (`TranscriptUploaderOptions.beforeFirstTick`). */
+/** What runs before the uploader's first tick (`TranscriptUploader.setBeforeFirstTick`). */
 export type BeforeFirstTick = () => void | Promise<void>;
 
 export interface TranscriptUploaderOptions {
@@ -19,13 +19,6 @@ export interface TranscriptUploaderOptions {
   baseBackoffMs?: number;
   maxBackoffMs?: number;
   clock?: () => Date;
-  /**
-   * Runs once, awaited, before the first tick (a scheduled one or a flush): the echo sink's
-   * startup settle (M2-T14b), so the holds a crash left are decided before any line goes up. A
-   * failure is a failed tick (logged, backed off, shown in the status) and the hook runs again on
-   * the next one: no line goes up before it succeeds, or one it would have hidden could.
-   */
-  beforeFirstTick?: BeforeFirstTick;
 }
 
 interface UploaderEvents extends Record<string, unknown> {
@@ -53,8 +46,10 @@ export class TranscriptUploader {
   private inflight: Promise<Error | null> | null = null;
   private failures = 0;
   private status: UploadStatus;
-  /** Null once it has run. */
-  private beforeFirstTick: BeforeFirstTick | null;
+  /** Null until set, and again once it has run. */
+  private beforeFirstTick: BeforeFirstTick | null = null;
+  /** True from the moment the first tick starts: a hook set after that could not run first. */
+  private ticked = false;
 
   constructor(private readonly options: TranscriptUploaderOptions) {
     this.intervalMs = options.intervalMs ?? 2_000;
@@ -62,7 +57,6 @@ export class TranscriptUploader {
     this.baseBackoffMs = options.baseBackoffMs ?? 2_000;
     this.maxBackoffMs = options.maxBackoffMs ?? 30_000;
     this.clock = options.clock ?? (() => new Date());
-    this.beforeFirstTick = options.beforeFirstTick ?? null;
     this.status = {
       state: 'idle',
       pending: options.store.countUnsyncedSegments(),
@@ -70,6 +64,30 @@ export class TranscriptUploader {
       lastError: null,
       nextAttemptAt: null,
     };
+  }
+
+  /**
+   * Set what runs once, awaited, before the first tick (a scheduled one or a flush): the echo
+   * sink's startup settle (M2-T14b), so the holds a crash left are decided before any line goes
+   * up. A failure is a failed tick (logged, backed off, shown in the status) and the hook runs
+   * again on the next one: no line goes up before it succeeds, or one it would have hidden could.
+   *
+   * A setter, not a constructor option: main builds the uploader before the capture runtime
+   * (CaptureService takes it), and the echo sink that settles exists only inside that runtime's
+   * M2-T14b slot. index.ts starts the uploader after the runtime is built, so the slot is in time.
+   * Throws once the first tick has started, since the hook could no longer run before it, and
+   * when one is already set, since a second would silently replace it.
+   */
+  setBeforeFirstTick(hook: BeforeFirstTick): void {
+    if (this.ticked) {
+      throw new Error(
+        "the step before the first upload must be set before the uploader's first tick, which has started",
+      );
+    }
+    if (this.beforeFirstTick !== null) {
+      throw new Error('a step before the first upload is already set');
+    }
+    this.beforeFirstTick = hook;
   }
 
   start(): void {
@@ -131,6 +149,7 @@ export class TranscriptUploader {
    * loop with no log and no retry.
    */
   private async tick(): Promise<Error | null> {
+    this.ticked = true;
     try {
       // Awaited only while it is due: an await yields, and every later tick keeps M1's timing, in
       // which a tick reaches the store and the API in the turn that started it.
