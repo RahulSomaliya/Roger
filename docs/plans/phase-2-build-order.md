@@ -1,7 +1,8 @@
 # Phase 2 build order (M2 to M5)
 
 **Status:** draft for the owner's sign-off · **Owner:** Rahul · **Written:** 2026-10-06 ·
-**Updated:** 2026-10-06, after `m1-assemblyai` merged into `phase-2` (what changed: section 9.2)
+**Updated:** 2026-10-06, after `m1-assemblyai` merged into `phase-2` (what changed: section 9.2),
+and after a review of that update (section 9.3)
 
 This is the integration plan that parallel coding agents run, each in its own git worktree. It
 sits above the four milestone plans:
@@ -76,7 +77,7 @@ its owner ("Stub from P2-F1; owned by M4-T13").
 | API router, service, model, settings and migration layout | **P2-F2** | Router stubs registered once, lifespan hooks, per-domain model modules, the fixed Alembic chain, every Phase 2 error class, test-database isolation and the contract skeleton |
 | Tooling, the Swift helper build step, new dependencies | **P2-F3** (Make targets, scripts, configs, dependencies, lockfile); **M2-T7** (the Swift sources, `scripts/build-native.sh` and the Darwin `make check` wiring) | One lockfile change and one Makefile change for all of Phase 2 |
 | Test fixtures | M2-T3 (`test/fixtures/backup/`, moved from M2-T15 so M3-T12 can start early), M2-T10 (`test/fixtures/fake-roger-audio.mjs`), M4-T4 then M4-T8 (`apps/api/tests/fixtures/ai_notes_doc.json`), M5-T2 (`tests/fixtures/calendar/`), M3-T5 (`stt/assemblyai/fixtures/`), P2-F1 (`preview/fakes/*` stubs), M4-S3 (preview scenarios and fixtures) | Each fixture has one writer; the tests that read it are listed in the owning plan |
-| STT layer and cost guards (landed, `m1-assemblyai`) | Not a Phase 2 task. Later edits are owned per file in section 3.1: `stt/core/*`, `stt/conformance.test.ts` and `stt/testing/*` (M3-T18, T4a, T5, M2-T6, M3-T15), `stt/registry.ts` (M3-T15), `costGuards.ts` (M3-T20), `lifecycle.ts` (P2-F1, M2-T12, M2-T18, M5-T11), `capture/stopReasons.ts` (M2-T12, M2-T17b), `stt_vendors.py` (M3-T1, T3, T14) | The shared lifecycle every vendor runs on, the registries on both sides, the conformance suite, `costGuards.ts`, `capture/SttOpenBudget.ts`, `capture/stopReasons.ts`, `lifecycle.ts`, the meter and local migration 3 (`stt_usage`). Every task keeps their tests green; a vendor is one protocol file, one issuer, one line per registry and one conformance entry |
+| STT layer and cost guards (landed, `m1-assemblyai`) | Not a Phase 2 task. Later edits are owned per file in section 3.1: `stt/core/*`, `stt/conformance.test.ts` and `stt/testing/*` (M3-T18, T4a, T5, M2-T6, M3-T15), `stt/registry.ts` (M3-T15), `costGuards.ts` (M3-T18's comment, M3-T20), `capture/SttOpenBudget.ts` (M2-T4), `lifecycle.ts` (P2-F1, M2-T12, M2-T18, M5-T11), `capture/stopReasons.ts` (M2-T12, M2-T17b), `stt_vendors.py` (M3-T1, T3, T14) | The shared lifecycle every vendor runs on, the registries on both sides, the conformance suite, `costGuards.ts`, `capture/SttOpenBudget.ts`, `capture/stopReasons.ts`, `lifecycle.ts`, the meter and local migration 3 (`stt_usage`). Every task keeps their tests green; a vendor is one protocol file, one issuer, one line per registry and one conformance entry |
 
 ### P2-F1. Desktop seams (S/M, no dependencies)
 
@@ -179,8 +180,8 @@ its owner ("Stub from P2-F1; owned by M4-T13").
   untouched: `config.py` imports `STT_VENDORS` from `stt_vendors.py`, while `stt_vendors.py`,
   `services/stt_tokens.py` and `log.py` import `Settings` only under `TYPE_CHECKING` (a runtime
   import back is an import cycle that fails at startup; the comments at each site say so). The
-  mixin files import neither. `test_config.py`'s STT cases and `test_stt_token.py` stay green
-  unchanged.
+  mixin files import neither. F2 leaves `test_config.py`'s STT cases and `test_stt_token.py`
+  untouched and green; M3-T1 rewrites their `STT_MODEL` cases in wave 1.
 - **Errors.** `errors.py` gains every Phase 2 error class:
   - `LlmProviderError` (502 `llm_provider_error`)
   - `EmptyMeetingError` (422 `empty_meeting`)
@@ -297,7 +298,7 @@ and `m1-assemblyai` (a3be3ee). Still to run: P2-F1, P2-F2 and M3-T18 (M2-T0 is t
 | M2-T1 | S | `main/signing.ts`, `main/settingsPanes.ts` (with tests), the M1 exit log entry | (Mac) |
 | M2-T14a | S | `main/capture/echo/EchoFilter.ts` (with test): pure, no Electron imports | - |
 | M3-T6a | S | `main/stt/LatencyMeter.ts` (with test) | - |
-| M3-T18 | M | Pacing in the STT core: `stt/core/AudioPacer.ts` (with test), `audioPacing` in `stt/core/SttProtocol.ts` and the paced queue in `stt/core/SttConnection.ts`, `stt/assemblyai/AudioFrameSizer.ts` moved unchanged to `stt/core/` (with its test), the `audioPacing` lines in the AssemblyAI and Deepgram protocol files, a conformance case for every vendor, one line of the README's vendor checklist | - |
+| M3-T18 | M | Pacing in the STT core: `stt/core/AudioPacer.ts` (with test), `audioPacing` in `stt/core/SttProtocol.ts` and the paced queue in `stt/core/SttConnection.ts`, `stt/assemblyai/AudioFrameSizer.ts` moved unchanged to `stt/core/` (with its test), the `audioPacing` lines in the AssemblyAI and Deepgram protocol files, a conformance case for every vendor, one line of the README's vendor checklist, and the comments pacing makes false: `capture/CaptureSession.ts` (the `hold()` doc and the pacing comment at the flush in `attach()`), `costGuards.ts` (the `sttReopenBufferMs` `why`) and the README's "Reopen buffer" row | - |
 | M4-T4 | S | `services/notes_markdown.py`, `tests/fixtures/ai_notes_doc.json`, `tests/test_notes_markdown.py` | - |
 | M4-T5 | M | `services/notes_prompt.py`, `notes_protocol.py`, `citations.py` (with tests) | - |
 | M4-T21a | S | `renderer/src/transcript/transcriptNavigator.ts` (the contract commit, with test) | - |
@@ -307,10 +308,10 @@ and `m1-assemblyai` (a3be3ee). Still to run: P2-F1, P2-F2 and M3-T18 (M2-T0 is t
 
 | Task | Size | Owns |
 | --- | --- | --- |
-| M2-T2 | M | `shared/capture.ts` (adds `offline`; keeps every landed status field), `shared/ipc/capture.ts`, `shared/ipc/setup.ts`, the `capture` and `setup` bridges and fakes, `main/config.ts`, `main/ipc-validation.ts` (with tests) |
+| M2-T2 | M | `shared/capture.ts` (adds `offline`; keeps every landed status field), the `offline` case of `describeStream` in `renderer/src/format.ts` (its switch has no default, so without it the type check fails, TS2366), `shared/ipc/capture.ts`, `shared/ipc/setup.ts`, the `capture` and `setup` bridges and fakes, `main/config.ts`, `main/ipc-validation.ts` (with tests) |
 | M2-T3 | M | `main/store/*` except the sync statements, with local migration 4; `test/fixtures/backup/` (a small `roger.sqlite` plus WAV and m4a chunks with a gap, and the script that makes them) |
 | M2-T7 | M | `native/roger-audio/{main,Protocol,Tap,RingBuffer,Lifecycle,SelfTest}.swift`, stub `Probe.swift` and `Monitor.swift` (called by `main.swift`), `scripts/build-native.sh`, the Darwin lines of `make check` |
-| M3-T1 | S | `stt_vendors.py` (`STT_PRESETS`), `config.py` (the STT fields: a preset id, `STT_MODEL` refused), `schemas/stt.py`, `app.py` (`api_started` fields), `tests/test_stt_providers.py`, `tests/test_config.py` (STT cases), `.env.example` (STT section), the STT settings in `apps/api/README.md`, the contract's token `provider` line and presets. The landed issuers, price table and `test_stt_token.py` are not rewritten |
+| M3-T1 | S | `stt_vendors.py` (`STT_PRESETS`), `config.py` (the STT fields: a preset id, `STT_MODEL` refused), `schemas/stt.py`, `app.py` (`api_started` fields), `tests/test_stt_providers.py`, `tests/test_config.py` (STT cases), `.env.example` (STT section), the STT settings in `apps/api/README.md`, the contract's token `provider` line and presets, the three `stt_model="nova-2"` cases of `tests/test_stt_token.py` (they fail once `STT_MODEL` is refused), and in `stt_vendors.py` the issuer lookup by the resolved vendor (`open_stt_token_issuer`, line 114, else `assemblyai-pro` is a `KeyError` at startup). The landed issuers, price table and `test_assemblyai_*` cases are not rewritten |
 | M3-T2 | M | `db/models_vocabulary.py`, `0002_vocabulary_terms.py`, `services/vocabulary.py`, `schemas/vocabulary.py`, `routers/vocabulary.py`, `tests/test_vocabulary.py`, the contract's Vocabulary section and its Database line |
 | M3-T4a | M | `main/stt/SpeechToText.ts` (optional `keyterms`, `SttConnectError.keytermsRejected`), `main/stt/keyterms.ts`, `stt/core/{SttProtocol,SttConnection}.ts` (the keyterm-rejection signal; no retry), `main/stt/deepgram/DeepgramSpeechToText.ts` (`keyterm`, `mip_opt_out`), the keyterm case in `stt/conformance.test.ts` and Deepgram's in `stt/testing/conformanceVendors.ts`, `main/stt/fake/FakeSpeechToText.ts`, `main/api/ApiClient.ts` (token type), the fake-settings literal and the `keyterms` line of `resolveStt` in `CaptureService.ts`, one line of the README's vendor checklist, their tests |
 | M3-T10 | M | `bench/core/*` (with tests) |
@@ -330,7 +331,7 @@ and `m1-assemblyai` (a3be3ee). Still to run: P2-F1, P2-F2 and M3-T18 (M2-T0 is t
 | Task | Size | Owns |
 | --- | --- | --- |
 | M2-T3b | S | `upload/TranscriptUploader.ts` (with test), the sync statements in `store/SqliteTranscriptStore.ts` and `store/InMemoryTranscriptStore.ts` |
-| M2-T4 | M | `capture/CaptureService.ts` (adds a status-contributor seam, so warnings, echo and backup add status without editing it; session event listeners; a resume start that takes the saved `stt_usage` row; keeps every landed cost guard and its tests), `capture/AudioFanout.ts`, `capture/createCaptureRuntime.ts` (with slots for T6, T10, T11, T14b, T15, T16, T17a, T17b, T18, T19 and M3-T19b), `main/ipc.ts`, the `[slot M2-T4 …]` blocks |
+| M2-T4 | M | `capture/CaptureService.ts` (adds a status-contributor seam, so warnings, echo and backup add status without editing it; session event listeners; a resume start that takes the saved `stt_usage` row, its open allowance starting afresh; an optional injected `SttOpenBudget`; keeps every landed cost guard and its tests), `capture/SttOpenBudget.ts` (a minute-only acquire for M2-T16's re-run and M3-T20's gate reopens; the doc comment names every allowed caller), `capture/AudioFanout.ts`, `capture/createCaptureRuntime.ts` (builds the one budget and passes it to `CaptureService` and the T16 slot; slots for T6, T10, T11, T14b, T15, T16, T17a, T17b, T18, T19 and M3-T19b), `main/ipc.ts`, the `[slot M2-T4 …]` blocks, architecture rule 9's wording in `CLAUDE.md` (every open acquires first, right before `openStream`; the re-run and the bench are named callers) |
 | M2-T7b | S | `native/roger-audio/Probe.swift`, the route-switch case in `SelfTest.swift` |
 | M2-T8 | M | `native/roger-audio/{Monitor,Route,ParentWatch}.swift`, `main/native/monitorRelaunch.mac.test.ts` |
 | M2-T9 | S | `electron-builder.yml`, `scripts/install-mac.sh`, `main/native/helperPath.ts` (with test) |
@@ -360,7 +361,7 @@ and `m1-assemblyai` (a3be3ee). Still to run: P2-F1, P2-F2 and M3-T18 (M2-T0 is t
 | M2-T12 | M | `renderer/src/audio/*`, `renderer/src/state/useCapture.ts`, `main/window.ts`, `main/lifecycle.ts` (a renderer crash or reload no longer stops the recording), `capture/stopReasons.ts` (drops `page-reloaded`) |
 | M3-T13 | S | CLAUDE.md commands and benchmark lines, `docs/research/stt-benchmark.md`, `.env.example` (Benchmark section) |
 | M3-T14 | S | Optional (OD-10). `services/stt_tokens.py` (one class), `stt_vendors.py` (one vendor entry and its preset), `domain.py` (`soniox`), `config.py` (the key and its case), `.env.example` (the key line), the Soniox lines in `apps/api/README.md`, `tests/test_stt_token_soniox.py`, the contract's provider line |
-| M3-T19a | M | `db/models_stt_usage.py`, `0005_stt_usage.py`, `services/stt_usage.py`, `schemas/stt_usage.py`, `routers/stt_usage.py`, `tests/test_stt_usage.py`, the contract's STT usage section and its Database line |
+| M3-T19a | M | `db/models_stt_usage.py`, `0005_stt_usage.py`, `services/stt_usage.py`, `schemas/stt_usage.py` (`stop_reason` bounded free text, never an enum: M1-era rows say `page-reloaded`, M2-T17b adds `call-ended` later), `routers/stt_usage.py`, `tests/test_stt_usage.py`, the contract's STT usage section and its Database line |
 | M4-S4b | S | `store/{TranscriptStore,SqliteTranscriptStore,InMemoryTranscriptStore}.ts` (adds `listMeetings` and `listSegments`), `main/meetings/meetings-ipc.ts` (with test), `[slot M4-S4b]` |
 | M4-T8 | M | `services/notes_generation.py`, `schemas/notes_runs.py`, `routers/notes_runs.py`, the fixture (owned by T8 from here on), its tests, the contract's runs and SSE section |
 | M4-T10 | M | `services/chat.py`, `services/chat_prompt.py`, `schemas/chat.py`, `routers/chat.py`, its tests, the contract's Chat section |
@@ -393,7 +394,7 @@ and `m1-assemblyai` (a3be3ee). Still to run: P2-F1, P2-F2 and M3-T18 (M2-T0 is t
 | M3-T4b | S | `capture/CaptureSession.ts` (a connect rejected for its keyterms reopens once without them, through `SttOpenBudget`), `capture/CaptureService.ts` (the `keyterms_rejected` capture warning), their tests |
 | M3-T9 | S | `app/slots/m3-transcript.ts` (`LiveTranscript` and `VocabularySettings`), `renderer/src/state/useCapture.ts` (drops the segment and interim state), deletes `components/TranscriptView.tsx` |
 | M3-T15 | M | Optional (OD-10). `main/stt/soniox/*`, one line in `stt/registry.ts`, one entry in `stt/testing/conformanceVendors.ts`, the opening-messages hook in `stt/core/{SttProtocol,SttConnection}.ts` if Soniox needs it, the Soniox note in `apps/desktop/README.md` |
-| M3-T19b | M | `upload/SttUsageUploader.ts`, `api/sttUsageClient.ts`, local migration 6 and the usage sync statements in `store/*`, the M3-T19b runtime slot (with tests) |
+| M3-T19b | M | `upload/SttUsageUploader.ts` (a `422` is a rejected row, marked and never retried until a later save), `api/sttUsageClient.ts`, local migration 6 and the usage sync statements in `store/*`, the M3-T19b runtime slot (with tests) |
 | M4-T18 | M | `renderer/src/notes/{AiNotesPanel,TemplatePicker,NotesSettings}.tsx`, `aiNotesStream.ts`, `aiNotesActions.ts` (with tests) |
 | M4-T19 | M | `renderer/src/chat/*` (with tests) |
 | M5-T6 | M | `main/calendar/{oauthLoopback,CalendarAccount,calendarIpc}.ts`, `main/api/calendarClient.ts`, `shared/ipc/calendar.ts` with its bridge and fake (with tests) |
@@ -403,13 +404,13 @@ and `m1-assemblyai` (a3be3ee). Still to run: P2-F1, P2-F2 and M3-T18 (M2-T0 is t
 
 | Task | Size | Owns |
 | --- | --- | --- |
-| M2-T16 | M | `main/rerun/*` (with tests), the T16 runtime slot |
+| M2-T16 | M | `main/rerun/*` (with tests), the T16 runtime slot (it opens through the budget M2-T4 injects there, with the minute-only acquire; no edit to `CaptureService.ts` or `SttOpenBudget.ts`) |
 | M2-T17a | S | `detect/{MeetingAppMonitor,callApps}.ts` (with test), the T17a runtime slot |
 | M4-T20 | S | `app/slots/m4-notes.ts`, the M4 QA script and gallery |
 | M5-T9c | M | `main/calendar/createCalendarRuntime.ts`, the enricher, `calendarFlow.test.ts`, `[slot M5-T9c]` |
 | M5-T10 | M | `main/prompt/{PromptWindow,promptBounds}.ts`, `preload/prompt.ts`, `renderer/prompt.html`, `renderer/src/prompt/*`, `electron.vite.config.ts`, `main/page-policy.ts` |
-| M5-T11 | M | `main/app/*` (`windowLifecycle.ts`, not `lifecycle.ts`), `shared/ipc/loginItem.ts` with its bridge and fake, `build/tray*.png`, `main/window.ts`, `main/lifecycle.ts` (`watchWindow` stops only on a real close, never on a hide), `[slot M5-T11 …]` (two slots) |
-| M3-T20 | M | Silence-gated streaming: `capture/SilenceGate.ts` (with test), `capture/CaptureSession.ts`, `capture/CaptureService.ts` (meter), `main/costGuards.ts` (three settings), `shared/capture.ts` (`SttMeter.gatedMs`, `estimatedSavedUsd`), `renderer/src/format.ts` (savings wording), the gate rows of the README's "Cost guards" table and their `.env.example` lines, `bench/run/replay.ts` (`--gate`) (with tests) |
+| M5-T11 | M | `main/app/*` (`windowLifecycle.ts`, not `lifecycle.ts`), `shared/ipc/loginItem.ts` with its bridge and fake, `build/tray*.png`, `main/window.ts` (close hides unless `lifecycle.quitting`), `main/lifecycle.ts` (`watchWindow` stops only on a real close, never on a hide; a public `quitting` getter, so the close a quit sends is not turned into a hide that cancels it; test: Cmd+Q with the window open quits), `[slot M5-T11 …]` (two slots) |
+| M3-T20 | M | Silence-gated streaming: `capture/SilenceGate.ts` (with test), `capture/CaptureSession.ts` (pause cause per source; token prefetch; hold bound pre-roll plus reopen buffer; gate reopens through the minute-only acquire and their own count; gap start at the speech onset; gated sources stay gated across `resumeStreams()`; the reopened-session latency figures), `capture/CaptureService.ts` (meter, token expiry in the credentials), `main/costGuards.ts` (three settings and the pre-roll check), `shared/capture.ts` (optional `SttMeter.gatedMs`, `estimatedSavedUsd`, optional `SttMeterStatus.silenceGate`), `renderer/src/format.ts` (savings, gate spent, the gated `paused` wording), the gate rows of the README's "Cost guards" table and their `.env.example` lines, the gate in rule 9 of `CLAUDE.md`, `bench/run/replay.ts` (`--gate`) and the `--gate` columns of `bench/report/report.ts` (with tests) |
 
 **Wave 7**
 
@@ -464,36 +465,39 @@ Every other file has exactly one writer in Phase 2.
 | `src/shared/ipc.ts` and `src/preload/index.ts` | P2-F1 only | Feature tasks own `shared/ipc/<feature>.ts`, `preload/bridges/<feature>.ts` and `preview/fakes/<feature>.ts`. `capture.ts` and its bridge: M2-T2 (wave 1), then M5-T5 (wave 4). The barrel keeps exporting `PCM_SAMPLE_RATE` and `PCM_ENCODING`. |
 | `src/shared/capture.ts` | M2-T2 (1, `offline` and M2's fields) → M5-T5 (4, `StartSource`, `title`) → M3-T20 (6, `SttMeter.gatedMs`, `estimatedSavedUsd`) | One writer per wave; every writer keeps the landed fields (`paused`, `retrying`, `streamMessages`, `meter`, `notice`) |
 | `src/main/index.ts` | P2-F1 (slots) → M4-S2, M4-S1 (wave 1) → M2-T4, M3-T8 (2) → M4-S4b (3) → M2-T13, M4-T16 (4) → M5-T9c, M5-T11 (6) → M2-T23 (7) | Named slots (section 1). Inside a wave the slots differ, so the merges are clean. Nobody edits outside their slot. The cost-guard wiring and the `RecordingLifecycle` stay inside `[slot M2-T4 runtime]`. |
-| `src/main/lifecycle.ts` (landed `RecordingLifecycle`, with `lifecycle.test.ts`) | P2-F1 (0, quit hooks) → M2-T12 (3, a renderer crash or reload no longer stops) → M2-T18 (5, `suspend` moves to `PowerCoordinator`) → M5-T11 (6, a hide never stops) | One writer per wave; each changes one decision and keeps every other G4 stop and its test |
+| `src/main/lifecycle.ts` (landed `RecordingLifecycle`, with `lifecycle.test.ts`) | P2-F1 (0, quit hooks) → M2-T12 (3, a renderer crash or reload no longer stops) → M2-T18 (5, `suspend` moves to `PowerCoordinator`) → M5-T11 (6, a hide never stops; the public `quitting` getter `window.ts` reads) | One writer per wave; each changes one decision and keeps every other G4 stop and its test |
 | `src/main/capture/stopReasons.ts` | M2-T12 (3, drops `page-reloaded`) → M2-T17b (7, adds `call-ended`) | - |
 | `src/main/capture/createCaptureRuntime.ts` | M2-T4 (slots) → T10, T11 (3) → T6, T15 (4) → T14b, T18, T19, M3-T19b (5) → T16, T17a (6) → T17b (7) | Runtime slots made by M2-T4, used the same way as the `index.ts` slots |
-| `src/main/capture/CaptureService.ts` | M3-T4a (wave 1, the fake literal and `keyterms` in `resolveStt`) → M2-T4 (2) → M4-T22 (3) → M5-T5 (4) → M3-T4b (5) → M3-T20 (6, the meter) | One writer per wave. Every writer keeps the landed cost guards (G1 to G7) and their tests green. |
-| `src/main/capture/CaptureSession.ts` | M2-T5 (3) → M2-T6, then M3-T6b (4, in that merge order) → M3-T4b (5) → M3-T20 (6) | One writer per wave, except wave 4, where M3-T6b (one call per event, the log line) rebases on M2-T6 |
+| `src/main/capture/CaptureService.ts` | M3-T4a (wave 1, the fake literal and `keyterms` in `resolveStt`) → M2-T4 (2, the injected budget) → M4-T22 (3) → M5-T5 (4) → M3-T4b (5) → M3-T20 (6, the meter, the token's expiry) | One writer per wave. Every writer keeps the landed cost guards (G1 to G7) and their tests green. M2-T16 reaches the budget through its runtime slot and never edits this file. |
+| `src/main/capture/CaptureSession.ts` | M3-T18 (0, the `hold()` doc and the flush comment only) → M2-T5 (3) → M2-T6, then M3-T6b (4, in that merge order) → M3-T4b (5) → M3-T20 (6) | One writer per wave, except wave 4, where M3-T6b (one call per event, the log line) rebases on M2-T6 |
+| `src/main/capture/SttOpenBudget.ts` (landed, with its test) | M2-T4 (2, the minute-only acquire and the doc comment naming every allowed caller) | Only M2-T4 edits it. M2-T16 and M3-T20 (both wave 6) call the minute-only acquire; the bench builds its own instance. |
 | `src/main/upload/TranscriptUploader.ts` | M2-T3b (2) → M4-T22 (3) → M5-T5 (4) | One writer per wave. M3-T19b's usage uploader is its own file. |
 | `src/main/store/*` | M2-T3 (1, migration 4) → M2-T3b (2) → M4-S4b (3) → M5-T5 (4, migration 5) → M3-T19b (5, migration 6) | One writer per wave; migration 3 (`stt_usage`) is landed and nobody edits it |
 | `src/main/api/ApiClient.ts` | P2-F1 (0) → M3-T4a (1) → M5-T5 (4) | Feature clients live in their own files |
 | `src/main/stt/core/{SttProtocol,SttConnection,WebSocketSpeechToText}.ts`, `src/main/stt/conformance.test.ts`, `src/main/stt/testing/*` | M3-T18 (0, pacing) → M3-T4a (1, keyterm rejection) → M3-T5 (2, wire tap) → M2-T6 (4, ping liveness) → M3-T15 (5, opening messages) | One writer per wave. Each adds a field the core applies and a conformance case; no adapter opens, times, retries or closes a socket (house rule 9) |
 | `src/main/stt/registry.ts` | M3-T15 (5, one line) | - |
+| `bench/run/replay.ts`, `bench/report/report.ts` | M3-T11 (2) → M3-T20 (6, `--gate` and its report columns) | - |
 | `src/main/stt/deepgram/DeepgramSpeechToText.ts` | M3-T18 (0, `audioPacing`) → M3-T4a (1) | - |
 | `src/main/stt/assemblyai/*` | M3-T18 (0, `AudioFrameSizer` moves to `stt/core/`, `audioPacing`) → M3-T5 (2) | - |
-| `src/main/costGuards.ts` | M3-T20 (6) only | `costGuards.test.ts` checks every guard against the README table and `.env.example`, so the three change together |
+| `src/main/costGuards.ts` | M3-T18 (0, the `sttReopenBufferMs` `why` only) → M3-T20 (6) | `costGuards.test.ts` checks every guard against the README table and `.env.example`, so the three change together |
 | `src/main/ipc.ts`, `src/main/ipc-validation.ts` | P2-F1 (0, trust helpers) → M2-T2 (`ipc-validation.ts`, 1) → M2-T4 (`ipc.ts`, 2) → M5-T5 (4) | Other features register in their own modules |
 | `src/renderer/src/state/useCapture.ts` | M2-T12 (3) → M5-T5 (4) → M3-T9 (5) | Each keeps the landed `followMain` call and the status re-read on focus |
-| `src/renderer/src/format.ts` | M2-T20a (5, stream wording) → M3-T20 (6, savings on the meter line) | - |
+| `src/renderer/src/format.ts` (with `format.test.ts`) | M2-T2 (1, the `offline` case of `describeStream`) → M2-T20a (5, stream wording) → M3-T20 (6, savings on the meter line, the gate spent, `paused` while gated) | `describeStream` has no default case, so whoever adds an `SttStreamState` adds its case in the same commit |
 | `src/main/window.ts` | M2-T12 (3) → M5-T11 (6) | - |
 | `src/renderer/src/styles.css`, `theme/tokens.css` | M4-S2 only. Later tasks never write colours; they use tokens. A task that needs a new token adds it at the end of `tokens.css`, in both themes, and never renames one. | S2 ships the union the plans need: `--bg`, `--panel`, `--ink`, `--muted`, `--line`, `--accent`, `--danger`, `--warn`, `--ok`, `--danger-bg`, `--warn-bg`, `--ok-bg`, `--interim-ink`, `--hidden-ink`, `--cited-bg`, `--recording`, `--focus-ring`, `--sidebar-bg`, `--chip-bg`, `--conflict-bg`. It keeps the landed `.notice` rule (the stop notice). |
 | `src/renderer/src/app/slots.ts` | M4-S1 only | Each mount task owns its own `app/slots/<task>.ts` |
 | `app.py` | P2-F2 → M3-T1 (the `api_started` fields only) | Router includes and lifespan hooks are already in place |
 | `config.py` | P2-F2 (mixins) → M3-T1 (1) → M3-T14 (3) | Notes and calendar settings are in their own mixin files |
-| `stt_vendors.py` | M3-T1 (1, presets) → M3-T3 (2, keyterm surcharge) → M3-T14 (3, Soniox) | One writer per wave |
+| `stt_vendors.py` | M3-T1 (1, presets; the issuer looked up by the resolved vendor) → M3-T3 (2, keyterm surcharge) → M3-T14 (3, Soniox) | One writer per wave |
+| `schemas/stt.py`, `tests/test_stt_token.py` | M3-T1 (1, `from_settings` from the preset; the three `stt_model="nova-2"` cases) → M3-T3 (2, `keyterms`; the keyterm cases) | One writer per wave |
 | `domain.py` | P2-F2 (0) → M3-T14 (3, `soniox` in `SttProvider`) | - |
 | `db/models.py` | P2-F2 (imports) → M5-T1 (the `Meeting` columns) | New tables live in per-domain modules |
 | `.env.example` | P2-F2 (sections) → M3-T1, M4-T2, M5-T1 (1) → M3-T13 (Benchmark), M3-T14 (the Soniox key) (3) → M3-T20 (6, its cost-guard lines) | Each task writes in its own section; the landed cost-guard block keeps every guard |
 | `apps/api/README.md` | M3-T1 (1, STT settings and presets; `STT_MODEL` retired) → M5-T3 (2, the calendar pointer) → M3-T14 (3, Soniox) | Each its own section |
-| `apps/desktop/README.md` | M3-T18 (0) and M3-T4a (1), one line each in "Add a speech-to-text vendor" (declare `audioPacing`; map keyterms and `keytermsRejected`) → M3-T15 (5, the Soniox vendor note) → M3-T20 (6, the gate rows of "Cost guards") → M2-T21 (9, helper, permissions, audio folder, M2's sleep and crash changes) | Each its own section |
+| `apps/desktop/README.md` | M3-T18 (0) and M3-T4a (1), one line each in "Add a speech-to-text vendor" (declare `audioPacing`; map keyterms and `keytermsRejected`), and M3-T18's "Reopen buffer" row of "Cost guards" (held audio is paced, not sent at once) → M3-T15 (5, the Soniox vendor note) → M3-T20 (6, the gate rows of "Cost guards") → M2-T21 (9, helper, permissions, audio folder, M2's sleep and crash changes) | Each its own section |
 | `apps/desktop/package.json`, `pnpm-lock.yaml` | P2-F3 only | A task that truly needs a new package asks the controller, which makes a separate F3-style commit |
 | root `Makefile` | P2-F3 → M2-T7 (the Darwin `check` lines) | - |
-| `CLAUDE.md` | M4-T2 (rule 4, wave 1) → M3-T13 (commands, wave 3) → M2-T21 (repo map, commands, wave 9). The controller appends failure-log lines. | Tasks put proposed failure-log lines in their hand-off note. The controller appends them once per wave. Architecture rule 9 (the STT core and the open budget) is landed; no task loosens it. |
+| `CLAUDE.md` | M4-T2 (rule 4, wave 1) → M2-T4 (rule 9's open-budget sentence, wave 2) → M3-T13 (commands, wave 3) → M3-T20 (rule 9's "no audio, no session" sentence gains the gate, wave 6) → M2-T21 (repo map, commands, wave 9). The controller appends failure-log lines. | Tasks put proposed failure-log lines in their hand-off note. The controller appends them once per wave. Architecture rule 9 (the STT core and the open budget) is landed; M2-T4 and M3-T20 reword it to cover the re-run, the bench and the gate, and no task loosens it: every open still acquires first, right before `openStream`. |
 | `apps/desktop/src/renderer/src/App.tsx` | M4-S1 only | No milestone mounts in M1's window any more: the shell lands in waves 1 and 2, before any UI that would mount. S1 keeps the landed stop notice. |
 
 ## 4. Test databases per worktree
@@ -603,7 +607,7 @@ or a done-when line on purpose. A plan's engineering calls are not repeated here
 | OD-24 | Who owns the prompt panel and call-detected offers? | M5's `PromptService.offer`. M2-T17b feeds it and builds no card or notification of its own. A click stores `call_detected`, or `notification` when one calendar event matches. | M2 owns it | M5 D5, M2 D6 |
 | OD-25 | Crash relaunch | The monitor helper relaunches Roger once per meeting and resumes the same meeting, with a visible Stop | End the meeting at launch | M2 D7 |
 | OD-26 | Call detection method | Poll Core Audio process objects every 1 s against an allowlist of call apps. Offer after 5 s (15 s for a browser). Never auto-start. | Window titles; a deny-list; auto-start | M2 D6 |
-| OD-27 | Silence-gated streaming on by default? (the owner's cost ask of 2026-10-06) | Yes: a source's session closes after 30 s without speech and reopens on speech with a 2 s pre-roll (M3-T20). If bake-off run F shows a cost of more than 1.0 point of pooled WER or a failed 2.0 s latency gate, the default becomes off | Off by default, on per Mac in `config.json` | M3 D5 |
+| OD-27 | Silence-gated streaming on by default? (the owner's cost ask of 2026-10-06) | Yes: a source's session closes after 30 s without speech and reopens on speech with a 1 s pre-roll and a token prefetched while it was closed (M3-T20). The gate has its own cap of 120 reopens per meeting (`sttSilenceReopensPerMeeting`), each also counted in the 4-a-minute window, never in the 30 opens per meeting that Start, stalls and failures use; past the cap the gate is off for that meeting and the status says so. The cost: AssemblyAI takes no audio faster than real time, so a source's words after a silence of 30 s show about 1 to 1.5 s later than usual until that source is quiet again. If bake-off run F shows a cost of more than 1.0 point of pooled WER, or adds more than 2.0 s of p95 word display latency to the words of reopened sessions, the default becomes off | Off by default, on per Mac in `config.json` | M3 D5 |
 
 ## 8. Owner and human inputs, by day
 
@@ -714,7 +718,9 @@ with a conformance case; every open passes `SttOpenBudget`.
     in `costGuards.ts`, savings in the meter. It shares the close-and-reopen path with the landed
     stall pause (stall: no chunks; silence: chunks of near-zero energy). Needs T4b, T6b, T11, T18,
     T19b, M2-T5, M2-T6, M2-T20a, M5-T5 (file order). New owner decision OD-27 (M3 D5): on by
-    default unless bake-off run F shows a real cost.
+    default unless bake-off run F shows a real cost. Superseded in 9.3: a 1 s pre-roll, a
+    prefetched token, its own reopen allowance instead of the reserve, a pause cause per source,
+    and run F judged on the lag the gate adds.
 - **Rescoped M2 tasks:**
   - **M2-T6** is now "STT liveness, offline and gap records": no `ResilientSttStream`, no wrapper
     in `createSpeechToText.ts`, no replay. It adds ping liveness to `stt/core/SttConnection.ts`
@@ -731,9 +737,10 @@ with a conformance case; every open passes `SttOpenBudget`.
     crash or reload reloads and goes on (a failed reload still stops), and a sleep pauses the
     sessions instead of stopping (a sleep of `noSpeechStopMs` or more still stops).
   - **M2-T13** raises `ROGER_STT_OPENS_PER_MINUTE` in the e2e harness; **M2-T16** re-runs through
-    the shared budget and adds its usage to the meeting; **M2-T17b** adds a `call-ended` stop
-    reason; **M2-T19**'s STT check opens no session; **M2-T20a** keeps the meter line and the stop
-    notice; **M2-T23** carries the saved usage into a resumed meeting.
+    the shared budget (in the per-minute window only, 9.3) and adds its usage to the meeting;
+    **M2-T17b** adds a `call-ended` stop reason; **M2-T19**'s STT check opens no session;
+    **M2-T20a** keeps the meter line and the stop notice; **M2-T23** carries the saved usage into
+    a resumed meeting.
   - The Wi-Fi cut in M2's exit check now needs T16 (AssemblyAI takes no replay faster than real
     time; the window comes back from the backup). The exit check runs on `STT_PROVIDER=assemblyai`.
 - **Rescoped M3 tasks:**
@@ -778,6 +785,52 @@ with a conformance case; every open passes `SttOpenBudget`.
   `format.ts`, `stt_vendors.py`, `domain.py` and both READMEs; `createSpeechToText.ts` left it (no
   Phase 2 task edits it now).
 
+### 9.3 After a review of 9.2 (2026-10-06)
+
+Checked against the landed code (`costGuards.ts`, `SttOpenBudget.ts`, `CaptureSession.ts`,
+`format.ts`, `lifecycle.ts`, `stt_vendors.py`, `test_stt_token.py`).
+
+- **M3-T20, the gate's opens.** With `sttOpensPerMeeting` 30, Start's 2 and a reserve of 10, the
+  gate had 18 reopens for both sources: a stop-and-start meeting spent them in 10 to 40 minutes,
+  then billed silence until Stop, and M2-T16's re-runs drew on the same count. Gate reopens now
+  count in the per-minute window and in their own `sttSilenceReopensPerMeeting` (120), never in
+  `sttOpensPerMeeting`; the reserve setting is gone (nothing left to reserve), and with it the
+  cross-field check it would have needed. Past its cap the gate is off for that meeting: one log
+  line and `SttMeterStatus.silenceGate` `spent`. OD-27 states the cap.
+- **M3-T20, held audio.** A gate reopen holds the pre-roll plus `sttReopenBufferMs`, and the
+  pre-roll never counts as dropped; the landed `hold()` would have cut the pre-roll and logged
+  "audio dropped while reconnecting" on every reopen. `sttSilencePreRollSeconds` is checked
+  against that bound.
+- **M3-T20, lag.** T18 never catches up above 1x and AssemblyAI documents no tolerance (M3 vendor
+  facts), so a reopen's backlog is lag for that whole session. The pre-roll is 1 s, a token is
+  prefetched while a source is gated (no API call at the onset), run F's latency measure is the
+  lag the gate adds to the words of reopened sessions (D5 and OD-27 turn the default off above
+  2.0 s), and those words are reported apart in the bench and the real call.
+- **M3-T20 and M2-T6, gaps.** A gated window is never a gap; a failure or budget gap on a gated
+  source starts at the speech onset, so M2-T16 never re-runs billed silence.
+- **M3-T20, two pauses.** A pause cause per source (`stall` or `silence`): a gated source reopens
+  only on speech, also after `resumeStreams()` (back online) and the wake.
+- **M3-T1** owns the three `stt_model="nova-2"` cases in `test_stt_token.py` and the issuer
+  lookup by the resolved vendor in `stt_vendors.py` (`assemblyai-pro` was a `KeyError`).
+- **M2-T2** owns the `offline` case of `describeStream` (`format.ts`) in wave 1, or the type check
+  fails. **M3-T20** owns the `paused` wording of a gated source.
+- **M2-T4** owns `SttOpenBudget.ts`: a minute-only acquire for M2-T16 and M3-T20, the budget built
+  in `createCaptureRuntime.ts` and injected, and the doc comment and CLAUDE.md rule 9 reworded to
+  name the re-run and the bench. A resumed meeting's open allowance starts afresh instead of
+  being seeded from `sessions_opened`, which counts gate reopens and re-runs too and could refuse
+  the resume's own Start.
+- **M3-T18** owns the comments pacing makes false (`hold()`, the flush, the `sttReopenBufferMs`
+  `why`, the README's "Reopen buffer" row) in wave 0.
+- **M3-T19a** keeps `stop_reason` free text; **M3-T19b** treats a `422` as rejected.
+- **M3-T20's `SttMeter` fields are optional**, so wave 5's tests and shots and M4-S3's fixtures do
+  not break.
+- **M5-T11** adds a public `quitting` getter to `lifecycle.ts`, or close-hides cancels Cmd+Q.
+- **M2-T22** records per call whether the gate was on. **M4**'s model-id example no longer names
+  the retired `STT_MODEL`.
+- **Section 3.1** gained `SttOpenBudget.ts`, `schemas/stt.py` with `test_stt_token.py`, and the
+  bench's `replay.ts` and `report.ts`; `CaptureSession.ts`, `costGuards.ts`, `format.ts`,
+  `lifecycle.ts`, `CLAUDE.md` and the desktop README name their new writers.
+
 ## 10. Notes from built tasks (read this if your task id appears below)
 
 Wave 0's pure modules landed on `phase-2` on 2026-10-06. Their builders left these hand-offs for
@@ -821,7 +874,8 @@ From `m1-assemblyai` (merged a3be3ee, 2026-10-06), the open issues its cost work
   after `Begin`; AssemblyAI may close with 3007 for audio faster than real time (M1 risk table,
   "The reopen flush trips..."). Pace it in the core, not in `CaptureSession`, so the stall reopen,
   the failure reopen, M2-T6's offline reopen, M2-T16's re-run and M3-T20's pre-roll are all
-  covered.
+  covered. Rewrite the comments that say it is sent at once (`CaptureSession.hold()`, the
+  `sttReopenBufferMs` `why`, the README's "Reopen buffer" row) in the same change.
 - **M2-T6, M2-T16:** audio between a failure and its reopen is lost beyond the 3 s held, and
   nothing records it (M1 known gaps). There is no replay: record the gap, re-run it from the
   backup.
@@ -840,4 +894,5 @@ From `m1-assemblyai` (merged a3be3ee, 2026-10-06), the open issues its cost work
   Replacing those files must keep both.
 - **M2-T4, M2-T23:** `SttOpenBudget` lives on `CaptureService` and outlives meetings (the vendor
   counts per account); `stt_usage` is upserted per meeting. A resumed meeting must add to its saved
-  row, not overwrite it.
+  row, not overwrite it. M2-T4 builds the budget in `createCaptureRuntime.ts` and injects it, so
+  M2-T16 shares it (section 9.3).

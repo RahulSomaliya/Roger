@@ -214,7 +214,7 @@ follows M2-T3 and M4-T22.
 | `src/main/capture/CaptureService.ts`, `src/main/index.ts`, `src/main/ipc.ts` | M2-T4 (seams, composition root), then M5-T5, then M5-T9c and M5-T11 (one block each in `index.ts`; whichever merges second rebases) |
 | `src/renderer/src/state/useCapture.ts` | M2-T12, then M5-T5 (`start(request)` as a thin wrapper over the existing start), then M3-T9, which keeps the wrapper |
 | `src/main/window.ts` | M2-T12, then M5-T11 |
-| `src/main/lifecycle.ts` (the landed `RecordingLifecycle`) | P2-F1 (quit hooks), M2-T12, M2-T18, then M5-T11 (a hide never stops the recording) |
+| `src/main/lifecycle.ts` (the landed `RecordingLifecycle`) | P2-F1 (quit hooks), M2-T12, M2-T18, then M5-T11 (a hide never stops the recording; the public `quitting` getter) |
 | `roger.sqlite` migrations | M1's migration 3 (`stt_usage`, landed), M2-T3's migration 4, then M5-T5's migration 5 (M3-T19b's 6 follows) |
 | Alembic | `0004_calendar`, `down_revision = "0003"`, fixed (M3 is `0002`, M4 is `0003`) |
 
@@ -580,11 +580,16 @@ T11 in wave 6; T12 in wave 7; T13 in wave 8.
   fires when the close is turned into a hide; it now stops only when the window is really closed
   (`closed`, which with close-hides happens only while quitting), with a test that a hide keeps
   recording. Quit still goes through `RecordingLifecycle`; the tray's Quit calls `app.quit()` and
-  adds no stop of its own. Menu: next meeting, Start notes now, Stop note while recording, "Calendar
-  not updated since …" when stale, "Reconnect Google Calendar (before <date>)" when needed, Open
-  Roger, Quit Roger. Icon states: idle, recording, warning. Default-on at first connect ships only
-  after real-Mac check 1 passes; until then `app.openAtLogin` defaults to `off`. Adds the dev-data
-  failure-log line to `CLAUDE.md`.
+  adds no stop of its own. Close hides unless quitting, and only `RecordingLifecycle` knows a quit
+  is under way (its `quitState` is private, and P2-F1 forbids another `before-quit` listener), so
+  T11 adds a public `quitting` getter to `lifecycle.ts` (true once a quit was requested) and the
+  close handler in `window.ts` hides only while it is false. Without it the close that `app.quit()`
+  sends after the stop is turned into a hide, which cancels the quit and Roger never exits; say
+  that in a comment at the close handler. Menu: next meeting, Start notes now, Stop note while
+  recording, "Calendar not updated since …" when stale, "Reconnect Google Calendar (before <date>)"
+  when needed, Open Roger, Quit Roger. Icon states: idle, recording, warning. Default-on at first
+  connect ships only after real-Mac check 1 passes; until then `app.openAtLogin` defaults to `off`.
+  Adds the dev-data failure-log line to `CLAUDE.md`.
 - [ ] **M5-T12** Owns `src/renderer/src/calendar/*`: `TodaySection`, `NextMeetingCard`,
   `ConnectCalendarCard`, `CalendarSettings` (open at login status and toggle, with
   `requires-approval` and its System Settings path), `NoticeBanner`, `CalendarStatusBanner`
@@ -644,7 +649,7 @@ Google with `httpx.MockTransport`, as `test_stt_token.py` does for AssemblyAI an
 | Panel placement: top right with a 16 px margin, on the display under the cursor, clamped on a display with a negative origin | `src/main/prompt/promptBounds.test.ts` |
 | The prompt page navigates as the app but gets no `media` | `src/main/page-policy.test.ts` |
 | Card text: "Starting in 1 min", "Started 3 min ago", "Jane, Ali and 3 others", "Untitled meeting", "Zoom is using the mic" | `src/renderer/src/prompt/promptFormat.test.ts` |
-| Close hides unless quitting, and a hide never stops the recording (the landed `window-closed` stop fires only on a real close); quit still stops capture and closes the store through `RecordingLifecycle`; a login launch (`wasOpenedAtLogin`) stays hidden, any other launch shows the window; reopening shows the window | `src/main/app/windowLifecycle.test.ts`, `src/main/lifecycle.test.ts` |
+| Close hides unless quitting, and a hide never stops the recording (the landed `window-closed` stop fires only on a real close); `quitting` is false until a quit is requested and true from then on; Cmd+Q with the window open does quit (the close sent during the quit is not turned into a hide); quit still stops capture and closes the store through `RecordingLifecycle`; a login launch (`wasOpenedAtLogin`) stays hidden, any other launch shows the window; reopening shows the window | `src/main/app/windowLifecycle.test.ts`, `src/main/lifecycle.test.ts` |
 | A dev build's data folder is "Roger Dev" and a packaged build's is "Roger" | `src/main/app/userDataPath.test.ts` |
 | Menu model: next meeting line, Start notes now, Stop note while recording, stale line, Reconnect (with date), Quit; icon idle, recording, warning | `src/main/app/trayMenu.test.ts` |
 | Login item never registered when not packaged; turned on at first connect unless the user turned it off; reports `requires-approval` | `src/main/app/loginItemPolicy.test.ts` |

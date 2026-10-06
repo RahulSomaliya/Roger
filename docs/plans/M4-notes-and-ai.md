@@ -119,9 +119,9 @@ Supporting checks, run before the real calls:
 | Preferences | `PreferencesStore` in main, with M5's SHELL-0 spec: a registry (`register(specs)`; each spec is a key, a default and a `parse`), so each milestone registers its keys from its own file (M5: `shared/calendarPrefs.ts`) and typed access comes from augmenting `PreferenceValues`; `get`, and `set` that refuses unknown keys and bad values naming the key; one change event per set; stored in `userData/preferences.json` (temp file then rename; a torn file keeps the last good copy), validated on read (a bad value falls back to its default with a log line); IPC `prefs:get-all`, `prefs:set` and `prefs:changed`, main window only. | `localStorage` in the renderer | Main needs them too (auto-generate after Stop, M5's reminder lead time). `config.json` (M1, M2) stays for capture switches read at start. |
 | Transcript navigator | One implementation of `reveal(segmentIds)` in `renderer/src/transcript/transcriptNavigator.ts` (M4-T21). M3-T7's `LiveTranscript` renders `data-segment-id` on every final line and registers its scroll container and follow control; it does not implement reveal itself. | Each panel scrolls itself; M3-T7 implements reveal | Chips in notes and chat need one thing to call, and reveal must pause live follow or follow-live scrolls straight back. |
 
-The default model id is product configuration, like `STT_MODEL=nova-3`. The house rule against model
-names in code and docs is about naming the agent that wrote the code, not the vendor model the
-product calls.
+The default model id is product configuration, like `STT_PROVIDER=assemblyai` (a speech-to-text
+preset that names a vendor model). The house rule against model names in code and docs is about
+naming the agent that wrote the code, not the vendor model the product calls.
 
 ### Decisions for the owner
 
