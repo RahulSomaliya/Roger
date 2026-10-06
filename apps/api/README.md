@@ -53,7 +53,7 @@ vendor key never leaves the API. Each vendor is one `SttTokenIssuer` in
 `src/roger_api/services/stt_tokens.py`, picked by `STT_PROVIDER`.
 
 AssemblyAI is Roger's vendor (owner decision, 2026-10-06: AssemblyAI lists Granola as a customer,
-live text costs about $0.15 per audio hour per stream, and it has generous free hours). The model
+live text costs about $0.15 an hour per stream, and it has generous free hours). The model
 is Universal-Streaming English. Deepgram stays as the second adapter for the M3 bake-off. To
 switch from the fake provider, set in `.env`:
 
@@ -67,6 +67,17 @@ and leave `STT_MODEL` empty. The issuer asks AssemblyAI for a temporary token
 key as `Authorization`). The TTL is only the window to open a stream; one token opens both of the
 desktop's streams, and each session can then run for up to 3 hours. A vendor that refuses, fails
 or times out is a `502 stt_provider_error`.
+
+Two vendor rules to know before testing (read 2026-10-06):
+
+- AssemblyAI bills the time each websocket is open, not the audio sent
+  ([docs](https://www.assemblyai.com/docs/universal-streaming)). A call opens two, mic and system
+  audio, so a call hour costs about $0.30, and a silent or dead system stream costs as much as a
+  live one until Stop.
+- A free account may start 5 streaming sessions a minute, paid accounts 100 or more
+  ([docs](https://www.assemblyai.com/docs/streaming/rate-limits)). Every Start opens two, so a
+  third Start within a minute fails with "Too many concurrent sessions" although nothing leaked.
+  The desktop error says to wait a minute.
 
 ## Errors
 
