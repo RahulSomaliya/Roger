@@ -1,7 +1,19 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { parseEnv } from 'node:util';
-import { app, dialog, ipcMain, Menu, powerMonitor, session, type BrowserWindow } from 'electron';
+import {
+  app,
+  desktopCapturer,
+  dialog,
+  ipcMain,
+  Menu,
+  Notification,
+  powerMonitor,
+  session,
+  systemPreferences,
+  type BrowserWindow,
+} from 'electron';
 import { APP_PREFERENCES } from '../shared/preferences';
 import { ApiClient } from './api/ApiClient';
 import type { ApiConnection } from './api/http';
@@ -9,6 +21,7 @@ import { VocabularyClient } from './api/vocabularyClient';
 import { buildAppMenu } from './appMenu';
 import { createCaptureRuntime } from './capture/createCaptureRuntime';
 import { loadConfig, readConfigFile } from './config';
+import { enterE2eMode, resolveE2eMode } from './e2eMode';
 import { RecordingLifecycle, watchApp, watchWindow } from './lifecycle';
 import { createLogger, errorMessage } from './logger';
 import { registerMeetingsIpc } from './meetings/meetings-ipc';
@@ -34,6 +47,22 @@ const MISSING_TOKEN =
  */
 async function main(): Promise<void> {
   // [slot M2-T13] e2e mode: temporary user data, no TCC prompt. Before the lock (it uses userData).
+
+  // The Electron smoke test only (e2eMode.ts): unpackaged and ROGER_E2E=1, read from the launch's
+  // environment, never .env (loadDevEnv runs later). M5-T11's slot leaves userData alone while
+  // `e2e.on`: this folder is the run's, and the harness reads roger.sqlite there.
+  const e2e = resolveE2eMode({
+    isPackaged: app.isPackaged,
+    env: process.env,
+    userDataDirSwitch: app.commandLine.getSwitchValue('user-data-dir'),
+    makeTemporaryDir: () => mkdtempSync(join(tmpdir(), 'roger-e2e-')),
+  });
+  enterE2eMode(
+    e2e,
+    { app, systemPreferences, desktopCapturer, Notification },
+    // Unpackaged only, so pretty like the app logger; that one needs config.json from userData.
+    createLogger({ level: 'info', format: 'pretty' }).child({ component: 'e2e' }),
+  );
 
   // [slot M5-T11 userData] "Roger Dev" when not packaged. Before the lock; never over M2-T13's.
 
