@@ -485,6 +485,58 @@ describe('ReminderScheduler', () => {
     h.scheduler.stop();
   });
 
+  it('logs the catch-up again at the next tick when its sweep fails', async () => {
+    const h = harness();
+    h.log.openRun(iso(START - 5 * HOUR));
+    h.log.heartbeat(iso(START - 4 * HOUR));
+    h.scheduler.start();
+    await advanceTo(0);
+    vi.spyOn(h.log, 'recordMissed').mockImplementationOnce(() => {
+      throw new Error('database is locked');
+    });
+
+    // Only the catch-up saw it, and the next launch's catch-up starts after it.
+    const uncached = call('uncached', -2 * 60);
+    h.emitCatchUp([uncached]);
+    expect(h.log.get(ACCOUNT, promptKey(uncached))).toBeNull();
+    expect(h.lines).toContainEqual(
+      expect.objectContaining({ level: 'error', error: 'database is locked' }),
+    );
+
+    await vi.advanceTimersByTimeAsync(REMINDER_TICK_MS);
+
+    expect(h.log.get(ACCOUNT, promptKey(uncached))).toMatchObject({
+      action: 'missed',
+      reason: 'not_running',
+    });
+    h.scheduler.stop();
+  });
+
+  it('drops a catch-up still owed at a disconnect: its calls belong to no other account', async () => {
+    const OTHER = 'other@example.com';
+    const h = harness({ connectedAt: null });
+    h.cache.recordConnected(OTHER, iso(START - 48 * HOUR));
+    h.cache.recordConnected(ACCOUNT, iso(START - 24 * HOUR));
+    h.log.openRun(iso(START - 5 * HOUR));
+    h.log.heartbeat(iso(START - 4 * HOUR));
+    h.scheduler.start();
+    await advanceTo(0);
+    vi.spyOn(h.log, 'recordMissed').mockImplementationOnce(() => {
+      throw new Error('database is locked');
+    });
+    const uncached = call('uncached', -2 * 60);
+    h.emitCatchUp([uncached]);
+
+    h.cache.recordDisconnected(iso(Date.now()));
+    await vi.advanceTimersByTimeAsync(REMINDER_TICK_MS);
+    h.cache.recordConnected(OTHER, iso(Date.now()));
+    await vi.advanceTimersByTimeAsync(REMINDER_TICK_MS);
+
+    expect(h.log.get(OTHER, promptKey(uncached))).toBeNull();
+    expect(h.log.get(ACCOUNT, promptKey(uncached))).toBeNull();
+    h.scheduler.stop();
+  });
+
   it('at launch, settles what the last run left before anything shows', () => {
     const h = harness();
     const crashed = call('crashed', -60);

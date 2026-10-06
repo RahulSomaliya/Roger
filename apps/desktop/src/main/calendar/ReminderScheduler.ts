@@ -130,6 +130,15 @@ export class ReminderScheduler {
    * its window (`noteRules`). In memory: it describes this run.
    */
   private readonly rulesSeen = new Map<string, PolicyRule>();
+  /**
+   * The launch catch-up until a sweep of it succeeds; each tick tries again after a failure (a
+   * locked or full database). The sync emits it once and the next launch's catch-up starts from
+   * this run's last tick, so a call only it holds (due more than 36 h ago, outside the copy) would
+   * otherwise get no `missed` row and the streak would skip it without breaking. Retrying is safe:
+   * `sweepMissed` skips keys that already have a row. Dropped on a disconnect, as the sync drops
+   * its own; lost if Roger quits before a sweep succeeds.
+   */
+  private owedCatchUp: CalendarCatchUp | null = null;
   private unsubscribeCatchUp: (() => void) | null = null;
 
   constructor(private readonly options: ReminderSchedulerOptions) {
@@ -172,6 +181,7 @@ export class ReminderScheduler {
     this.options.powerMonitor.removeListener('resume', this.onResume);
     this.unsubscribeCatchUp?.();
     this.unsubscribeCatchUp = null;
+    this.owedCatchUp = null;
     this.releaseBlocker();
     try {
       this.beat();
@@ -197,16 +207,15 @@ export class ReminderScheduler {
 
   private readonly onCatchUp = (catchUp: CalendarCatchUp): void => {
     if (!this.running) return;
+    this.owedCatchUp = catchUp;
     try {
       const account = this.options.cache.activeConnection()?.accountEmail ?? null;
-      if (account === null) return;
-      this.sweepMissed(account, catchUp.events, this.nowMs(), this.options.leadMinutes());
+      if (account !== null) this.sweepCatchUp(account, this.nowMs(), this.options.leadMinutes());
     } catch (error) {
-      this.options.logger.error('missed prompts from the catch-up could not be logged', {
-        from: catchUp.from,
-        to: catchUp.to,
-        error: errorMessage(error),
-      });
+      this.options.logger.error(
+        'missed prompts from the catch-up could not be logged; retried at the next tick',
+        { from: catchUp.from, to: catchUp.to, error: errorMessage(error) },
+      );
     }
   };
 
@@ -247,6 +256,7 @@ export class ReminderScheduler {
     if (account === null) {
       this.releaseBlocker();
       this.rulesSeen.clear();
+      this.owedCatchUp = null;
       return;
     }
     const nowMs = this.nowMs();
@@ -257,6 +267,16 @@ export class ReminderScheduler {
     const pending = this.pendingEvents(account, events, nowMs, lead);
     if (pending.some((event) => isDue(event, nowMs, lead))) this.showDue();
     this.holdBlocker(pending, nowMs, lead);
+    // Last, so a catch-up that keeps failing never holds up an offer or the blocker.
+    this.sweepCatchUp(account, nowMs, lead);
+  }
+
+  /** Log `missed` for the catch-up still owed, then forget it; a throw keeps it owed. */
+  private sweepCatchUp(account: string, nowMs: number, lead: ReminderLeadMinutes): void {
+    const owed = this.owedCatchUp;
+    if (owed === null) return;
+    this.sweepMissed(account, owed.events, nowMs, lead);
+    this.owedCatchUp = null;
   }
 
   /**
