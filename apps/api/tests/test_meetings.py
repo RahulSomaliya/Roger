@@ -10,7 +10,14 @@ from roger_api.auth import default_principal
 from roger_api.config import Settings
 from roger_api.db.engine import Database
 from roger_api.services.meetings import _with_segment_count
-from tests.helpers import Json, append_segments, assert_error, create_meeting, segment_payload
+from tests.helpers import (
+    Json,
+    append_segments,
+    assert_error,
+    create_meeting,
+    post_ascii_json,
+    segment_payload,
+)
 
 STARTED_AT = "2026-10-05T10:00:00Z"
 
@@ -74,6 +81,34 @@ async def test_blank_title_gets_the_default(client: httpx.AsyncClient, title: st
     meeting = await create_meeting(client, title=title)
 
     assert meeting["title"] == "Untitled meeting"
+
+
+@pytest.mark.parametrize(
+    ("sent", "stored"),
+    [
+        ("Weekly\x00 sync", "Weekly sync"),
+        ("Acme \ud83d call", "Acme \ufffd call"),
+        ("Acme \U0001f600 call", "Acme \U0001f600 call"),
+        (" \x00 ", "Untitled meeting"),
+    ],
+)
+async def test_title_text_postgres_cannot_store_is_stored_without_it(
+    client: httpx.AsyncClient, sent: str, stored: str
+) -> None:
+    # Postgres `text` holds no U+0000 (a 500) and UTF-8 no unpaired surrogate, half an emoji that
+    # JSON.stringify sends as an escape (a 422). TranscriptUploader.ts retries a refused create
+    # forever, so either one kept the meeting, its transcript included, off the server.
+    response = await post_ascii_json(client, "/v1/meetings", {"title": sent})
+
+    assert response.status_code == 201, response.text
+    assert response.json()["title"] == stored
+
+
+async def test_the_title_limit_counts_the_trimmed_title(client: httpx.AsyncClient) -> None:
+    # Counted before the trim, 500 characters and a trailing space were refused.
+    meeting = await create_meeting(client, title="x" * 500 + "  ")
+
+    assert meeting["title"] == "x" * 500
 
 
 async def test_started_at_is_returned_in_utc(client: httpx.AsyncClient) -> None:
@@ -313,6 +348,11 @@ async def test_segments_for_unknown_meeting_is_404(client: httpx.AsyncClient) ->
     [
         ({"text": "   "}, "body.segments[0].text: String should have at least 1 character"),
         ({"text": ""}, "body.segments[0].text"),
+        # Postgres cannot store U+0000: dropped, nothing is left to store.
+        (
+            {"text": " \x00 "},
+            "body.segments[0].text: String should have at least 1 character",
+        ),
         ({"start_ms": 3000, "end_ms": 2999}, "body.segments[0]: end_ms must be >= start_ms"),
         ({"start_ms": -1}, "body.segments[0].start_ms"),
         ({"source": "speaker"}, "body.segments[0].source"),
@@ -371,6 +411,36 @@ async def test_segment_text_is_trimmed(client: httpx.AsyncClient) -> None:
     transcript = (await client.get(f"/v1/meetings/{meeting['id']}/transcript")).json()
 
     assert transcript["segments"][0]["text"] == "Hello."
+
+
+async def test_segment_text_postgres_cannot_store_is_stored_without_it(
+    client: httpx.AsyncClient,
+) -> None:
+    # A U+0000 in one line was a 500 for its whole batch, which the uploader retries forever; an
+    # unpaired surrogate (half an emoji) was a 422, and the uploader set the line aside. `words`
+    # is jsonb, which holds neither either.
+    meeting = await create_meeting(client)
+    line = segment_payload(
+        speaker="the\x00m",
+        text="Half \ud83d an emoji\x00, a whole one \U0001f600",
+        words=[
+            {"text": "Ha\x00lf", "start_ms": 1200, "end_ms": 1400, "confidence": 0.9},
+            {"text": "\ude00", "start_ms": 1400, "end_ms": 1600, "confidence": None},
+        ],
+    )
+    batch = [segment_payload(start_ms=0, end_ms=1), line]
+
+    response = await post_ascii_json(
+        client, f"/v1/meetings/{meeting['id']}/segments", {"segments": batch}
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json() == {"accepted": 2, "duplicates": 0}
+    transcript = (await client.get(f"/v1/meetings/{meeting['id']}/transcript")).json()
+    [stored] = [segment for segment in transcript["segments"] if segment["id"] == line["id"]]
+    assert stored["speaker"] == "them"
+    assert stored["text"] == "Half \ufffd an emoji, a whole one \U0001f600"
+    assert [word["text"] for word in stored["words"]] == ["Half", "\ufffd"]
 
 
 # ---------------------------------------------------------------------------- transcript

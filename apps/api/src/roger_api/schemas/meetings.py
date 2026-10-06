@@ -8,27 +8,19 @@ from roger_api.config_calendar import CalendarProviderName
 from roger_api.db.models import Meeting
 from roger_api.db.models_calendar import AttendeeResponseStatus, MeetingAttendee
 from roger_api.domain import DEFAULT_MEETING_TITLE, MeetingStatus, StartSource
-from roger_api.schemas.common import UtcDatetime
+from roger_api.schemas.common import UtcDatetime, storable_input
 from roger_api.services.records import MeetingRecord
 
 
 def _title_or_default(value: object) -> object:
+    value = storable_input(value)
     if value is None or (isinstance(value, str) and not value.strip()):
         return DEFAULT_MEETING_TITLE
     return value
 
 
-def _without_nul(value: object) -> object:
-    # Postgres `text` cannot hold U+0000: kept, it fails the insert with a 500. Dropped, not refused
-    # with a 422: TranscriptUploader.ts retries a refused create as well, so a refusal would keep
-    # the meeting, transcript included, off the server.
-    if isinstance(value, str):
-        return value.replace("\x00", "")
-    return value
-
-
 def _blank_is_none(value: object) -> object:
-    value = _without_nul(value)
+    value = storable_input(value)
     if isinstance(value, str) and not value.strip():
         return None
     return value
@@ -43,17 +35,21 @@ MAX_MEETING_ATTENDEES = 200
 # transcript included, off the server.
 MAX_CALENDAR_TEXT_LENGTH = 2048
 
+# Blank, or nothing but U+0000 and whitespace, is the default title.
 MeetingTitle = Annotated[
     str,
-    BeforeValidator(_title_or_default),
     StringConstraints(strip_whitespace=True, max_length=500),
+    # After the constraints, as in CalendarText: written first, it made pydantic count trailing
+    # spaces toward the 500 (test_the_title_limit_counts_the_trimmed_title).
+    BeforeValidator(_title_or_default),
 ]
+# U+0000 dropped and unpaired surrogates replaced (`storable_text`), then trimmed.
 CalendarText = Annotated[
     str,
     StringConstraints(strip_whitespace=True, min_length=1, max_length=MAX_CALENDAR_TEXT_LENGTH),
     # After the constraints, never before: written first, it makes pydantic check the lengths
     # before the trim, so " " passes as "" (test_create_validation_errors pins it).
-    BeforeValidator(_without_nul),
+    BeforeValidator(storable_input),
 ]
 # Blank, NUL and whitespace only included, reads as null. M6 matches two teammates' notes of one
 # call by `ical_uid`: stored as "", it would match calls that have nothing to do with each other.
