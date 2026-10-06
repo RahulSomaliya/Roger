@@ -121,8 +121,10 @@ async function main(): Promise<void> {
     logger: logger.child({ component: 'uploader' }),
     // M4-T16: a meeting nobody spoke in is kept for its notes, asked once the open editors have
     // saved; both delete sites in CaptureService ask through these (TranscriptUploader says why).
+    // Stop's save, never the quit's flush: only it fails on a window that did not answer, and
+    // only a failure keeps the meeting (NotesQuitGuard.saveOpenNotes).
     hasNotes: (meetingId) => notesStore.hasNotes(meetingId),
-    saveOpenNotes: () => notesQuitGuard.flushOpenNotes(),
+    saveOpenNotes: () => notesQuitGuard.saveOpenNotes(),
   });
   // An unreadable config.json is the likely reason for a missing token, so the UI names both.
   const missingToken = config.apiToken

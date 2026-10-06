@@ -74,13 +74,23 @@ export class NotesQuitGuard {
   }
 
   /**
-   * Sends `notes:flush-request` to every open window and resolves once each answered, or its
-   * wait ran out (logged). Never rejects: a page that cannot answer must not hold up a quit or a
-   * Stop, and its editors keep what they could not save.
+   * Stop's save (TranscriptUploader's `saveOpenNotes`): sends `notes:flush-request` to every open
+   * window, resolves once each answered, and rejects naming the windows whose wait ran out. Its
+   * caller keeps a meeting nobody spoke in when this rejects (CaptureService.keepsForNotes).
+   *
+   * Trap: never resolve on a wait that ran out, as the quit does. keepsForNotes bounds this with
+   * its own timer of the same 1 s, set after this one's, so this one always fires first: a wait
+   * that resolved would read as a save that landed, `hasNotes` would miss the typing still in a
+   * busy page, and the meeting would be deleted under it, its notes then waiting for good.
    */
-  async flushOpenNotes(): Promise<void> {
-    const windows = this.options.windows().filter((window) => !window.webContents.isDestroyed());
-    await Promise.all(windows.map((window) => this.flushWindow(window)));
+  async saveOpenNotes(): Promise<void> {
+    const unanswered = await this.flushOpenNotes();
+    if (unanswered.length > 0) {
+      throw new Error(
+        `the notes open in window ${unanswered.join(', ')} were not saved in ` +
+          `${this.flushTimeoutMs} ms`,
+      );
+    }
   }
 
   /** A page's answer (`notes:flush-ack`), passed on by notes-ipc.ts from the trusted page only. */
@@ -100,6 +110,8 @@ export class NotesQuitGuard {
   }
 
   private async quit(): Promise<void> {
+    // Never fails on a window that did not answer (flushWindow logged it): a page that cannot
+    // answer must not hold up the quit, and notes.sqlite closes after the 1 s either way.
     await this.flushOpenNotes();
     // Each stop on its own: one that throws must not keep notes.sqlite open, or the services
     // after it running, through the rest of the quit.
@@ -115,31 +127,45 @@ export class NotesQuitGuard {
     this.options.store.close();
   }
 
-  private flushWindow(window: FlushWindow): Promise<void> {
+  /**
+   * Sends `notes:flush-request` to every open window and waits for each answer, or its wait
+   * (logged). Resolves with the ids of the windows that did not answer in time.
+   */
+  private async flushOpenNotes(): Promise<number[]> {
+    const windows = this.options.windows().filter((window) => !window.webContents.isDestroyed());
+    const answered = await Promise.all(windows.map((window) => this.flushWindow(window)));
+    return windows.filter((_, index) => !answered[index]).map((window) => window.webContents.id);
+  }
+
+  /** Resolves true once the window's page answered, false once its wait ran out. */
+  private flushWindow(window: FlushWindow): Promise<boolean> {
     const { logger } = this.options;
     const windowId = window.webContents.id;
     const requestId = this.newRequestId();
-    return new Promise<void>((resolve) => {
-      const settle = (): void => {
+    return new Promise<boolean>((resolve) => {
+      const settle = (answered: boolean): void => {
         clearTimeout(timer);
         this.waiting.delete(requestId);
-        resolve();
+        resolve(answered);
       };
       const timer = setTimeout(() => {
         logger.warn('notes flush not answered in time', {
           windowId,
           timeoutMs: this.flushTimeoutMs,
         });
-        settle();
+        settle(false);
       }, this.flushTimeoutMs);
-      this.waiting.set(requestId, settle);
+      this.waiting.set(requestId, () => {
+        settle(true);
+      });
       try {
         const request: NotesFlush = { requestId };
         window.webContents.send(notesChannels.NotesFlushRequest, request);
       } catch (error) {
-        // Destroyed between the check and the send: there is no page left to wait for.
+        // Destroyed between the check and the send: there is no page left to wait for, and no
+        // editor left whose typing could be missed.
         logger.warn('notes flush request not sent', { windowId, error: errorMessage(error) });
-        settle();
+        settle(true);
       }
     });
   }

@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { notesChannels, type NotesFlush } from '../../shared/ipc/notes';
 import { createLogger } from '../logger';
+import { withTimeout } from '../util/time';
 import { NOTES_FLUSH_TIMEOUT_MS, NotesQuitGuard, type FlushWindow } from './notesQuitGuard';
 
 /** A window whose page answers main's flush request after `ackAfterMs`, or never (null). */
@@ -136,7 +137,7 @@ describe('NotesQuitGuard', () => {
       return [silent.window];
     });
     let done = false;
-    void guard.flushOpenNotes().then(() => {
+    void guard.saveOpenNotes().then(() => {
       done = true;
     });
     // An ack for an earlier request, or a made-up one, is not this page's answer.
@@ -150,10 +151,41 @@ describe('NotesQuitGuard', () => {
 
   it("asks the same way for Stop's check, and closes nothing", async () => {
     const { guard, calls } = setUp((get) => [page(7, 10, get).window]);
-    const saving = guard.flushOpenNotes();
+    const saving = guard.saveOpenNotes();
     await vi.advanceTimersByTimeAsync(10);
     await saving;
     expect(calls).toEqual([]);
+  });
+
+  it("fails Stop's save when a window did not answer, under Stop's own 1 s bound too", async () => {
+    let silent!: ReturnType<typeof page>;
+    const { guard, calls } = setUp((get) => {
+      silent = page(9, null, get);
+      return [page(7, 10, get).window, silent.window];
+    });
+    // CaptureService.keepsForNotes waits on it just so, with its own timer of the same length set
+    // after the guard's: the guard's fires first, and a wait it ended must not read as a save.
+    const saving = withTimeout(guard.saveOpenNotes(), NOTES_FLUSH_TIMEOUT_MS, 'saving notes');
+    const outcome = saving.then(
+      () => 'saved',
+      (error: unknown) => (error instanceof Error ? error.message : String(error)),
+    );
+    await vi.advanceTimersByTimeAsync(NOTES_FLUSH_TIMEOUT_MS);
+
+    await expect(outcome).resolves.toBe(
+      `the notes open in window 9 were not saved in ${NOTES_FLUSH_TIMEOUT_MS} ms`,
+    );
+    expect(silent.requests).toHaveLength(1);
+    expect(calls).toEqual([]);
+  });
+
+  it('a window whose page is gone before the request has nothing to save for Stop', async () => {
+    const { guard } = setUp((get) => {
+      const gone = page(11, 0, get);
+      gone.destroy();
+      return [gone.window];
+    });
+    await expect(guard.saveOpenNotes()).resolves.toBeUndefined();
   });
 
   it('with no window open the quit closes at once', async () => {
@@ -174,7 +206,7 @@ describe('NotesQuitGuard', () => {
         },
       },
     ]);
-    await guard.flushOpenNotes();
+    await guard.saveOpenNotes();
     expect(logged()).toContainEqual(
       expect.objectContaining({
         level: 'warn',
