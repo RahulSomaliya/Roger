@@ -91,6 +91,9 @@ class Totals(BaseModel):
     facts: Share
     # None when no judge ran.
     judge_unsupported: Share | None
+    # Kept lines the judge gave no verdict on (a failed judge leaves all of its case's). They are
+    # not in `judge_unsupported`, so its target is not measured while any remain.
+    judge_unjudged: int
     # Every case's notes calls added up, failed cases included (a cut-off is billed). A case whose
     # vendor reported no usage is counted in `usage_unknown`, never added as 0; None when no case
     # reported any.
@@ -120,6 +123,7 @@ class Totals(BaseModel):
             judge_unsupported=(
                 sum((judge.unsupported for judge in judged), NO_SHARE) if judged else None
             ),
+            judge_unjudged=sum(judge.unjudged for judge in judged),
             usage=add_usage([case.usage for case in cases if case.usage is not None]),
             usage_unknown=sum(case.usage is None for case in cases),
             judge_usage=add_usage([judge.usage for judge in judged if judge.usage is not None]),
@@ -140,9 +144,11 @@ class EvalReport(BaseModel):
 
     @property
     def incomplete(self) -> bool:
-        """A case that did not score, or a judge that did not answer: the run is not complete."""
+        """A case that did not score, or a judge that did not answer every line: the run is not
+        complete."""
         return any(
-            case.error is not None or (case.judge is not None and case.judge.error is not None)
+            case.error is not None
+            or (case.judge is not None and (case.judge.error is not None or case.judge.unjudged))
             for case in self.cases
         )
 
@@ -206,7 +212,7 @@ def render_summary(report: EvalReport) -> str:
         _target_row(
             'Flagged lines ("check this")', totals.flagged, _under(totals.flagged, FLAGGED_UNDER)
         ),
-        _judge_row(totals.judge_unsupported),
+        _judge_row(report),
         _target_row(
             "Action items found",
             totals.action_items,
@@ -247,13 +253,21 @@ def _judge_cost_row(totals: Totals) -> list[str]:
     return [f"| Cost of the judge | {cost} | none |"]
 
 
-def _judge_row(unsupported: Share | None) -> str:
+def _judge_row(report: EvalReport) -> str:
+    measure = "Lines the judge calls unsupported"
     target = f"under {UNSUPPORTED_UNDER:.0%}"
+    unsupported = report.totals.judge_unsupported
     if unsupported is None:
-        return f"| Lines the judge calls unsupported | not judged (pass --judge-model) | {target} |"
-    return _target_row(
-        "Lines the judge calls unsupported", unsupported, _under(unsupported, UNSUPPORTED_UNDER)
-    )
+        # A judge only reads scored notes: named, it still has nothing when every case failed.
+        why = "pass --judge-model" if report.judge_model is None else "no case was scored"
+        return f"| {measure} | not judged ({why}) | {target} |"
+    unjudged = report.totals.judge_unjudged
+    if unjudged:
+        # Never met or missed over the lines it answered: "0 of 2: met" with 38 lines unread would
+        # be saved to the exit check log as the whole run's result.
+        lines = f"{unjudged} {_plural(unjudged, 'line')}"
+        return f"| {measure} | {_share(unsupported)}; {lines} not judged | {target}: not measured |"
+    return _target_row(measure, unsupported, _under(unsupported, UNSUPPORTED_UNDER))
 
 
 def _under(share: Share, limit: float) -> str:

@@ -39,7 +39,7 @@ from roger_api.evals.notes_cases import (
 from roger_api.evals.notes_eval import main, run_eval
 from roger_api.evals.notes_fixes import measure_fixes, render_fixes
 from roger_api.evals.notes_judge import JUDGE_PROMPT_VERSION
-from roger_api.evals.notes_report import EvalReport, render_report, write_report
+from roger_api.evals.notes_report import EvalReport, render_report, render_summary, write_report
 from roger_api.evals.notes_score import Share
 from roger_api.services.notes_model import ModelCutOffError, ModelDone, ModelUsage
 from roger_api.services.notes_model_fake import FakeNotesModel, ModelScript, ScriptedNotesModel
@@ -333,6 +333,54 @@ async def test_judge_counts_the_lines_it_calls_unsupported() -> None:
     assert scored.usage.cost_usd == Decimal("0.0021")
     assert scored.judge.usage is not None
     assert scored.judge.usage.cost_usd == Decimal("0.0021")
+
+
+def judge_row(report: EvalReport) -> str:
+    return next(
+        line for line in render_summary(report).splitlines() if "judge calls unsupported" in line
+    )
+
+
+async def test_lines_the_judge_left_without_a_verdict_leave_the_run_incomplete() -> None:
+    case = inline_case("Beta ships on Friday.", "Pricing stays where it is.", "We hire two.")
+    notes = scripted("- Beta ships Friday [L1]\n- Pricing stays [L2]\n- We hire two [L3]\n")
+    # Claim 2 in a form the judge's parser does not read: no verdict, and no error either.
+    judge = ScriptedNotesModel(
+        ModelScript(steps=("J1: yes\nClaim 2: supported\nJ3: yes\n",)), model_id="judge"
+    )
+
+    report = await run_eval([case], notes, provider="openrouter", reasoning="off", judge=judge)
+
+    [scored] = report.cases
+    assert scored.judge is not None
+    assert scored.judge.error is None
+    assert (counted(scored.judge.unsupported), scored.judge.unjudged) == ((0, 2), 1)
+    assert report.totals.judge_unjudged == 1
+    # "0 of 2: met" would call the target over two of three lines: not measured, and the run
+    # exits 1 (`notes_eval._run`).
+    assert report.incomplete
+    assert judge_row(report) == (
+        "| Lines the judge calls unsupported | 0.0% (0 of 2); 1 line not judged "
+        "| under 5%: not measured |"
+    )
+
+
+async def test_a_named_judge_with_no_scored_case_is_not_asked_for_again() -> None:
+    case = inline_case("Beta ships on Friday.")
+    refused = scripted(ModelScript(refuse=LlmProviderError("The provider refused the request")))
+
+    report = await run_eval(
+        [case],
+        refused,
+        provider="openrouter",
+        reasoning="off",
+        judge=ScriptedNotesModel(model_id="judge"),
+    )
+
+    assert report.totals.judge_unsupported is None
+    assert judge_row(report) == (
+        "| Lines the judge calls unsupported | not judged (no case was scored) | under 5% |"
+    )
 
 
 async def test_the_judge_is_not_called_when_no_line_was_kept() -> None:
