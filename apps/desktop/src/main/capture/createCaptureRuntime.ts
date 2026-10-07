@@ -22,6 +22,10 @@ import { SttUsageUploader } from '../upload/SttUsageUploader';
 import type { TranscriptUploader } from '../upload/TranscriptUploader';
 import { electronNotifierPorts, Notifier } from '../notify/Notifier';
 import { PowerCoordinator } from '../power/PowerCoordinator';
+import { GapAudioReader } from '../rerun/gapAudio';
+import { GapRetranscriber } from '../rerun/GapRetranscriber';
+import { listMeetingsKeptForRerun } from '../rerun/keptForRerun';
+import { rerunCredentials } from '../rerun/rerunStt';
 import { CaptureService } from './CaptureService';
 import { EchoSink } from './echo/EchoSink';
 import { RouteHistory } from './echo/RouteProvider';
@@ -279,6 +283,38 @@ export function createCaptureRuntime(deps: CaptureRuntimeDeps): CaptureRuntime {
   quitHooks.push(audioBackup.quitHook);
 
   // [slot M2-T16] the gap re-run: every session takes `budget.acquire(1, 'minute')` first
+
+  // Audio that reached main but not the vendor is transcribed again from the backup: at launch
+  // (once audioBackup.start() above has repaired the WAVs, and the crash tails are recorded as
+  // gaps), after every Stop, and on demand; never while capture is not idle. Each session takes a
+  // slot in this one budget's minute window right before it opens (house rule 9), and re-run mic
+  // lines go through the echo sink against the call audio stored first (filterStored).
+  const rerunLogger = logger.child({ component: 'rerun' });
+  const rerun = new GapRetranscriber({
+    store,
+    capture,
+    budget,
+    opensPerMinute: config.costGuards.sttOpensPerMinute,
+    credentials: rerunCredentials(deps.api, config.sttProviderOverride),
+    createSpeechToText: deps.createSpeechToText,
+    audio: new GapAudioReader({ store, userData: deps.userData, logger: rerunLogger }),
+    echo: echoSink,
+    onRecovered: (meetingId) => {
+      audioBackup.refresh(meetingId);
+    },
+    logger: rerunLogger,
+    clock,
+  });
+  rerun.start();
+  features.rerunGaps = (meetingId) => rerun.rerunMeeting(meetingId);
+  features.listMeetingsKeptForRerun = () =>
+    listMeetingsKeptForRerun(store, config.capture.audioRetentionDays);
+  quitHooks.push({
+    name: 'stop the gap re-run',
+    // A terminate, or a killed afconvert: well under a second.
+    timeoutMs: 3_000,
+    run: () => rerun.stop(),
+  });
 
   // [slot M2-T17a] the call app monitor; it feeds the echo sink's RouteProvider
 
