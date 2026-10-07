@@ -5,7 +5,7 @@ import type { AudioSource } from '../../src/shared/transcript';
 import { BenchCredentialSource, RunStoppedError } from './credentials';
 import type { BenchItem } from './items';
 import { BenchOpener } from './opens';
-import { REPLAY_CHUNK_MS, replayItemAttempt } from './replay';
+import { REPLAY_CHUNK_MS, type ReplayGate, replayItemAttempt } from './replay';
 import { FakeVendor, ScriptedTokenApi, freshTokens, tokenResponse } from './testing/fakes';
 import { tone } from './testing/benchFolder';
 import { ManualTimers } from './testing/manualTimers';
@@ -28,7 +28,7 @@ function setup(
     vendor?: ConstructorParameters<typeof FakeVendor>[1];
     api?: ScriptedTokenApi;
     keyterms?: boolean;
-    gate?: boolean;
+    gate?: ReplayGate | null;
   } = {},
 ): {
   timers: ManualTimers;
@@ -60,7 +60,7 @@ function setup(
           adapters: vendor.adapters,
           timers,
           signal: abort.signal,
-          gate: options.gate ?? false,
+          gate: options.gate ?? null,
         }),
       ),
   };
@@ -297,7 +297,7 @@ describe('replayItemAttempt', () => {
       },
       timers,
       signal: new AbortController().signal,
-      gate: false,
+      gate: null,
     });
 
     await expect(timers.settle(attempt)).rejects.toThrow(RunStoppedError);
@@ -318,22 +318,11 @@ describe('replayItemAttempt', () => {
       adapters: new FakeVendor(timers).adapters,
       timers,
       signal: new AbortController().signal,
-      gate: false,
+      gate: null,
     });
 
     await expect(timers.settle(attempt)).rejects.toThrow(RunStoppedError);
     expect(api.calls).toBe(0);
-  });
-
-  it('refuses a gated replay before asking for a token, until the silence gate (M3-T20) lands', async () => {
-    const { vendor, api, attempt } = setup({ gate: true });
-
-    const refused = attempt(new Map([['mic', tone(1_000)]]));
-
-    await expect(refused).rejects.toThrow(RunStoppedError);
-    await expect(refused).rejects.toThrow(/--gate needs the silence gate \(M3-T20\)/);
-    expect(api.calls).toBe(0);
-    expect(vendor.opens).toBe(0);
   });
 
   it('asks for no token and opens nothing when the run stops while the item waits for slots', async () => {
@@ -391,5 +380,156 @@ describe('replayItemAttempt', () => {
     expect(result.record.error).toBe('run stopped: the API now serves deepgram nova-3');
     expect(vendor.streams[0]?.sentAtMs).toHaveLength(5);
     expect(vendor.streams[0]?.closed).toBe(true);
+  });
+});
+
+describe('replayItemAttempt with --gate (M3-T20)', () => {
+  const GATE: ReplayGate = {
+    closeAfterMs: 30_000,
+    preRollMs: 1_000,
+    reopensPerMeeting: 120,
+    reopenBufferMs: 3_000,
+    tokenExpiresAtMs: () => null,
+  };
+  const silence = (ms: number): Int16Array => new Int16Array(ms * SAMPLES_PER_MS);
+
+  function joined(...parts: Int16Array[]): Int16Array {
+    const all = new Int16Array(parts.reduce((length, part) => length + part.length, 0));
+    let at = 0;
+    for (const part of parts) {
+      all.set(part, at);
+      at += part.length;
+    }
+    return all;
+  }
+
+  it('closes a stream through silence and reopens it on speech with the pre-roll and the prefetched token', async () => {
+    const { vendor, api, attempt } = setup({ gate: GATE });
+
+    // Talk, a silence past the hang-over (closed once the session is a minute old), talk again.
+    const result = await attempt(
+      new Map([['mic', joined(tone(1_000), silence(70_000), tone(2_000))]]),
+    );
+
+    expect(result.record.error).toBeNull();
+    // Start's token, then the one prefetched at the close: none at the onset.
+    expect(api.calls).toBe(2);
+    expect(vendor.streams.map((stream) => [stream.label, stream.options.accessToken])).toEqual([
+      ['mic', 'tok-1'],
+      ['mic#1', 'tok-2'],
+    ]);
+    expect(result.record.streams[0]?.sessions).toEqual([
+      {
+        cause: 'start',
+        itemOffsetMs: 0,
+        openedAtMs: T0,
+        readyAtMs: T0,
+        closedAtMs: T0 + 60_000,
+        connectedMs: 60_000,
+        backlogMs: 0,
+      },
+      {
+        cause: 'gate',
+        // Its stream time 0 is the pre-roll's first sample, a second before the speech.
+        itemOffsetMs: 70_000,
+        openedAtMs: T0 + 71_100,
+        readyAtMs: T0 + 71_100,
+        closedAtMs: T0 + 73_000,
+        connectedMs: 1_900,
+        // The pre-roll and the chunk that woke it, held until the ready signal.
+        backlogMs: 1_100,
+      },
+    ]);
+    const reopened = vendor.streams[1];
+    expect(reopened?.sentBytes).toBe(3_000 * SAMPLES_PER_MS * 2);
+    // Its own close is no failure; each event names its session.
+    expect(
+      (result.events.get('mic') ?? []).map((record) => [record.session, record.event.type]),
+    ).toEqual([
+      [0, 'closed'],
+      [1, 'closed'],
+    ]);
+  });
+
+  it('counts the time a reopen spent connecting in its backlog', async () => {
+    const { attempt } = setup({ gate: GATE, vendor: { connectMs: 300 } });
+
+    const result = await attempt(
+      new Map([['mic', joined(tone(1_000), silence(70_000), tone(2_000))]]),
+    );
+
+    // 300 ms of connect on top of the pre-roll and the chunk that woke it.
+    expect(result.record.streams[0]?.sessions[1]).toMatchObject({
+      itemOffsetMs: 70_000,
+      backlogMs: 1_300,
+    });
+  });
+
+  it('keeps the prefetched token fresh while gated, from what the run knows of its lifetime', async () => {
+    const timers = new ManualTimers(T0);
+    const vendor = new FakeVendor(timers);
+    const api = new ScriptedTokenApi(freshTokens());
+    // run.ts notes each token's expires_in when it arrives; here every token lives 30 s.
+    const fetchedAt = new Map<string, number>();
+    const credentials = new BenchCredentialSource(
+      {
+        getSttToken: async () => {
+          const token = await api.getSttToken();
+          fetchedAt.set(token.access_token, timers.now());
+          return token;
+        },
+      },
+      { keyterms: true },
+    );
+    const result = await timers.settle(
+      replayItemAttempt({
+        item: item(['mic']),
+        audio: new Map([['mic', joined(tone(1_000), silence(100_000), tone(1_000))]]),
+        credentials,
+        opener: new BenchOpener({ opensPerMinute: 4 }, timers),
+        adapters: vendor.adapters,
+        timers,
+        signal: new AbortController().signal,
+        gate: {
+          ...GATE,
+          tokenExpiresAtMs: (token) => (fetchedAt.get(token) ?? Number.NaN) + 30_000,
+        },
+      }),
+    );
+
+    expect(result.record.error).toBeNull();
+    // Start's, the prefetch at the close (60 s), its refreshes at 80 s and 100 s; none at onset.
+    expect([...fetchedAt.values()]).toEqual([T0, T0 + 60_000, T0 + 80_000, T0 + 100_000]);
+    expect(vendor.streams[1]?.options.accessToken).toBe('tok-4');
+  });
+
+  it('never reopens on silence, and stops closing once its own reopens are spent', async () => {
+    const { vendor, attempt } = setup({ gate: { ...GATE, reopensPerMeeting: 1 } });
+
+    const result = await attempt(
+      new Map([['mic', joined(tone(1_000), silence(70_000), tone(1_000), silence(90_000))]]),
+    );
+
+    expect(result.record.error).toBeNull();
+    // One close and its reopen; the second silence keeps the reopened session open.
+    expect(vendor.streams.map((stream) => stream.label)).toEqual(['mic', 'mic#1']);
+    expect(result.record.streams[0]?.sessions.map((session) => session.closedAtMs)).toEqual([
+      T0 + 60_000,
+      T0 + 162_000,
+    ]);
+  });
+
+  it('opens every reopen through the bench open budget', async () => {
+    const { vendor, opener, timers, attempt } = setup({ gate: GATE });
+    // Another item's opens fill the minute just before the speech: the reopen waits for a slot.
+    void timers.sleep(70_500).then(() => opener.reserve(4, () => Promise.resolve(null)));
+
+    const result = await attempt(
+      new Map([['mic', joined(tone(1_000), silence(70_000), tone(62_000))]]),
+    );
+
+    expect(result.record.error).toBeNull();
+    expect(vendor.streams[1]?.label).toBe('mic#1');
+    expect(result.record.streams[0]?.sessions[1]?.openedAtMs).toBe(T0 + 130_500);
   });
 });

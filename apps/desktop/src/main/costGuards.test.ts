@@ -27,6 +27,9 @@ describe('loadCostGuards', () => {
       maxRecordingMs: 4 * 3_600_000,
       quitStopTimeoutMs: 5_000,
       sttVendorIdleTimeoutMs: 120_000,
+      sttSilenceCloseMs: 30_000,
+      sttSilencePreRollMs: 1_000,
+      sttSilenceReopensPerMeeting: 120,
     });
   });
 
@@ -69,6 +72,50 @@ describe('loadCostGuards', () => {
       'sttVendorIdleTimeoutSeconds (30) must be above sttStallCloseSeconds (30): the vendor ' +
         'timeout is the net for when Roger cannot close the session itself',
       'sttReopenBackoffMaxSeconds (1) must be at least sttReopenBackoffSeconds (5)',
+    ]);
+  });
+
+  it('takes the silence gate settings, and 0 s turns the gate off', () => {
+    const { guards, errors } = loadCostGuards(
+      { ROGER_STT_SILENCE_REOPENS_PER_MEETING: '40' },
+      { sttSilenceCloseSeconds: 0, sttSilencePreRollSeconds: 3 },
+    );
+    expect(errors).toEqual([]);
+    expect(guards).toMatchObject({
+      sttSilenceCloseMs: 0,
+      sttSilencePreRollMs: 3_000,
+      sttSilenceReopensPerMeeting: 40,
+    });
+  });
+
+  it('refuses a silence hang-over under 10 s, and a pre-roll plus reopen buffer over 10 s', () => {
+    const { errors } = loadCostGuards(
+      { ROGER_STT_SILENCE_CLOSE_SECONDS: '5', ROGER_STT_SILENCE_PRE_ROLL_SECONDS: '3' },
+      { sttReopenBufferSeconds: 8 },
+    );
+    expect(errors).toEqual([
+      'sttSilenceCloseSeconds (5) must be 0 (the silence gate off) or at least 10: a shorter ' +
+        'hang-over closes sessions in the pauses of a conversation',
+      'sttSilencePreRollSeconds (3) plus sttReopenBufferSeconds (8) must be at most 10: every ' +
+        'second held for a reopen is lag on that session until it closes',
+    ]);
+    // At the bound exactly, both are taken.
+    expect(
+      loadCostGuards(
+        {},
+        { sttSilenceCloseSeconds: 10, sttSilencePreRollSeconds: 2, sttReopenBufferSeconds: 8 },
+      ).errors,
+    ).toEqual([]);
+  });
+
+  it('refuses a pre-roll outside 1 to 3 s and a reopen count outside 1 to 1000', () => {
+    const { errors } = loadCostGuards(
+      {},
+      { sttSilencePreRollSeconds: 0, sttSilenceReopensPerMeeting: 1001 },
+    );
+    expect(errors).toEqual([
+      'config.json "sttSilencePreRollSeconds" must be a whole number from 1 to 3 (got 0)',
+      'config.json "sttSilenceReopensPerMeeting" must be a whole number from 1 to 1000 (got 1001)',
     ]);
   });
 

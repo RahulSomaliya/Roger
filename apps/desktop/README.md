@@ -78,6 +78,9 @@ of range blocks Start with an error naming it: a typo never loosens a guard.
 | Recording cap       | `maxRecordingSeconds` / `ROGER_MAX_RECORDING_SECONDS`                   | 14400 s, 4 h (60 to 86400)                | Hard cap per recording, even with speech (a TV left on): past any real meeting, $1.20 for both streams.                                                                                                                               |
 | Quit wait           | `quitStopTimeoutSeconds` / `ROGER_QUIT_STOP_TIMEOUT_SECONDS`            | 5 s (1 to 30)                             | Quitting while recording runs the normal stop, but never hangs the quit: after 5 s the app exits and process exit closes the sockets.                                                                                                 |
 | Vendor idle timeout | `sttVendorIdleTimeoutSeconds` / `ROGER_STT_VENDOR_IDLE_TIMEOUT_SECONDS` | 120 s (10 to 3600, above the stall close) | Sent as AssemblyAI's `inactivity_timeout` on every stream: the vendor closes a session that received nothing for this long. Only fires when Roger cannot act (the Mac slept with the socket half-open). Deepgram has no such setting. |
+| Silence close       | `sttSilenceCloseSeconds` / `ROGER_STT_SILENCE_CLOSE_SECONDS`            | 30 s (0 is off, else 10 to 3600)          | The silence gate: chunks arrive but none is speech (a muted mic, a waiting room). The session closes ("closed while silent") and reopens on speech, its token fetched while closed. Never within 60 s of an open; no gap.             |
+| Silence pre-roll    | `sttSilencePreRollSeconds` / `ROGER_STT_SILENCE_PRE_ROLL_SECONDS`       | 1 s (1 to 3)                              | Audio from before the speech that reopens a gated session is sent first, so a soft first syllable is kept. Paced at 1x: that session's words show about 1 s later. With the reopen buffer, at most 10 s.                              |
+| Silence reopens     | `sttSilenceReopensPerMeeting` / `ROGER_STT_SILENCE_REOPENS_PER_MEETING` | 120 (1 to 1000)                           | The gate's own reopens, both sources: each takes a per-minute slot, never one of the opens per meeting, which failures need. Past it the gate is off for that meeting, and the meter's tooltip says so.                               |
 
 Fixed behaviour, not settings:
 
@@ -90,11 +93,13 @@ Fixed behaviour, not settings:
 | Connect and close         | A connect times out after 10 s; Stop terminates any socket the vendor has not closed 5 s after the finish sequence (`SttConnection`).                                                                                                                                                                                                           |
 
 What it cost shows in the status panel ("AssemblyAI · 25m 00s connected · about $0.06" for a
-12½-minute call: the time sums both sources' sessions, since each bills; sessions, audio and each
-source in its tooltip; each source's own time on its row; "Last recording" after Stop), in the log
-(`stt meter` after every session that closes mid-meeting, `stt meter at stop` with the reason) and
-in `roger.sqlite`'s `stt_usage` table, one row per meeting, kept even when the meeting itself is
-discarded. The cost is an estimate from the price the API returns (`stream.price_per_hour_usd`).
+12½-minute call: the time sums both sources' sessions, since each bills; then what the silence gate
+saved, "saved about $0.03 in silence"; sessions, audio and each source in its tooltip; each
+source's own time on its row; "Last recording" after Stop), in the log (`stt meter` after every
+session that closes mid-meeting, `stt meter at stop` with the reason, both with the time closed for
+silence and the gate's reopens) and in `roger.sqlite`'s `stt_usage` table (the closed time as
+`gated_ms`), one row per meeting, kept even when the meeting itself is discarded. The cost is an
+estimate from the price the API returns (`stream.price_per_hour_usd`).
 Each row goes up to the API after it changes (every 30 s while the API answers, backing off to at
 most 5 min after failures, and at once after Stop), where `GET /v1/stt-usage/summary` sums the
 cost per meeting hour (docs/api-contract.md, "STT usage").

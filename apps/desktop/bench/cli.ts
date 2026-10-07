@@ -9,7 +9,7 @@ import { type BenchCommand, USAGE, UsageError, parseBenchArgs } from './run/args
 import { resolveBenchDir } from './run/benchDir';
 import { findDatasetCommands, runDatasetCommand } from './run/dataset';
 import { loadRepoEnv } from './run/env';
-import { runBench } from './run/run';
+import { type RunDeps, runBench } from './run/run';
 import { REAL_TIMERS } from './run/timers';
 
 /**
@@ -63,6 +63,7 @@ async function main(argv: readonly string[]): Promise<number> {
           first: config.costGuards.sttReopenBackoffMs,
           max: config.costGuards.sttReopenBackoffMaxMs,
         },
+        silenceGate: silenceGate(config),
         timers: REAL_TIMERS,
         out: print,
       });
@@ -111,6 +112,18 @@ function apiClient(config: DesktopConfig): ApiClient {
     );
   }
   return new ApiClient({ baseUrl: config.apiUrl, token: config.apiToken });
+}
+
+/** The desktop's silence gate, as CaptureService runs it: none when sttSilenceCloseSeconds is 0. */
+function silenceGate(config: DesktopConfig): RunDeps['silenceGate'] {
+  const guards = config.costGuards;
+  if (guards.sttSilenceCloseMs <= 0) return null;
+  return {
+    closeAfterMs: guards.sttSilenceCloseMs,
+    preRollMs: guards.sttSilencePreRollMs,
+    reopensPerMeeting: guards.sttSilenceReopensPerMeeting,
+    reopenBufferMs: guards.sttReopenBufferMs,
+  };
 }
 
 function adapters(config: DesktopConfig): ReturnType<typeof registryAdapters> {
