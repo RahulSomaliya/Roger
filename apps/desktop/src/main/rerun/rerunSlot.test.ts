@@ -102,5 +102,6 @@ describe('the M2-T16 slot of createCaptureRuntime', () => {
     expect(rerun[0]?.startMs).toBeGreaterThanOrEqual(2_500);
     expect(store.getSttUsage(FIXTURE_MEETING_ID)?.bySource.system.sessionsOpened).toBe(1);
     expect(quitHooks.map((hook) => hook.name)).toContain('stop the gap re-run');
-  });
+    // Real time: 2 s of streaming, maybe an afconvert decode, under a loaded gate.
+  }, 15_000);
 });
