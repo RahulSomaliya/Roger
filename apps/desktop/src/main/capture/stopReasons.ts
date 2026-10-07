@@ -29,7 +29,14 @@ export type StopReason =
    * (power/PowerCoordinator.ts, M2-T18). A shorter sleep only pauses both sessions, and the
    * recording goes on.
    */
-  | 'system-sleep';
+  | 'system-sleep'
+  /**
+   * No call app has held the mic since the one that was in use at Start let go, for its release
+   * debounce (detect/CallDetector.ts, M2-T17b). Roger's own stop, through the normal one: the
+   * no-speech and 4-hour stops stay as the backstop for a recording that never saw a call app.
+   * `stt_usage.stop_reason` is bounded free text, so the API takes it with no change.
+   */
+  | 'call-ended';
 
 /**
  * What the status shows after Roger stopped a recording itself. Null for a Stop someone pressed,
@@ -59,6 +66,9 @@ export function stopNotice(
       return `Stopped at ${time} because the Roger window could not reload${detail === null ? '' : ` (${detail})`}.`;
     case 'system-sleep':
       return `Stopped at ${time} because the Mac went to sleep.`;
+    case 'call-ended':
+      // `detail` is the call app's name, as the offer card showed it.
+      return `Stopped at ${time}: the call${detail === null ? '' : ` in ${detail}`} ended.`;
   }
 }
 
