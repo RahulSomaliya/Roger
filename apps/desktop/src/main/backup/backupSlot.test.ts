@@ -15,19 +15,9 @@ import { FakeSpeechToText } from '../stt/fake/FakeSpeechToText';
 import { TranscriptUploader } from '../upload/TranscriptUploader';
 import { meetingAudioDir } from './audioPaths';
 
-// As in createCaptureRuntime.test.ts: ipc.ts asks Electron's desktopCapturer for the screen source
-// and the M2-T10 slot looks for the helper under `app.getAppPath()`, a folder with no helper, so no
-// test here runs one (a real tap would raise a privacy prompt).
-vi.mock('electron', () => ({
-  desktopCapturer: { getSources: vi.fn() },
-  app: { isPackaged: false, getAppPath: () => '/nonexistent/roger-app', on: vi.fn() },
-  // createCaptureRuntime's M2-T6 slot asks this every second while a recording runs. Left out,
-  // each poll logs "network check failed" (the mock has no `net`) and the test still passes.
-  net: { isOnline: () => true },
-  // Its M2-T18 slot listens for sleep and wake, and keeps the Mac awake while recording.
-  powerMonitor: { on: () => undefined },
-  powerSaveBlocker: { start: () => 1, stop: () => undefined },
-}));
+vi.mock('electron', async () =>
+  (await import('../testing/electronRuntimeMock')).electronRuntimeMock(),
+);
 
 const logger = createLogger({ level: 'error', format: 'json', sink: () => undefined });
 const SENDER: SenderEvent = { sender: { id: 7 } };

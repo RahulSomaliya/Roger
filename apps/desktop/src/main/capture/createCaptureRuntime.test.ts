@@ -17,12 +17,10 @@ import {
   noCaptureFeatures,
 } from './createCaptureRuntime';
 
-// ipc.ts asks Electron's desktopCapturer for the screen source; nothing here calls it. The M2-T10
-// slot looks for the audio helper under `app.getAppPath()`: a folder with no helper, so call audio
-// takes Electron's path and no test here runs a helper. Never the real apps/desktop: on a Mac that
-// ran `make check` its dev build exists, and a Start here would build a real tap (a privacy prompt).
-// The M2-T6 slot asks net.isOnline() every second while a recording runs. The M2-T18 slot listens
-// to powerMonitor's suspend and resume, and holds a power save blocker while a recording runs.
+// The shared stand-in (testing/electronRuntimeMock.ts) covers the rest of Electron. Here: the M2-T6
+// slot asks net.isOnline() every second while a recording runs, and the M2-T18 slot listens to
+// powerMonitor's suspend and resume and holds a power save blocker while a recording runs; the
+// tests below drive and read both.
 const electronNet = vi.hoisted(() => ({ online: true, reads: 0 }));
 const electronPower = vi.hoisted(() => {
   const listeners: { event: string; listener: () => void }[] = [];
@@ -40,28 +38,25 @@ const electronPower = vi.hoisted(() => {
     nextId: () => (nextId += 1),
   };
 });
-vi.mock('electron', () => ({
-  desktopCapturer: { getSources: vi.fn() },
-  app: { isPackaged: false, getAppPath: () => '/nonexistent/roger-app', on: vi.fn() },
-  net: {
-    isOnline: () => {
-      electronNet.reads += 1;
-      return electronNet.online;
+vi.mock('electron', async () =>
+  (await import('../testing/electronRuntimeMock')).electronRuntimeMock({
+    net: {
+      isOnline: () => {
+        electronNet.reads += 1;
+        return electronNet.online;
+      },
     },
-  },
-  // Going offline raises M2-T11's loud warning, and the Notifier posts only while Roger is not
-  // focused: the harness window (webContents 7) is, so no test here posts a notification.
-  BrowserWindow: { getFocusedWindow: () => ({ webContents: { id: 7 } }) },
-  powerMonitor: { on: electronPower.on },
-  powerSaveBlocker: {
-    start: () => {
-      const id = electronPower.nextId();
-      electronPower.held.add(id);
-      return id;
+    powerMonitor: { on: electronPower.on },
+    powerSaveBlocker: {
+      start: () => {
+        const id = electronPower.nextId();
+        electronPower.held.add(id);
+        return id;
+      },
+      stop: (id: number) => electronPower.held.delete(id),
     },
-    stop: (id: number) => electronPower.held.delete(id),
-  },
-}));
+  }),
+);
 
 const logger = createLogger({ level: 'error', format: 'json', sink: () => undefined });
 

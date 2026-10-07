@@ -103,9 +103,10 @@ Extends the root `CLAUDE.md`, whose house rules and repo-wide failure log apply 
   `app.isPackaged`, `app.getAppPath()` and `app.on`, and the merged suite failed with
   "app.getAppPath is not a function" (fixed in 29df536, wave 3). Vitest throws for a missing
   export of a `vi.mock('electron', factory)` only when code reads it, never at import, so each
-  branch was green alone. A test that builds the capture runtime copies the stand-ins of
-  `createCaptureRuntime.test.ts`'s mock, and a slot that reads another Electron field adds it to
-  every test that builds the runtime (`git grep -l createCaptureRuntime -- '*.test.ts'`). A read
+  branch was green alone, and it hit a third time with `powerMonitor` (M2-T18, 11 tests). Every test
+  that builds the capture runtime now mocks `electron` through the ONE shared
+  `src/main/testing/electronRuntimeMock.ts` (overriding only what it asserts on), and a slot that
+  reads another Electron field adds it there, never to a test's own copy. A read
   inside a guarded timer fails silently: M2-T6's network poll catches the throw, so
   `backupSlot.test.ts` without `net` passed while logging "network check failed" every second.
   That mock has a focused `BrowserWindow` since M2-T6, so a loud warning there posts nothing: a

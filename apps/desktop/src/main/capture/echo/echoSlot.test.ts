@@ -11,17 +11,9 @@ import { FakeSpeechToText } from '../../stt/fake/FakeSpeechToText';
 import { TranscriptUploader } from '../../upload/TranscriptUploader';
 import { createCaptureRuntime } from '../createCaptureRuntime';
 
-// As in createCaptureRuntime.test.ts, whose stand-ins every test that builds the runtime copies:
-// ipc.ts asks desktopCapturer for the screen source, the M2-T10 slot looks for the helper under
-// `app.getAppPath()` (a folder with none, so no test here runs a helper and no tap is built), the
-// M2-T6 slot polls net.isOnline() while recording, and a focused window keeps M2-T11's Notifier
-// from posting.
-vi.mock('electron', () => ({
-  desktopCapturer: { getSources: vi.fn() },
-  app: { isPackaged: false, getAppPath: () => '/nonexistent/roger-app', on: vi.fn() },
-  net: { isOnline: () => true },
-  BrowserWindow: { getFocusedWindow: () => ({ webContents: { id: 7 } }) },
-}));
+vi.mock('electron', async () =>
+  (await import('../../testing/electronRuntimeMock')).electronRuntimeMock(),
+);
 
 const logger = createLogger({ level: 'error', format: 'json', sink: () => undefined });
 const SENDER: SenderEvent = { sender: { id: 7 } };

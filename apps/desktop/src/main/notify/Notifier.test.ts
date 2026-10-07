@@ -49,9 +49,7 @@ const electron = vi.hoisted(() => {
     shown,
     Notification: FakeNotification,
     app: {
-      // createCaptureRuntime also builds M2-T10's system-audio source, which reads these (the
-      // same stand-ins as createCaptureRuntime.test.ts). Without them this suite failed only
-      // after both tasks merged: "app.getAppPath is not a function".
+      // createCaptureRuntime also reads these (the stand-ins of testing/electronRuntimeMock.ts).
       isPackaged: false,
       getAppPath: (): string => '/nonexistent/roger-app',
       on: (): void => undefined,
@@ -71,16 +69,13 @@ const electron = vi.hoisted(() => {
     },
   };
 });
-vi.mock('electron', () => ({
-  Notification: electron.Notification,
-  app: electron.app,
-  BrowserWindow: electron.BrowserWindow,
-  // createCaptureRuntime's M2-T6 slot asks this every second while a recording runs.
-  net: { isOnline: () => true },
-  // Its M2-T18 slot listens for sleep and wake, and keeps the Mac awake while recording.
-  powerMonitor: { on: () => undefined },
-  powerSaveBlocker: { start: () => 1, stop: () => undefined },
-}));
+vi.mock('electron', async () =>
+  (await import('../testing/electronRuntimeMock')).electronRuntimeMock({
+    Notification: electron.Notification,
+    app: electron.app,
+    BrowserWindow: electron.BrowserWindow,
+  }),
+);
 
 const logger = createLogger({ level: 'error', format: 'json', sink: () => undefined });
 const T0 = Date.parse('2026-10-07T10:00:00.000Z');

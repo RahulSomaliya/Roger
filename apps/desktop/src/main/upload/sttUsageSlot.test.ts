@@ -8,16 +8,9 @@ import { InMemoryTranscriptStore } from '../store/InMemoryTranscriptStore';
 import { FakeSpeechToText } from '../stt/fake/FakeSpeechToText';
 import { TranscriptUploader } from './TranscriptUploader';
 
-// As in createCaptureRuntime.test.ts: ipc.ts asks Electron's desktopCapturer for the screen source,
-// the M2-T10 slot looks for the helper under `app.getAppPath()` (a folder with no helper, so no
-// test here runs one), the M2-T6 slot asks net.isOnline() every second while a recording runs, and
-// the Notifier posts nothing while the harness window (webContents 7) is focused.
-vi.mock('electron', () => ({
-  desktopCapturer: { getSources: vi.fn() },
-  app: { isPackaged: false, getAppPath: () => '/nonexistent/roger-app', on: vi.fn() },
-  net: { isOnline: () => true },
-  BrowserWindow: { getFocusedWindow: () => ({ webContents: { id: 7 } }) },
-}));
+vi.mock('electron', async () =>
+  (await import('../testing/electronRuntimeMock')).electronRuntimeMock(),
+);
 
 const logger = createLogger({ level: 'error', format: 'json', sink: () => undefined });
 const EARLIER = '0e9d8c7b-6a5f-4e3d-8c1b-0a9f8e7d6c5b';

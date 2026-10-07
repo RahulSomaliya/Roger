@@ -11,10 +11,9 @@ import { InMemoryTranscriptStore } from '../store/InMemoryTranscriptStore';
 import { FakeSpeechToText } from '../stt/fake/FakeSpeechToText';
 import { TranscriptUploader } from '../upload/TranscriptUploader';
 
-// The stand-ins of createCaptureRuntime.test.ts's mock (the helper looked for in a folder with
-// none, so call audio takes Electron's path and no helper runs; a focused window, so no warning
-// posts), plus what `[slot M2-T19]`'s ports call when a setup request comes: all fakes, so no test
-// here asks macOS for anything, opens System Settings or relaunches the runner.
+// The shared stand-in (testing/electronRuntimeMock.ts) with the fakes this file asserts on: what
+// `[slot M2-T19]`'s ports call when a setup request comes, so no test here asks macOS for anything,
+// opens System Settings or relaunches the runner.
 const electron = vi.hoisted(() => ({
   app: {
     isPackaged: false,
@@ -29,15 +28,13 @@ const electron = vi.hoisted(() => ({
     askForMediaAccess: vi.fn(() => Promise.resolve(true)),
   },
 }));
-vi.mock('electron', () => ({
-  desktopCapturer: { getSources: vi.fn() },
-  app: electron.app,
-  net: { isOnline: () => true },
-  BrowserWindow: { getFocusedWindow: () => ({ webContents: { id: 7 } }) },
-  shell: electron.shell,
-  systemPreferences: electron.systemPreferences,
-  Notification: { isSupported: () => false },
-}));
+vi.mock('electron', async () =>
+  (await import('../testing/electronRuntimeMock')).electronRuntimeMock({
+    app: electron.app,
+    shell: electron.shell,
+    systemPreferences: electron.systemPreferences,
+  }),
+);
 
 const logger = createLogger({ level: 'error', format: 'json', sink: () => undefined });
 
