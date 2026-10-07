@@ -1,37 +1,61 @@
-/**
- * The meeting page's panes. On a wide page they sit side by side; on a narrow one (the window
- * opens 520 wide) one shows at a time and a row of buttons picks it (meeting.css, regions.tsx).
- */
-export type MeetingPane = 'notes' | 'transcript' | 'chat';
+import type { TabList } from '../components/ui/Tabs';
 
-/** The page's own label for each pane, on the narrow page's buttons and as region names. */
-export const PANE_LABEL: Readonly<Record<MeetingPane, string>> = {
-  notes: 'Notes',
+/**
+ * The meeting page's one tab row (docs/design.md, Tabs): My notes, AI notes, Transcript, Chat, one
+ * pane at a time at every width. Your notes are the page; the others are a click away.
+ */
+export type MeetingTab = 'mine' | 'ai' | 'transcript' | 'chat';
+
+/** The page's own label for each tab, and the name of its pane. */
+export const TAB_LABEL: Readonly<Record<MeetingTab, string>> = {
+  mine: 'My notes',
+  ai: 'AI notes',
   transcript: 'Transcript',
   chat: 'Chat',
 };
 
-/** Which regions have something mounted in their slots (app/slots/). */
-export interface MountedRegions {
-  notes: boolean;
+/** Which tabs have something to show (app/slots/, and whether AI notes exist). */
+export interface MountedTabs {
+  mine: boolean;
+  /** The AI notes slot is mounted AND notes exist or are being written (MeetingPage). */
+  ai: boolean;
   chat: boolean;
 }
 
 /**
- * The panes the page shows, in order: the notes first, as the notepad is what the user writes in
- * during the call, then the transcript, then chat. A region with nothing mounted is left out, so
- * no tab ever opens onto nothing; the transcript is always there.
+ * The tabs the page shows, in a fixed order: your notes first, as that is what the user writes in
+ * during the call, then the AI notes, the transcript and chat. A tab with nothing to show is left
+ * out, so none ever opens onto nothing; the transcript is always there.
  */
-export function meetingPanes(mounted: MountedRegions): readonly MeetingPane[] {
+export function meetingTabs(mounted: MountedTabs): readonly MeetingTab[] {
   return [
-    ...(mounted.notes ? (['notes'] as const) : []),
+    ...(mounted.mine ? (['mine'] as const) : []),
+    ...(mounted.ai ? (['ai'] as const) : []),
     'transcript',
     ...(mounted.chat ? (['chat'] as const) : []),
   ];
 }
 
-/** The pane a narrow page shows: the one picked, while the page has it, else the first. */
-export function activePane(chosen: MeetingPane | null, panes: readonly MeetingPane[]): MeetingPane {
-  if (chosen !== null && panes.includes(chosen)) return chosen;
-  return panes[0] ?? 'transcript';
+/** The tab the page shows: the one picked, while the page has it, else the first. */
+export function activeTab(chosen: MeetingTab | null, tabs: readonly MeetingTab[]): MeetingTab {
+  if (chosen !== null && tabs.includes(chosen)) return chosen;
+  return tabs[0] ?? 'transcript';
+}
+
+/**
+ * The tab row's specs. `Tabs` takes one to four (its `TabList` type); `meetingTabs` never gives
+ * more, and this is where that stops being a hope: a fifth tab throws here, not in the layout.
+ */
+export function tabSpecs(tabs: readonly MeetingTab[]): TabList {
+  const [first, second, third, fourth, extra] = tabs.map((tab) => ({
+    id: tab,
+    label: TAB_LABEL[tab],
+  }));
+  if (first === undefined || extra !== undefined) {
+    throw new Error(`The meeting page shows 1 to 4 tabs, not ${tabs.length}`);
+  }
+  if (second === undefined) return [first];
+  if (third === undefined) return [first, second];
+  if (fourth === undefined) return [first, second, third];
+  return [first, second, third, fourth];
 }

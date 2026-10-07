@@ -13,6 +13,7 @@ import {
 } from '../../../shared/meetings';
 import type { TranscriptSegment } from '../../../shared/transcript';
 import { describeError } from '../app/describeError';
+import { type AiNotesApi, AiNotesSession, type AiNotesState } from '../notes/aiNotesActions';
 import { LatestRead, type ReadState } from './latestRead';
 
 /** A read from main the page shows, and how to ask for it again (a Try again button). */
@@ -56,6 +57,43 @@ export function useMeeting(meetingId: string, refreshKey: string): Read<StoredMe
     [meetingId],
   );
   return useLatestRead(reader, refreshKey);
+}
+
+/**
+ * `window.roger`'s notes channels, looked up at each call. The session is made while the page
+ * renders, and `window.roger` does not exist under Node, where the page tests render it: only
+ * `start()` (an effect, never run there) and the buttons reach the channels.
+ */
+const rogerNotes: AiNotesApi = {
+  getNotes: (...args) => window.roger.getNotes(...args),
+  saveNote: (...args) => window.roger.saveNote(...args),
+  listNoteTemplates: (...args) => window.roger.listNoteTemplates(...args),
+  generateNotes: (...args) => window.roger.generateNotes(...args),
+  cancelNotesGenerate: (...args) => window.roger.cancelNotesGenerate(...args),
+  getPendingGenerate: (...args) => window.roger.getPendingGenerate(...args),
+  getNotesRun: (...args) => window.roger.getNotesRun(...args),
+  onNoteChanged: (...args) => window.roger.onNoteChanged(...args),
+  onNotesEvent: (...args) => window.roger.onNotesEvent(...args),
+  onPendingGenerateChanged: (...args) => window.roger.onPendingGenerateChanged(...args),
+};
+
+/**
+ * The meeting's AI notes as main holds them, for the header: Write notes, "Writing notes…" with
+ * Cancel, the ⋯ menu and the AI notes tab (whether it exists at all) all read this state. It is the
+ * page's own session, apart from the AI notes panel's: both follow main's events and act through
+ * main, so neither misses the other's change, but a confirmation or an action error one of them
+ * raises is the one that shows it (the header shows its own).
+ */
+export function useMeetingNotes(meetingId: string): {
+  session: AiNotesSession;
+  state: AiNotesState;
+} {
+  const session = useMemo(() => new AiNotesSession(rogerNotes, meetingId), [meetingId]);
+  // The server snapshot is the session's initial state: renderToString (the page tests) never
+  // reads main.
+  const state = useSyncExternalStore(session.subscribe, session.getState, session.getState);
+  useEffect(() => session.start(), [session]);
+  return { session, state };
 }
 
 /**

@@ -1,24 +1,51 @@
 import { describe, expect, it } from 'vitest';
-import { activePane, meetingPanes } from './panes';
+import { activeTab, meetingTabs, tabSpecs } from './panes';
 
-describe('meetingPanes', () => {
+describe('meetingTabs', () => {
   it('is the transcript alone while nothing else is mounted on the page', () => {
-    expect(meetingPanes({ notes: false, chat: false })).toEqual(['transcript']);
+    expect(meetingTabs({ mine: false, ai: false, chat: false })).toEqual(['transcript']);
   });
 
-  it('puts the notes first, then the transcript, then chat', () => {
-    expect(meetingPanes({ notes: true, chat: true })).toEqual(['notes', 'transcript', 'chat']);
-    expect(meetingPanes({ notes: false, chat: true })).toEqual(['transcript', 'chat']);
+  it('is one row in a fixed order: My notes, AI notes, Transcript, Chat', () => {
+    expect(meetingTabs({ mine: true, ai: true, chat: true })).toEqual([
+      'mine',
+      'ai',
+      'transcript',
+      'chat',
+    ]);
+  });
+
+  it('leaves out the AI notes until there are some, so no tab opens onto nothing', () => {
+    expect(meetingTabs({ mine: true, ai: false, chat: true })).toEqual([
+      'mine',
+      'transcript',
+      'chat',
+    ]);
   });
 });
 
-describe('activePane', () => {
-  it('opens on the first pane until one is picked', () => {
-    expect(activePane(null, ['notes', 'transcript', 'chat'])).toBe('notes');
-    expect(activePane('chat', ['notes', 'transcript', 'chat'])).toBe('chat');
+describe('activeTab', () => {
+  it('opens on the first tab (your notes) until one is picked', () => {
+    expect(activeTab(null, ['mine', 'ai', 'transcript', 'chat'])).toBe('mine');
+    expect(activeTab('chat', ['mine', 'ai', 'transcript', 'chat'])).toBe('chat');
   });
 
-  it('falls back to the first pane when the picked one is not on the page', () => {
-    expect(activePane('chat', ['transcript'])).toBe('transcript');
+  it('falls back to the first tab when the picked one is not on the page', () => {
+    // The AI notes tab is gone (a generate was cancelled before any notes existed).
+    expect(activeTab('ai', ['mine', 'transcript'])).toBe('mine');
+  });
+});
+
+describe('tabSpecs', () => {
+  it('names each tab for the tab row, in order', () => {
+    expect(tabSpecs(['mine', 'transcript'])).toEqual([
+      { id: 'mine', label: 'My notes' },
+      { id: 'transcript', label: 'Transcript' },
+    ]);
+  });
+
+  it('refuses none or more than four: the row never holds a fifth tab', () => {
+    expect(() => tabSpecs([])).toThrow(/1 to 4/);
+    expect(() => tabSpecs(['mine', 'ai', 'transcript', 'chat', 'mine'])).toThrow(/1 to 4/);
   });
 });

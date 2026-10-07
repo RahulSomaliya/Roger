@@ -83,6 +83,19 @@ function linesOf(page: Page, speaker: Speaker): Locator {
     .filter({ has: page.getByText(speaker, { exact: true }) });
 }
 
+/**
+ * Brings the transcript forward on the meeting page. The page shows one pane at a time and opens
+ * on the first tab (My notes); the Transcript pane stays mounted but `hidden`, so its lines match
+ * `linesOf` yet are never visible, and `visibleLines` counts none. Waits for the page's own tab
+ * row (it is drawn with the panes), then picks Transcript when the row has it: a page whose only
+ * pane is the transcript draws no row, and its lines are already on show.
+ */
+async function openTranscript(page: Page): Promise<void> {
+  await page.locator('[aria-label="Transcript"]').first().waitFor({ state: 'attached' });
+  const tab = page.getByRole('tab', { name: 'Transcript', exact: true });
+  if ((await tab.count()) > 0) await tab.click();
+}
+
 /** How many final lines of each speaker the transcript draws. */
 async function shownCounts(page: Page): Promise<Record<Speaker, number>> {
   return { Me: await linesOf(page, 'Me').count(), Them: await linesOf(page, 'Them').count() };
@@ -214,6 +227,8 @@ describe('a recording', () => {
     await watchSentLines(page);
     const startedAt = Date.now();
     await page.getByRole('button', { name: 'New note' }).click();
+    // Inside the 10 s: the tab row is drawn within a frame of the page opening.
+    await openTranscript(page);
     for (const speaker of ['Me', 'Them'] as const) {
       const left = LINES_WITHIN_MS - (Date.now() - startedAt);
       await linesOf(page, speaker)

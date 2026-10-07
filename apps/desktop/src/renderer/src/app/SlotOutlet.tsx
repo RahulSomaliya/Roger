@@ -1,4 +1,5 @@
 import { Component, createElement, type ReactNode } from 'react';
+import { Icon } from '../components/ui/icons';
 import { describeError } from './describeError';
 import type { SlotName, SlotPropsByName } from './slotRegistry';
 import { slots } from './slots';
@@ -31,7 +32,7 @@ interface SlotBoundaryProps {
 /**
  * One failing mount must not blank the window: React unmounts the whole tree on an error no
  * boundary catches, and the user loses the Stop button mid-call. The failure stays visible in
- * place of that one entry.
+ * place of that one entry, as a problem line (docs/design.md): an icon and words, no red box.
  */
 class SlotBoundary extends Component<SlotBoundaryProps, { failure: string | null }> {
   override state: { failure: string | null } = { failure: null };
@@ -43,8 +44,12 @@ class SlotBoundary extends Component<SlotBoundaryProps, { failure: string | null
   override render(): ReactNode {
     if (this.state.failure === null) return this.props.children;
     return (
-      <div role="alert" className="error slot-failure">
-        This part of Roger failed to show ({this.props.slot}: {this.props.id}): {this.state.failure}
+      <div role="alert" className="problem">
+        <Icon name="circle-alert" />
+        <span className="problem-text">
+          This part of Roger failed to show ({this.props.slot}: {this.props.id}):{' '}
+          {this.state.failure}
+        </span>
       </div>
     );
   }
