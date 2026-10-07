@@ -32,6 +32,8 @@ export interface KeepRunningDeps {
   app: AppEvents & LoginItemApp & { quit(): void };
   electron: ElectronTrayParts;
   build: LoginItemBuild;
+  /** `wasOpenedAtLogin`, as read once at launch (the login item controller logs it). */
+  openedAtLogin: boolean;
   /** `process.resourcesPath`. */
   resourcesPath: string;
   /** `app.getAppPath()`. */
@@ -79,7 +81,7 @@ export function startKeepRunning(deps: KeepRunningDeps): { stop(): void } {
   calendar?.account.onConnectionChange((connection) => {
     loginItem.setCalendarConnected(connection !== null);
   });
-  loginItem.start();
+  loginItem.start({ openedAtLogin: deps.openedAtLogin });
 
   const iconContext = {
     isPackaged: build.isPackaged,

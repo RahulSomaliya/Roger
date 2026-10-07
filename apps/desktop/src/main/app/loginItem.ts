@@ -37,8 +37,24 @@ export class LoginItemController {
 
   constructor(private readonly options: LoginItemOptions) {}
 
-  /** Applies the preference as it stands at launch (a login item the user turned on is repaired). */
-  start(): void {
+  /**
+   * Logs what macOS says about the login item, then applies the preference as it stands at launch
+   * (a login item the user turned on is repaired).
+   *
+   * Trap: `openedAtLogin` is the `wasOpenedAtLogin` index.ts read before the window was made, and
+   * it is passed in, not read again here: macOS answers it true only to the first read of a
+   * launch, so a second read would log false on every login launch and fail real-Mac check 1.
+   */
+  start({ openedAtLogin }: { openedAtLogin: boolean }): void {
+    const { app, build, logger } = this.options;
+    // Real-Mac check 1 (docs/plans/M5-calendar.md) reads this line after a reboot, so it is logged
+    // before `apply` can change the item, and with macOS's own status word, not the page's.
+    if (build.isPackaged && !build.e2eOn) {
+      logger.info('login item at startup', {
+        status: app.getLoginItemSettings().status,
+        wasOpenedAtLogin: openedAtLogin,
+      });
+    }
     // What the page may already have been told: macOS's answer before this launch changes it.
     this.lastStatus = this.getState().status;
     this.apply();

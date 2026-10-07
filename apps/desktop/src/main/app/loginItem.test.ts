@@ -52,7 +52,7 @@ function harness(
 describe('LoginItemController', () => {
   it('never asks macOS about, or changes, the login item of a build that is not packaged', () => {
     const h = harness({ isPackaged: false, preference: 'on' });
-    h.controller.start();
+    h.controller.start({ openedAtLogin: false });
     h.controller.setCalendarConnected(true);
     expect(h.controller.getState()).toEqual({ status: 'unavailable' });
     expect(h.app.sets).toEqual([]);
@@ -61,14 +61,14 @@ describe('LoginItemController', () => {
 
   it('does the same in the e2e run', () => {
     const h = harness({ e2eOn: true, preference: 'on' });
-    h.controller.start();
+    h.controller.start({ openedAtLogin: false });
     expect(h.controller.getState()).toEqual({ status: 'unavailable' });
     expect(h.app.sets).toEqual([]);
   });
 
   it('registers at launch when the user chose on, and tells the page', () => {
     const h = harness({ preference: 'on' });
-    h.controller.start();
+    h.controller.start({ openedAtLogin: false });
     expect(h.app.sets).toEqual([true]);
     expect(h.controller.getState()).toEqual({ status: 'enabled' });
     expect(h.heard).toEqual([{ status: 'enabled' }]);
@@ -76,7 +76,7 @@ describe('LoginItemController', () => {
 
   it('does nothing at launch while the preference is off (the default until real-Mac check 1)', () => {
     const h = harness({ preference: 'off' });
-    h.controller.start();
+    h.controller.start({ openedAtLogin: false });
     expect(h.app.sets).toEqual([]);
     expect(h.heard).toEqual([]);
     expect(h.controller.getState()).toEqual({ status: 'disabled' });
@@ -84,7 +84,7 @@ describe('LoginItemController', () => {
 
   it('follows a change of the preference: on registers, off removes', () => {
     const h = harness({ preference: 'off' });
-    h.controller.start();
+    h.controller.start({ openedAtLogin: false });
     h.choice.value = 'on';
     h.controller.preferenceChanged();
     h.choice.value = 'off';
@@ -93,15 +93,41 @@ describe('LoginItemController', () => {
     expect(h.heard.map((state) => state.status)).toEqual(['enabled', 'disabled']);
   });
 
+  it('logs at startup what macOS says and whether this launch was a login launch', () => {
+    // Real-Mac check 1 (docs/plans/M5-calendar.md) reads this line after a reboot: it is the only
+    // place `status: enabled` and `wasOpenedAtLogin: true` show up.
+    const h = harness({ status: 'enabled' });
+    h.controller.start({ openedAtLogin: true });
+    const entries = h.lines.map((line) => JSON.parse(line) as Record<string, unknown>);
+    expect(entries.find((entry) => entry.message === 'login item at startup')).toMatchObject({
+      status: 'enabled',
+      wasOpenedAtLogin: true,
+    });
+  });
+
+  it('logs the startup line before it changes anything, so it shows what the reboot left', () => {
+    const h = harness({ preference: 'on', status: 'not-registered' });
+    h.controller.start({ openedAtLogin: false });
+    const messages = h.lines.map((line) => (JSON.parse(line) as { message: string }).message);
+    expect(messages).toEqual(['login item at startup', 'login item changed']);
+    expect(h.lines[0]).toContain('"status":"not-registered"');
+  });
+
+  it('logs no startup line for a build that is not packaged', () => {
+    const h = harness({ isPackaged: false });
+    h.controller.start({ openedAtLogin: false });
+    expect(h.lines).toEqual([]);
+  });
+
   it('turns on at the first connect when the preference is auto, and not when it is off', () => {
     const auto = harness({ preference: 'auto' });
-    auto.controller.start();
+    auto.controller.start({ openedAtLogin: false });
     expect(auto.app.sets).toEqual([]);
     auto.controller.setCalendarConnected(true);
     expect(auto.app.sets).toEqual([true]);
 
     const off = harness({ preference: 'off' });
-    off.controller.start();
+    off.controller.start({ openedAtLogin: false });
     off.controller.setCalendarConnected(true);
     expect(off.app.sets).toEqual([]);
   });
@@ -109,7 +135,7 @@ describe('LoginItemController', () => {
   it('reports requires-approval, which is registered but not yet allowed', () => {
     const h = harness({ preference: 'on' });
     h.app.answerToRegister = 'requires-approval';
-    h.controller.start();
+    h.controller.start({ openedAtLogin: false });
     expect(h.controller.getState()).toEqual({ status: 'requires-approval' });
     // Not asked again at the next change: the registration is made.
     h.controller.preferenceChanged();
@@ -118,7 +144,7 @@ describe('LoginItemController', () => {
 
   it('says nothing when a check finds the same state', () => {
     const h = harness({ preference: 'on', status: 'enabled' });
-    h.controller.start();
+    h.controller.start({ openedAtLogin: false });
     h.controller.preferenceChanged();
     expect(h.heard).toEqual([]);
     expect(h.app.sets).toEqual([]);
@@ -127,7 +153,7 @@ describe('LoginItemController', () => {
   it('logs a registration macOS refuses, with what was asked, and keeps running', () => {
     const h = harness({ preference: 'on' });
     h.app.failSet = new Error('SMAppService refused');
-    h.controller.start();
+    h.controller.start({ openedAtLogin: false });
     expect(
       h.lines.some((line) => line.includes('SMAppService refused') && line.includes('register')),
     ).toBe(true);

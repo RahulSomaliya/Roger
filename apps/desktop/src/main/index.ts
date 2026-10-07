@@ -375,13 +375,14 @@ async function main(): Promise<void> {
     page,
     logger.child({ component: 'permissions' }),
   );
+  // A launch at login keeps the window hidden (app/windowLifecycle.ts). Read once, before the page
+  // loads: macOS tells only the first read of a launch, so the login item log gets this value.
+  const openedAtLogin = app.getLoginItemSettings().wasOpenedAtLogin;
   window = createMainWindow(
     join(__dirname, '../preload/index.js'),
     page,
     logger.child({ component: 'window' }),
-    // A launch at login keeps the window hidden (app/windowLifecycle.ts). Read here, before the
-    // page loads: macOS tells only the first read of a launch.
-    { lifecycle, openedAtLogin: app.getLoginItemSettings().wasOpenedAtLogin },
+    { lifecycle, openedAtLogin },
   );
   watchWindow(lifecycle, window);
   window.on('closed', () => {
@@ -400,6 +401,7 @@ async function main(): Promise<void> {
     app,
     electron: { Tray, Menu, nativeImage },
     build: { isPackaged: app.isPackaged, e2eOn: e2e.on },
+    openedAtLogin,
     resourcesPath: process.resourcesPath,
     appPath: app.getAppPath(),
     capture,

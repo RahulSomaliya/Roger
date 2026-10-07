@@ -46,6 +46,7 @@ function setup(options: { isPackaged: boolean; e2eOn?: boolean; preference?: Ope
     destroy = () => void (trays.destroyed += 1);
   }
   const navigated: string[] = [];
+  const lines: string[] = [];
   const shown: string[] = [];
   const window = {
     isDestroyed: () => false,
@@ -69,6 +70,7 @@ function setup(options: { isPackaged: boolean; e2eOn?: boolean; preference?: Ope
       nativeImage: { createFromPath: () => ({ isEmpty: () => false }) as never },
     },
     build: { isPackaged: options.isPackaged, e2eOn: options.e2eOn ?? false },
+    openedAtLogin: false,
     resourcesPath: '/Applications/Roger.app/Contents/Resources',
     capture: {
       phase: 'idle',
@@ -106,7 +108,7 @@ function setup(options: { isPackaged: boolean; e2eOn?: boolean; preference?: Ope
     ipcMain,
     getWindow: () => window,
     navigate: (route) => void navigated.push(route),
-    logger: createLogger({ level: 'error', format: 'json', sink: () => undefined }),
+    logger: createLogger({ level: 'info', format: 'json', sink: (line) => void lines.push(line) }),
   };
   return {
     app,
@@ -114,6 +116,7 @@ function setup(options: { isPackaged: boolean; e2eOn?: boolean; preference?: Ope
     deps,
     trays,
     navigated,
+    lines,
     shown,
     handlers,
     preference,
@@ -143,6 +146,14 @@ afterEach(() => {
 });
 
 describe('startKeepRunning', () => {
+  it('hands the launch-time wasOpenedAtLogin to the login item log, not a second read', () => {
+    const h = setup({ isPackaged: true });
+    startKeepRunning({ ...h.deps, openedAtLogin: true });
+    expect(h.lines.find((line) => line.includes('login item at startup'))).toContain(
+      '"wasOpenedAtLogin":true',
+    );
+  });
+
   it('keeps Roger running when the last window goes, and shows the window on reopen', () => {
     const h = setup({ isPackaged: false });
     startKeepRunning(h.deps);
