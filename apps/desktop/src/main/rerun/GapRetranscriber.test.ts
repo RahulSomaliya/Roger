@@ -214,8 +214,10 @@ function fakeCapture() {
       contributor = read;
       return () => undefined;
     },
+    // As CaptureService's: a refresh sends a status, which reaches the re-run's own listener.
     refreshStatus: () => {
       seen.push(rerun());
+      for (const listener of [...statusListeners]) listener(status());
     },
   };
   return {

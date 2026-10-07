@@ -225,10 +225,15 @@ export class GapRetranscriber {
   private kick(): void {
     if (this.worker !== null || this.stopped || this.queue.length === 0) return;
     if (this.options.capture.phase !== 'idle') return;
-    this.worker = this.drain().finally(() => {
-      this.worker = null;
-      this.kick();
-    });
+    // Trap: drain starts a microtask later, once `worker` is set. Called here and now, its first
+    // progress refresh sends a status (CaptureService.refreshStatus), whose listener calls kick()
+    // while `worker` is still null: a second drain, and so on until the stack overflows.
+    this.worker = Promise.resolve()
+      .then(() => this.drain())
+      .finally(() => {
+        this.worker = null;
+        this.kick();
+      });
   }
 
   /** Never rejects: a meeting whose run throws is logged and left for the next launch. */
