@@ -267,6 +267,29 @@ describe('RecordingLifecycle once quitting', () => {
   });
 });
 
+describe('RecordingLifecycle.quitting', () => {
+  // The window's close handler hides the window unless a quit is under way, and only this class
+  // knows that (its quit state is private; nothing else may listen for before-quit). Without the
+  // getter the close that app.quit() sends after the stop would be turned into a hide, which
+  // cancels the quit: Roger never exits (M5-T11, app/windowLifecycle.ts).
+  it('is false until a quit is requested, and true from then on', async () => {
+    const h = harness();
+    expect(h.lifecycle.quitting).toBe(false);
+    h.lifecycle.onQuitRequested();
+    expect(h.lifecycle.quitting).toBe(true);
+    await flush();
+    expect(h.order).toEqual(['beforeExit', 'quit']);
+    expect(h.lifecycle.quitting).toBe(true);
+  });
+
+  it('stays false for a crash, a reload and a window close, which are not quits', () => {
+    const h = watched();
+    h.window.webContents.emit('render-process-gone', {}, { reason: 'crashed' });
+    h.window.emit('closed');
+    expect(h.lifecycle.quitting).toBe(false);
+  });
+});
+
 describe('RecordingLifecycle.stopFor', () => {
   it('stops a recording through the normal path with its reason, and logs why', () => {
     const h = harness();
@@ -331,7 +354,7 @@ function watched(phase: CapturePhase = 'recording') {
 }
 
 describe('the Electron events', () => {
-  it('maps quit and the window closing to a stop', () => {
+  it('maps quit and the window really closing to a stop', () => {
     const h = harness();
     h.capture.idleAfterStop = false;
     const app = new EventEmitter();
@@ -339,7 +362,7 @@ describe('the Electron events', () => {
     watchApp(h.lifecycle, { app });
     watchWindow(h.lifecycle, window);
 
-    window.emit('close');
+    window.emit('closed');
     let prevented = 0;
     app.emit('before-quit', { preventDefault: () => (prevented += 1) });
     app.emit('will-quit', { preventDefault: () => (prevented += 1) });
@@ -349,6 +372,22 @@ describe('the Electron events', () => {
       ['window-closed', undefined],
       ['quit', undefined],
     ]);
+  });
+
+  it('never stops the recording for a hide: a close the window turned into a hide is not a close (M5-T11)', () => {
+    const h = watched();
+    // The window's close handler (app/windowLifecycle.ts) prevents the close and hides, so the
+    // window lives on and `closed` never comes; only the `close` event does.
+    h.window.emit('close', { preventDefault: () => undefined });
+    h.window.emit('hide');
+    expect(h.stops()).toEqual([]);
+    expect(h.window.listenerCount('close')).toBe(0);
+  });
+
+  it('stops once the window is really closed', () => {
+    const h = watched();
+    h.window.emit('closed');
+    expect(h.stops()).toEqual([['window-closed', undefined]]);
   });
 
   it('leaves sleep to PowerCoordinator: a suspend no longer stops the recording (M2-T18)', () => {

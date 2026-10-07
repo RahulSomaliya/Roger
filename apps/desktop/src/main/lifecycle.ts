@@ -5,13 +5,15 @@ import { errorMessage, type Logger } from './logger';
 import { withTimeout } from './util/time';
 
 /**
- * Cost guard G4: whatever ends the app's ability to record (quit, the window closing, a page that
- * cannot be brought back) stops the recording through the normal stop: finish sequence, last lines
+ * Cost guard G4: whatever ends the app's ability to record (quit, the window really closing, a page
+ * that cannot be brought back) stops the recording through the normal stop: finish sequence, last lines
  * saved, sessions closed. Left open, each vendor session bills until a vendor timeout (AssemblyAI:
  * the 120 s idle timeout Roger asks for; without it, the 3-hour cap, $0.45 a stream). A renderer
  * crash or a reload no longer stops (M2 D7, M2-T12): the page comes back and reopens the mic
  * because main is recording, and until its chunks come, G2's stall close shuts the mic's session
- * after 30 s, so a crash costs at most that. A page that keeps crashing stops instead
+ * after 30 s, so a crash costs at most that. Closing the window hides it and the recording goes on
+ * (M5-T11, app/windowLifecycle.ts): the window's `closed`, which with close-hides comes only while
+ * quitting, is what stops. A page that keeps crashing stops instead
  * (RENDERER_CRASH_LIMIT). Nor does a sleep (M2-T18): power/PowerCoordinator.ts finishes and closes
  * both sessions at `suspend` and stops with `system-sleep` only after a sleep of noSpeechStopMs or
  * more. The decisions live here and are tested; index.ts only connects Electron's objects.
@@ -196,6 +198,19 @@ export class RecordingLifecycle {
     );
   }
 
+  /**
+   * True once a quit was requested (before-quit, will-quit or the tray's Quit through app.quit()),
+   * and for good. The main window's close handler hides the window unless this is true
+   * (app/windowLifecycle.ts). Read there because only this class knows a quit is under way (its
+   * `quitState` is private, and no other before-quit listener may exist, see `quitHooks`).
+   *
+   * Trap: never derive this from the window's own events. The close that `app.quit()` sends after
+   * the stop must not be turned into a hide: the hide cancels the quit and Roger never exits.
+   */
+  get quitting(): boolean {
+    return this.quitState !== 'running';
+  }
+
   private async stopThenQuit(): Promise<void> {
     const { capture, logger, quitStopTimeoutMs, quitHooks, quit } = this.options;
     const phase = capture.phase;
@@ -241,7 +256,7 @@ export interface AppEventSources {
 
 /** The parts of the main BrowserWindow this needs. */
 export interface WindowEventSource {
-  on(event: 'close', listener: () => void): unknown;
+  on(event: 'closed', listener: () => void): unknown;
   readonly webContents: {
     on(
       event: 'render-process-gone',
@@ -279,7 +294,10 @@ export function watchApp(lifecycle: RecordingLifecycle, { app }: AppEventSources
 
 export function watchWindow(lifecycle: RecordingLifecycle, window: WindowEventSource): void {
   const { webContents } = window;
-  window.on('close', () => {
+  // `closed`, never `close`: with close-hides (M5-T11) a click on the red button fires `close` and
+  // then hides the window, and a hide must keep recording. The window is gone only when it was
+  // really closed, which happens while quitting. app/windowLifecycle.ts holds the hide.
+  window.on('closed', () => {
     lifecycle.stopFor('window-closed');
   });
   webContents.on('render-process-gone', (_event, details) => {
