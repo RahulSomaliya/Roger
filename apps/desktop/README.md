@@ -245,6 +245,18 @@ and a local fake vendor, and fails if any test leaves a socket open. Shipping ad
   (Soniox may close a session that hears nothing for 20 s). On stop: `finalize`, then an empty
   text frame, answered by `finished`. Billed for the whole time a stream is open, like AssemblyAI;
   the API's key caps a session at 5 hours.
+- `xai`: Grok Voice Transcribe 2.0, added 2026-10-07 to compare with AssemblyAI on the same audio
+  (`make bench`). Streaming websocket `wss://api.x.ai/v1/stt`; the API's client secret goes in
+  `Authorization: Bearer`, which xAI documents for its voice-agent socket only (open point 1 in the
+  vendor log of `docs/research/stt-benchmark.md`: a refusal shows as "xAI: rejected with HTTP 401"
+  at connect). Configuration is the URL's query: `pcm` at 16 kHz, interim results, formatted text
+  in the call language, the jargon list as repeated `keyterm`, no diarization (the mic and the
+  call stay two streams). xAI sends `transcript.created` first, and the adapter holds audio until
+  it. Replies are partials in three states: it shows interims (a locked 3 s chunk stays on screen)
+  and saves one line per utterance, at the `speech_final` partial. On stop: `Finalize`, then
+  `audio.done`, answered by `transcript.done`; a line still held then is saved. xAI documents no
+  keep-alive, idle timeout or session cap, so none is sent and Roger's own guards close a quiet
+  stream. Billing basis is not documented; assumed to be open time, like AssemblyAI.
 - `fake`: no network. Emits one line per two seconds of non-silent audio. Used by tests and by
   `ROGER_STT_PROVIDER=fake`.
 
