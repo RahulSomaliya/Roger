@@ -50,3 +50,27 @@
 .level-meter[data-signal='dead'] .level-meter-text {
   color: var(--danger-ink);
 }
+
+/* Notices: what Roger recovered from on its own. Quiet, never a warning's colours. */
+
+.capture-notices {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.capture-notice {
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: var(--chip-bg);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.capture-notice-meta {
+  color: var(--muted);
+  white-space: nowrap;
+}
