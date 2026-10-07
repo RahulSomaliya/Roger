@@ -27,6 +27,7 @@ import pytest
 from sqlalchemy import select
 
 from roger_api.auth import Principal
+from roger_api.config_notes import NotesSettings
 from roger_api.db.engine import Database
 from roger_api.db.models import Meeting, TranscriptSegment, Workspace
 from roger_api.db.models_notes import LlmRun, MeetingNote
@@ -36,7 +37,6 @@ from roger_api.schemas.notes import note_doc_problem
 from roger_api.services.citations import SourceLine
 from roger_api.services.llm_runs import LlmRuntime, RunEvent
 from roger_api.services.notes_generation import (
-    DEFAULT_MAX_INPUT_TOKENS,
     NOT_SAID_ON_THE_CALL,
     GeneratedNotes,
     NotesSources,
@@ -55,6 +55,9 @@ from roger_api.services.notes_model_fake import ModelScript, ScriptedNotesModel
 FIXTURE = Path(__file__).parent / "fixtures" / "ai_notes_doc.json"
 REGENERATE_FIXTURE = os.environ.get("REGENERATE_AI_NOTES_FIXTURE") == "1"
 
+# NOTES_MAX_INPUT_TOKENS as an unset environment leaves it: every meeting here is far under it, so
+# every run is one pass. Long calls are tests/test_notes_long.py.
+MAX_INPUT_TOKENS = NotesSettings().notes_max_input_tokens
 # Bounds every wait below: a bug fails the test instead of hanging `make check`.
 WAIT_S = 5.0
 POLL_S = 0.02
@@ -125,7 +128,9 @@ async def generate_offline(
     """The DB-free core on a scripted answer: what it made, the events it emitted, the model."""
     model = ScriptedNotesModel(ModelScript(steps=pieces))
     events: list[RunEvent] = []
-    notes = await generate_notes(sources, model.stream, events.append)
+    notes = await generate_notes(
+        sources, model.stream, events.append, max_input_tokens=MAX_INPUT_TOKENS
+    )
     return notes, events, model
 
 
@@ -482,7 +487,7 @@ async def start(
         template=general,
         user_notes_version=user_notes_version,
         ai_base_version=ai_base_version,
-        max_input_tokens=DEFAULT_MAX_INPUT_TOKENS,
+        max_input_tokens=MAX_INPUT_TOKENS,
     )
     async with aclosing(stream.events()) as events:
         return [event async for event in events]

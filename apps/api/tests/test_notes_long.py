@@ -8,8 +8,9 @@ and the rules take about 500 of its tokens, so a window holds about 80 of these 
 is the one in the settings.
 """
 
+import inspect
 import json
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Callable, Sequence
 from contextlib import asynccontextmanager
 from decimal import Decimal
 from itertools import pairwise
@@ -29,10 +30,10 @@ from roger_api.services import llm_runs
 from roger_api.services.citations import SourceLine
 from roger_api.services.llm_runs import RunEvent
 from roger_api.services.notes_generation import (
-    DEFAULT_MAX_INPUT_TOKENS,
     GeneratedNotes,
     NotesSources,
     generate_notes,
+    start_notes_run,
 )
 from roger_api.services.notes_long import (
     LONG_PROMPT_VERSION,
@@ -197,8 +198,15 @@ async def test_lines_that_fit_one_window_are_one_pass_however_long_the_notes() -
     assert model.requests == [notes_request(sources.prompt())]
 
 
-def test_the_default_budget_is_the_settings_default() -> None:
-    assert NotesSettings().notes_max_input_tokens == DEFAULT_MAX_INPUT_TOKENS
+@pytest.mark.parametrize("entry_point", [generate_notes, start_notes_run])
+def test_every_entry_point_requires_the_budget(entry_point: Callable[..., object]) -> None:
+    # A default budget is one a caller can forget, and then NOTES_MAX_INPUT_TOKENS is ignored
+    # without a word: the eval (M4-T12), written against a three-argument `generate_notes`, would
+    # write one pass at 200,000 tokens whatever the setting said. Required, a caller that leaves
+    # it out fails mypy instead.
+    budget = inspect.signature(entry_point).parameters["max_input_tokens"]
+    assert budget.kind is inspect.Parameter.KEYWORD_ONLY
+    assert budget.default is inspect.Parameter.empty
 
 
 # --- Map: the windows --------------------------------------------------------------------------
