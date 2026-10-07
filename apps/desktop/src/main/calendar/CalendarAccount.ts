@@ -10,6 +10,7 @@ import {
   OAUTH_CALLBACK_PATH,
 } from './oauthLoopback';
 import type { CalendarApiPort, GoogleConnectionRequest } from './ports';
+import type { SqliteCalendarCache } from './SqliteCalendarCache';
 
 /** How long the user has to finish the sign-in in the browser before Connect gives up. */
 export const CALENDAR_SIGN_IN_TIMEOUT_MS = 3 * 60_000;
@@ -24,6 +25,8 @@ export interface CalendarAccountOptions {
   api: CalendarAccountApi;
   /** Connect and disconnect are recorded through it, never straight in the cache (see below). */
   sync: Pick<CalendarSync, 'connected' | 'disconnected'>;
+  /** Read only: this Mac's `connections_log`, which a read of the connection keeps in line. */
+  cache: Pick<SqliteCalendarCache, 'activeConnection'>;
   /** Electron's `shell.openExternal`: the default browser, where Google allows the sign-in. */
   openExternal: (url: string) => Promise<void>;
   logger: Logger;
@@ -47,12 +50,22 @@ interface CalendarAccountEvents extends Record<string, unknown> {
  * `https://accounts.google.com/`, or its own redirect, which is the fake provider's whole sign-in.
  * A second Connect cancels the first, and so does Disconnect.
  *
- * Connect and Disconnect are recorded through `CalendarSync.connected` and `disconnected`, never
- * the cache's `recordConnected` or `recordDisconnected`: those also drop a poll already on its
- * way, which would otherwise write a disconnected account's events back into the copy.
+ * Connect, Disconnect, and a read that finds this Mac's `connections_log` out of line with the
+ * API, are recorded through `CalendarSync.connected` and `disconnected`, never the cache's
+ * `recordConnected` or `recordDisconnected`: those also drop a poll already on its way, which
+ * would otherwise write a disconnected account's events back into the copy.
+ *
+ * The API holds the connection, but CalendarSync polls and ReminderScheduler prompts only while
+ * `connections_log` has an open row. The two part when another Roger build that shares the API
+ * (the dev build keeps its own "Roger Dev" data) connects or disconnects, when calendar.sqlite is
+ * new, or when a quit closes the cache under a connect. So every read of the connection brings the
+ * log in line (getConnection), and `start` reads it once at launch: left apart, Settings shows a
+ * connected account while nothing syncs, Today stays empty, nothing turns stale, and no prompt
+ * ever fires.
  *
  * The code exchange, the revoke and the connection reads take turns: a Disconnect sent during an
- * exchange waits for it, so the API never ends up holding a grant the user just disconnected.
+ * exchange waits for it, so the API never ends up holding a grant the user just disconnected, and
+ * `stop` waits for the turn on its way, so a quit never closes the cache under a stored grant.
  *
  * Log lines never carry the code, the verifier, the state or the account's address.
  */
@@ -65,6 +78,8 @@ export class CalendarAccount {
   private turns: Promise<void> = Promise.resolve();
   /** The connection listeners last heard; undefined before the first answer. */
   private known: CalendarConnection | null | undefined = undefined;
+  /** Set by `stop`: the cache is about to close, so nothing new may start. */
+  private stopped = false;
 
   constructor(private readonly options: CalendarAccountOptions) {
     this.signInTimeoutMs = options.signInTimeoutMs ?? CALENDAR_SIGN_IN_TIMEOUT_MS;
@@ -76,6 +91,7 @@ export class CalendarAccount {
    * message for the page: cancelled at Google, timed out, replaced, or the API's refusal.
    */
   async connect(): Promise<CalendarConnection> {
+    if (this.stopped) throw quitting();
     this.signIn?.abort(new Error('This sign-in was replaced by a newer Connect.'));
     const signIn = new AbortController();
     this.signIn = signIn;
@@ -119,26 +135,19 @@ export class CalendarAccount {
         this.options.logger.warn('calendar disconnect failed', { error: failure.message });
         throw failure;
       }
-      this.setKnown(null);
-      try {
-        this.options.sync.disconnected();
-      } catch (error) {
-        this.options.logger.error('calendar disconnect could not be recorded on this Mac', {
-          error: errorMessage(error),
-        });
-        throw new Error(
-          `Google Calendar is disconnected, but Roger could not clear its copy on this Mac: ${errorMessage(error)}`,
-          { cause: error },
-        );
-      }
+      this.recordDisconnected();
       this.options.logger.info('calendar disconnected');
     });
   }
 
   /**
    * The connection as the Roger API holds it now (its status and `expiresHint`), or null when
-   * there is none. Waits for an exchange or a revoke on its way. Rejects with a message for the
-   * page when the API cannot be reached; this Mac's copy of the calendar still works then.
+   * there is none. Waits for an exchange or a revoke on its way. On the way it brings this Mac's
+   * `connections_log` in line with the answer (see the class doc): a connection the log lacks, or
+   * holds for another account, is recorded, which starts the sync; a log row the API no longer
+   * has is closed, which clears the copy. Rejects with a message for the page when the API cannot
+   * be reached (this Mac's copy of the calendar still works then), or when this Mac cannot record
+   * the answer.
    */
   async getConnection(): Promise<CalendarConnection | null> {
     return this.takeTurn(async () => {
@@ -150,9 +159,26 @@ export class CalendarAccount {
         this.options.logger.warn('calendar connection read failed', { error: failure.message });
         throw failure;
       }
+      this.bringLogInLine(connection);
       this.setKnown(connection);
       return connection;
     });
+  }
+
+  /**
+   * At launch, beside CalendarSync's start (M5-T9c's slot; either order works: a connect recorded
+   * before the sync starts is read by its start): reads the connection, so a grant made elsewhere
+   * starts the sync and the prompts before any page asks, which a hidden window may never do.
+   * Never rejects: a failure is logged, and the next read (Settings, Home) tries again.
+   */
+  async start(): Promise<void> {
+    try {
+      await this.getConnection();
+    } catch (error) {
+      this.options.logger.warn('calendar connection not checked at launch', {
+        error: errorMessage(error),
+      });
+    }
   }
 
   /** Each change of the connection as the API last told it: a connect, a disconnect, a read. */
@@ -168,9 +194,18 @@ export class CalendarAccount {
     });
   }
 
-  /** At quit: a sign-in still waiting on the browser ends and closes its port. */
-  stop(): void {
-    this.signIn?.abort(new Error('Roger is quitting.'));
+  /**
+   * At quit, before calendar.sqlite closes: a sign-in still waiting on the browser or on its turn
+   * ends (its port closes, its code goes unredeemed), and nothing new starts. Resolves once the
+   * exchange, revoke or read already sent has answered and been recorded. The API keeps a grant
+   * whose code it was sent whatever main does, so the quit hook (M5-T9c's slot) awaits this before
+   * it closes the cache; a cache closed first loses the record, which the next launch's `start`
+   * then repairs.
+   */
+  async stop(): Promise<void> {
+    this.stopped = true;
+    this.signIn?.abort(quitting());
+    await this.turns;
   }
 
   /** Listen, ask the API for the URL, open it, wait for the code. The port closes on any exit. */
@@ -209,6 +244,42 @@ export class CalendarAccount {
     return { code: outcome.code, codeVerifier: pkce.verifier, redirectUri: loopback.redirectUri };
   }
 
+  /**
+   * The API's answer against this Mac's open `connections_log` row. Compared by account only: a
+   * renewed grant for the same account keeps its row (a status or `expiresHint` change is the
+   * API's to report), so a read never writes when the two agree. Logs say which way it moved,
+   * never the address.
+   */
+  private bringLogInLine(connection: CalendarConnection | null): void {
+    let local: string | null;
+    try {
+      local = this.options.cache.activeConnection()?.accountEmail ?? null;
+    } catch (error) {
+      this.options.logger.error('calendar connection on this Mac could not be read', {
+        error: errorMessage(error),
+      });
+      throw new Error(
+        `Could not check the Google Calendar connection on this Mac: ${errorMessage(error)}`,
+        { cause: error },
+      );
+    }
+    if (connection === null) {
+      if (local === null) return;
+      this.options.logger.warn(
+        'calendar connected on this Mac but not at the API: clearing the copy',
+      );
+      this.recordDisconnected();
+      return;
+    }
+    // Trimmed as the cache trims it when it records the account.
+    if (local === connection.accountEmail.trim()) return;
+    this.options.logger.warn('calendar connected at the API but not on this Mac: recording it', {
+      provider: connection.provider,
+      onThisMac: local === null ? 'none' : 'another_account',
+    });
+    this.recordConnected(connection);
+  }
+
   /** The API stored the grant: record it on this Mac and tell the listeners. */
   private recordConnected(connection: CalendarConnection): void {
     let refreshed: Promise<void>;
@@ -234,8 +305,28 @@ export class CalendarAccount {
     this.setKnown(connection);
   }
 
-  /** Runs `work` after every turn queued before it, whether that one succeeded or not. */
+  /** The API holds no connection: tell the listeners, then clear this Mac's copy. */
+  private recordDisconnected(): void {
+    this.setKnown(null);
+    try {
+      this.options.sync.disconnected();
+    } catch (error) {
+      this.options.logger.error('calendar disconnect could not be recorded on this Mac', {
+        error: errorMessage(error),
+      });
+      throw new Error(
+        `Google Calendar is disconnected, but Roger could not clear its copy on this Mac: ${errorMessage(error)}`,
+        { cause: error },
+      );
+    }
+  }
+
+  /**
+   * Runs `work` after every turn queued before it, whether that one succeeded or not. Refused once
+   * stopped: a turn queued then would run on a closed cache.
+   */
   private takeTurn<T>(work: () => Promise<T>): Promise<T> {
+    if (this.stopped) return Promise.reject(quitting());
     const result = this.turns.then(work);
     this.turns = result.then(
       () => undefined,
@@ -266,6 +357,10 @@ export class CalendarAccount {
       return new Error(error.message, { cause: error });
     return new Error(`Could not ${action}: ${error.message}`, { cause: error });
   }
+}
+
+function quitting(): Error {
+  return new Error('Roger is quitting.');
 }
 
 /**

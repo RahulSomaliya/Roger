@@ -78,8 +78,10 @@ export interface CalendarApi {
   /**
    * The Google Calendar connection as the Roger API holds it: the account, `reconnect_required`,
    * and `expiresHint` (Google expires the grant then; warn from a day before). Null when nothing
-   * is connected. Rejects with a message to show when the API cannot be reached; the events and
-   * their sync state still answer then.
+   * is connected. When this Mac's copy disagrees (another Roger build sharing the API connected or
+   * disconnected), main brings it in line first, and the events and their sync state follow as
+   * their own events. Rejects with a message to show when the API cannot be reached, or when this
+   * Mac cannot record the change; the events and their sync state still answer then.
    */
   getCalendarConnection(): Promise<CalendarConnection | null>;
   /**

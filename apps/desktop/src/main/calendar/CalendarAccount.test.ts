@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { CalendarConnection } from '../../shared/calendar';
 import { ApiError } from '../api/http';
-import { createLogger } from '../logger';
+import { createLogger, type Logger } from '../logger';
 import {
   CALENDAR_SIGN_IN_TIMEOUT_MS,
   CalendarAccount,
@@ -9,7 +9,7 @@ import {
 } from './CalendarAccount';
 import { CalendarSync } from './CalendarSync';
 import { pkceChallenge } from './oauthLoopback';
-import type { GoogleAuthorizationRequest } from './ports';
+import type { CalendarApiPort, GoogleAuthorizationRequest } from './ports';
 import { SqliteCalendarCache } from './SqliteCalendarCache';
 
 // The sign-in runs for real: the loopback listens on 127.0.0.1 and the fake browser below follows
@@ -104,21 +104,25 @@ interface Setup {
   signInTimeoutMs?: number;
   /** In place of the fake browser, for a browser that cannot be opened. */
   openExternal?: (url: string) => Promise<void>;
+  logger?: Logger;
 }
 
 const caches: SqliteCalendarCache[] = [];
+const syncs: CalendarSync[] = [];
 afterEach(() => {
+  // The sync first: a started one holds a retry timer, which must not fire on a closed cache.
+  for (const sync of syncs.splice(0)) sync.stop();
   for (const cache of caches.splice(0)) cache.close();
 });
 
 function setup(options: Setup = {}) {
   const cache = new SqliteCalendarCache(':memory:');
   caches.push(cache);
-  const sync = new CalendarSync({
-    api: { listEvents: () => Promise.reject(new Error('no events in these tests')) },
-    cache,
-    logger: silentLogger,
-  });
+  const listEvents = vi.fn<CalendarApiPort['listEvents']>(() =>
+    Promise.reject(new Error('no events in these tests')),
+  );
+  const sync = new CalendarSync({ api: { listEvents }, cache, logger: silentLogger });
+  syncs.push(sync);
   const build = options.authorizationUrl ?? googleUrl;
   const api = {
     createGoogleAuthorization: vi.fn<CalendarAccountApi['createGoogleAuthorization']>((request) =>
@@ -134,8 +138,9 @@ function setup(options: Setup = {}) {
   const account = new CalendarAccount({
     api,
     sync,
+    cache,
     openExternal: options.openExternal ?? browser.open,
-    logger: silentLogger,
+    logger: options.logger ?? silentLogger,
     ...(options.signInTimeoutMs === undefined ? {} : { signInTimeoutMs: options.signInTimeoutMs }),
   });
   /** The redirect the nth sign-in sent to the API (it holds the loopback's port). */
@@ -144,7 +149,7 @@ function setup(options: Setup = {}) {
     if (request === undefined) throw new Error(`no authorization request ${call}`);
     return request.redirectUri;
   };
-  return { cache, api, browser, account, redirectOf };
+  return { cache, sync, listEvents, api, browser, account, redirectOf };
 }
 
 describe('CalendarAccount.connect', () => {
@@ -303,9 +308,52 @@ describe('CalendarAccount.connect', () => {
     await vi.waitFor(() => {
       expect(browser.opened).toHaveLength(1);
     });
-    account.stop();
+    await account.stop();
     expect(messageOf(await waiting)).toBe('Roger is quitting.');
     await expect(portIsOpen(redirectOf())).resolves.toBe(false);
+  });
+});
+
+describe('CalendarAccount.stop', () => {
+  it('waits for a code exchange already sent, and records it before the cache closes', async () => {
+    // Cmd+Q during the exchange: the API keeps the grant whatever main does, so a quit that closed
+    // calendar.sqlite first would leave the API connected and this Mac with no record of it.
+    const { cache, api, account } = setup();
+    let exchanged: (connection: CalendarConnection) => void = () => undefined;
+    api.connectGoogle.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          exchanged = resolve;
+        }),
+    );
+    const connecting = account.connect();
+    await vi.waitFor(() => {
+      expect(api.connectGoogle).toHaveBeenCalledTimes(1);
+    });
+
+    let stopped = false;
+    const stopping = account.stop().then(() => {
+      stopped = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(stopped).toBe(false);
+
+    exchanged(connectionOf(ACCOUNT));
+    await stopping;
+    expect(cache.activeConnection()?.accountEmail).toBe(ACCOUNT);
+    await expect(connecting).resolves.toEqual(connectionOf(ACCOUNT));
+  });
+
+  it('takes no new work once stopped: the cache is closing', async () => {
+    const { api, account } = setup();
+    await account.stop();
+
+    await expect(account.connect()).rejects.toThrow('Roger is quitting.');
+    await expect(account.getConnection()).rejects.toThrow('Roger is quitting.');
+    await expect(account.disconnect()).rejects.toThrow('Roger is quitting.');
+    expect(api.createGoogleAuthorization).not.toHaveBeenCalled();
+    expect(api.getConnection).not.toHaveBeenCalled();
+    expect(api.disconnect).not.toHaveBeenCalled();
   });
 });
 
@@ -431,5 +479,112 @@ describe('CalendarAccount.getConnection', () => {
     await account.disconnect();
 
     expect(seen).toEqual([null, connectionOf(ACCOUNT), null]);
+  });
+});
+
+// The API holds the connection; this Mac's connections_log decides whether CalendarSync polls and
+// ReminderScheduler prompts. They part when another Roger build that shares the API (the dev
+// build's own "Roger Dev" data) connects or disconnects, when calendar.sqlite is new, or when a
+// connect's record is lost at quit. Unrepaired, Settings shows a connected account while nothing
+// syncs, Today stays empty, nothing turns stale and no prompt ever fires.
+describe("CalendarAccount: this Mac's record follows the API's connection", () => {
+  it('records a connection the API holds that this Mac has no record of, and the sync starts', async () => {
+    const { cache, sync, listEvents, api, account } = setup();
+    sync.start({ previousRunLastTickAt: null });
+    expect(listEvents).not.toHaveBeenCalled();
+    api.getConnection.mockResolvedValueOnce(connectionOf(ACCOUNT));
+
+    await expect(account.getConnection()).resolves.toEqual(connectionOf(ACCOUNT));
+
+    expect(cache.activeConnection()?.accountEmail).toBe(ACCOUNT);
+    expect(listEvents).toHaveBeenCalledTimes(1);
+  });
+
+  it("records the API's account in place of another one this Mac still holds", async () => {
+    const { cache, sync, api, account } = setup();
+    await sync.connected('former@linkt.ai');
+    api.getConnection.mockResolvedValueOnce(connectionOf(ACCOUNT));
+
+    await account.getConnection();
+
+    expect(cache.activeConnection()?.accountEmail).toBe(ACCOUNT);
+    expect(cache.listConnections('former@linkt.ai')[0]?.disconnectedAt).not.toBeNull();
+  });
+
+  it('clears the copy when the API holds no connection any more; the log stays', async () => {
+    const { cache, account } = setup();
+    await account.connect();
+
+    // The API answers null: disconnected from another build.
+    await expect(account.getConnection()).resolves.toBeNull();
+
+    expect(cache.activeConnection()).toBeNull();
+    expect(cache.listConnections(ACCOUNT)).toHaveLength(1);
+    expect(cache.listConnections(ACCOUNT)[0]?.disconnectedAt).not.toBeNull();
+  });
+
+  it('writes nothing when the two agree', async () => {
+    const { cache, api, account } = setup();
+    await account.connect();
+    api.getConnection.mockResolvedValue(connectionOf(ACCOUNT));
+
+    await account.getConnection();
+    await account.getConnection();
+
+    expect(cache.listConnections(ACCOUNT)).toHaveLength(1);
+  });
+
+  it('rejects, saying so, when this Mac cannot read or write its record', async () => {
+    const { cache, sync, api, account } = setup();
+    api.getConnection.mockResolvedValue(connectionOf(ACCOUNT));
+
+    vi.spyOn(sync, 'connected').mockImplementationOnce(() => {
+      throw new Error('database is not open');
+    });
+    await expect(account.getConnection()).rejects.toThrow(
+      'Google Calendar is connected, but Roger could not record it on this Mac: database is not open',
+    );
+
+    vi.spyOn(cache, 'activeConnection').mockImplementationOnce(() => {
+      throw new Error('database is not open');
+    });
+    await expect(account.getConnection()).rejects.toThrow(
+      'Could not check the Google Calendar connection on this Mac: database is not open',
+    );
+  });
+});
+
+describe('CalendarAccount.start', () => {
+  it('reads the connection at launch, so a grant made elsewhere syncs with no window open', async () => {
+    const { cache, sync, listEvents, api, account } = setup();
+    sync.start({ previousRunLastTickAt: null });
+    api.getConnection.mockResolvedValueOnce(connectionOf(ACCOUNT));
+
+    await account.start();
+
+    expect(cache.activeConnection()?.accountEmail).toBe(ACCOUNT);
+    expect(listEvents).toHaveBeenCalledTimes(1);
+  });
+
+  it('logs and carries on when the API cannot be reached at launch', async () => {
+    const lines: string[] = [];
+    const logger = createLogger({
+      level: 'warn',
+      format: 'json',
+      sink: (line) => lines.push(line),
+    });
+    const { cache, api, account } = setup({ logger });
+    api.getConnection.mockRejectedValueOnce(
+      new ApiError(
+        0,
+        'network_error',
+        'GET /v1/calendar/connection failed: connect ECONNREFUSED 127.0.0.1:8000',
+      ),
+    );
+
+    await expect(account.start()).resolves.toBeUndefined();
+
+    expect(cache.activeConnection()).toBeNull();
+    expect(lines.join('\n')).toContain('calendar connection not checked at launch');
   });
 });
