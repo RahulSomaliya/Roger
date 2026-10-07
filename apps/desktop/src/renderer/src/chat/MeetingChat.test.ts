@@ -147,7 +147,11 @@ describe('ChatPanel', () => {
     expect(textOf(html)).toContain(
       'The quote is twelve percent off 00:34 The AI service did not answer. Try again in a moment.',
     );
-    expect(html).toContain('role="alert"');
+    // A problem line (icon, words, one action), never a box: styles.css `.problem`.
+    expect(html).toMatch(
+      /<div class="problem" role="alert"><svg[^>]*aria-hidden[^>]*>.*?<\/svg><span class="problem-text">The AI service did not answer/,
+    );
+    expect(html).not.toContain('meeting-chat-error');
     expect(button(html, 'Try again')).not.toBeNull();
 
     const stopped = render(
@@ -157,7 +161,9 @@ describe('ChatPanel', () => {
     );
     expect(textOf(stopped)).toContain('You stopped this answer.');
     expect(stopped).not.toContain('role="alert"');
-    expect(button(stopped, 'Ask again')).not.toBeNull();
+    // One word for a retry (docs/design.md, naming list): a stopped answer is asked with Try again.
+    expect(button(stopped, 'Try again')).not.toBeNull();
+    expect(stopped).not.toContain('Ask again');
 
     const tooLong = render(
       state({
@@ -167,7 +173,6 @@ describe('ChatPanel', () => {
       }),
     );
     expect(button(tooLong, 'Try again')).toBeNull();
-    expect(button(tooLong, 'Ask again')).toBeNull();
   });
 
   it('while an answer is coming, another answer cannot be asked again', () => {
@@ -175,11 +180,12 @@ describe('ChatPanel', () => {
     expect(button(html, 'Try again')).toMatch(/disabled=""/);
   });
 
-  it('the empty chat says what it can answer', () => {
+  it('the empty chat is only the box to ask in: the placeholder says what it is for', () => {
     const html = render(state());
-    expect(textOf(html)).toContain(
-      'Ask anything about this call: what was decided, a number someone gave, who said they would do what. Each answer links to the transcript lines behind it.',
-    );
+    // Empty states are absent (docs/design.md): no paragraph, no heading above the tab's own name.
+    expect(html).not.toContain('Ask anything about this call');
+    expect(html).not.toContain('meeting-chat-message');
+    expect(html).not.toContain('meeting-chat-title');
     expect(html).toContain('placeholder="Ask about this meeting"');
     // Nothing typed yet.
     expect(html).toMatch(/<button type="submit" class="btn" data-variant="ghost"[^>]* disabled=""/);
@@ -191,14 +197,18 @@ describe('ChatPanel', () => {
     expect(textOf(html)).toContain(
       'Could not open this chat: GET /v1/meetings/x/chat failed Try again',
     );
-    expect(html).toContain('role="alert"');
+    expect(html).toMatch(/<div class="problem" role="alert"><svg/);
+    expect(html).not.toMatch(/class="(?:[^"]* )?error[" ]/);
+    expect(button(html, 'Try again')).toMatch(/data-variant="secondary"/);
   });
 
   it('shows a notice that belongs to no one answer', () => {
     const html = render(
       state({ notice: 'Roger could not stop that answer (offline). It may still arrive.' }),
     );
-    expect(html).toMatch(/<p class="meeting-chat-notice" role="status">Roger could not stop/);
+    expect(html).toMatch(
+      /<div class="problem" role="status"><svg[^>]*>.*?<\/svg><span class="problem-text">Roger could not stop/,
+    );
   });
 });
 

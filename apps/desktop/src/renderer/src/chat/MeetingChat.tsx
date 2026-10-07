@@ -1,12 +1,14 @@
 import {
   Fragment,
   type KeyboardEvent,
+  type ReactNode,
   type RefObject,
   useLayoutEffect,
   useRef,
   useState,
 } from 'react';
 import { type CitationAttrs, isChatText, MAX_CHAT_TEXT_CHARS } from '../../../shared/notes';
+import { Icon } from '../components/ui/icons';
 import { CitationChipButton } from '../notes/CitationChip';
 import { useCitationNavigator } from '../transcript/transcriptNavigator';
 import {
@@ -19,7 +21,7 @@ import {
 } from './chatStream';
 import { type ChatExchange, type MeetingChatState, useMeetingChat } from './useMeetingChat';
 // The chip's look: CitationChipButton is the notes' chip, and NoteEditor.tsx, which imports its
-// styles, may not be on the page (the chat pane alone on a narrow window).
+// styles, may not be loaded when the chat is the first pane shown.
 import '../notes/notes.css';
 import './chat.css';
 
@@ -43,7 +45,11 @@ export interface ChatActions {
   reload(): void;
 }
 
-/** The panel as drawn from the chat's state: the thread, then the box to ask in. */
+/**
+ * The panel as drawn from the chat's state: the thread, then the box to ask in. No heading: the
+ * tab says Chat, and an empty thread is no text at all (docs/design.md, "Empty states are
+ * absent"): the box's placeholder says what it is for.
+ */
 export function ChatPanel({ state, actions }: { state: MeetingChatState; actions: ChatActions }) {
   // Whether the log shows its end, so a growing answer keeps it there. Read and written only in
   // handlers and effects: a ref read during render breaks react-hooks/refs.
@@ -55,13 +61,8 @@ export function ChatPanel({ state, actions }: { state: MeetingChatState; actions
   };
   return (
     <section className="meeting-chat" aria-label="Chat">
-      <h2 className="meeting-chat-title">Chat</h2>
       <ChatLog state={state} actions={actions} atEndRef={atEndRef} />
-      {state.notice === null ? null : (
-        <p className="meeting-chat-notice" role="status">
-          {state.notice}
-        </p>
-      )}
+      {state.notice === null ? null : <ChatProblem role="status">{state.notice}</ChatProblem>}
       <ChatComposer ready={state.status === 'ready'} answering={state.answering} onAsk={ask} />
     </section>
   );
@@ -106,6 +107,29 @@ function ChatLog({
   );
 }
 
+/**
+ * A problem in the chat: the shared `.problem` line (styles.css), an icon, words and at most one
+ * secondary action, never a box or red. `alert` for what the person must act on (a thread that did
+ * not open, an answer that failed), `status` for a quiet note.
+ */
+function ChatProblem({
+  role,
+  children,
+  action,
+}: {
+  role: 'alert' | 'status';
+  children: ReactNode;
+  action?: ReactNode;
+}) {
+  return (
+    <div className="problem" role={role}>
+      <Icon name="circle-alert" />
+      <span className="problem-text">{children}</span>
+      {action}
+    </div>
+  );
+}
+
 function LogContent({ state, actions }: { state: MeetingChatState; actions: ChatActions }) {
   if (state.status === 'loading') {
     return (
@@ -116,28 +140,24 @@ function LogContent({ state, actions }: { state: MeetingChatState; actions: Chat
   }
   if (state.status === 'failed') {
     return (
-      <div className="error meeting-chat-read-error" role="alert">
-        Could not open this chat: {state.error}{' '}
-        <button
-          type="button"
-          className="btn"
-          data-variant="secondary"
-          data-size="sm"
-          onClick={() => {
-            actions.reload();
-          }}
-        >
-          Try again
-        </button>
-      </div>
-    );
-  }
-  if (state.exchanges.length === 0) {
-    return (
-      <p className="meeting-chat-message">
-        Ask anything about this call: what was decided, a number someone gave, who said they would
-        do what. Each answer links to the transcript lines behind it.
-      </p>
+      <ChatProblem
+        role="alert"
+        action={
+          <button
+            type="button"
+            className="btn"
+            data-variant="secondary"
+            data-size="sm"
+            onClick={() => {
+              actions.reload();
+            }}
+          >
+            Try again
+          </button>
+        }
+      >
+        Could not open this chat: {state.error}
+      </ChatProblem>
     );
   }
   return state.exchanges.map((exchange) => (
@@ -184,13 +204,10 @@ function Exchange({
             {live ? 'Writing...' : 'Roger is still writing this answer.'}
           </p>
         ) : null}
-        {answer.error === null ? null : (
-          <p
-            className={stopped ? 'meeting-chat-state' : 'meeting-chat-error'}
-            role={stopped ? undefined : 'alert'}
-          >
-            {describeAnswerError(answer.error)}
-          </p>
+        {answer.error === null ? null : stopped ? (
+          <p className="meeting-chat-state">{describeAnswerError(answer.error)}</p>
+        ) : (
+          <ChatProblem role="alert">{describeAnswerError(answer.error)}</ChatProblem>
         )}
         {live && coming ? (
           <div className="meeting-chat-actions">
@@ -219,7 +236,7 @@ function Exchange({
                 actions.retry(question.id);
               }}
             >
-              {stopped ? 'Ask again' : 'Try again'}
+              Try again
             </button>
           </div>
         ) : null}

@@ -190,7 +190,7 @@ export class MeetingChatStore {
         // question back until the meeting is opened again.
         //
         // Main may answer only once the API stopped the run, long after its `cancelled` offered
-        // Ask again: a retry main took meanwhile is a new paid run, not this Stop's to end.
+        // Try again: a retry main took meanwhile is a new paid run, not this Stop's to end.
         if (this.tries.get(questionId) !== stoppedTry) return;
         const current = this.live.get(questionId);
         if (current === undefined || !isAnswering(current)) return;
