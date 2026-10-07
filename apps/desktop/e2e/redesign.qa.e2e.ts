@@ -146,14 +146,7 @@ interface KnownFailure {
   /** The file and what the screen shows. */
   reason: string;
 }
-const KNOWN_FAILURES: readonly KnownFailure[] = [
-  {
-    slug: 'past-menu',
-    width: 390,
-    reason:
-      'components/ui/Menu.tsx and styles.css `.menu` (R0b), with meeting/MeetingHeader.tsx (R2): at 390 the actions wrap under the title, the ⋯ trigger sits at the left edge and the menu opens `right: 0` of it, so it runs 142 px off the left edge of the window and its labels are cut off',
-  },
-];
+const KNOWN_FAILURES: readonly KnownFailure[] = [];
 
 async function verifyAndShoot(preview: qa.PreviewPage, combo: Combo, spec: Spec): Promise<void> {
   const failure = await checkView(preview, spec).then(
@@ -207,6 +200,7 @@ async function checkView(preview: qa.PreviewPage, spec: Spec): Promise<void> {
   } else if (primary.covered !== null) {
     throw new Error(`${label(primary)} is covered by ${primary.covered}`);
   }
+  await expectMenuInWindow(page);
   for (const text of spec.problems ?? []) await expectProblem(page, text);
   for (const text of spec.shows ?? []) await expectTextVisible(page, text);
   for (const text of spec.hides ?? []) await expectTextHidden(page, text);
@@ -299,6 +293,17 @@ async function expectNoRunningAnimation(page: Page): Promise<void> {
  * Neither check below scrolls: a scroll would move the page the shot is taken of (a transcript that
  * landed on its newest line would be shot at its top). The shell is grown to its content first.
  */
+
+/** An open menu lies wholly inside the window: a list cut off at an edge hides its items (R13). */
+async function expectMenuInWindow(page: Page): Promise<void> {
+  const outside = await page.evaluate(() =>
+    [...document.querySelectorAll<HTMLElement>('[role="menu"]')]
+      .map((menu) => menu.getBoundingClientRect())
+      .filter((box) => box.left < 0 || box.right > innerWidth || box.top < 0)
+      .map((box) => `${Math.round(box.left)}..${Math.round(box.right)} of ${innerWidth}`),
+  );
+  if (outside.length > 0) throw new Error(`a menu runs outside the window: ${outside.join('; ')}`);
+}
 
 /** A problem line holding `text` that a person can see: it has a box and nothing covers its centre. */
 async function expectProblem(page: Page, text: string): Promise<void> {
@@ -1044,8 +1049,8 @@ describe('past', () => {
         );
         await qa.settle(page);
         await page.getByRole('button', { name: 'More actions' }).click();
-        // By the DOM, not the pointer: at 390 wide the menu is off the window (KNOWN_FAILURES, past-menu).
-        await page.getByRole('menuitem', { name: 'Write again as General' }).dispatchEvent('click');
+        // A real click: the menu must be inside the window at 390 too (checkView's bounds check).
+        await page.getByRole('menuitem', { name: 'Write again as General' }).click();
         await page.waitForSelector('dialog[open]');
         await qa.settle(page);
         await shoot({

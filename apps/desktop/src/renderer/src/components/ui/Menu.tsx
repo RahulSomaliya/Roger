@@ -1,6 +1,7 @@
-import { useEffect, useId, useRef, useState, type KeyboardEvent } from 'react';
+import { useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent } from 'react';
 import { Icon } from './icons';
 import { nextIndex } from './keyNav';
+import { menuSide } from './menuPlacement';
 import { useLeave } from './useLeave';
 
 /**
@@ -8,6 +9,10 @@ import { useLeave } from './useLeave';
  * notes), behind a ghost icon button. Keyboard: Enter, Space or ArrowDown on the button opens it
  * on the first item, arrows move (wrapping), Esc closes and puts focus back on the button, Tab
  * closes, and a pointer press outside closes. Picking an item runs it, then closes.
+ *
+ * The list stays inside the window at every width: `align` is the side asked for, and the open list
+ * flips to the other one when it would run off the window (`menuSide`). A fixed side opened 142 px
+ * off the left edge at 390 px, where the meeting header's buttons wrap under the title.
  */
 export interface MenuEntry {
   id: string;
@@ -25,6 +30,8 @@ export interface MenuProps {
 
 /** Must match `--dur-menu-leave` in styles.css (useLeave.ts says why it is a timer). */
 const LEAVE_MS = 140;
+/** The room the open list keeps from the window's edge: `--space-2`. */
+const MARGIN_PX = 8;
 
 export function Menu({ label, items, align = 'end' }: MenuProps) {
   const [open, setOpen] = useState(false);
@@ -34,6 +41,31 @@ export function Menu({ label, items, align = 'end' }: MenuProps) {
   const { leaving, start } = useLeave(open, LEAVE_MS, () => {
     setOpen(false);
   });
+
+  // Keep the open list inside the window. It writes the attribute on the element, not state: a
+  // state write in an effect renders the list once on the wrong side first, and React leaves the
+  // attribute alone on later renders because the `align` prop does not change.
+  useLayoutEffect(() => {
+    if (!open) return;
+    const place = (): void => {
+      const list = anchor.current?.querySelector<HTMLElement>('.menu');
+      const button = trigger.current;
+      if (!list || !button) return;
+      const box = button.getBoundingClientRect();
+      list.dataset.align = menuSide(
+        align,
+        box,
+        list.offsetWidth,
+        document.documentElement.clientWidth,
+        MARGIN_PX,
+      );
+    };
+    place();
+    window.addEventListener('resize', place);
+    return () => {
+      window.removeEventListener('resize', place);
+    };
+  }, [open, align]);
 
   // Focus the first item as the list appears. Not a setState: the effect only moves focus.
   useEffect(() => {
