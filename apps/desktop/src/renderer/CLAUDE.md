@@ -37,5 +37,26 @@ when you hit a new one.
   and focus: a line that grows would move the notes under the cursor, and `display: none` hides the
   text from screen readers. Its buttons are `.calendar-notice-buttons`; `.calendar-notice-actions`
   is the settings editor's (redesign R9).
-- A regex word boundary matches inside a hyphenated class name: assert a removed class with
-  `/class="(?:[^"]* )?notice[" ]/`, not `\bnotice\b`, which matched `calendar-notice` (redesign R9).
+- A regex word boundary matches inside a hyphenated class name, and `toContain` matches a longer
+  one: assert a removed class with `/class="(?:[^"]* )?notice[" ]/`, not `\bnotice\b` (it matched
+  `calendar-notice`) or `toContain('capture-warning')` (the wrapper is `capture-warnings`)
+  (redesign R9, R3).
+- `renderToStaticMarkup` escapes an apostrophe as `&#x27;`: a test helper that strips tags also
+  replaces it before matching text that holds one (redesign R3).
+- The banner hides loud capture warnings on the recording meeting's own page, because the header's
+  status line says them there; both decide with `captureStatusFor` (`meeting/liveMeeting.ts`).
+  Change both in one commit, or a warning shows twice or not at all (redesign R3).
+- The renderer has no logger and `no-console` is an error: report an error the page shows on
+  purpose nowhere with `reportError(new Error(...))` in an effect (`AppLayout`, the theme
+  preference), never `console` (redesign R3).
+- Two `AiNotesSession`s run per meeting page: the header's (`useMeetingNotes`) and the AI tab's
+  (`AiNotesPanel`). A confirmation or error one holds is invisible to the other, so each action's
+  failure shows in the surface of the session that ran it (redesign R4).
+- Deleting a phase or key from a shared type (`needs_template`, a preference key) fails typecheck in
+  `e2e/*.qa.e2e.ts` and in every test double typed as the whole type: grep `e2e` and `preview`
+  first (redesign R4).
+- A meeting pane scrolls, so it clips a focus ring (2 px plus a 2 px offset) on a control flush to
+  its edge: keep `--space-1` of room at its sides and bottom (`chat/chat.css`) (redesign R5).
+- Set up Roger has no header, so its only exit is the button at the foot of `SetupScreen`: Later
+  while a check needs you, Done when all pass. Never hide both behind `needsYou()`, or a person who
+  cannot pass a check yet is stuck on `#/setup` (redesign R11).
