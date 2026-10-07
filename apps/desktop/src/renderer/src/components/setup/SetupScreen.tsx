@@ -180,6 +180,7 @@ function SetupRow({ view, state, onAction }: SetupRowProps) {
               key={action.kind === 'open-pane' ? `${action.kind}-${action.pane}` : action.kind}
               type="button"
               className={leads && index === 0 ? 'setup-primary' : 'shell-button'}
+              data-action={action.kind}
               disabled={state.running !== null}
               onClick={() => {
                 onAction(view.id, action);
