@@ -69,7 +69,7 @@ export interface RoutePage {
  * (main/lifecycle.ts, watchWindow) stops the recording on any `did-start-loading` as a reload.
  * Whether Electron emits that for a same-document navigation was not checked (it needs the running
  * app; the controller's Electron check after wave 2 settles it); if it does, a hash-driven router
- * ends the call the moment "New note" opens the meeting. Until M2-T12 removes that stop, the
+ * ends the call the moment Start notes opens the meeting. Until M2-T12 removes that stop, the
  * route lives here and in sessionStorage, which a reload keeps. The URL hash is read once at
  * start (a QA script's `index.html#/settings` wins over the saved route) and followed when someone
  * else changes it; it is not updated as the user moves around.
