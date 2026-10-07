@@ -12,6 +12,7 @@ import { type CaptureRequests, type CaptureWindow, registerIpcHandlers } from '.
 import type { IpcMainLike } from '../ipc/trust';
 import type { QuitHook } from '../lifecycle';
 import { errorMessage, type Logger } from '../logger';
+import { CallOffer } from '../detect/CallOffer';
 import {
   MeetingAppMonitor,
   type MeetingAppMonitorOptions,
@@ -73,6 +74,13 @@ export interface CaptureRuntime {
    * closes: a timer still running after the close meets "database is not open".
    */
   quitHooks: QuitHook[];
+  /**
+   * M2-T17b: call offers and auto-stop. Its prompt service is late-bound: index.ts calls
+   * `callOffer.bindPrompts(calendar.prompts)` right after `createCalendarRuntime` (`[slot
+   * M5-T9c]`) builds the PromptService, which is after this runtime. Until then an offer that
+   * falls due is logged and dropped; auto-stop does not need it.
+   */
+  callOffer: CallOffer;
 }
 
 /**
@@ -386,6 +394,24 @@ export function createCaptureRuntime(deps: CaptureRuntimeDeps): CaptureRuntime {
 
   // [slot M2-T17b] the call offer and auto-stop
 
+  // An app that holds the mic for 5 s (a browser 15 s) is offered to M5's prompt panel as
+  // `call_detected`; nothing starts without the person's click. A recording in which a call app
+  // was seen stops through the normal stop (`call-ended`) once none holds the mic for 15 s (a
+  // browser 30 s), and `notifier` says so. `config.capture.callDetection` turns both off. It
+  // fills `status.trigger` and listens to powerMonitor beside PowerCoordinator for the 60 s wake
+  // grace. PromptService does not exist yet here: index.ts binds it (see CaptureRuntime.callOffer).
+  const callOffer = new CallOffer({
+    enabled: config.capture.callDetection,
+    monitor: meetingAppMonitor,
+    capture,
+    notifier,
+    powerMonitor,
+    logger: logger.child({ component: 'call-offer' }),
+    clock,
+  });
+  callOffer.attach();
+  quitHooks.push(callOffer.quitHook);
+
   // [slot M2-T18] sleep and wake: PowerCoordinator
 
   // The only owner of powerMonitor's suspend and resume for capture (lifecycle.ts no longer stops
@@ -446,7 +472,7 @@ export function createCaptureRuntime(deps: CaptureRuntimeDeps): CaptureRuntime {
     getWindow: deps.getWindow,
     logger: logger.child({ component: 'ipc' }),
   });
-  return { capture, budget, quitHooks };
+  return { capture, budget, quitHooks, callOffer };
 }
 
 /**
