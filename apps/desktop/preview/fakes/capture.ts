@@ -6,11 +6,7 @@ import {
   storedMeetingText,
   type TranscriptSegmentChange,
 } from '../../src/shared/capture';
-import {
-  captureChannels,
-  type CaptureApi,
-  type MeetingKeptForRerun,
-} from '../../src/shared/ipc/capture';
+import { captureChannels, type CaptureApi } from '../../src/shared/ipc/capture';
 import type { FakeHub } from './hub';
 
 /**
@@ -23,9 +19,7 @@ import type { FakeHub } from './hub';
  * Capture reports have no event of their own, so a scenario describes a meeting's report by
  * emitting it on the CaptureGetReport channel (`hub.emit(IpcChannel.CaptureGetReport, report)`):
  * it becomes that meeting's answer, and a re-run or a delete changes it as main would. A meeting
- * no scenario described has an empty report. The list of meetings kept for a re-run is seeded the
- * same way (`hub.emit(IpcChannel.AudioListKeptForRerun, list)`), and a re-run or a delete takes
- * that meeting off it, as main's would. A line a scenario hides (a `hidden` event on
+ * no scenario described has an empty report. A line a scenario hides (a `hidden` event on
  * TranscriptSegmentChanged) can be unhidden, which sends the `unhidden` event main sends; a line
  * it only trims cannot, as in main.
  *
@@ -58,14 +52,6 @@ export function createCaptureFake(hub: FakeHub): CaptureApi {
   const saveReport = (report: CaptureReport): CaptureReport => {
     reports.set(report.meetingId, report);
     return report;
-  };
-
-  let keptForRerun: MeetingKeptForRerun[] = [];
-  hub.on(captureChannels.AudioListKeptForRerun, (list: MeetingKeptForRerun[]) => {
-    keptForRerun = list;
-  });
-  const noLongerKept = (meetingId: string): void => {
-    keptForRerun = keptForRerun.filter((meeting) => meeting.meetingId !== meetingId);
   };
 
   let pendingStart: StartCaptureRequest | null = null;
@@ -131,7 +117,6 @@ export function createCaptureFake(hub: FakeHub): CaptureApi {
     // Every open gap comes back, as if its audio was kept and the vendor heard it.
     rerunGaps: ({ meetingId }) =>
       hub.request(captureChannels.CaptureRerunGaps, () => {
-        noLongerKept(meetingId);
         const report = reportOf(meetingId);
         const now = new Date().toISOString();
         return saveReport({
@@ -146,7 +131,6 @@ export function createCaptureFake(hub: FakeHub): CaptureApi {
       }),
     deleteMeetingAudio: ({ meetingId }) =>
       hub.request(captureChannels.AudioDeleteMeeting, () => {
-        noLongerKept(meetingId);
         return saveReport({
           ...reportOf(meetingId),
           backup: {
@@ -158,8 +142,6 @@ export function createCaptureFake(hub: FakeHub): CaptureApi {
           },
         });
       }),
-    listMeetingsKeptForRerun: () =>
-      hub.request(captureChannels.AudioListKeptForRerun, () => [...keptForRerun]),
     unhideSegment: ({ segmentId }) =>
       hub.request(captureChannels.TranscriptUnhideSegment, () => {
         const line = hidden.get(segmentId);

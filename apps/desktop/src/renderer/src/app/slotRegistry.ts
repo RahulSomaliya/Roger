@@ -22,8 +22,6 @@ export interface MeetingSlotProps {
 export interface SlotPropsByName {
   /** Above every page, the setup route included: M2's capture warnings. */
   banner: NoProps;
-  /** Home's sections: M5's Today. */
-  home: NoProps;
   /** Settings sections, each with its own heading: M3's jargon list, M4's notes, M5's calendar. */
   settings: NoProps;
   /** The full-window setup route: M2's permission setup. */
@@ -97,7 +95,6 @@ export function mergeSlots(files: Readonly<Record<string, SlotContributions>>): 
   };
   return {
     banner: merge('banner'),
-    home: merge('home'),
     settings: merge('settings'),
     setup: merge('setup'),
     meetingBanner: merge('meetingBanner'),

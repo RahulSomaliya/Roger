@@ -6,7 +6,6 @@ import type { MeetingSlotProps } from '../app/slotRegistry';
 import { Icon } from '../components/ui/icons';
 import type { CalendarSettingsState } from './calendarSettingsStore';
 import { useCalendarSettings } from './useCalendar';
-import './today.css';
 import './calendarNotice.css';
 
 /**

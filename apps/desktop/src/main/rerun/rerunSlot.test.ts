@@ -1,11 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { BACKUP_KEEP_FOR_RERUN_MAX_DAYS, type CaptureReport } from '../../shared/capture';
+import type { CaptureReport } from '../../shared/capture';
 import { IpcChannel } from '../../shared/ipc';
-import type { MeetingKeptForRerun } from '../../shared/ipc/capture';
 import { ApiClient } from '../api/ApiClient';
 import {
   copyBackupFixture,
-  FIXTURE_ENDED_AT_MS,
   FIXTURE_GAP_ID,
   FIXTURE_MEETING_ID,
   type FixtureCopy,
@@ -24,7 +22,6 @@ vi.mock('electron', async () =>
 
 const logger = createLogger({ level: 'error', format: 'json', sink: () => undefined });
 const SENDER: SenderEvent = { sender: { id: 7 } };
-const DAY_MS = 86_400_000;
 
 describe('the M2-T16 slot of createCaptureRuntime', () => {
   let fixture: FixtureCopy | null = null;
@@ -75,15 +72,6 @@ describe('the M2-T16 slot of createCaptureRuntime', () => {
         finished: 0,
       });
     });
-    await expect(ask<MeetingKeptForRerun[]>(IpcChannel.AudioListKeptForRerun)).resolves.toEqual([
-      {
-        meetingId: FIXTURE_MEETING_ID,
-        title: 'Backup fixture',
-        keepUntil: new Date(
-          FIXTURE_ENDED_AT_MS + BACKUP_KEEP_FOR_RERUN_MAX_DAYS * DAY_MS,
-        ).toISOString(),
-      },
-    ]);
 
     // Asked meanwhile, the re-run answers once the launch's run of that meeting is over.
     const report = await ask<CaptureReport>(IpcChannel.CaptureRerunGaps, {
@@ -92,7 +80,6 @@ describe('the M2-T16 slot of createCaptureRuntime', () => {
     expect(report.gaps.find((gap) => gap.id === FIXTURE_GAP_ID)?.recoveredAt).not.toBeNull();
     expect(report.backup.keptForRerun).toBe(false);
     expect(runtime.capture.getStatus().rerun ?? null).toBeNull();
-    await expect(ask<MeetingKeptForRerun[]>(IpcChannel.AudioListKeptForRerun)).resolves.toEqual([]);
 
     // The fake heard the call audio's tone in the gap: one line, re-run, saved; its use metered.
     const rerun = store

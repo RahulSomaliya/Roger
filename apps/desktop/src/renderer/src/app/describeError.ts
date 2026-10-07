@@ -28,7 +28,7 @@ export function describeReadFailure(error: unknown): string {
   if (status === '404' || /\bnot found$/i.test(text)) {
     return "Roger's server does not have this meeting yet.";
   }
-  if (status !== undefined && status.startsWith('5')) return "Roger's server had a problem.";
+  if (status?.startsWith('5') === true) return "Roger's server had a problem.";
   if (/^[A-Z]+ \/\S* returned non-JSON$/.test(text)) {
     return "Roger's server sent an answer Roger could not read.";
   }

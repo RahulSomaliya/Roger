@@ -910,17 +910,17 @@ describe.each(qa.QA_THEMES.flatMap((theme) => qa.QA_WIDTHS.map((width) => ({ the
           `offline-${tag}`,
           'The API is offline: the chat says it could not open, with Try again; the box cannot ask meanwhile',
           async () => {
-            expect(await textOf(page, `${CHAT_LOG} .meeting-chat-read-error`)).toMatch(
+            expect(await textOf(page, `${CHAT_LOG} .problem`)).toMatch(
               /^Could not open this chat\. Roger could not reach its server\. Try again$/,
             );
-            await qa.expectVisible(page, `${CHAT_LOG} .meeting-chat-read-error button`);
+            await qa.expectVisible(page, `${CHAT_LOG} .problem button`);
             await page.fill(INPUT, 'How many lines?');
             expect(await page.isDisabled(ASK)).toBe(true);
             await page.fill(INPUT, '');
           },
         );
         await qa.setApiOffline(page, false);
-        await page.click(`${CHAT_LOG} .meeting-chat-read-error button`);
+        await page.click(`${CHAT_LOG} .problem button`);
         await qa.settle(page);
         await shootChecked(
           preview,

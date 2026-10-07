@@ -21,7 +21,6 @@ export const captureChannels = {
   CaptureGetReport: 'capture:get-report',
   CaptureRerunGaps: 'capture:rerun-gaps',
   AudioDeleteMeeting: 'audio:delete-meeting',
-  AudioListKeptForRerun: 'audio:list-kept-for-rerun',
   TranscriptUnhideSegment: 'transcript:unhide-segment',
   CaptureTakePendingStart: 'capture:take-pending-start',
   /** renderer → main, fire and forget */
@@ -91,21 +90,6 @@ export interface SegmentRequest {
   segmentId: string;
 }
 
-/**
- * A meeting whose audio is kept past its retention for a re-run (M2 D5): a gap of it is not yet
- * filled (a failed re-run counts). Home's card lists these (M2-T20b).
- */
-export interface MeetingKeptForRerun {
-  meetingId: string;
-  title: string;
-  /**
-   * ISO 8601 instant, UTC, when its audio is deleted, by the same rule as its report's
-   * `backup.keepUntil` (audioKeep); null while the meeting is open (being recorded), when nothing
-   * deletes it.
-   */
-  keepUntil: string | null;
-}
-
 /** Capture's part of `window.roger`. */
 export interface CaptureApi {
   /**
@@ -149,11 +133,6 @@ export interface CaptureApi {
   rerunGaps(request: MeetingRequest): Promise<CaptureReport>;
   /** Deletes the meeting's local audio backup (its lines stay) and answers the report after it. */
   deleteMeetingAudio(request: MeetingRequest): Promise<CaptureReport>;
-  /**
-   * Every meeting whose audio is kept for a re-run, newest first (M2-T16). Ask again after a
-   * re-run or a delete: neither sends an event that changes this list.
-   */
-  listMeetingsKeptForRerun(): Promise<MeetingKeptForRerun[]>;
   /**
    * Shows a hidden echo line again, which uploads it; a segment change event follows. Only a
    * `hidden` line: a `trimmed` one already uploads, and main's store will not unhide it

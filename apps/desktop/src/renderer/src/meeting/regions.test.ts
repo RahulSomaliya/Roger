@@ -54,7 +54,6 @@ vi.mock('../app/slots', () => {
   };
   const slots: Slots = {
     banner: [],
-    home: [],
     settings: [],
     setup: [],
     meetingBanner: [],
