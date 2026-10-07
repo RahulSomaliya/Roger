@@ -147,6 +147,7 @@ function state(overrides: Partial<AiNotesState> = {}): AiNotesState {
     lastRun: { status: 'none' },
     templates: { status: 'ready', value: TEMPLATES },
     confirm: null,
+    picker: null,
     busy: null,
     cancelling: false,
     actionError: null,
@@ -155,6 +156,9 @@ function state(overrides: Partial<AiNotesState> = {}): AiNotesState {
 }
 
 const ACTIONS: AiNotesPanelActions = {
+  openPicker: () => undefined,
+  closePicker: () => undefined,
+  pick: () => Promise.resolve(true),
   generate: () => Promise.resolve(true),
   regenerate: () => Promise.resolve(true),
   restorePrevious: () => Promise.resolve(true),
@@ -185,6 +189,19 @@ describe('AiNotesView', () => {
     expect(html).toContain('No AI notes yet');
     expect(html).toContain('>Generate notes</button>');
     expect(html).not.toContain('data-editor');
+  });
+
+  it('shows the template picker the user opened, in place of the empty state', () => {
+    const generate = render(state({ picker: 'generate' }), 'client_call');
+    expect(generate).toContain('>Which kind of call was this?</p>');
+    expect(generate).toContain('Roger writes the AI notes in the shape of the call.');
+    expect(generate).toContain('Suggested');
+    expect(generate).toContain('>Cancel</button>');
+    expect(generate).not.toContain('No AI notes yet');
+
+    const regenerate = render(state({ note: aiNote(), picker: 'regenerate' }));
+    expect(regenerate).toContain('>Regenerate as which kind of call?</p>');
+    expect(regenerate).toContain('Restore previous notes brings them back.');
   });
 
   it('asks which kind of call it was, with Not now', () => {

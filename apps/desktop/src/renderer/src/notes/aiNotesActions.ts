@@ -69,6 +69,9 @@ export type LastRunRead =
 /** An action waiting for the user's yes: it would replace AI notes edited since their run. */
 export type Confirmation = { action: 'regenerate'; templateId: string } | { action: 'restore' };
 
+/** Why the user opened the template picker: a first generate, or a regenerate. */
+export type PickerPurpose = 'generate' | 'regenerate';
+
 export interface AiNotesState {
   /** `loading` until main answers with the pending generate and the AI note; `failed` if not. */
   status: 'loading' | 'ready' | 'failed';
@@ -81,6 +84,11 @@ export interface AiNotesState {
   /** In picker order (`orderTemplates`). */
   templates: Loadable<NoteTemplate[]>;
   confirm: Confirmation | null;
+  /**
+   * The template picker the user opened (Generate notes, Regenerate); null while it is closed.
+   * Never open while a generate is pending or a run streams (`pickerMoot`).
+   */
+  picker: PickerPurpose | null;
   /** A generate or a restore on its way to main; the panel's buttons wait for it. */
   busy: 'generate' | 'restore' | null;
   /** Stop was pressed and main has not answered; only the Stop button waits for it. */
@@ -280,6 +288,17 @@ function failureOf(
   return null;
 }
 
+/**
+ * A generate is pending or a run streams, so the template picker the user opened is moot: a pick
+ * would only start a second run.
+ */
+function pickerMoot(
+  pending: PendingGenerateState | null,
+  stream: AiNotesStreamView | null,
+): boolean {
+  return pending !== null || shownStream(stream) === 'live';
+}
+
 function sameDoc(a: NoteDoc, b: NoteDoc): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
 }
@@ -293,6 +312,7 @@ const INITIAL: AiNotesState = {
   lastRun: { status: 'none' },
   templates: { status: 'loading' },
   confirm: null,
+  picker: null,
   busy: null,
   cancelling: false,
   actionError: null,
@@ -372,6 +392,26 @@ export class AiNotesSession {
   reloadRun(): void {
     const { lastRun } = this.state;
     if (lastRun.status === 'failed') this.readRun(lastRun.runId);
+  }
+
+  /** Opens the template picker; it stays closed while a generate is pending or a run streams. */
+  openPicker(purpose: PickerPurpose): void {
+    this.set({ picker: purpose });
+  }
+
+  closePicker(): void {
+    this.set({ picker: null });
+  }
+
+  /**
+   * The user's pick in the picker they opened: a first generate, or a regenerate (which asks
+   * first over notes edited since their run). Resolves false when no picker was open.
+   */
+  async pick(templateId: string): Promise<boolean> {
+    const { picker } = this.state;
+    if (picker === null) return false;
+    this.set({ picker: null });
+    return picker === 'regenerate' ? this.regenerate(templateId) : this.generate(templateId);
   }
 
   /**
@@ -575,7 +615,13 @@ export class AiNotesSession {
   }
 
   private set(change: Partial<AiNotesState>): void {
-    this.state = { ...this.state, ...change };
+    const next = { ...this.state, ...change };
+    // A generate that starts while the picker is open (Stop with auto-generate on, during the
+    // call) closes it for good, here for every change. Trap: only hiding it while the generate is
+    // pending brings it back, focused, once the run ends, and a stray Enter then starts a second
+    // paid run over the notes just written, with no question asked.
+    if (next.picker !== null && pickerMoot(next.pending, next.stream)) next.picker = null;
+    this.state = next;
     for (const listener of [...this.listeners]) listener();
   }
 }

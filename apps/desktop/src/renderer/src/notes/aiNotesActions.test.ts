@@ -255,6 +255,73 @@ describe('the waiting and ask states', () => {
   });
 });
 
+describe('the template picker', () => {
+  it('a generate that starts while it is open closes it for good', async () => {
+    const main = new FakeMain();
+    const session = await opened(main);
+    session.openPicker('generate');
+    expect(session.getState().picker).toBe('generate');
+
+    // Stop with auto-generate on: main writes a pending generate while the picker is open.
+    main.pendingChanged(pendingGenerate({ phase: 'running' }));
+    expect(session.getState().picker).toBeNull();
+
+    // The run ends: the picker never comes back over the notes it wrote.
+    main.event({ type: 'run', runId: NEXT_RUN, model: 'm', templateId: 'general', lineCount: 9 });
+    main.noteChanged(aiNote({ lastRunId: NEXT_RUN, baseVersion: 5, generatedVersion: 5 }));
+    main.pendingChanged(null);
+    expect(session.getState().picker).toBeNull();
+    expect(main.api.generateNotes).not.toHaveBeenCalled();
+  });
+
+  it('a run that starts streaming closes it, and it never opens over one', async () => {
+    const main = new FakeMain();
+    main.ai = aiNote();
+    const session = await opened(main);
+    session.openPicker('regenerate');
+    main.event({ type: 'run', runId: NEXT_RUN, model: 'm', templateId: 'general', lineCount: 9 });
+    expect(session.getState().picker).toBeNull();
+
+    session.openPicker('regenerate');
+    expect(session.getState().picker).toBeNull();
+    main.pendingChanged(pendingGenerate({ phase: 'waiting_for_lines', waitingLines: 2 }));
+    session.openPicker('generate');
+    expect(session.getState().picker).toBeNull();
+  });
+
+  it('a pick generates or regenerates, as the picker was opened for, and closes it', async () => {
+    const main = new FakeMain();
+    const session = await opened(main);
+    session.openPicker('generate');
+    expect(await session.pick('standup')).toBe(true);
+    expect(session.getState().picker).toBeNull();
+    expect(main.api.generateNotes).toHaveBeenCalledWith({
+      meetingId: MEETING,
+      templateId: 'standup',
+    });
+
+    // Regenerating AI notes edited since their run still asks first.
+    main.noteChanged(aiNote({ dirty: true }));
+    session.openPicker('regenerate');
+    expect(await session.pick('general')).toBe(false);
+    expect(session.getState().picker).toBeNull();
+    expect(session.getState().confirm).toEqual({ action: 'regenerate', templateId: 'general' });
+    expect(main.api.generateNotes).toHaveBeenCalledTimes(1);
+
+    // A pick with no picker open does nothing.
+    expect(await session.pick('general')).toBe(false);
+    expect(main.api.generateNotes).toHaveBeenCalledTimes(1);
+  });
+
+  it('Cancel closes it', async () => {
+    const main = new FakeMain();
+    const session = await opened(main);
+    session.openPicker('generate');
+    session.closePicker();
+    expect(session.getState().picker).toBeNull();
+  });
+});
+
 describe('regenerate and restore', () => {
   it('asks before regenerating AI notes edited since their run', async () => {
     const main = new FakeMain();

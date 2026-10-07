@@ -66,6 +66,9 @@ export function AiNotesPanel({ meetingId }: MeetingSlotProps) {
 /** What the view calls; AiNotesSession is one, a test passes stand-ins. */
 export type AiNotesPanelActions = Pick<
   AiNotesSession,
+  | 'openPicker'
+  | 'closePicker'
+  | 'pick'
   | 'generate'
   | 'regenerate'
   | 'restorePrevious'
@@ -87,11 +90,7 @@ export interface AiNotesViewProps {
   suggested: string | null;
 }
 
-/** Why the user opened the template picker: a first generate, or a regenerate. */
-type PickerPurpose = 'generate' | 'regenerate';
-
 export function AiNotesView({ meetingId, state, actions, suggested }: AiNotesViewProps) {
-  const [picker, setPicker] = useState<PickerPurpose | null>(null);
   if (state.status === 'loading') {
     return (
       <div className="ai-notes" aria-busy="true">
@@ -124,13 +123,8 @@ export function AiNotesView({ meetingId, state, actions, suggested }: AiNotesVie
 
   const layout = layoutAiNotes(state);
   const busy = state.busy !== null;
-  // A generate that started meanwhile (Stop with auto-generate on) makes the open picker moot.
-  const pickerShown = picker !== null && state.pending === null && layout.stream !== 'live';
-  const pick = (templateId: string): void => {
-    const purpose = picker;
-    setPicker(null);
-    void (purpose === 'regenerate' ? actions.regenerate(templateId) : actions.generate(templateId));
-  };
+  // The session closes the picker for good once a generate starts (AiNotesSession `set`).
+  const { picker } = state;
 
   return (
     <div className="ai-notes">
@@ -140,7 +134,7 @@ export function AiNotesView({ meetingId, state, actions, suggested }: AiNotesVie
           layout={layout}
           actions={actions}
           onRegenerate={() => {
-            setPicker('regenerate');
+            actions.openPicker('regenerate');
           }}
         />
       ) : null}
@@ -179,7 +173,7 @@ export function AiNotesView({ meetingId, state, actions, suggested }: AiNotesVie
       {layout.prompt?.kind === 'ask' ? (
         <AskWhichCall state={state} busy={busy} actions={actions} />
       ) : null}
-      {pickerShown ? (
+      {picker === null ? null : (
         <TemplatePicker
           question={
             picker === 'regenerate'
@@ -196,18 +190,20 @@ export function AiNotesView({ meetingId, state, actions, suggested }: AiNotesVie
           current={state.note?.templateId ?? null}
           takeFocus
           disabled={busy}
-          onPick={pick}
+          onPick={(templateId) => {
+            void actions.pick(templateId);
+          }}
           onReload={() => {
             actions.reloadTemplates();
           }}
           dismiss={{
             label: 'Cancel',
             onDismiss: () => {
-              setPicker(null);
+              actions.closePicker();
             },
           }}
         />
-      ) : null}
+      )}
       {layout.stream !== null && state.stream !== null ? (
         <StreamedNotes view={state.stream} live={layout.stream === 'live'} />
       ) : null}
@@ -216,7 +212,7 @@ export function AiNotesView({ meetingId, state, actions, suggested }: AiNotesVie
           <NoteEditor meetingId={meetingId} kind="ai" label={LABEL} readOnly={layout.readOnly} />
         </div>
       )}
-      {layout.empty && !pickerShown ? (
+      {layout.empty && picker === null ? (
         <div className="empty-state ai-notes-empty">
           <div>
             <p className="empty-state-title">No AI notes yet</p>
@@ -230,7 +226,7 @@ export function AiNotesView({ meetingId, state, actions, suggested }: AiNotesVie
             className="note-button note-button-primary"
             disabled={busy}
             onClick={() => {
-              setPicker('generate');
+              actions.openPicker('generate');
             }}
           >
             Generate notes
