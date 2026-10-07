@@ -1,52 +1,96 @@
 /*
- * The meeting page (MeetingPage.tsx, MeetingHeader.tsx, regions.tsx). Colours come only from the
- * theme tokens (theme/tokens.css); text in the accent hue reads --accent-ink, never the --accent
- * fill (theme/tokens.test.ts).
+ * The meeting page (MeetingPage.tsx, MeetingHeader.tsx, regions.tsx): one column at every width,
+ * one tab row (docs/design.md). Colours come only from the theme tokens (theme/tokens.css); type,
+ * space and radius from styles.css. The shell's `.shell-page` gives the gutter and scrolls.
  *
- * The page fills the shell's page height (app.css .meeting-page), so each region scrolls inside
- * itself. A region is a flex column: a child with `flex: 1` (transcript.css .live-transcript)
- * fills it.
- * These rules load before app.css (AppLayout imports this page first), so any rule here that
- * overrides one there needs the higher specificity, not the later place.
+ * The page fills the shell's page height, so a region scrolls inside itself. A pane is a flex
+ * column: a child with `flex: 1` (transcript.css .live-transcript) fills it. Everything here has
+ * its own `meeting-` name, so it never ties with a rule in app/app.css.
  */
 
-.meeting-page {
-  /* The panes sit side by side from 720px of page, whatever the window's sidebar takes. */
-  container: meeting / inline-size;
+.meeting {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  height: 100%;
+  /* 68ch of 16 px reading text plus its room (docs/design.md, Space). */
+  max-width: 760px;
+  margin: 0 auto;
 }
 
 /* Header */
+
+.meeting-header {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.meeting-header-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3) var(--space-4);
+}
+
+/* The title takes what the buttons leave, and the buttons wrap under it in a narrow window. */
+.meeting-heading {
+  flex: 1 1 240px;
+  min-width: 0;
+}
+
+.meeting-title {
+  margin: 0;
+  font-size: var(--text-2xl);
+  line-height: var(--leading-2xl);
+  letter-spacing: var(--tracking-2xl);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
 
 .meeting-title-pending {
   color: var(--ink-muted);
 }
 
-/* The recording state while Roger records this meeting; nothing once it stops. */
-.meeting-phase {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 2px 10px;
-  border-radius: 999px;
-  background: var(--line);
-  color: var(--ink);
-  font-size: 12px;
-  font-weight: 600;
-  white-space: nowrap;
+.meeting-time {
+  margin: var(--space-1) 0 0;
+  color: var(--ink-subtle);
+  font-variant-numeric: tabular-nums;
 }
 
-/* --ink, not --accent: as text on --fill the dot's colour is under 4.5:1. */
-.meeting-phase-recording {
-  background: var(--fill);
-  color: var(--ink);
-}
-
-.meeting-read-error {
+.meeting-actions {
   display: flex;
-  flex-wrap: wrap;
+  flex: none;
   align-items: center;
-  justify-content: space-between;
-  gap: 8px 12px;
+  gap: var(--space-2);
+}
+
+/*
+ * The status line (the meetingCaptureStatus slot). While recording it always holds one line, so
+ * a loud problem that takes the line's place never moves the editor under the person's cursor
+ * (docs/design.md, Traps); with nothing in it and nothing recording it takes no room.
+ */
+.meeting-status {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.meeting-status:empty {
+  display: none;
+}
+
+.meeting-header[data-recording] .meeting-status {
+  display: flex;
+  min-height: var(--leading-sm);
+}
+
+/* Under the header */
+
+.meeting-aside {
+  margin: 0;
+  max-width: var(--measure);
+  color: var(--ink-muted);
 }
 
 /* Regions */
@@ -55,145 +99,29 @@
   display: flex;
   flex: 1;
   flex-direction: column;
-  gap: 12px;
+  gap: var(--space-4);
   min-height: 0;
 }
 
-.meeting-region {
-  display: flex;
-  flex: 1;
-  flex-direction: column;
-  /*
-   * Under this the page scrolls instead: a tall capture report or a short window must not squeeze
-   * the transcript to nothing.
-   */
-  min-height: 240px;
+/* `.tabs` is inline-flex; as a flex item it would stretch across the page. */
+.meeting-body > .tabs {
+  align-self: flex-start;
 }
 
 /*
- * Narrow: one pane at a time. Hidden, not unmounted: the citation navigator finds a chip's lines
- * in the hidden transcript, then showTranscript brings it forward before it scrolls.
+ * Each pane scrolls inside itself: a tall AI notes pane once outgrew its grid row and was drawn
+ * over the chat under it, which then took the clicks meant for the notes (M4-T20). The closed
+ * panes carry `hidden`, which styles.css's global `[hidden]` rule keeps closed whatever `display`
+ * is set here.
  */
-.meeting-body[data-layout='split'] > .meeting-region:not([data-active]) {
-  display: none;
-}
-
-.meeting-pane-buttons {
-  display: flex;
-  align-self: flex-start;
-  gap: 2px;
-  padding: 3px;
-  border: 1px solid var(--line);
-  border-radius: 9px;
-  background: var(--surface);
-}
-
-.meeting-pane-button {
-  padding: 5px 14px;
-  border: none;
-  border-radius: 6px;
-  background: none;
-  color: var(--ink-muted);
-  font: inherit;
-  font-weight: 600;
-  cursor: pointer;
-}
-
-.meeting-pane-button[aria-pressed='true'] {
-  background: var(--fill);
-  color: var(--ink);
-}
-
-/* Wide: the notes beside the transcript, chat under the notes. */
-@container meeting (min-width: 720px) {
-  .meeting-body[data-layout='split'] {
-    display: grid;
-    grid-template-areas: 'side transcript';
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-    grid-template-rows: minmax(0, 1fr);
-  }
-
-  .meeting-body[data-layout='split'] > .meeting-region,
-  .meeting-body[data-layout='split'] > .meeting-region:not([data-active]) {
-    display: flex;
-  }
-
-  .meeting-body[data-layout='split'] > .meeting-pane-buttons {
-    display: none;
-  }
-
-  .meeting-body[data-layout='split'] > .meeting-region-notes,
-  .meeting-body[data-layout='split'] > .meeting-region-chat {
-    grid-area: side;
-  }
-
-  .meeting-body[data-layout='split'] > .meeting-region-transcript {
-    grid-area: transcript;
-  }
-
-  .meeting-body[data-layout='split']:has(> .meeting-region-notes):has(> .meeting-region-chat) {
-    grid-template-areas:
-      'notes transcript'
-      'chat transcript';
-    grid-template-rows: minmax(0, 3fr) minmax(0, 2fr);
-  }
-
-  .meeting-body[data-layout='split']:has(> .meeting-region-chat) > .meeting-region-notes {
-    grid-area: notes;
-  }
-
-  .meeting-body[data-layout='split']:has(> .meeting-region-notes) > .meeting-region-chat {
-    grid-area: chat;
-  }
-}
-
-/* Notes tabs */
-
-.meeting-notes {
+.meeting-pane {
   display: flex;
   flex: 1;
   flex-direction: column;
-  min-height: 0;
-}
-
-.meeting-notes-tabs {
-  display: flex;
-  gap: 4px;
-  border-bottom: 1px solid var(--line);
-}
-
-.meeting-notes-tab {
-  margin-bottom: -1px;
-  padding: 6px 10px;
-  border: none;
-  border-bottom: 2px solid transparent;
-  background: none;
-  color: var(--ink-muted);
-  font: inherit;
-  font-weight: 600;
-  cursor: pointer;
-}
-
-.meeting-notes-tab[aria-selected='true'] {
-  border-bottom-color: var(--accent);
-  color: var(--ink);
-}
-
-.meeting-notes-panel {
-  display: flex;
-  flex: 1;
-  flex-direction: column;
-  min-height: 0;
-  padding-top: 10px;
   /*
-   * The panel scrolls inside itself. Without this a long AI notes panel (a failure banner, the
-   * picker and the notes above the editor) outgrew its grid row on a wide page and was drawn over
-   * the chat under it, which then answered the clicks meant for the notes (M4-T20 browser QA).
+   * Under this the page scrolls instead: a short window must not squeeze the transcript to
+   * nothing.
    */
+  min-height: 240px;
   overflow-y: auto;
-}
-
-/* `display: flex` above would otherwise show the closed tab: [hidden] is only a UA default. */
-.meeting-notes-panel[hidden] {
-  display: none;
 }
