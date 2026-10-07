@@ -22,7 +22,7 @@ import { CalendarAccount } from './CalendarAccount';
 import { registerCalendarIpc, type CalendarIpcWindow } from './calendarIpc';
 import { registerCalendarPreferences } from './calendarPreferences';
 import { CalendarSync } from './CalendarSync';
-import { createConsentNotice, type NoticeClipboard } from './consentNotice';
+import type { NoticeClipboard } from './consentNotice';
 import type { CalendarApiPort } from './ports';
 import { PromptLog } from './PromptLog';
 import {
@@ -175,18 +175,12 @@ export function createCalendarRuntime(deps: CalendarRuntimeDeps): CalendarRuntim
   const log = new PromptLog(cache.database);
   const prompts = new PromptService({
     cache,
-    sync,
     log,
     capture,
     navigation: deps.navigation,
     revealWindow: revealWithoutFocus(getWindow),
     openWindow: deps.openWindow,
     openExternal: (url) => electron.shell.openExternal(url),
-    notice: createConsentNotice({
-      preferences,
-      clipboard: electron.clipboard,
-      logger: logger.child({ component: 'consent-notice' }),
-    }),
     logger: logger.child({ component: 'prompts' }),
     clock: () => clock().getTime(),
   });

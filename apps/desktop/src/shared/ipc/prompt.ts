@@ -25,12 +25,15 @@ export interface PromptPanelState {
   /** In the order they came up. The panel shows itself while this is not empty (M5-T10). */
   cards: PromptCard[];
   /**
-   * A note is starting or recording: a start action stops it first, so its button reads "Stop
-   * current note and start".
+   * A note is starting or recording: a start action stops it first, so the card says so once,
+   * under its Start notes button.
    */
   recording: boolean;
-  /** `notice.enabled`: calendar cards offer Copy notice only while it is on. */
-  noticeEnabled: boolean;
+  /**
+   * The title of that note ("Stops notes on Weekly sync"), or null while none records or the
+   * start has no meeting yet. Always null when `recording` is false.
+   */
+  recordingTitle: string | null;
 }
 
 /**
@@ -38,7 +41,6 @@ export interface PromptPanelState {
  * - take_notes: start a note. On a calendar card `eventId` names which of its events (a card can
  *   hold two calls starting within a minute); a call-detected card takes none.
  * - join_and_take_notes: open the event's video link (allowlisted hosts only), then start.
- * - copy_notice: put the consent notice on the clipboard; the card stays.
  * - dismiss: close the card.
  * - open_roger: on a card that is taking notes, bring Roger's window forward. The one action that
  *   may activate Roger: the user asked to leave the call for it.
@@ -46,7 +48,7 @@ export interface PromptPanelState {
 export type PromptActionRequest =
   | { cardId: string; action: 'take_notes'; eventId?: string }
   | { cardId: string; action: 'join_and_take_notes'; eventId: string }
-  | { cardId: string; action: 'copy_notice' | 'dismiss' | 'open_roger' };
+  | { cardId: string; action: 'dismiss' | 'open_roger' };
 
 export type PromptActionName = PromptActionRequest['action'];
 

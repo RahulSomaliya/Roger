@@ -80,7 +80,7 @@ describe('the prompt preload', () => {
     };
     const received: unknown[] = [];
     api.onStateChanged((state) => received.push(state));
-    const state = { cards: [], recording: false, noticeEnabled: true };
+    const state = { cards: [], recording: false, recordingTitle: null };
     for (const listener of electron.listeners.get(promptChannels.PromptStateChanged) ?? []) {
       listener({ sender: 'main' }, state);
     }
