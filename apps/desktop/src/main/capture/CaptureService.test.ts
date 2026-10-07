@@ -2107,4 +2107,92 @@ describe('CaptureService start requests (M5)', () => {
     expect(h.stt.opened).toHaveLength(4);
     expect(h.store.meetings.size).toBe(0);
   });
+
+  // The prompt's card goes up a minute early, so Take notes on the next meeting often comes while
+  // the last one's Stop still uploads (up to 15 s). Answered with the stop's idle status, the
+  // request's title and event were lost with no error and no log line.
+  it('starts a request that comes while a Stop still uploads once that Stop is done, with its title and event', async () => {
+    const h = harness();
+    let finishCreate: () => void = () => undefined;
+    h.api.createMeeting.mockImplementationOnce(
+      (input) =>
+        new Promise<MeetingDto>((resolve) => {
+          finishCreate = () => {
+            resolve(meetingDto(input.id));
+          };
+        }),
+    );
+    const first = await h.service.start();
+    sayFinal(h, 'mic', 'hello');
+    const stopping = h.service.stop();
+    await vi.waitFor(() => {
+      expect(h.api.createMeeting).toHaveBeenCalledTimes(1);
+    });
+    expect(h.service.phase).toBe('stopping');
+
+    const starting = h.service.start({
+      source: 'notification',
+      title: 'Review',
+      calendarEvent: REVIEW,
+    });
+    finishCreate();
+    await expect(stopping).resolves.toMatchObject({ phase: 'idle', meetingId: null });
+    const started = await starting;
+    expect(started).toMatchObject({ phase: 'recording', title: 'Review', error: null });
+    expect(started.meetingId).not.toBe(first.meetingId);
+    expect(lastMeeting(h)).toMatchObject({
+      id: started.meetingId,
+      title: 'Review',
+      startSource: 'notification',
+      calendarEvent: REVIEW,
+    });
+  });
+
+  // M5-T9b stops a recording note before it asks for a start. A request that still meets one, or
+  // a start under way, joins it: the answer is that note's status, with no error, so only the log
+  // can say the request's own title and event went nowhere.
+  it('answers a start while a note starts or records with that note, and logs that its request was not applied', async () => {
+    const log = jsonLog('warn');
+    const h = harness({ logger: log.logger });
+    const starting = h.service.start();
+    const joinedStart = h.service.start({ source: 'tray', title: 'Mine' });
+    const recording = await starting;
+    await expect(joinedStart).resolves.toEqual(recording);
+
+    const joined = await h.service.start({
+      source: 'notification',
+      title: 'Review',
+      calendarEvent: REVIEW,
+    });
+    expect(joined).toMatchObject({
+      phase: 'recording',
+      meetingId: recording.meetingId,
+      title: recording.title,
+      error: null,
+    });
+    expect(h.store.meetings.size).toBe(1);
+    // A plain Start that joins loses nothing, so it says nothing.
+    await h.service.start();
+
+    expect(
+      log.lines.filter(
+        (line) => line.message === 'start request not applied: a recording is starting or running',
+      ),
+    ).toEqual([
+      expect.objectContaining({
+        source: 'tray',
+        linked: false,
+        resume: false,
+        phase: 'starting',
+        meetingId: null,
+      }),
+      expect.objectContaining({
+        source: 'notification',
+        linked: true,
+        resume: false,
+        phase: 'recording',
+        meetingId: recording.meetingId,
+      }),
+    ]);
+  });
 });

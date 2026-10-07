@@ -96,7 +96,9 @@ export interface CaptureApi {
    * Starts a recording. `request` says how it was started, its title and its calendar event (M5);
    * left out, a plain manual Start. Main refuses a request that does not check
    * (parseStartCaptureRequest) by rejecting, naming the field; every other refusal comes back as
-   * the status's `error`.
+   * the status's `error`. Sent while a stop is under way, it starts once the stop is done; while a
+   * recording starts or runs, it answers that recording's status, and the request is not applied
+   * (main logs it): CaptureService.start.
    */
   startCapture(request?: StartCaptureRequest): Promise<CaptureStatus>;
   /**
