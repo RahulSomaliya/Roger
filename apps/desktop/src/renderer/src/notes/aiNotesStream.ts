@@ -63,7 +63,12 @@ export interface AiNotesStreamView {
   templateId: string | null;
   /** In the order the model wrote them, which is not always the template's. */
   sections: StreamedSection[];
-  /** The closing list: lines only the user's notes back, in the user's order. */
+  /**
+   * The closing list: lines only the user's notes back, in the order the model wrote them. The
+   * saved doc sorts them by the first note block each cites (`result` in the API's
+   * services/notes_generation.py), so the list can reorder when the editor takes over at `done`.
+   * The order cannot be matched here: a `from_notes` event carries only the line's text.
+   */
   fromNotes: string[];
   dropped: DroppedLine[];
   /** Why the run ended, while `failed` or `cancelled`. */
