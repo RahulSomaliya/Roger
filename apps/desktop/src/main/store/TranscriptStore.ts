@@ -90,10 +90,12 @@ export interface SegmentTrim {
 
 /**
  * Why audio reached main but not the vendor (M2-T6), or was lost in a crash (M2-T23). A window
- * with no audio at all is a capture event, not a gap. Every reason is listed here, because the
- * tasks that write gaps (M2-T6, M2-T23) do not own this file.
+ * with no audio at all is a capture event, not a gap. `asleep` is audio held while the Mac slept
+ * (M2-T18) and never sent: a Stop at wake came first, or the hold overflowed before the reopen.
+ * Every reason is listed here, because the tasks that write gaps (M2-T6, M2-T23) do not own this
+ * file; SqliteTranscriptStore's reader and `CaptureGapReason` (shared/capture.ts) list them too.
  */
-export type GapReason = 'stt_failed' | 'offline' | 'budget' | 'crash';
+export type GapReason = 'stt_failed' | 'offline' | 'asleep' | 'budget' | 'crash';
 
 /** A window of one stream to re-run from the audio backup. Offsets from the meeting start. */
 export interface NewTranscriptGap {

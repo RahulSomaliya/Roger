@@ -313,7 +313,7 @@ export interface TranscriptSegmentChange {
  * Why audio reached main but not the vendor, or was lost in a crash: a gap the re-run fills from
  * the backup. The same values as `GapReason` in main/store/TranscriptStore.ts.
  */
-export type CaptureGapReason = 'stt_failed' | 'offline' | 'budget' | 'crash';
+export type CaptureGapReason = 'stt_failed' | 'offline' | 'asleep' | 'budget' | 'crash';
 
 export interface CaptureReportGap {
   id: string;

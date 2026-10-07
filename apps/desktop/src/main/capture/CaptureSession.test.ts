@@ -1340,10 +1340,13 @@ describe('CaptureSession', () => {
 
       expect(latencyLines(log.messages)[0]?.mic).toMatchObject({ words: 1, displayP50Ms: 1_000 });
       // The held audio never reached a vendor: lost from its first chunk to the last, after the
-      // flushed line's end (3.5 s), the watermark the gap may never start before.
+      // flushed line's end (3.5 s), the watermark the gap may never start before. Named for the
+      // sleep that held it, not `stt_failed`: speech-to-text never failed (M2-T18).
       expect(
-        store.listGaps('m1').map(({ source, startMs, endMs }) => [source, startMs, endMs]),
-      ).toEqual([['mic', 4_000, 5_000]]);
+        store
+          .listGaps('m1')
+          .map(({ source, startMs, endMs, reason }) => [source, startMs, endMs, reason]),
+      ).toEqual([['mic', 4_000, 5_000, 'asleep']]);
       const order = log.messages.map((m) => m.message);
       expect(order.indexOf('speech-to-text gap recorded')).toBeLessThan(
         order.indexOf('stt latency'),

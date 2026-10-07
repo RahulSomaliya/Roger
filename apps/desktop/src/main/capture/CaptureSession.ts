@@ -669,8 +669,11 @@ export class CaptureSession {
     const link = this.links[source];
     // Kept when the bound below drops this chunk: a dropped chunk never reaches a vendor (endLoss).
     link.heldFromMs ??= this.meetingOffset(capturedAtMs);
-    // Held because the Mac is offline: if any of it is lost, that is why.
+    // Held because the Mac is offline or asleep: if any of it is lost, that is why. Asleep, it is
+    // lost when a Stop at wake comes first (PowerCoordinator) or the hold overflows; left
+    // unnamed it read as `stt_failed`, a vendor failure that never happened (M2-T18).
     if (this.suspended.has('offline')) link.lostReason ??= 'offline';
+    else if (this.suspended.has('asleep')) link.lostReason ??= 'asleep';
     link.held.push({ pcm, capturedAtMs });
     link.heldMs += this.chunkMs(pcm);
     while (link.heldMs > this.options.reopenBufferMs && link.held.length > 1) {
