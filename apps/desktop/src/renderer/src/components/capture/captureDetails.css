@@ -1,0 +1,355 @@
+/*
+ * M2-T20b's capture details: the audio note, the re-run progress, the capture report, the echo
+ * lines and the crash-resume notice. Colours come only from the theme tokens (theme/tokens.css,
+ * light and dark); theme/noLiteralColours.test.ts fails on a literal colour here, and text in the
+ * accent and danger hues reads the -ink tokens, never the fills (theme/tokens.test.ts). Nothing
+ * transitions a colour: a screenshot caught mid-fade reads the wrong state.
+ */
+
+/* Echo lines */
+
+.echo-lines {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.echo-lines-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px 12px;
+}
+
+.echo-lines-summary {
+  flex: 1 1 24ch;
+  margin: 0;
+  min-width: 0;
+}
+
+.echo-lines-head .shell-button[aria-pressed='true'] {
+  background: var(--chip-bg);
+}
+
+.echo-lines-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.echo-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 8px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: var(--chip-bg);
+  font-size: 13px;
+}
+
+.echo-line-tag {
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--line);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.echo-line-speaker {
+  font-weight: 600;
+}
+
+.echo-line-text {
+  flex: 1 1 24ch;
+  min-width: 0;
+  color: var(--hidden-ink);
+  overflow-wrap: anywhere;
+}
+
+.echo-line[data-echo-line='trimmed'] .echo-line-text {
+  color: var(--ink);
+}
+
+.echo-line-unhide {
+  padding: 2px 10px;
+  font-size: 12px;
+}
+
+.echo-line-unhide:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.echo-lines-note {
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.echo-lines-error {
+  margin: 0;
+  font-size: 13px;
+}
+
+/* Audio note (the meeting page) and the kept-audio card (Home) */
+
+.audio-note,
+.capture-report {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.audio-note[data-tone='warn'] {
+  border-left: 4px solid var(--warn);
+  background: var(--warn-bg);
+}
+
+.audio-note-text,
+.kept-card-intro,
+.report-stop,
+.report-gap-summary {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.audio-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+}
+
+.audio-actions .shell-button:disabled,
+.capture-danger-button:disabled,
+.resumed-notice .shell-button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.audio-confirm {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+}
+
+.audio-confirm-text {
+  font-weight: 600;
+}
+
+/* The delete's confirm: a fill under --on-accent, as the Stop button is. */
+.capture-danger-button {
+  padding: 6px 14px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--danger);
+  color: var(--on-accent);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.audio-actions-hint {
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.audio-error {
+  margin: 0;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.kept-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.kept-card-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 650;
+}
+
+.kept-card-intro {
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.kept-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.kept-meeting {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.kept-meeting:first-child {
+  padding-top: 0;
+  border-top: 0;
+}
+
+.kept-meeting-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.kept-meeting-title {
+  overflow-wrap: anywhere;
+}
+
+/* Re-run progress */
+
+.rerun-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.rerun-progress-text {
+  margin: 0;
+  font-size: 13px;
+}
+
+.rerun-progress-bar {
+  width: 100%;
+  height: 8px;
+  accent-color: var(--accent);
+}
+
+/* Capture report */
+
+.capture-report-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 650;
+}
+
+.report-gaps,
+.report-events {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.report-gap {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 10px;
+  padding: 6px 10px 6px 12px;
+  border-left: 4px solid var(--line);
+  border-radius: 8px;
+  background: var(--chip-bg);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.report-gap[data-status='recovered'] {
+  border-left-color: var(--ok);
+}
+
+.report-gap[data-status='failed'] {
+  border-left-color: var(--danger);
+}
+
+.report-gap[data-status='waiting'] {
+  border-left-color: var(--warn);
+}
+
+.report-gap-span {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+.report-gap-status {
+  flex-basis: 100%;
+  color: var(--muted);
+}
+
+.report-gap[data-status='failed'] .report-gap-status {
+  color: var(--danger-ink);
+}
+
+.report-timeline summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.report-events {
+  margin-top: 8px;
+  font-size: 13px;
+}
+
+.report-event {
+  display: flex;
+  gap: 10px;
+}
+
+.report-event-time {
+  flex: none;
+  min-width: 7ch;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.report-event-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.capture-report-error {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+}
+
+/* Crash-resume notice: quiet, like the other recoveries, with the Stop D7 promises. */
+
+.resumed-notice {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: var(--chip-bg);
+}
+
+.resumed-notice-text {
+  flex: 1 1 24ch;
+  margin: 0;
+  min-width: 0;
+}
+
+.resumed-notice-meta {
+  color: var(--muted);
+  white-space: nowrap;
+}
