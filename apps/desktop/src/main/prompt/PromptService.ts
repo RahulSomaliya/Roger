@@ -219,6 +219,11 @@ export class PromptService implements PromptOfferPort {
   private cards: CardState[] = [];
   private nextCardId = 1;
   private attempt: StartAttempt | null = null;
+  /**
+   * The key of a start logged `not_started_in_time` while capture was still starting: its first
+   * recording still opens the note's page (`followLateStart`). Null otherwise.
+   */
+  private lateStartKey: string | null = null;
   /** What the panel was last told about `recording`, to send a change only when it flips. */
   private recordingShown = false;
   /** The stale spell (its `staleSince`) a card was shown for; a spell gets one card. */
@@ -574,6 +579,8 @@ export class PromptService implements PromptOfferPort {
       lastRecording: null,
     };
     this.attempt = attempt;
+    // This start owns the window's page now: a late start's recording must not open it too.
+    this.lateStartKey = null;
     if (card.kind === 'calendar') {
       card.startingKey = target.key;
       this.noteAnswered(card, nowMs);
@@ -685,6 +692,7 @@ export class PromptService implements PromptOfferPort {
         });
       }
     }
+    if (this.lateStartKey !== null) this.followLateStart(this.lateStartKey, status);
     const recording = isRecording(status.phase);
     if (recording !== this.recordingShown) {
       this.recordingShown = recording;
@@ -736,8 +744,12 @@ export class PromptService implements PromptOfferPort {
       return;
     }
     if (status.phase === 'starting') {
-      // Still starting (a vendor slow to open): too slow to count. The window shows how the start
-      // ends, so the card does not come back with a button that would stop it.
+      // Still starting (a vendor slow to open, the microphone dialog of a first run): too slow to
+      // count, and the row stays so (start_failed is final). The window shows how the start ends,
+      // so the card does not come back with a button that would stop it.
+      // Trap: settling drops the attempt, and only `judge` on a live attempt opens the meeting, so
+      // a start that records after this would leave the window on Home: followLateStart opens it.
+      this.lateStartKey = attempt.key;
       this.settleFailed(attempt, 'not_started_in_time', 'still starting after 20 s', {
         showCard: false,
       });
@@ -810,6 +822,22 @@ export class PromptService implements PromptOfferPort {
     if (card.kind === 'calendar') card.startingKey = null;
     if (!this.cards.includes(card)) this.cards.push(card);
     this.changed();
+  }
+
+  /**
+   * A start logged `not_started_in_time` (`decide`): its first recording opens the note's page,
+   * as for any prompt start, and logs nothing more. Anything else it reaches (idle, stopping) ends
+   * the watch: a note started after that is not this prompt's.
+   */
+  private followLateStart(key: string, status: CaptureStatus): void {
+    if (status.phase === 'starting') return;
+    this.lateStartKey = null;
+    if (status.phase !== 'recording' || status.meetingId === null) return;
+    this.options.logger.info('prompt start recorded after its outcome window', {
+      key,
+      meetingId: status.meetingId,
+    });
+    this.openMeeting(status.meetingId);
   }
 
   private openMeeting(meetingId: string): void {

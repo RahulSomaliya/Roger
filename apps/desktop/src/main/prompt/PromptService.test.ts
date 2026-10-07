@@ -598,6 +598,49 @@ describe('PromptService', () => {
       expect(h.onlyCard()).not.toMatchObject({ error: null });
     });
 
+    it('opens the note of a start still starting at 20 s once it records, logging it once', async () => {
+      const standup = call('standup', 1);
+      const h = harness({ events: [standup] });
+      h.offerCalendar(standup);
+      await takeNotes(h, standup);
+      // The window took the request; main's start waits on the first run's microphone dialog.
+      h.capture.beginStart();
+
+      await vi.advanceTimersByTimeAsync(START_OUTCOME_WINDOW_MS);
+      expect(h.row(standup)).toMatchObject({
+        action: 'start_failed',
+        reason: 'not_started_in_time',
+      });
+      expect(h.cards()).toEqual([]);
+
+      // The user clicks Allow at 25 s: the note records, and its page still opens, once.
+      await vi.advanceTimersByTimeAsync(5 * SECOND);
+      h.capture.record(MEETING, { mic: LIVE, system: NO_AUDIO });
+      h.capture.record(MEETING, { mic: LIVE, system: LIVE });
+      expect(h.routes).toEqual([`meeting/${MEETING}`]);
+      // The 20 s bar decided the row, and start_failed stays final.
+      expect(h.row(standup)).toMatchObject({
+        action: 'start_failed',
+        reason: 'not_started_in_time',
+        meetingId: null,
+      });
+    });
+
+    it('opens no page for a late start that ends unrecorded, nor for the next note', async () => {
+      const standup = call('standup', 1);
+      const h = harness({ events: [standup] });
+      h.offerCalendar(standup);
+      await takeNotes(h, standup);
+      h.capture.beginStart();
+      await vi.advanceTimersByTimeAsync(START_OUTCOME_WINDOW_MS);
+      h.capture.emit({ phase: 'idle', error: MIC_DENIED });
+
+      // A note started later from Home is not this prompt's.
+      h.capture.beginStart();
+      h.capture.record(MEETING, { mic: LIVE, system: LIVE });
+      expect(h.routes).toEqual([]);
+    });
+
     it('logs start_failed with the refusal when capture refuses the request', async () => {
       const standup = call('standup', 1);
       const h = harness({ events: [standup] });
