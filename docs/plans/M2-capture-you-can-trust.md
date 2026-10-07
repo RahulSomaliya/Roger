@@ -380,7 +380,7 @@ plus one slot block. Every task is TDD: the failing test first,
   reaches call-audio lines by span); offsets are rounded to whole ms (the API's `OffsetMs` is an
   int). Its tests stand in for the soak at the session level only: the service-level 2-hour soak
   (`CaptureService.soak.test.ts`, Tests below) had no owner and is M3-T4b's (wave 5).
-- [ ] **M2-T6 STT liveness, offline and gap records** · M · desktop · depends on: T3, T4, T5, M3-T5
+- [x] **M2-T6 STT liveness, offline and gap records** · M · desktop · depends on: T3, T4, T5, M3-T5
   (file order in `stt/core`). A delta on the landed reopen (G2, G3): it adds no wrapper, no
   reconnect loop and no replay (design row "STT reconnect"). Owns: in the shared core, the ping
   liveness in `src/main/stt/core/SttConnection.ts` (ping every 1 s while audio flows, dead after 4 s
