@@ -19,10 +19,11 @@ import {
 } from './PermissionService';
 import type { ProbeOutcome } from './systemAudioProbe';
 
+const LOCAL_HASH = 'a'.repeat(64);
 const LOCAL: SigningIdentity = {
   kind: 'local-identity',
   requirement: 'identifier "ai.linkt.roger" and certificate leaf = H"b4570000"',
-  requirementHash: 'a'.repeat(64),
+  requirementHash: LOCAL_HASH,
 };
 const ADHOC: SigningIdentity = {
   kind: 'adhoc',
@@ -248,7 +249,7 @@ describe('the system audio row', () => {
 
   it('lets a silent test outweigh a proof from before it: the switch may be off since', async () => {
     const store = new InMemoryTranscriptStore();
-    store.setAppState(SYSTEM_AUDIO_VERIFIED_KEY, LOCAL.requirementHash, '2026-10-01T09:00:00.000Z');
+    store.setAppState(SYSTEM_AUDIO_VERIFIED_KEY, LOCAL_HASH, '2026-10-01T09:00:00.000Z');
     const { service } = harness({ store, probes: [SILENT] });
     expect((await service.status()).systemAudio.state).toBe('verified');
     expect((await service.testSystemAudio()).systemAudio.state).toBe('pending');
