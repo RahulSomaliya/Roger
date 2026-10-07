@@ -1,4 +1,5 @@
 import type { CalendarConnection, CalendarEvent, CalendarSyncState } from '../calendar';
+import { storedMeetingText } from '../capture';
 import type { Unsubscribe } from './unsubscribe';
 
 /**
@@ -33,9 +34,8 @@ export const calendarChannels = {
 export const MAX_CALENDAR_MEETINGS_LOOKUP = 500;
 
 /**
- * The longest event id a meeting can be linked to: a start request refuses a longer one
- * (`MAX_CALENDAR_TEXT_LENGTH` in src/main/ipc-validation.ts, which calendarIpc.test.ts checks
- * this against), so no lookup for one can match.
+ * The longest event id a meeting can be linked to, measured as a start request measures it
+ * (`MAX_CALENDAR_TEXT_LENGTH` in src/main/ipc-validation.ts; see parseFindCalendarMeetingsRequest).
  */
 export const MAX_CALENDAR_EVENT_ID_LENGTH = 2048;
 
@@ -52,8 +52,15 @@ export interface CalendarMeetingLink {
 
 /**
  * The request as main takes it, a fresh copy, or null: a list of at most
- * MAX_CALENDAR_MEETINGS_LOOKUP non-empty ids, each at most MAX_CALENDAR_EVENT_ID_LENGTH long.
- * Main and the preview fake both refuse with it, so they refuse the same payloads.
+ * MAX_CALENDAR_MEETINGS_LOOKUP ids, each one a start request would link a meeting to. Main and the
+ * preview fake both refuse with it, so they refuse the same payloads.
+ *
+ * Trap: an id is measured exactly as the start's `text()` in src/main/ipc-validation.ts measures
+ * it (code points of storedMeetingText: U+0000 dropped, the ends trimmed, not blank, at most
+ * MAX_CALENDAR_EVENT_ID_LENGTH), never by `.length`. The start stores the id as sent, so an id
+ * the start took and this refused is a meeting nobody can find, and since one bad id refuses the
+ * whole list, Home loses Open note for every event of the day. calendarIpc.test.ts runs the same
+ * ids through both.
  */
 export function parseFindCalendarMeetingsRequest(
   payload: unknown,
@@ -65,9 +72,9 @@ export function parseFindCalendarMeetingsRequest(
   if (!Array.isArray(eventIds) || eventIds.length > MAX_CALENDAR_MEETINGS_LOOKUP) return null;
   const checked: string[] = [];
   for (const id of eventIds as unknown[]) {
-    if (typeof id !== 'string' || id === '' || id.length > MAX_CALENDAR_EVENT_ID_LENGTH) {
-      return null;
-    }
+    if (typeof id !== 'string') return null;
+    const length = Array.from(storedMeetingText(id)).length;
+    if (length === 0 || length > MAX_CALENDAR_EVENT_ID_LENGTH) return null;
     checked.push(id);
   }
   return { eventIds: checked };

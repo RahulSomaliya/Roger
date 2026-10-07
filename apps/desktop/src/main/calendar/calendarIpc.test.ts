@@ -9,9 +9,10 @@ import {
   calendarChannels,
   MAX_CALENDAR_EVENT_ID_LENGTH,
   MAX_CALENDAR_MEETINGS_LOOKUP,
+  parseFindCalendarMeetingsRequest,
 } from '../../shared/ipc/calendar';
 import type { IpcMainLike, SenderEvent } from '../ipc/trust';
-import { MAX_CALENDAR_TEXT_LENGTH } from '../ipc-validation';
+import { MAX_CALENDAR_TEXT_LENGTH, parseStartCaptureRequest } from '../ipc-validation';
 import { createLogger } from '../logger';
 import { type CalendarIpcDeps, type CalendarIpcWindow, registerCalendarIpc } from './calendarIpc';
 
@@ -289,8 +290,45 @@ describe('calendar:find-meetings', () => {
     ).resolves.toEqual([]);
   });
 
-  it('caps an id where a start request caps it, so every linked event can be found', () => {
+  it('takes every id a start request takes, measured as the start measures it', async () => {
+    // A start counts code points once U+0000 is dropped and the ends trimmed, and stores the id as
+    // sent. A lookup that counted UTF-16 units refused a stored id, and with it the whole list:
+    // Home lost Open note for every event of the day.
+    const startLinkedTo = (eventId: string) => () =>
+      parseStartCaptureRequest({
+        calendarEvent: {
+          provider: 'fake',
+          eventId,
+          icalUid: null,
+          recurringEventId: null,
+          scheduledStart: '2026-10-06T10:00:00Z',
+          scheduledEnd: '2026-10-06T10:30:00Z',
+          attendees: [],
+        },
+      });
+    const most = MAX_CALENDAR_EVENT_ID_LENGTH;
+    const astral = '\u{1F600}'.repeat(most);
+    const taken = [astral, ` ${'a'.repeat(most)}\t`, `${'a'.repeat(most)}\u0000`];
+    const refused = ['\u{1F600}'.repeat(most + 1), 'a'.repeat(most + 1), '', ' \t', '\u0000'];
+
     expect(MAX_CALENDAR_EVENT_ID_LENGTH).toBe(MAX_CALENDAR_TEXT_LENGTH);
+    for (const eventId of taken) {
+      expect(startLinkedTo(eventId)).not.toThrow();
+      expect(parseFindCalendarMeetingsRequest({ eventIds: [eventId] })).toEqual({
+        eventIds: [eventId],
+      });
+    }
+    for (const eventId of refused) {
+      expect(startLinkedTo(eventId)).toThrow('calendarEvent.eventId');
+      expect(parseFindCalendarMeetingsRequest({ eventIds: [eventId] })).toBeNull();
+    }
+
+    // Through the channel: the stored id as sent reaches the store, and the others are answered.
+    const h = harness();
+    h.findMeetingIdsByEventIds.mockReturnValueOnce(new Map([[astral, MEETING_A]]));
+    await expect(
+      h.invoke(calendarChannels.CalendarFindMeetings, { eventIds: ['fake-call', astral] }),
+    ).resolves.toEqual([{ eventId: astral, meetingId: MEETING_A }]);
   });
 
   it('logs a failed store read by count only, and rejects', async () => {
