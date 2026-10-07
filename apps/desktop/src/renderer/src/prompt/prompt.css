@@ -1,0 +1,178 @@
+/*
+ * The prompt panel's page (M5-T10). Colours come only from the theme tokens (theme/tokens.css,
+ * light and dark); theme/noLiteralColours.test.ts fails on a literal one here. The window is
+ * transparent and frameless: the cards are the only pixels, and the transparent gaps between them
+ * let clicks through to the call. Nothing transitions a colour: a screenshot or a glance mid-fade
+ * would read the wrong state.
+ */
+@import '../theme/tokens.css';
+
+:root {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  /* The window is transparent (PromptWindow.ts): a page background would draw a box round it. */
+  background: transparent;
+  color: var(--ink);
+  overflow: hidden;
+  /* A panel is not text to select, and a drag would start nothing. */
+  user-select: none;
+  cursor: default;
+}
+
+/*
+ * prompt-content is what PromptApp measures: its natural height, which main turns into the
+ * window's. The scroller is the OUTER element: if the measured element were the one capped at the
+ * window's height, a window first made small would report that small height and keep it.
+ */
+.prompt-scroll {
+  max-height: 100vh;
+  overflow-y: auto;
+}
+
+.prompt-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.prompt-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel);
+}
+
+.prompt-card[data-kind='stale_calendar'] {
+  border-left: 3px solid var(--warn);
+}
+
+.prompt-event {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.prompt-event + .prompt-event {
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+
+.prompt-when {
+  margin: 0;
+  color: var(--accent-ink);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.prompt-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 650;
+  line-height: 1.3;
+  /* A long title wraps to two lines, then ends in an ellipsis: the card keeps its shape. */
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+
+.prompt-stale {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.prompt-meta {
+  margin: 0;
+  overflow: hidden;
+  color: var(--muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.prompt-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.prompt-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 4px;
+}
+
+.prompt-button {
+  min-height: 28px;
+  padding: 5px 12px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.prompt-button:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+
+.prompt-primary {
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+.prompt-secondary {
+  border-color: var(--line);
+}
+
+.prompt-quiet {
+  padding-inline: 8px;
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.prompt-taking {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  font-weight: 600;
+}
+
+.prompt-taking .prompt-quiet {
+  padding-inline: 4px;
+  color: var(--accent-ink);
+}
+
+.prompt-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--recording);
+}
+
+.prompt-error {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--danger-bg);
+  color: var(--danger-ink);
+}
