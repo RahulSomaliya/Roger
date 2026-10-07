@@ -32,10 +32,13 @@ def _blank_is_none(value: object) -> object:
 MAX_MEETING_ATTENDEES = 200
 # Every text field of a calendar link. Far above anything Google sends (its event ids are at most
 # 1024 characters), so a real invite never meets it: a refused create keeps the whole meeting, its
-# transcript included, off the server.
+# transcript included, off the server. The desktop checks the same number before it sends
+# (MAX_CALENDAR_TEXT_LENGTH in apps/desktop/src/main/ipc-validation.ts, whose test reads this
+# file); change the two together.
 MAX_CALENDAR_TEXT_LENGTH = 2048
 
-# Blank, or nothing but U+0000 and whitespace, is the default title.
+# Blank, or nothing but U+0000 and whitespace, is the default title. The desktop cuts a title to the
+# same 500 characters (MAX_MEETING_TITLE_LENGTH in apps/desktop/src/shared/capture.ts).
 MeetingTitle = Annotated[
     str,
     StringConstraints(strip_whitespace=True, max_length=500),

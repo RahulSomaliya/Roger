@@ -172,8 +172,7 @@ STT_PRESETS: Mapping[SttPresetId, SttPreset] = MappingProxyType(
         # sends that only to universal-streaming-* models.
         "assemblyai-pro": SttPreset(vendor="assemblyai", model="universal-3-6-pro"),
         "deepgram": SttPreset(vendor="deepgram", model="nova-3"),
-        # Run D of the M3 bake-off. The desktop runs it once M3-T15's adapter lands; until then
-        # Start on the Mac refuses the provider.
+        # Run D of the M3 bake-off. The desktop adapter is M3-T15's (`stt/soniox/`).
         "soniox": SttPreset(vendor="soniox", model="stt-rt-v5"),
     }
 )

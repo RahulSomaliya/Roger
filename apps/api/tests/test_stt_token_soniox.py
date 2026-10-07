@@ -1,7 +1,7 @@
 """Soniox, the optional third speech-to-text vendor (decision D1, M3-T14): its temporary-key issuer
-and the `soniox` preset. The desktop adapter is M3-T15's; until it lands, STT_PROVIDER=soniox
-passes the API's startup and fails Start on the Mac (`AWAITING_A_DESKTOP_ADAPTER` in
-tests/test_stt_providers.py). Nothing here calls Soniox: every request goes to a MockTransport."""
+and the `soniox` preset. The desktop adapter is M3-T15's (it landed after this issuer, which
+`AWAITING_A_DESKTOP_ADAPTER` in tests/test_stt_providers.py covered until then). Nothing here calls
+Soniox: every request goes to a MockTransport."""
 
 import json
 from collections.abc import AsyncIterator, Callable

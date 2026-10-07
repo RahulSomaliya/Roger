@@ -399,7 +399,11 @@ def build_ai_doc(sections: Sequence[NotesSection], from_notes: Sequence[FromNote
 
 
 def chip_label(start_ms: int) -> str:
-    """The time a chip shows: "03:12", or "1:02:05" past an hour (`CitationAttrs.label`)."""
+    """The time a chip shows: "03:12", or "1:02:05" past an hour (`CitationAttrs.label`).
+
+    The desktop mirrors it for streamed lines and chat answers: `chipLabel` in
+    renderer/src/notes/aiNotesStream.ts and renderer/src/chat/chatStream.ts. Change them together.
+    """
     hours, remainder = divmod(start_ms // 1000, 3600)
     minutes, seconds = divmod(remainder, 60)
     if hours:
@@ -417,7 +421,9 @@ def _cited_paragraph(line: CitedLine) -> Json:
 def _neighbours(citations: Sequence[Citation]) -> list[list[Citation]]:
     """`citations` (in transcript order) cut into runs of neighbouring lines: `L12, L13, L15` is
     one chip for 12 and 13, then one for 15. A chip reveals all its lines at once, so a run of
-    lines reads as one source instead of a row of chips a few seconds apart."""
+    lines reads as one source instead of a row of chips a few seconds apart.
+
+    The desktop mirrors it for streamed lines: `chipsFor` in renderer/src/notes/aiNotesStream.ts."""
     runs: list[list[Citation]] = []
     previous: int | None = None
     for citation in citations:

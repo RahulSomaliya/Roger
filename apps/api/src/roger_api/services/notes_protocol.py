@@ -61,6 +61,8 @@ _BRACKETED_REFS = rf"\[ ?{_REF}(?: ?[,;] ?{_REF})* ?\]"
 # The separator is `(?: ?[,;])? ?`, never ` ?[,;]? ?`: two ways to match one space would make a
 # failed match retry every split of every space, which is exponential in the number of groups.
 _BRACKETED_GROUPS = rf"{_BRACKETED_REFS}(?:(?: ?[,;])? ?{_BRACKETED_REFS})*"
+# The desktop's chat answers read the same grammar (`REF_GROUP` in renderer/src/chat/chatStream.ts):
+# change both together.
 # One `[L12, L15]` group, or groups the model wrapped in one more pair of brackets (`[[L12]]`,
 # `([L12], [L13])`): the wrapper goes with them, or it would stay in the text as `[]` or `(,)`.
 _REF_GROUP = re.compile(

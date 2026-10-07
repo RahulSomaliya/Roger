@@ -293,6 +293,8 @@ def _scan(text: str) -> _Scanned:
 
 
 def _tokens(text: str) -> list[str]:
+    # `_plain` in evals/notes_score.py copies this NFKC and apostrophe rule so that an owner label
+    # tokenises like the line it is matched against: change the two together.
     # NFKC turns full-width digits and superscripts into ASCII digits; curly apostrophes are not
     # touched by it, so they are straightened by hand before contractions expand.
     normal = (
