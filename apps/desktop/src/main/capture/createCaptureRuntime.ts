@@ -19,7 +19,7 @@ import type { TranscriptUploader } from '../upload/TranscriptUploader';
 import { electronNotifierPorts, Notifier } from '../notify/Notifier';
 import { CaptureService } from './CaptureService';
 import { EchoSink } from './echo/EchoSink';
-import { LatestRoute } from './echo/RouteProvider';
+import { RouteHistory } from './echo/RouteProvider';
 import { SignalMonitor } from './SignalMonitor';
 import { SttOpenBudget } from './SttOpenBudget';
 
@@ -216,11 +216,12 @@ export function createCaptureRuntime(deps: CaptureRuntimeDeps): CaptureRuntime {
 
   // Mic lines that repeat call audio (laptop speakers) are hidden or trimmed, and each waits for
   // the call-audio watermark before it may upload (M2 D2). M2-T16 runs its re-run mic lines through
-  // `echoSink.filterStored`; M2-T17a sets `echoRoute` from the monitor's route events (known
-  // headphones turn the filter off). Its segment listener runs before ipc.ts's (registered below),
-  // so a `hidden` change reaches the window before the line it names, as TranscriptSegmentChange
-  // allows: the page keeps such a change until its line arrives.
-  const echoRoute = new LatestRoute();
+  // `echoSink.filterStored`; M2-T17a sets `echoRoute` from the monitor's route events as each comes:
+  // it keeps every report, dated on the clock meetings start by, and known headphones turn the
+  // filter off for the lines said while they played. The sink's segment listener runs before
+  // ipc.ts's (registered below), so a `hidden` change reaches the window before the line it names,
+  // as TranscriptSegmentChange allows: the page keeps such a change until its line arrives.
+  const echoRoute = new RouteHistory(clock);
   const echoSink = new EchoSink({
     store,
     enabled: config.capture.echoFilter,

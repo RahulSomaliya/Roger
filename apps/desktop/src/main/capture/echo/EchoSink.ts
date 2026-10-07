@@ -3,7 +3,13 @@ import type { AudioSource, TranscriptSegment } from '../../../shared/transcript'
 import { errorMessage, type LogFields, type Logger } from '../../logger';
 import type { StoredSegment, TranscriptStore } from '../../store/TranscriptStore';
 import type { SourceWatermark, WatermarkListener } from '../CaptureSession';
-import { ECHO_MATCH_WINDOW_MS, type EchoLine, filterEcho, isEchoFilterOn } from './EchoFilter';
+import {
+  ECHO_MATCH_WINDOW_MS,
+  type EchoLine,
+  type EchoOutputRoute,
+  filterEcho,
+  isEchoFilterOn,
+} from './EchoFilter';
 import type { RouteProvider } from './RouteProvider';
 
 /**
@@ -172,13 +178,13 @@ export class EchoSink {
         `could not settle the echo holds left before launch: "${launchedAt}" is not an instant`,
       );
     }
-    const { store, logger } = this.options;
+    const { store, logger, enabled } = this.options;
     const left = store.listHeldSegments().filter((line) => Date.parse(line.createdAt) < launch);
     if (left.length === 0) return;
-    const filterOn = this.filterOn();
     const released: string[] = [];
     for (const line of left) {
-      const outcome = filterOn && line.source === 'mic' ? this.decide(line) : 'kept';
+      // Said before this run heard of any route: unknown (RouteHistory), so filtered.
+      const outcome = enabled && line.source === 'mic' ? this.decide(line) : 'kept';
       if (outcome !== 'hidden') released.push(line.id);
     }
     store.releaseSegments(released);
@@ -200,7 +206,7 @@ export class EchoSink {
     if (line === null) {
       throw new Error(`Line ${segmentId} is not stored: store a re-run line before filtering it.`);
     }
-    if (line.source !== 'mic' || !this.filterOn()) return 'kept';
+    if (line.source !== 'mic' || !this.options.enabled) return 'kept';
     return this.decide(line);
   }
 
@@ -234,8 +240,9 @@ export class EchoSink {
 
   private onLine(segment: TranscriptSegment): void {
     const live = this.live;
-    // CaptureService sends only its recording's lines, between `started` and `ended`.
-    if (live?.meetingId !== segment.meetingId || !this.filterOn()) return;
+    // CaptureService sends only its recording's lines, between `started` and `ended`. The route is
+    // read per line, for the moment it was said (routeWhileSaid), never here.
+    if (live?.meetingId !== segment.meetingId || !this.options.enabled) return;
     if (segment.source === 'mic') {
       this.guard(
         'filtering a mic line',
@@ -290,7 +297,10 @@ export class EchoSink {
     const line = store.getSegment(segmentId);
     // Not stored: the session could not save it, and has said so. Nothing to hide or hold.
     if (line === null) return;
-    const outcome = this.decide(line);
+    const route = this.routeWhileSaid(line);
+    // Said behind known headphones: no call audio leaked into it, so no twin to wait for.
+    if (!isEchoFilterOn(route)) return;
+    const outcome = this.decide(line, route);
     if (outcome === 'hidden' || outcome === 'too-late') return;
     const { finalEndMs, closed } = live.session.watermark('system');
     if (closed || passes(finalEndMs, line)) return;
@@ -322,15 +332,16 @@ export class EchoSink {
    * Decides one stored mic line against the call-audio lines stored now, and applies it: the one
    * place a line is hidden or trimmed, so the window and the counts hear of every change.
    */
-  private decide(line: StoredSegment): EchoOutcome {
-    const { store, route, logger } = this.options;
+  private decide(line: StoredSegment, route = this.routeWhileSaid(line)): EchoOutcome {
+    if (!isEchoFilterOn(route)) return 'kept';
+    const { store, logger } = this.options;
     const callAudio = store.listSegmentsOverlapping(
       line.meetingId,
       'system',
       line.startMs - ECHO_MATCH_WINDOW_MS,
       line.endMs + ECHO_MATCH_WINDOW_MS,
     );
-    const decision = filterEcho(asTheVendorWroteIt(line), callAudio, route.current());
+    const decision = filterEcho(asTheVendorWroteIt(line), callAudio, route);
     const ids = { meetingId: line.meetingId, segmentId: line.id };
     switch (decision.action) {
       case 'keep':
@@ -407,8 +418,23 @@ export class EchoSink {
     return { hidden, trimmed };
   }
 
-  private filterOn(): boolean {
-    return this.options.enabled && isEchoFilterOn(this.options.route.current());
+  /**
+   * Where call audio played while `line` was said, give or take the match window its twin may sit
+   * in (RouteHistory says why it is never the route of the decision's moment).
+   */
+  private routeWhileSaid(line: StoredSegment): EchoOutputRoute {
+    const meeting = this.options.store.getMeeting(line.meetingId);
+    // Line offsets count from the meeting's start (CaptureService's meetingStartedAtMs).
+    const startedAtMs = meeting === null ? Number.NaN : Date.parse(meeting.startedAt);
+    if (!Number.isFinite(startedAtMs)) {
+      throw new Error(
+        `could not tell where call audio played for line ${line.id}: meeting ${line.meetingId} has no stored start`,
+      );
+    }
+    return this.options.route.during(
+      startedAtMs + line.startMs - ECHO_MATCH_WINDOW_MS,
+      startedAtMs + line.endMs + ECHO_MATCH_WINDOW_MS,
+    );
   }
 
   /**

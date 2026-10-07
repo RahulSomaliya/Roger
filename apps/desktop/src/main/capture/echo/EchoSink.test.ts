@@ -16,7 +16,7 @@ import {
   type EchoSession,
   EchoSink,
 } from './EchoSink';
-import { LatestRoute } from './RouteProvider';
+import { RouteHistory } from './RouteProvider';
 
 const MEETING = '6f1d2b7e-8a4c-4f0e-9b1a-2c3d4e5f6a7b';
 const OTHER_MEETING = '0e9d8c7b-6a5f-4e3d-8c1b-0a9f8e7d6c5b';
@@ -166,7 +166,7 @@ function harness(options: HarnessOptions = {}) {
   store.createMeeting({ id: MEETING, title: 'Weekly sync', startedAt: new Date(T0).toISOString() });
   const changes: TranscriptSegmentChange[] = [];
   const logs: Record<string, unknown>[] = [];
-  const route = new LatestRoute();
+  const route = new RouteHistory(() => now);
   const sink = new EchoSink({
     store,
     enabled: options.enabled ?? true,
@@ -582,6 +582,91 @@ describe('EchoSink: lines from the live recording', () => {
       error: 'disk I/O error',
     });
     expect(JSON.stringify(h.logs)).not.toContain('wait a week');
+  });
+});
+
+// The harness meeting starts at T0, so a line at offset X was said at T0 + X on the harness clock.
+describe('EchoSink: the route while a line was said', () => {
+  it('still hides a held line said on the speakers when its twin comes after headphones connect', () => {
+    const h = harness();
+    h.record();
+    h.say('me-1', 'mic', SAID, 10_120);
+    h.advance(20_000);
+    h.route.set('headphones');
+
+    h.callAudioUpTo(h.say('them-1', 'system', SAID, 10_000).endMs);
+
+    expect(h.store.getSegment('me-1')).toMatchObject({
+      suppressedReason: 'echo',
+      echoOf: 'them-1',
+    });
+  });
+
+  it('filters and holds lines said on the speakers that are stored after headphones connect', () => {
+    const h = harness();
+    h.record();
+    h.advance(20_000);
+    h.route.set('headphones');
+
+    h.callAudioUpTo(h.say('them-1', 'system', SAID, 10_000).endMs);
+    h.say('me-1', 'mic', SAID, 10_120);
+    h.say('me-2', 'mic', 'I think we should wait a week', 14_000);
+
+    expect(h.store.getSegment('me-1')?.suppressedReason).toBe('echo');
+    expect(h.store.getSegment('me-2')?.uploadAfter).not.toBeNull();
+  });
+
+  it('keeps a line said behind headphones when its twin comes after the speakers return', () => {
+    const h = harness();
+    h.route.set('headphones');
+    h.record();
+    h.say('me-1', 'mic', SAID, 10_120);
+    h.advance(20_000);
+    h.route.set('speakers');
+
+    h.say('them-1', 'system', SAID, 10_000);
+
+    expect(h.store.getSegment('me-1')).toMatchObject({ suppressedReason: null, uploadAfter: null });
+    expect(h.changes).toEqual([]);
+  });
+
+  it('filters a re-run line said on the speakers, though headphones connected before the re-run', () => {
+    const h = harness();
+    h.stored('them-1', 'system', SAID, 10_000, T0);
+    h.stored('me-1', 'mic', SAID, 10_120, T0, 'rerun');
+    h.advance(60_000);
+    h.route.set('headphones');
+
+    expect(h.sink.filterStored('me-1')).toBe('hidden');
+  });
+
+  it("settles an earlier run's holds as said on an unknown route, whatever this run reports", () => {
+    const h = harness();
+    // Its meeting began, and its lines were said, before this launch: no route was reported then.
+    const earlier = T0 - 120_000;
+    h.store.createMeeting({
+      id: OTHER_MEETING,
+      title: 'Standup',
+      startedAt: new Date(earlier).toISOString(),
+    });
+    for (const [id, source, startMs] of [
+      ['them-1', 'system', 10_000],
+      ['me-1', 'mic', 10_120],
+    ] as const) {
+      h.store.appendSegment({
+        ...line(id, source, SAID, startMs, earlier + 30_000),
+        meetingId: OTHER_MEETING,
+      });
+    }
+    h.store.holdSegment('me-1', new Date(earlier + 30_000 + ECHO_HOLD_CAP_MS).toISOString());
+    h.route.set('headphones');
+
+    h.sink.settleAll(new Date(T0).toISOString());
+
+    expect(h.store.getSegment('me-1')).toMatchObject({
+      suppressedReason: 'echo',
+      uploadAfter: null,
+    });
   });
 });
 
