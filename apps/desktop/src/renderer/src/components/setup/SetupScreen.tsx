@@ -26,7 +26,10 @@ const RUNNING_TEXT: Record<SetupActionKind, string> = {
 };
 
 interface SetupScreenProps {
-  /** Leaves setup. The route has no header button for it: Done shows here, once all pass. */
+  /**
+   * Leaves setup. The route has no header button for it: Later shows here while a check needs you,
+   * Done once all pass.
+   */
   onDone: () => void;
 }
 
@@ -198,19 +201,20 @@ function SetupBody({
         </div>
       )}
       {showPassing ? list(passing, 'Checks that pass') : null}
-      {needsYou(rows) ? null : (
-        <div className="setup-actions">
-          <button
-            type="button"
-            className="btn"
-            data-variant="primary"
-            data-size="md"
-            onClick={onDone}
-          >
-            Done
-          </button>
-        </div>
-      )}
+      {/* Setup has no header, so this is the only way out. While a check needs you it is Later
+          (ghost: the first fix above stays the one main button); with nothing left it is Done.
+          Never disabled by a running action: it must always be a way out. */}
+      <div className="setup-actions">
+        <button
+          type="button"
+          className="btn"
+          data-variant={needsYou(rows) ? 'ghost' : 'primary'}
+          data-size="md"
+          onClick={onDone}
+        >
+          {needsYou(rows) ? 'Later' : 'Done'}
+        </button>
+      </div>
     </>
   );
 }
