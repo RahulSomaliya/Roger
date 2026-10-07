@@ -1,4 +1,4 @@
-import { app } from 'electron';
+import { app, net } from 'electron';
 import type { BackupStatus, CaptureReport, EchoStatus } from '../../shared/capture';
 import type { ApiClient } from '../api/ApiClient';
 import { createSystemAudio } from '../audio/system/createSystemAudio';
@@ -13,6 +13,7 @@ import type { MicrophoneAccess } from '../permissions';
 import { readSigningIdentity } from '../signing';
 import type { StoredSegment, TranscriptStore } from '../store/TranscriptStore';
 import type { SpeechToTextFactory } from '../stt/createSpeechToText';
+import { NetworkStatus } from '../stt/networkStatus';
 import type { TranscriptUploader } from '../upload/TranscriptUploader';
 import { electronNotifierPorts, Notifier } from '../notify/Notifier';
 import { CaptureService } from './CaptureService';
@@ -142,6 +143,22 @@ export function createCaptureRuntime(deps: CaptureRuntimeDeps): CaptureRuntime {
   const quitHooks: QuitHook[] = [];
 
   // [slot M2-T6] the network poll (net.isOnline every 1 s), fed to the live session
+
+  // Polled only while a recording runs: the session it suspends exists only then, and Start just
+  // opened two sessions, so each recording begins online. Offline terminates both sockets and holds
+  // the audio; back online, each source reopens with its next chunk (CaptureSession.suspendStreams).
+  const network = new NetworkStatus({
+    isOnline: () => net.isOnline(),
+    logger: logger.child({ component: 'network' }),
+  });
+  capture.onRecording({
+    started: ({ session }) => {
+      network.follow(session);
+    },
+    ended: () => {
+      network.stop();
+    },
+  });
 
   // [slot M2-T10] call audio through the helper: HelperProcess, TapSystemAudio, selection
 

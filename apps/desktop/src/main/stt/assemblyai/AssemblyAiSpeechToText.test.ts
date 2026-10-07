@@ -335,8 +335,10 @@ describe('AssemblyAiSpeechToText', () => {
     await new Promise((resolve) => setTimeout(resolve, 20));
     await stream.close();
 
-    expect(events.map((e) => e.type)).toEqual(['final', 'closed']);
+    // The held turn is saved first; then the core reports the finish it never got (M2-T6).
+    expect(events.map((e) => e.type)).toEqual(['final', 'error', 'closed']);
     expect(events[0]).toMatchObject({ text: 'cut off' });
+    expect(events[1]).toMatchObject({ type: 'error', fatal: true });
   });
 
   it('saves a Pro end of turn at once, formatted or not, and only once', async () => {

@@ -21,9 +21,20 @@ import {
 // slot looks for the audio helper under `app.getAppPath()`: a folder with no helper, so call audio
 // takes Electron's path and no test here runs a helper. Never the real apps/desktop: on a Mac that
 // ran `make check` its dev build exists, and a Start here would build a real tap (a privacy prompt).
+// The M2-T6 slot asks net.isOnline() every second while a recording runs.
+const electronNet = vi.hoisted(() => ({ online: true, reads: 0 }));
 vi.mock('electron', () => ({
   desktopCapturer: { getSources: vi.fn() },
   app: { isPackaged: false, getAppPath: () => '/nonexistent/roger-app', on: vi.fn() },
+  net: {
+    isOnline: () => {
+      electronNet.reads += 1;
+      return electronNet.online;
+    },
+  },
+  // Going offline raises M2-T11's loud warning, and the Notifier posts only while Roger is not
+  // focused: the harness window (webContents 7) is, so no test here posts a notification.
+  BrowserWindow: { getFocusedWindow: () => ({ webContents: { id: 7 } }) },
 }));
 
 const logger = createLogger({ level: 'error', format: 'json', sink: () => undefined });
@@ -131,6 +142,33 @@ describe('createCaptureRuntime', () => {
       IpcChannel.TranscriptUnhideSegment,
     ]) {
       expect(ipcMain.handlers.has(channel)).toBe(true);
+    }
+  });
+
+  it('suspends the live session while the Mac is offline, and polls only while recording (M2-T6)', async () => {
+    vi.useFakeTimers();
+    try {
+      const { runtime } = runtimeHarness();
+      const { capture } = runtime;
+      const idleReads = electronNet.reads; // earlier tests here record too
+      vi.advanceTimersByTime(5_000);
+      expect(electronNet.reads).toBe(idleReads); // no recording, no poll
+
+      await capture.start();
+      electronNet.online = false;
+      vi.advanceTimersByTime(1_000);
+      expect(capture.getStatus().streams).toEqual({ mic: 'offline', system: 'offline' });
+      electronNet.online = true;
+      vi.advanceTimersByTime(1_000);
+      expect(capture.getStatus().streams).toEqual({ mic: 'paused', system: 'paused' });
+
+      await capture.stop({ flushUploads: false });
+      const reads = electronNet.reads;
+      vi.advanceTimersByTime(5_000);
+      expect(electronNet.reads).toBe(reads);
+    } finally {
+      electronNet.online = true;
+      vi.useRealTimers();
     }
   });
 
