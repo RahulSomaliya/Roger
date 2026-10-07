@@ -23,7 +23,7 @@ vi.mock('./SettingsPage', () => ({ SettingsPage: () => null }));
 vi.mock('./SetupRoute', () => ({ SetupRoute: () => null }));
 
 // The layout is checked without M5's calendar: its banner reads `window.roger` through a shared
-// store, which Node lacks. What it shows is checked in the browser (e2e/m5-t13.qa.e2e.ts) and
+// store, which Node lacks. What it shows is checked in the browser (e2e/redesign.qa.e2e.ts) and
 // mounted in slots/m5-calendar.test.ts.
 vi.mock('./slots/m5-calendar', () => ({ contributions: {} }));
 

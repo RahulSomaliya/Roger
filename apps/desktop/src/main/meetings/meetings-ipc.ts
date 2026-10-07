@@ -22,7 +22,7 @@ export interface MeetingsIpcDeps {
 
 /**
  * Wires the meetings channels (src/shared/ipc/meetings.ts) to main's local store, roger.sqlite,
- * for the main window's page only (ipc/trust.ts). Never to the API: the sidebar and the meeting
+ * for the main window's page only (ipc/trust.ts). Never to the API: Home's Earlier list and the meeting
  * page work offline, and show a meeting before it uploads. Each payload goes through the parsers
  * in src/shared/meetings.ts, which the preview fake (preview/fakes/meetings.ts) uses too, so
  * both refuse the same payloads and cap the same limit.

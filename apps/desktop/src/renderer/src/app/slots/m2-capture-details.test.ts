@@ -9,7 +9,7 @@ import { contributions } from './m2-capture-details';
 
 // Node has no window.roger: the shell is a stand-in, as in m2-capture-status.test.ts. The reads and
 // buttons are effects and handlers, which renderToStaticMarkup never runs; they are checked in the
-// browser (e2e/capture-details.shots.e2e.ts).
+// browser (e2e/redesign.qa.e2e.ts: the gap line, Details and Delete audio).
 const fakes = vi.hoisted(() => ({ shell: null as Shell | null }));
 vi.mock('../ShellContext', () => ({
   useShell: () => {

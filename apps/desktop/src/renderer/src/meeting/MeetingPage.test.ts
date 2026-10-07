@@ -30,8 +30,8 @@ const fakes = vi.hoisted(() => ({
 }));
 // M4-T20's notes and chat need `window.roger`, which Node lacks, and the page's frame is what is
 // checked here: with nothing mounted in the notes and chat regions the page shows the transcript
-// alone. The real regions are checked in the browser (e2e/m4-t20.qa.e2e.ts). Likewise M5's notice
-// banner (its store reads `window.roger`): e2e/m5-t13.qa.e2e.ts and slots/m5-calendar.test.ts.
+// alone. The real regions are checked in the browser (e2e/redesign.qa.e2e.ts). Likewise M5's notice
+// banner (its store reads `window.roger`): the same script and slots/m5-calendar.test.ts.
 vi.mock('../app/slots/m4-notes', () => ({ contributions: {} }));
 vi.mock('../app/slots/m5-calendar', () => ({ contributions: {} }));
 vi.mock('../app/ShellContext', () => ({

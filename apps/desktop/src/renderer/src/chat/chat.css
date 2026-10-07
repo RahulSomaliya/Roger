@@ -25,7 +25,7 @@
  * Positioned for the screen-reader labels (.visually-hidden, absolute, MeetingChat.tsx): with no
  * positioned ancestor each one is placed against the window at its unscrolled place, outside this
  * scroller, and a long thread makes the whole window scroll into blank space
- * (e2e/m4-t19.qa.e2e.ts, expectNoPageScroll).
+ * (e2e/redesign.qa.e2e.ts checks every chat state for sideways and page scroll).
  */
 .meeting-chat-log {
   position: relative;
