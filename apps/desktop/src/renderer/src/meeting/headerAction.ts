@@ -1,5 +1,5 @@
 import type { CapturePhase } from '../../../shared/capture';
-import { suggestTemplate } from '../../../shared/suggestTemplate';
+import { suggestTemplate, type TemplateAttendee } from '../../../shared/suggestTemplate';
 import type { MenuEntry } from '../components/ui/Menu';
 import { type AiNotesSession, type AiNotesState, layoutAiNotes } from '../notes/aiNotesActions';
 
@@ -76,10 +76,15 @@ export function aiNotesTabExists(state: AiNotesState): boolean {
 /**
  * The template "Write notes" uses: the title's best guess (shared/suggestTemplate.ts), else
  * General (docs/plans/redesign.md, call 6: no question, "Write again as" changes it). The page
- * cannot read notes.sqlite's remembered picks, so `lastPick` is none.
+ * cannot read notes.sqlite's remembered picks, so `lastPick` is none. The invite's attendees do
+ * reach it (StoredMeeting.attendees): without them a call with an outside guest, which the rule
+ * reads as a client call, was written as General.
  */
-export function templateForWriting(title: string): string {
-  return suggestTemplate({ title, lastPick: () => null }).templateId ?? 'general';
+export function templateForWriting(
+  title: string,
+  attendees: readonly TemplateAttendee[] = [],
+): string {
+  return suggestTemplate({ title, lastPick: () => null, attendees }).templateId ?? 'general';
 }
 
 /** What the ⋯ menu calls; AiNotesSession is one, a test passes stand-ins. */

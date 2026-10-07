@@ -121,7 +121,7 @@ export function MeetingPage({ meetingId }: { meetingId: string }) {
     notes: notesState,
   });
   const write = (): void => {
-    void notes.generate(templateForWriting(meeting?.title ?? '')).then((took) => {
+    void notes.generate(templateForWriting(meeting?.title ?? '', meeting?.attendees)).then((took) => {
       // Show the notes arrive: the AI notes tab exists once main reports the pending generate.
       if (took) setChosenTab('ai');
     });

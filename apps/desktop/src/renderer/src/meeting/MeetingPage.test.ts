@@ -98,6 +98,7 @@ function stored(meetingId: string, segments: TranscriptSegment[]): StoredMeeting
     startedAt: '2026-10-05T09:30:04.000Z',
     endedAt: '2026-10-05T09:33:16.000Z',
     segments,
+    attendees: [],
   };
 }
 

@@ -9,7 +9,6 @@ import { PreferencesStore } from '../preferences/PreferencesStore';
 import {
   createCalendarRuntime,
   createStartRequestEnricher,
-  meetingAttendees,
   type CalendarRuntimeDeps,
   type CalendarWindow,
 } from './createCalendarRuntime';
@@ -97,47 +96,6 @@ describe('createStartRequestEnricher', () => {
     expect(untitled.title).toBe('   ');
     expect(untitled.calendarEvent?.eventId).toBe('x');
     expect(enrich([call('y', 0)], { title: '  ' }).title).toBe('Call y');
-  });
-});
-
-describe('meetingAttendees', () => {
-  it('reads the invitees off the local meeting, and none for a start with no event', () => {
-    const attendees = call('a', 0).attendees;
-    const read = meetingAttendees({
-      getMeeting: (id) =>
-        id === 'linked'
-          ? {
-              id,
-              title: 'T',
-              startedAt: iso(NOW),
-              endedAt: null,
-              remoteState: 'pending',
-              startSource: 'notification',
-              calendarEvent: {
-                provider: 'fake',
-                eventId: 'a',
-                icalUid: null,
-                recurringEventId: null,
-                scheduledStart: iso(NOW),
-                scheduledEnd: iso(NOW + MINUTE),
-                attendees,
-              },
-            }
-          : id === 'manual'
-            ? {
-                id,
-                title: 'T',
-                startedAt: iso(NOW),
-                endedAt: null,
-                remoteState: 'pending',
-                startSource: 'manual',
-                calendarEvent: null,
-              }
-            : null,
-    });
-    expect(read('linked')).toEqual(attendees);
-    expect(read('manual')).toEqual([]);
-    expect(read('no such meeting')).toEqual([]);
   });
 });
 
