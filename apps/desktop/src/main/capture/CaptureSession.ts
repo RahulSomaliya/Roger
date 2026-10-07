@@ -20,7 +20,16 @@ import {
   type SttStreamSettings,
 } from '../stt/SpeechToText';
 import { AudioTimeline } from './AudioTimeline';
-import { type GateChunk, type Heard, SilenceGate } from './SilenceGate';
+import {
+  GATE_MIN_OPEN_MS,
+  GATE_TOKEN_MIN_INTERVAL_MS,
+  GATE_TOKEN_MIN_LEFT_MS,
+  GATE_TOKEN_REFRESH_LEAD_MS,
+  type GateChunk,
+  type Heard,
+  SilenceGate,
+  type SilenceGateSettings,
+} from './SilenceGate';
 import type { SttOpenBudget, SttOpenDecision, SttOpenScope } from './SttOpenBudget';
 
 export interface CaptureSessionListeners {
@@ -88,16 +97,6 @@ export interface CaptureSessionOptions {
    * 0), and a silent source keeps its session as before.
    */
   silenceGate?: SilenceGateSettings | null;
-}
-
-/** The silence gate's settings (costGuards.ts, M3-T20). */
-export interface SilenceGateSettings {
-  /** The hang-over: chunks with no speech for this long close the session (sttSilenceCloseMs). */
-  closeAfterMs: number;
-  /** Audio kept while closed, sent first on the reopen (sttSilencePreRollMs). */
-  preRollMs: number;
-  /** The gate's own reopens this meeting, both sources (sttSilenceReopensPerMeeting). */
-  reopensPerMeeting: number;
 }
 
 /**
@@ -170,21 +169,6 @@ const SAMPLE_BYTES = 2;
  * backoff over instead of doubling it. A minute is the open budget's window.
  */
 const HEALTHY_STREAM_MS = 60_000;
-
-/**
- * The silence gate never closes a session younger than this (M3-T20): at most one gate reopen per
- * source per minute, the open budget's window, and every gated session has billed a minute anyway.
- */
-const GATE_MIN_OPEN_MS = 60_000;
-
-/** The gate's prefetched token is fetched again this long before it expires (while gated). */
-const PREFETCH_REFRESH_LEAD_MS = 10_000;
-
-/** A gate reopen opens with the prefetched token only when it has this long left. */
-const PREFETCH_MIN_LEFT_MS = 5_000;
-
-/** After a failed prefetch, the next try waits this long (while a source is still gated). */
-const PREFETCH_RETRY_MS = 10_000;
 
 const MS_PER_HOUR = 3_600_000;
 
@@ -388,7 +372,7 @@ export class CaptureSession {
   private prefetched: StreamCredentials | null = null;
   /** The prefetch in flight: a reopen at the onset waits for it rather than fetch twice. */
   private prefetching: Promise<StreamCredentials | null> | null = null;
-  /** No prefetch before this clock time (after one failed). */
+  /** No prefetch before this clock time (GATE_TOKEN_MIN_INTERVAL_MS after the last one began). */
   private prefetchNotBeforeMs = 0;
   /** The suspend reasons in force, each with the clock time it began (suspendStreams). */
   private readonly suspended = new Map<SuspendReason, number>();
@@ -1162,11 +1146,13 @@ export class CaptureSession {
 
   /**
    * Keeps the gate's prefetched token fresh while any source is gated (M3-T20): fetched at a close,
-   * fetched again PREFETCH_REFRESH_LEAD_MS before it expires, so speech after a silence opens with
-   * no API call at the onset (one token serves both sources, as at Start). Driven by the gated
+   * fetched again GATE_TOKEN_REFRESH_LEAD_MS before it expires, so speech after a silence opens
+   * with no API call at the onset (one token serves both sources, as at Start). Driven by the gated
    * chunks that keep arriving, not a timer: with no chunk there is no onset to be ready for. Never
-   * while suspended: no token is fetched until resumeStreams() (M2-T6). A failed fetch is logged
-   * and tried again PREFETCH_RETRY_MS later; meanwhile a reopen fetches at the onset, as before.
+   * while suspended: no token is fetched until resumeStreams() (M2-T6). Fetches are at least
+   * GATE_TOKEN_MIN_INTERVAL_MS apart, so a failed one is tried again then (logged; meanwhile a
+   * reopen fetches at the onset, as before) and a token shorter-lived than the lead is not fetched
+   * at every chunk.
    */
   private keepTokenFresh(): void {
     if (this.closing || this.suspended.size > 0 || this.prefetching !== null) return;
@@ -1174,17 +1160,17 @@ export class CaptureSession {
     const now = this.clock();
     if (now < this.prefetchNotBeforeMs) return;
     const token = this.prefetched;
-    if (token !== null && tokenLeftMs(token, now) > PREFETCH_REFRESH_LEAD_MS) return;
+    if (token !== null && tokenLeftMs(token, now) > GATE_TOKEN_REFRESH_LEAD_MS) return;
+    this.prefetchNotBeforeMs = now + GATE_TOKEN_MIN_INTERVAL_MS;
     const fetching = this.options.refreshCredentials().then(
       (credentials) => {
         this.prefetched = credentials;
         return credentials;
       },
       (error: unknown) => {
-        this.prefetchNotBeforeMs = this.clock() + PREFETCH_RETRY_MS;
         this.options.logger.warn('speech-to-text token prefetch failed', {
           error: errorMessage(error),
-          retryInMs: PREFETCH_RETRY_MS,
+          retryInMs: Math.max(0, this.prefetchNotBeforeMs - this.clock()),
         });
         return null;
       },
@@ -1197,12 +1183,12 @@ export class CaptureSession {
 
   /**
    * The token a gate reopen opens with: the prefetched one (waiting for a prefetch still on its
-   * way) while it has PREFETCH_MIN_LEFT_MS or more left, else a fetch now, as any reopen does.
+   * way) while it has GATE_TOKEN_MIN_LEFT_MS or more left, else a fetch now, as any reopen does.
    */
   private async gateCredentials(): Promise<StreamCredentials> {
     const fetched = this.prefetching === null ? null : await this.prefetching;
     const token = fetched ?? this.prefetched;
-    if (token !== null && tokenLeftMs(token, this.clock()) >= PREFETCH_MIN_LEFT_MS) return token;
+    if (token !== null && tokenLeftMs(token, this.clock()) >= GATE_TOKEN_MIN_LEFT_MS) return token;
     return this.options.refreshCredentials();
   }
 

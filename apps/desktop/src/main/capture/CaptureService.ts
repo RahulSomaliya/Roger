@@ -41,7 +41,8 @@ import type { TranscriptUploader } from '../upload/TranscriptUploader';
 import { Emitter } from '../util/emitter';
 import { withTimeout } from '../util/time';
 import { AudioFanout, type AudioSink } from './AudioFanout';
-import { CaptureSession, type SilenceGateSettings, type StreamCredentials } from './CaptureSession';
+import { CaptureSession, type StreamCredentials } from './CaptureSession';
+import type { SilenceGateSettings } from './SilenceGate';
 import { SttOpenBudget } from './SttOpenBudget';
 import { type StopReason, stopNotice } from './stopReasons';
 
@@ -1075,11 +1076,13 @@ export class CaptureService {
       provider: token.provider,
       accessToken: token.access_token,
       // From when it arrived: the silence gate's prefetched token is refreshed before this, and a
-      // gate reopen fetches anew when it has under 5 s left (CaptureSession, M3-T20). An API that
-      // names no lifetime (the response is cast, not validated) gives no known expiry.
-      expiresAtMs: Number.isFinite(token.expires_in)
-        ? this.clock() + token.expires_in * 1000
-        : null,
+      // gate reopen fetches anew when it has under 5 s left (CaptureSession, M3-T20). A lifetime of
+      // 0 (the API's fake vendor, whose empty token never expires) or none at all (the response is
+      // cast, not validated) is no known expiry: read as now, it would be fetched again every 10 s.
+      expiresAtMs:
+        Number.isFinite(token.expires_in) && token.expires_in > 0
+          ? this.clock() + token.expires_in * 1000
+          : null,
       settings: {
         model: token.stream.model,
         language: token.stream.language,

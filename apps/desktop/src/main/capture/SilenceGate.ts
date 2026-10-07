@@ -20,6 +20,38 @@ const FLOOR_WINDOW_MS = 30_000;
 /** Bytes per sample of the PCM every source sends (Int16 mono). */
 const SAMPLE_BYTES = 2;
 
+/**
+ * The gate never closes a session younger than this: at most one gate reopen per source per
+ * minute, the open budget's window, and every gated session has billed a minute anyway.
+ * CaptureSession and the bench's gated replay both keep it.
+ */
+export const GATE_MIN_OPEN_MS = 60_000;
+
+/**
+ * The token a gate reopen opens with is fetched while the source is closed (prefetched), so speech
+ * after a silence needs no API call at the onset. It is fetched again this long before it expires.
+ */
+export const GATE_TOKEN_REFRESH_LEAD_MS = 10_000;
+
+/** A gate reopen opens with the prefetched token only when it has this long left; else it fetches. */
+export const GATE_TOKEN_MIN_LEFT_MS = 5_000;
+
+/**
+ * Prefetches are at least this far apart: a failed one is tried again after it, and a token that
+ * lives less than the refresh lead (the API's fake names 0 s) is not fetched again at every chunk.
+ */
+export const GATE_TOKEN_MIN_INTERVAL_MS = 10_000;
+
+/** The silence gate's settings, from costGuards.ts: what CaptureSession and the bench run it with. */
+export interface SilenceGateSettings {
+  /** The hang-over: chunks with no speech for this long close the session (sttSilenceCloseMs). */
+  closeAfterMs: number;
+  /** Audio kept while closed, sent first on the reopen (sttSilencePreRollMs). */
+  preRollMs: number;
+  /** The gate's own reopens per meeting, both sources (sttSilenceReopensPerMeeting). */
+  reopensPerMeeting: number;
+}
+
 export interface SilenceGateOptions {
   /** The hang-over: audio with no speech chunk in it after which the source may close (> 0). */
   closeAfterMs: number;

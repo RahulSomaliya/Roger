@@ -1746,6 +1746,7 @@ describe('CaptureSession', () => {
     async function gated(
       overrides: Partial<CaptureSessionOptions> = {},
       limits = { perMinute: 100, perMeeting: 100 },
+      tokenTtlMs = 30_000,
     ) {
       const stt = new ControlledSpeechToText();
       const l = listeners();
@@ -1768,7 +1769,7 @@ describe('CaptureSession', () => {
           return Promise.resolve({
             accessToken: `token-${fetched}`,
             settings,
-            expiresAtMs: now + 30_000,
+            expiresAtMs: now + tokenTtlMs,
           });
         },
         budget,
@@ -1917,6 +1918,26 @@ describe('CaptureSession', () => {
       await flush();
       expect(g.fetched()).toBe(2);
       expect(g.stt.openOptions.at(-1)?.accessToken).toBe('token-2');
+      g.stt.succeed('mic');
+      await flush();
+      await g.s.close();
+    });
+
+    it('fetches at most every 10 s while gated, however short-lived the token', async () => {
+      // A token that lives under the refresh lead would otherwise be fetched again at every chunk.
+      const g = await gated({}, undefined, 3_000);
+      g.pushUntil('mic', 10_000, 70_100);
+      await flush();
+      expect(g.fetched()).toBe(1);
+      for (let t = 70_100; t < 95_000; t += 100) {
+        g.push('mic', t);
+        await flush(); // each fetch lands before the next chunk, as in real time
+      }
+      expect(g.fetched()).toBe(3); // at 80 s and 90 s
+      // Gone stale meanwhile: the onset fetches.
+      g.push('mic', 95_000, voice());
+      await flush();
+      expect(g.fetched()).toBe(4);
       g.stt.succeed('mic');
       await flush();
       await g.s.close();

@@ -2471,6 +2471,22 @@ describe('CaptureService silence gate (M3-T20)', () => {
     await h.service.stop();
   });
 
+  it("keeps a token whose lifetime the API names as 0 s, its fake's, rather than fetch again", async () => {
+    const h = harness();
+    const token = await h.api.getSttToken();
+    h.api.getSttToken.mockClear();
+    h.api.getSttToken.mockResolvedValue({ ...token, expires_in: 0 });
+    await h.service.start();
+    talkOverSilence(h, 60_000);
+    await settle();
+    for (let step = 0; step < 6; step += 1) {
+      talkOverSilence(h, 5_000);
+      await settle();
+    }
+    expect(h.api.getSttToken).toHaveBeenCalledTimes(2); // Start's, and the one prefetched
+    await h.service.stop();
+  });
+
   it('is off with sttSilenceCloseMs 0: a silent source keeps its session, and the meter says so', async () => {
     const h = harness({ guards: { sttSilenceCloseMs: 0 } });
     await h.service.start();
