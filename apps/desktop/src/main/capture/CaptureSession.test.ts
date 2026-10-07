@@ -2158,9 +2158,10 @@ describe('CaptureSession', () => {
       expect(g.s.gateUsage('mic')).toEqual({ gatedMs: 10_000, estimatedSavedUsd: 0.001 });
       expect(g.s.gateUsage('system')).toEqual({ gatedMs: 0, estimatedSavedUsd: 0 });
       expect(g.s.gateUsage()).toEqual({ gatedMs: 10_000, estimatedSavedUsd: 0.001 });
-      expect(g.s.gateReopens).toBe(1);
+      expect(g.s.gateReopens).toBe(0); // still connecting
       g.stt.succeed('mic');
       await flush();
+      expect(g.s.gateReopens).toBe(1);
       await g.s.close();
       expect(g.store.listCaptureEvents('m1').map(({ kind }) => kind)).toEqual([
         'stt-gate-closed',

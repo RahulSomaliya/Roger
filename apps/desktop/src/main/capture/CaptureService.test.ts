@@ -2441,17 +2441,23 @@ describe('CaptureService silence gate (M3-T20)', () => {
     expect(meter?.total).toMatchObject({ gatedMs: 10_000, estimatedSavedUsd: 0.0004 });
     expect(meter?.silenceGate).toBe('on');
 
+    // Someone joins: speech reopens call audio, and its closed time stops there.
+    h.advance(100);
+    h.service.pushAudio('system', new Uint8Array(3200).fill(64), h.now() - 100);
+    await settle();
+    expect(h.service.getStatus().streams.system).toBe('open');
+    h.advance(5_000);
     await h.service.stop();
-    expect(h.service.getStatus().meter?.total.gatedMs).toBe(10_000); // kept after Stop
+    expect(h.service.getStatus().meter?.total.gatedMs).toBe(10_100); // kept after Stop
     expect(log.lines.find((line) => line.message === 'stt meter at stop')).toMatchObject({
-      total: { gatedMs: 10_000, estimatedSavedUsd: 0.0004 },
-      system: { gatedMs: 10_000 },
+      total: { gatedMs: 10_100, estimatedSavedUsd: 0.0004 },
+      system: { gatedMs: 10_100 },
       silenceGate: 'on',
       gateReopens: 1,
     });
     expect(h.store.getSttUsage(meetingId!)).toMatchObject({
-      gatedMs: 10_000,
-      bySource: { mic: { gatedMs: 0 }, system: { gatedMs: 10_000 } },
+      gatedMs: 10_100,
+      bySource: { mic: { gatedMs: 0 }, system: { gatedMs: 10_100 } },
     });
   });
 

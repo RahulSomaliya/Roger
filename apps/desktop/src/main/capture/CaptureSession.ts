@@ -417,9 +417,12 @@ export class CaptureSession {
     return this.gateCloses >= gate.reopensPerMeeting ? 'spent' : 'on';
   }
 
-  /** Gate closes this meeting, both sources: each took one of sttSilenceReopensPerMeeting. */
+  /**
+   * Streams the silence gate reopened this meeting, both sources: one fewer than its closes while a
+   * source is still gated (each close took its reopen from sttSilenceReopensPerMeeting already).
+   */
   get gateReopens(): number {
-    return this.gateCloses;
+    return this.gateLatencyMeters.mic.length + this.gateLatencyMeters.system.length;
   }
 
   /**
@@ -1079,6 +1082,8 @@ export class CaptureSession {
     if (this.clock() - handle.openedAtMs < GATE_MIN_OPEN_MS) return;
     link.attempt += 1;
     link.current = null;
+    // Only speech reopens it now; a backoff left from a failure before it holds nothing back.
+    link.notBeforeMs = 0;
     link.pauseCause = 'silence';
     link.gatedSinceMs = this.clock();
     link.gatedPricePerHourUsd = handle.pricePerHourUsd;
