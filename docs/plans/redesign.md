@@ -20,7 +20,9 @@ still on by default, every AI line still links to its transcript lines.
 - [x] Everything in the removal list below is deleted (code, CSS and tests), not hidden.
       (R10: a `git grep` of every removed name finds none outside comments; the QA `hides` checks
       the old words are not on screen.)
-- [ ] 12-hour times, one word per concept (the naming list is in `CLAUDE.md`), plain copy.
+- [x] 12-hour times, one word per concept (the naming list is in `CLAUDE.md`), plain copy.
+      (R13: every error line goes through `describeError`, and QA fails any raw request path,
+      address or errno outside Details; the meeting page writes "Mon 5 Oct" like Home.)
 - [ ] `make check` green; one QA gallery (1440 and 390, light and dark, happy and failure path,
       realistic data) published.
 
@@ -195,3 +197,24 @@ Calls that changed while building, now in `docs/design.md`: Reconnect is the pri
 while Google refuses the grant; Set up Roger has a ghost Later while a check fails; the status line
 is "Recording · 12m" and Details is a header button, not part of the line; the pinned-pairings table
 floors every ratio (7 cells were rounded; fixed in the doc and in `tokens.test.ts`).
+
+## R13 log: fixes from the QA
+
+**2026-10-07.** Fixed what the R10 run found, test first where it is logic: the more-actions menu
+flips to the edge that fits and stays in the window at 390 (`components/ui/menuPlacement.ts`; the
+`past-menu` entry left `KNOWN_FAILURES`); one `describeError` mapping for every error line, so the
+jargon save and the AI notes start failure print "Roger could not reach its server."; the meeting's
+time line is "Mon 5 Oct, 3:00 pm to 3:03 pm"; refused lines show in the banner on every page but the
+meeting whose header says it (both through `captureStatusFor`); a refused or offline note keeps its
+state while a retry runs, so "Not saved to Roger" no longer blinks; migration 3 of `notes.sqlite`
+rebuilds the table in SQLite's order and a test upgrades a schema 2 file with a row in every old
+state; a pending generate left for Stop by an earlier build is dropped with a log line.
+
+Re-shot with `e2e/redesign.qa.e2e.ts` in four pieces (`past`, `settings`, `home`, `offline`, 17 to
+32 s each): 28 states in light and dark at 1440 and 390 (112 captures), 0 failed, 0 known failures,
+0 console errors. New checks: no raw request path, address or errno on the page outside Details, and
+no open menu outside the window. Two new states: refused lines on Home and in Settings. 52 pairs
+replaced, 4 added; gallery
+`/Users/rahulsomaliya/Documents/learn/roger-qa/qa-2026-10-07-redesign.html` (102 light | dark
+pairs, 4.8 MB). The "12-hour times, plain copy" box is ticked on that evidence. Still the
+controller's: "`make check` green" and publishing the gallery.

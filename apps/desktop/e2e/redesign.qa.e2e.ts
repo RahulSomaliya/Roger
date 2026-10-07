@@ -4,6 +4,7 @@ import { afterAll, beforeAll, describe, it } from 'vitest';
 import type { ForcedTheme } from '../preview/control';
 import { previewCalendarDay } from '../preview/fakes/calendar';
 import { LIVE_CALL, PAST_MEETING, segmentIdForLine } from '../preview/scenarios';
+import { meetingDayLabel } from '../src/renderer/src/app/labels';
 import * as qa from '../qa/driver';
 import type { CalendarEvent } from '../src/shared/calendar';
 import type {
@@ -55,7 +56,7 @@ beforeAll(async () => {
 });
 afterAll(async () => {
   await run.close();
-  await gallery.write({ Branch: 'rd/r10', Date: '2026-10-07' });
+  await gallery.write({ Branch: 'rd/r13', Date: '2026-10-07' });
 });
 
 interface Combo {
@@ -201,6 +202,7 @@ async function checkView(preview: qa.PreviewPage, spec: Spec): Promise<void> {
     throw new Error(`${label(primary)} is covered by ${primary.covered}`);
   }
   await expectMenuInWindow(page);
+  await expectNoRawApiText(page);
   for (const text of spec.problems ?? []) await expectProblem(page, text);
   for (const text of spec.shows ?? []) await expectTextVisible(page, text);
   for (const text of spec.hides ?? []) await expectTextHidden(page, text);
@@ -293,6 +295,22 @@ async function expectNoRunningAnimation(page: Page): Promise<void> {
  * Neither check below scrolls: a scroll would move the page the shot is taken of (a transcript that
  * landed on its newest line would be shot at its top). The shell is grown to its content first.
  */
+
+/**
+ * No request path, address or errno on the page outside Details (docs/design.md, Copy): every
+ * error line goes through `describeError` (R13). An open dialog is Details, the one place that may
+ * name them.
+ */
+async function expectNoRawApiText(page: Page): Promise<void> {
+  const found = await page.evaluate(() => {
+    const raw =
+      /\/v1\/|\bECONN[A-Z]*\b|\b127\.0\.0\.1\b|\b(?:GET|PUT|POST|DELETE) \/\S* (?:failed|returned)/;
+    const visible = (document.body.innerText || '').split('\n');
+    if (document.querySelector('dialog[open]') !== null) return null;
+    return visible.find((line) => raw.test(line)) ?? null;
+  });
+  if (found !== null) throw new Error(`raw API text on the page: "${found.trim().slice(0, 100)}"`);
+}
 
 /** An open menu lies wholly inside the window: a list cut off at an edge hides its items (R13). */
 async function expectMenuInWindow(page: Page): Promise<void> {
@@ -966,7 +984,14 @@ describe('past', () => {
           caption:
             'My notes, typed during the call; Write notes is the one primary, no AI notes tab yet',
           primary: 'Write notes',
-          shows: ['My notes', 'Transcript', 'Chat', 'Details'],
+          // The time line is Home's date form, not the system locale's (R13): "Mon 5 Oct, 3:00 pm".
+          shows: [
+            'My notes',
+            'Transcript',
+            'Chat',
+            'Details',
+            `${meetingDayLabel(PAST_MEETING.startedAt, new Date())}, `,
+          ],
           hides: ['No AI notes yet', 'Which kind of call'],
         });
 
@@ -1371,7 +1396,7 @@ describe('settings', () => {
           slug: 'settings-jargon-failed',
           caption: "Roger's server is away: the new term shows as Not saved, with Try again",
           primary: null,
-          problems: ['Not saved'],
+          problems: ['Not saved: Roger could not reach its server.'],
           shows: ['Try again'],
         },
         connectedSettings,
@@ -1729,6 +1754,51 @@ describe('offline', () => {
   );
 
   it(
+    'lines the server refused for good, on Home: the banner says it',
+    async () => {
+      await inEveryView(
+        {
+          group: 'Server away or refusing',
+          slug: 'offline-refused-lines-home',
+          caption:
+            'The server refused 3 lines for good and the person is on Home: the banner says so, with where they stay',
+          primary: 'Start notes',
+          problems: ["Roger's server refused 3 lines for good", 'They stay saved on this Mac only'],
+        },
+        openScenario('empty-mac'),
+        ({ page }) =>
+          patchStatus(page, {
+            upload: { state: 'idle', rejected: 3, lastError: 'validation_error' },
+          }),
+      );
+    },
+    PIECE_TIMEOUT_MS,
+  );
+
+  it(
+    'lines the server refused for good, in Settings: the banner says it there too',
+    async () => {
+      await inEveryView(
+        {
+          group: 'Server away or refusing',
+          slug: 'offline-refused-lines-settings',
+          caption: 'The same line above Settings: a person who left Home is still told',
+          primary: 'Connect Google Calendar',
+          problems: ["Roger's server refused 3 lines for good"],
+        },
+        openScenario('empty-mac'),
+        async ({ page }) => {
+          await goToSettings(page);
+          await patchStatus(page, {
+            upload: { state: 'idle', rejected: 3, lastError: 'validation_error' },
+          });
+        },
+      );
+    },
+    PIECE_TIMEOUT_MS,
+  );
+
+  it(
     'Details after Stop while the server is away: what waits to upload, in plain words',
     async () => {
       await inEveryView(
@@ -1829,7 +1899,10 @@ describe('offline', () => {
           caption:
             'Write notes could not start: a line with the reason and Dismiss, Write notes still offered',
           primary: 'Write notes',
-          problems: ['Dismiss'],
+          problems: [
+            'Roger could not start writing the notes: Roger could not reach its server.',
+            'Dismiss',
+          ],
         });
       });
     },
