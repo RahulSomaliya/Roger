@@ -1,6 +1,6 @@
 # Roger desktop: failure log
 
-Extends the root `CLAUDE.md`, whose house rules and repo-wide failure log apply here too: these are the traps hit only in `apps/desktop` (its bench, e2e and QA scripts and the Swift helper included). Add one when you hit a new one.
+Extends the root `CLAUDE.md`, whose house rules and repo-wide failure log apply here too: these are the traps hit only in `apps/desktop` (its bench, e2e and QA scripts and the Swift helper included). Add one when you hit a new one. Renderer and UI traps from the redesign live in `src/renderer/CLAUDE.md`.
 
 - In `make dev-desktop` the terminal is the app macOS asks for capture permission. cmux, iTerm2 and
   Terminal.app have no `NSAudioCaptureUsageDescription`, so the system audio ("Them") stream is
@@ -280,9 +280,9 @@ Extends the root `CLAUDE.md`, whose house rules and repo-wide failure log apply 
   macOS 13+, use `wasOpenedAtLogin`. Tray icons are `build/tray*Template.png` plus `@2x` (the
   `Template` suffix makes macOS tint them), reach a packaged app only through `electron-builder.yml`
   `extraResources`, and `createFromPath` of a missing file returns an EMPTY image with no error.
-- A meeting-page region that is a grid row must scroll inside itself: `.meeting-notes-panel` had no
-  overflow, so a tall AI panel painted over the chat and took its clicks, and only `expectVisible`
-  (`elementFromPoint`) caught it (M4-T20). A component mounted in a slot file that reads
+- The meeting page is one column: each pane is a flex column with `overflow-y: auto` inside
+  `.meeting-body` (a pane without it once painted over the chat and took its clicks, M4-T20), and
+  closed panes carry `hidden`. A component mounted in a slot file that reads
   `window.roger` breaks every Node test that renders the real slots: mock the slot file
   (`vi.mock('../app/slots/m4-notes', () => ({ contributions: {} }))`, likewise `m5-calendar`),
   never stub `window` (`MeetingPage.test.ts`, `AppLayout.test.ts`; M4-T20, M5-T13).

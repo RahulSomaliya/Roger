@@ -166,7 +166,8 @@ before you start.
   (a BOM in a regex failed `no-irregular-whitespace`; curly quotes passed silently, M3-T10): search
   for non-ASCII after every write or edit and fix a hit with a script that emits the escape. On
   this Mac use `perl -ne 'print if /[^\x00-\x7F]/'`: BSD grep has no `-P` and reads no `\x`
-  escapes, so a `grep` for it finds nothing (M3-T19b).
+  escapes, so a `grep` for it finds nothing (M3-T19b). A `\u00a0` written into a TSX string came
+  back as a literal no-break space, which lint refused (redesign R2).
 - pnpm 10.28 here does NOT enforce the global `minimum-release-age=10080`: `@tiptap/core@^3.31.0`
   resolved to a 6-day-old 3.31.4 (P2-F3, 2026-10-06). After any `pnpm add`, check each new
   lockfile version's publish date (`npm view <pkg> time`). `@tiptap/react` pulls its bubble and
