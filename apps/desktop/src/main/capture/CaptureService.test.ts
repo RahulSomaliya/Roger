@@ -1898,6 +1898,14 @@ describe('CaptureService start requests (M5)', () => {
     const nul = await h.service.start({ title: '\u0000  ' });
     expect(nul.title).toBe(defaultMeetingTitle(new Date(h.now())));
     expect(lastMeeting(h)?.title).toBe(defaultMeetingTitle(new Date(h.now())));
+    await h.service.stop();
+
+    // And Python's strip(), the API's blank test, also trims U+001C to U+001F, which the stored
+    // title keeps: an invisible title here, while the server named the meeting "Untitled meeting".
+    h.advance(60_000);
+    const separators = await h.service.start({ title: ` ${String.fromCharCode(0x1c, 0x1f)} ` });
+    expect(separators.title).toBe(defaultMeetingTitle(new Date(h.now())));
+    expect(lastMeeting(h)?.title).toBe(defaultMeetingTitle(new Date(h.now())));
   });
 
   // The uploader sends the stored title, so the local title is the one the server keeps.

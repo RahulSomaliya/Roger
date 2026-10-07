@@ -6,6 +6,7 @@ import {
   type ResponseStatus,
 } from '../shared/calendar';
 import {
+  isApiBlank,
   isStartSource,
   MAX_MEETING_TITLE_LENGTH,
   type StartCaptureRequest,
@@ -220,10 +221,13 @@ function optionalCalendarText(value: unknown, name: string): string | null {
  * Text measured as the API measures it before it stores it: its storedMeetingText (U+0000 dropped,
  * then trimmed as the API trims, never with trim()), counted in code points as Python's `len`
  * counts (`Array.from`, never `.length`: an emoji is one character to the API and two UTF-16 units
- * here).
+ * here). Where blank is allowed (a title, an optional calendar text), a blank one is never
+ * measured: the API reads it as blank first (isApiBlank, which unlike the trim takes U+001C to
+ * U+001F for whitespace) and stores the default title or null.
  */
 function text(value: unknown, name: string, rules: { max: number; blank: boolean }): string {
   if (typeof value !== 'string') refuse(`${name} is not text`);
+  if (rules.blank && isApiBlank(value)) return value;
   const length = Array.from(storedMeetingText(value)).length;
   if (length === 0 && !rules.blank) refuse(`${name} is blank`);
   if (length > rules.max) refuse(`${name} is over ${rules.max} characters`);

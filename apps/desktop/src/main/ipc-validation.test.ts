@@ -353,6 +353,19 @@ describe('parseStartCaptureRequest', () => {
     expect(parseStartCaptureRequest({ title: padded })).toEqual({ title: padded });
   });
 
+  // The API names a blank title "Untitled meeting" and stores a blank optional text as null before
+  // it measures either, and its blank is Python's strip(), which trims U+001C to U+001F too.
+  it('passes a title or an optional calendar text the API reads as blank, at any length', () => {
+    const separator = String.fromCharCode(0x1c);
+    const title = separator.repeat(600);
+    expect(parseStartCaptureRequest({ title })).toEqual({ title });
+    const blankUid = withEvent({ icalUid: ` ${separator.repeat(3000)} ` });
+    expect(parseStartCaptureRequest(blankUid)).toEqual(blankUid);
+    // A required text is trimmed as pydantic trims, which keeps them: one is not blank there.
+    const separatorId = withEvent({ eventId: separator });
+    expect(parseStartCaptureRequest(separatorId)).toEqual(separatorId);
+  });
+
   it('refuses an event link POST /v1/meetings would refuse with a 422', () => {
     const refusals: [unknown, string][] = [
       [{ calendarEvent: 'nope' }, 'calendarEvent is not an object'],

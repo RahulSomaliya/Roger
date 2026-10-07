@@ -7,6 +7,7 @@ import {
   fitMeetingTitle,
   HELPER_HANG_KILL_MS,
   idleCaptureStatus,
+  isApiBlank,
   isStartSource,
   MAX_MEETING_TITLE_LENGTH,
   MIC_DEAD_WARNING_MS,
@@ -89,6 +90,38 @@ describe('storedMeetingText', () => {
     expect(storedMeetingText(`  Weekly${nul} sync ${nul}`)).toBe('Weekly sync');
     expect(storedMeetingText(`${nul} ${nul}`)).toBe('');
     expect(storedMeetingText(`${nextLine}Standup${byteOrderMark}`)).toBe(`Standup${byteOrderMark}`);
+  });
+});
+
+describe('isApiBlank', () => {
+  // The API tests a title and an optional calendar text for blank with Python's str.strip(), which
+  // also trims U+001C to U+001F. storedMeetingText keeps them, as the API's stored text does.
+  it("is blank as the API reads a title: U+0000 dropped, then nothing but Python's whitespace", () => {
+    const nul = String.fromCharCode(0);
+    const separators = [0x1c, 0x1d, 0x1e, 0x1f].map((code) => String.fromCharCode(code));
+    const [fileSeparator = '', , , unitSeparator = ''] = separators;
+    const ideographicSpace = String.fromCharCode(0x3000);
+    for (const blank of [
+      '',
+      '  ',
+      `${nul} ${nul}`,
+      ...separators,
+      ` ${separators.join(' ')} `,
+      `${nul}${unitSeparator}${ideographicSpace}`,
+      fileSeparator.repeat(600),
+    ]) {
+      expect(isApiBlank(blank), JSON.stringify(blank)).toBe(true);
+    }
+    // Not whitespace to Python: a byte order mark, a zero-width space.
+    for (const text of [
+      'a',
+      `${fileSeparator} a`,
+      `a${fileSeparator}`,
+      String.fromCharCode(0xfeff),
+      String.fromCharCode(0x200b),
+    ]) {
+      expect(isApiBlank(text), JSON.stringify(text)).toBe(false);
+    }
   });
 });
 
