@@ -1122,6 +1122,10 @@ export class CaptureService {
       this.checkAudioFlow();
       this.checkForgottenStop();
       this.refreshRetryCountdowns();
+      // Every tick, changed or not. While main records and the window captures no mic (a reload,
+      // a start from the tray), M2-T12's followMain opens it on the next status the page gets;
+      // besides its first read and the focus read, this tick is what brings one. Sent only on a
+      // change, that mic stayed shut until something else changed.
       this.emitStatus();
     }, MONITOR_INTERVAL_MS);
   }

@@ -569,6 +569,22 @@ describe('CaptureService audio flow', () => {
     await h.service.stop();
   });
 
+  it('sends a status every 500 ms while recording, changed or not', async () => {
+    // M2-T12's followMain opens the mic on the next status the page gets while main records and
+    // the page captures none (a reload, a start from the tray): besides its first read and the
+    // focus read, this tick is what brings one. Sent only on change, that mic stayed shut.
+    const h = harness();
+    await h.service.start();
+    const before = h.statuses.length;
+    await vi.advanceTimersByTimeAsync(2_000); // nothing changes: no audio yet, no stall yet
+    expect(h.statuses.length - before).toBe(4);
+    expect(h.statuses.at(-1)?.phase).toBe('recording');
+    await h.service.stop();
+    const after = h.statuses.length;
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(h.statuses.length).toBe(after); // idle: nothing to follow
+  });
+
   it('does not let the renderer report a stalled source back to healthy without audio', async () => {
     const h = harness();
     await h.service.start();
