@@ -471,9 +471,9 @@ Every other file has exactly one writer in Phase 2.
 | `src/main/index.ts` | P2-F1 (slots) → M4-S2, M4-S1 (wave 1) → M2-T4, M3-T8 (2) → M4-S4b (3) → M2-T13, M4-T16 (4; also the `new TranscriptUploader` call in `[slot M2-T4 runtime]`) → M5-T9c, M5-T11 (6; M5-T9c also passes `attendees` to the `new NotesGenerator` call in `[slot M4-T16 notes]`) → M2-T23 (7) | Named slots (section 1). Inside a wave the slots differ, so the slot bodies merge cleanly; the import lines at the top are outside every slot and do conflict (M4-S1 and M4-S2 both edited the `electron` import): resolve as the union. Nobody edits outside their slot and its imports. The cost-guard wiring and the `RecordingLifecycle` stay inside `[slot M2-T4 runtime]`. |
 | `src/main/lifecycle.ts` (landed `RecordingLifecycle`, with `lifecycle.test.ts`) | P2-F1 (0, quit hooks) → M2-T12 (3, a renderer crash or reload no longer stops) → M2-T18 (5, `suspend` moves to `PowerCoordinator`) → M5-T11 (6, a hide never stops; the public `quitting` getter `window.ts` reads) | One writer per wave; each changes one decision and keeps every other G4 stop and its test |
 | `src/main/capture/stopReasons.ts` | M2-T12 (3, drops `page-reloaded`) → M2-T17b (7, adds `call-ended`) | - |
-| `src/main/capture/createCaptureRuntime.ts` | M2-T4 (slots) → T10, T11 (3) → T6, T15 (4) → T14b, T18, T19, M3-T19b (5) → T16, T17a (6) → T17b (7) | Runtime slots made by M2-T4, used the same way as the `index.ts` slots. Outside the slots only M2-T16 (6) writes: one `CaptureFeatureHandlers` member and its request in `createCaptureRequests` |
+| `src/main/capture/createCaptureRuntime.ts` | M2-T4 (slots) → T10, T11 (3) → T6, T15 (4) → T14b, T18, T19, M3-T19b (5) → T16, T17a (6) → T17b (7) | Runtime slots made by M2-T4, used the same way as the `index.ts` slots. Outside the slots only M2-T16 (6) writes: one `CaptureFeatureHandlers` member (with its null in `noCaptureFeatures()` and a line in the interface's doc) and its request in `createCaptureRequests` |
 | `src/main/capture/CaptureService.ts` | M3-T4a (wave 1, the fake literal and `keyterms` in `resolveStt`) → M2-T4 (2, the injected budget) → M4-T22 (3) → M5-T5 (4) → M3-T4b (5) → M3-T20 (6, the meter, the token's expiry) | One writer per wave. Every writer keeps the landed cost guards (G1 to G7) and their tests green. M2-T16 reaches the budget through its runtime slot and never edits this file. |
-| `src/main/capture/CaptureSession.ts` | M3-T18 (0, the `hold()` doc and the flush comment only) → M2-T5 (3) → M2-T6, then M3-T6b (4, in that merge order; as built M3-T6b merged first) → M3-T4b (5) → M3-T20 (6) | One writer per wave, except wave 4, where M3-T6b (one call per event, the log line) and M2-T6 overlap; M2-T6's merge keeps both sides |
+| `src/main/capture/CaptureSession.ts` | M3-T18 (0, the `hold()` doc and the flush comment only) → M2-T5 (3) → M2-T6, then M3-T6b (4, in that merge order; as built M3-T6b merged first) → M3-T4b (5) → M3-T20 (6) | One writer per wave, except wave 4, where M3-T6b (one call per event, the log line) and M2-T6 overlap; M2-T6's merge keeps both sides there, but not in `CaptureSession.test.ts`'s `ScriptedStream`, where the two ways to hold a `close()` pending collide (section 10, "From wave 4") |
 | `src/main/capture/SttOpenBudget.ts` (landed, with its test) | M2-T4 (2, the minute-only acquire and the doc comment naming every allowed caller) | Only M2-T4 edits it. M2-T16 and M3-T20 (both wave 6) call the minute-only acquire; the bench builds its own instance. |
 | `src/main/upload/TranscriptUploader.ts` | M2-T3b (2) → M4-T22 (3) → M5-T5 (4) | One writer per wave. M3-T19b's usage uploader is its own file. |
 | `src/main/store/*` | M2-T3 (1, migration 4) → M2-T3b (2) → M4-S4b (3) → M5-T5 (4, migration 5) → M3-T19b (5, migration 6) → M5-T9c (6, the `findMeetingIdsByEventIds` doc only) | One writer per wave; migration 3 (`stt_usage`) is landed and nobody edits it |
@@ -1713,10 +1713,11 @@ and later first, then what wave 4 must know:
 From wave 4 (7 tasks merged 2026-10-07: M2-T13, M2-T15, M3-T6b, M4-T9, M4-T12, M4-T16 and M5-T5;
 their boxes in the milestone plans are ticked, and the plan text they made false is fixed in
 place). M2-T6 merges right after this note, on top of M3-T6b (the reverse of section 3.1's order);
-its lines below were read from `p2/m2-t6` (00b434f). Two gaps get owners: the list of meetings
-whose audio is kept for a re-run goes to M2-T16 (wave 6), and the channel that tells Home which
-events already have a note goes to M5-T6 (wave 5), wired by M5-T9c (wave 6). The hand-offs, wave 5
-first:
+its lines below were read from `p2/m2-t6` (00b434f) and still hold at fa5067b (the two commits
+after it change only `SttConnection.ts`'s liveness check and its tests). Two gaps get owners: the
+list of meetings whose audio is kept for a re-run goes to M2-T16 (wave 6), and the channel that
+tells Home which events already have a note goes to M5-T6 (wave 5), wired by M5-T9c (wave 6). The
+hand-offs, wave 5 first:
 
 - **M2-T14b (wave 5): the call-audio watermark (M2-T6).** `session.onWatermark((source, {
   finalEndMs, closed }) => ...)` returns its unsubscribe, and `session.watermark(source)` reads it
@@ -1746,7 +1747,9 @@ first:
   `Notification.isSupported()` is false: M2-T19's first-run redirect (on `not-determined`) never
   fires there and no notification posts; keep New note reachable. Build first
   (`pnpm --filter @roger/desktop test:e2e` runs `electron-vite build`), fetch Electron once per
-  worktree, and pass `manyStarts: true` for more than two Starts a minute.
+  worktree, and pass `manyStarts: true` for more than two Starts a minute. `make e2e-desktop` runs
+  your files in parallel with `capture.e2e.ts` and the QA files (vitest's default; Controller,
+  below).
 - **M2-T20a (wave 5):** an offline source (M2-T6) shows `offline` in `CaptureStatus.streams`, and
   nothing calls `onStreamFailure` while offline, so the banner shows T11's one offline warning and
   no retry countdown. Low disk raises the loud `backup-paused` warning (M2-T15); a failed backup
@@ -1824,11 +1827,17 @@ first:
   Assigned after wave 4: the call that lists the meetings whose audio is kept for a re-run, for
   M2-T20b's Home card. Add its channel and `CaptureApi` member to `shared/ipc/capture.ts` (bridge,
   preview fake, and a stub in `AudioCaptureController.test.ts`), its request to `CaptureRequests`
-  in `main/ipc.ts`, and a `CaptureFeatureHandlers` member registered in `createCaptureRequests`
-  (`capture/createCaptureRuntime.ts`, the only edit there outside a slot in wave 6), filled from
-  your slot. Answer meeting id, title and `keepUntil` (`audioBackup.report(meetingId)`), newest
-  first, from one `listUnrecoveredGaps()` read and `listMeetingIdsWithAudio()`, not a query per
-  meeting.
+  in `main/ipc.ts`, and a `CaptureFeatureHandlers` member (`capture/createCaptureRuntime.ts`):
+  null in `noCaptureFeatures()`, registered in `createCaptureRequests`, filled from your slot.
+  Those, with the interface's doc (it says each member's meeting id is checked and the meeting
+  known before it runs; say the list takes none), are your only edits there outside a slot.
+  Answer meeting id, title and `keepUntil`, newest first: one `listUnrecoveredGaps()` read counted
+  per meeting and kept to the ids `listMeetingIdsWithAudio()` returns, then for each meeting
+  listed `getMeeting(id)` (title and `endedAt`: `TranscriptStore` has no read for several
+  meetings, and the list is short) and `audioKeep(endedAt, gapCount,
+  config.capture.audioRetentionDays)` (`backup/AudioRetentionSweeper.ts`), the rule
+  `audioBackup.report` uses, so the card and the report agree. Not `report()` per meeting: each
+  call reads the meeting's files, events, meeting and gaps.
 - **M3-T20 (wave 6): `CaptureSession.ts` after M2-T6 and M3-T6b.** `gapStartMs` is the one
   function that places a gap's start, and the reopen decision is the one condition in
   `pushAudio`'s `paused`/`retrying` branch (`this.suspended.size === 0 && this.clock() >=
@@ -1895,20 +1904,37 @@ first:
     `max_input_tokens` a required keyword: in the same merge pass
     `max_input_tokens=settings.notes_max_input_tokens` at `evals/notes_eval.py:184` (threaded from
     `main`'s settings through `run_eval` and `eval_case`), or mypy fails. Until then the eval runs
-    every case at the 200,000 default whatever `NOTES_MAX_INPUT_TOKENS` says.
-  - M2-T6's merge: `CaptureSession.ts` overlaps M3-T6b's blocks (the `latency` field of
-    `StreamHandle`, `latencyMeters`, `track()`, the first lines and last block of `close()`, the
-    meter calls after `onSegment` in `handleEvent`, `measureLatency`): keep both sides, the
-    watermark publish beside the meter call. Add `net: { isOnline: () => true }` to
-    `backup/backupSlot.test.ts`'s `electron` mock, as M2-T6 did in the other two. Check this
-    note's M2-T6 lines against its last fix, then tick its box.
+    every case at the 200,000 default whatever `NOTES_MAX_INPUT_TOKENS` says. mypy checks `tests`
+    too (`files = ["src", "tests"]`): a new required `run_eval` parameter changes its 11 calls in
+    `tests/test_notes_eval.py`. And `run_eval` records `prompt_version=PROMPT_VERSION` for the
+    whole run (`evals/notes_eval.py:172`): once the budget is real, a case over it runs
+    map-then-reduce, so the report must name the prompts each case ran (`LONG_PROMPT_VERSION` when
+    `plan_windows(sources, max_input_tokens)` has windows, as `start_notes_run` picks it in
+    `services/notes_generation.py`).
+  - M2-T6's merge (`git merge-tree phase-2 p2/m2-t6`: 4 conflict hunks in `CaptureSession.ts`, 2
+    in `CaptureSession.test.ts`): `CaptureSession.ts` overlaps M3-T6b's blocks (the `latency`
+    field of `StreamHandle`, `latencyMeters`, `track()`, the first lines and last block of
+    `close()`, the meter calls after `onSegment` in `handleEvent`, `measureLatency`): keep both
+    sides, the watermark publish beside the meter call. Both test hunks are in `ScriptedStream`,
+    where keeping both sides does not work: M3-T6b's `closeUntil` and M2-T6's `finishing` gate
+    each hold a `close()` pending, and the two `close()` bodies collide. Keep one way and M2-T6's
+    `terminate()`: move M3-T6b's "logs only once every stream has closed, so the last line a close
+    flushes is timed" to `finishing`, as the trial merge on `p2/m2-t6-merge` (98431a0) does. Add
+    `net: { isOnline: () => true }` to `backup/backupSlot.test.ts`'s `electron` mock, as M2-T6 did
+    in the other two (98431a0 does not yet). If M2-T6's last fix goes past fa5067b, check this
+    note's M2-T6 lines again; then tick its box.
   - Comments with no later writer: `shared/calendar.ts`'s header (M5-T8) says calendar types are
     mapped "in `main/api/calendarClient.ts` and nowhere else", but `ApiClient.ts` maps them to the
     wire for the create; `schemas/meetings.py`'s `MeetingTitle` and `MAX_CALENDAR_TEXT_LENGTH`
     need pointers back to the desktop's `MAX_MEETING_TITLE_LENGTH` (`shared/capture.ts`) and
     `MAX_CALENDAR_TEXT_LENGTH` (`main/ipc-validation.ts`), which point at them;
     `services/citations.py`'s `_tokens` to `evals/notes_score._plain`, which copies its NFKC and
-    apostrophe rule; `NotesGenerator.recordingEnded` (M4-T23) to `KeptSilentMeetings`. Optional
+    apostrophe rule; `NotesGenerator.recordingEnded` (M4-T23) to `KeptSilentMeetings`. Two M2-T13
+    left false (review findings it did not fix): `vitest.e2e.config.ts` still says "Pass with none
+    until the first smoke test lands" over `passWithNoTests: true` (drop both now that
+    `capture.e2e.ts` is in, or say why it stays), and `main/index.ts`'s `[slot M2-T13]` says "the
+    harness reads roger.sqlite there": the harness writes `config.json` there before launch, checks
+    main's `userData` is that folder, and reads lines through `window.roger`. Optional
     code: `bench/core/wav.ts` (M3-T10) can import `wavHeader` and `WAV_HEADER_BYTES` from
     `src/main/backup/wav.ts`, as its comment asks.
   - Now due ("From wave 3", M4-T9 merged): comments that send a reader to `CLAUDE.md` for a
@@ -1920,7 +1946,12 @@ first:
     to `SttTokenResponse.stream` (`main/api/ApiClient.ts`).
   - Publish M2-T13's gallery (`scratchpad/p2/qa-m2-t13/qa-2026-10-07-m2-t13-smoke.html`, 4 shots)
     with the others, and run the whole `make e2e-desktop` once on the Mac: builders ran only their
-    own e2e files since wave 2.
+    own e2e files since wave 2. Vitest runs those files in parallel (its default;
+    `vitest.e2e.config.ts` does not turn it off), so `capture.e2e.ts`'s Electron launch and 10 s
+    first-line window, so far checked only with the file alone, share the Mac with the five
+    `*.qa.e2e.ts` files' Vite servers and Chromes, and M2-T19 and M2-T20a add Electron launches. If
+    a window misses only in the full run, `fileParallelism: false` there runs one file at a time;
+    widening the 10 s would weaken what the smoke test checks.
 - **Owner:** calls to confirm or reverse, each in its task's code and notes: M2-T15's failed
   backup write raising no loud warning (state `error`, an error log and a `backup_failed` event;
   low disk is the loud one); M2-T6's gap rows naming an outage's first cause, and its pong record
