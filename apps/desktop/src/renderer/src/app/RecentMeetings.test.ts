@@ -67,8 +67,6 @@ function shell(
     capture: {
       status,
       lastMeetingId,
-      segments: [],
-      interim: { mic: null, system: null },
       localError: null,
       busy: false,
       start: vi.fn(),

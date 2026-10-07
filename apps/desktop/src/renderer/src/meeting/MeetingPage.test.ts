@@ -10,11 +10,17 @@ import { MeetingPage } from './MeetingPage';
 import type { Read } from './useMeeting';
 import type * as UseMeeting from './useMeeting';
 
-// The page under renderToString, with the real slot files: M4-S4's seeds (M1's StatusPanel and
-// TranscriptView) are what it shows until M2-T20a and M3-T9 mount theirs. Node has no
-// window.roger, so the shell and the meeting read are stand-ins.
+// The page under renderToString, with the real slot files: M3-T9's live transcript, and M4-S4's
+// seed (M1's StatusPanel) until M2-T20a mounts its capture status. Node has no window.roger, so
+// the shell and the meeting read are stand-ins, and the transcript shows only the stored lines:
+// its subscription to main's events is an effect, which renderToString never runs.
 const fakes = vi.hoisted(() => ({
   shell: null as Shell | null,
+  /**
+   * Shells the page sees after `shell`, one per useShell call, the last one kept: a render that
+   * sets the page's own state renders it again at once, so a test can show it a change.
+   */
+  later: [] as Shell[],
   read: null as Read<StoredMeeting | null> | null,
   /** What each render passed to useMeeting: the meeting and the key that makes it read again. */
   reads: [] as { meetingId: string; refreshKey: string }[],
@@ -22,7 +28,9 @@ const fakes = vi.hoisted(() => ({
 vi.mock('../app/ShellContext', () => ({
   useShell: () => {
     if (fakes.shell === null) throw new Error('set fakes.shell first');
-    return fakes.shell;
+    const now = fakes.shell;
+    fakes.shell = fakes.later.shift() ?? now;
+    return now;
   },
 }));
 vi.mock('./useMeeting', async (importOriginal) => ({
@@ -90,7 +98,6 @@ function read(value: StoredMeeting | null | undefined, error: string | null = nu
 function shell(fields: {
   status?: CaptureStatus | null;
   captureMeeting?: CaptureMeeting | null;
-  segments?: TranscriptSegment[];
   busy?: boolean;
 }): Shell {
   return {
@@ -100,8 +107,6 @@ function shell(fields: {
       status: fields.status ?? null,
       // The meeting main named last is the one the shell points at (captureMeeting).
       lastMeetingId: fields.captureMeeting?.id ?? null,
-      segments: fields.segments ?? [],
-      interim: { mic: null, system: null },
       localError: null,
       busy: fields.busy ?? false,
       start: vi.fn(),
@@ -127,6 +132,11 @@ function recording(meetingId: string): CaptureStatus {
 
 const page = (meetingId = A): string => renderToString(createElement(MeetingPage, { meetingId }));
 
+const LIVE = { id: A, startedAt: '2026-10-06T09:00:00.000Z' };
+
+/** The live transcript panel (transcript/LiveTranscript.tsx), mounted in the transcript region. */
+const PANEL = /<div[^>]*class="live-transcript-lines"[^>]*role="log"[^>]*aria-label="Transcript"/;
+
 /** The text content of the rendered page, tags and React's comment markers removed. */
 const text = (html: string): string => html.replace(/<[^>]*>/g, '');
 
@@ -143,6 +153,7 @@ function readKeyFor(fake: Shell, meetingId = A): string {
 
 beforeEach(() => {
   fakes.shell = shell({});
+  fakes.later = [];
   fakes.read = read(undefined);
   fakes.reads = [];
 });
@@ -178,16 +189,15 @@ describe('the meeting page', () => {
     expect(page()).toMatch(/<button[^>]*disabled=""[^>]*>Stop<\/button>/);
   });
 
-  it('adds the lines that arrived live to the stored ones, each once', () => {
-    fakes.shell = shell({
-      status: recording(A),
-      captureMeeting: { id: A, startedAt: '2026-10-06T09:00:00.000Z' },
-      segments: [line(A, 'l1', 2100, 'Stored and live'), line(A, 'l2', 4000, 'Only live so far')],
-    });
-    fakes.read = read(stored(A, [line(A, 'l1', 2100, 'Stored and live')]));
-    const shown = text(page());
-    expect(shown.match(/Stored and live/g)).toHaveLength(1);
-    expect(shown).toContain('Only live so far');
+  it('shows the lines in the live transcript panel, which follows while the meeting records', () => {
+    // The panel adds the lines main sends it to these stored ones itself (useLiveTranscript).
+    fakes.shell = shell({ status: recording(A), captureMeeting: LIVE });
+    fakes.read = read(stored(A, [line(A, 'l1', 2100, 'Stored before this page opened')]));
+    const html = page();
+    expect(html).toMatch(PANEL);
+    expect(html).toMatch(/<p [^>]*data-segment-id="l1"[^>]*>.*Stored before this page opened/);
+    // Following live from the start: nothing to jump back to.
+    expect(html).not.toContain('Jump to live');
   });
 
   it("keeps the last recording's meter after Stop, the cost the owner asked to see", () => {
@@ -207,13 +217,11 @@ describe('the meeting page', () => {
     fakes.shell = shell({
       status: recording(B),
       captureMeeting: { id: B, startedAt: '2026-10-06T10:00:00.000Z' },
-      segments: [line(B, 'b1', 500, 'First line of the next call')],
     });
     fakes.read = read(stored(A, [line(A, 'l1', 2100, 'A line of meeting A')]));
     const html = page(A);
     expect(html).toMatch(/<h1[^>]*>Daily standup<\/h1>/);
     expect(text(html)).toContain('A line of meeting A');
-    expect(text(html)).not.toContain('First line of the next call');
     expect(text(html)).not.toContain('can show only the meeting it recorded last');
     expect(html).not.toContain('aria-label="Capture status"');
     expect(html).not.toContain('>Stop<');
@@ -236,19 +244,16 @@ describe('the meeting page', () => {
     fakes.read = read(null);
     const html = page();
     expect(text(html)).toContain('This meeting is not on this Mac');
-    expect(html).not.toContain('class="transcript"');
+    expect(html).not.toMatch(PANEL);
   });
 
   it('keeps the live transcript of a meeting main has not stored yet', () => {
-    fakes.shell = shell({
-      status: recording(A),
-      captureMeeting: { id: A, startedAt: '2026-10-06T09:00:00.000Z' },
-      segments: [line(A, 'l1', 2100, 'Live before the store answers')],
-    });
+    fakes.shell = shell({ status: recording(A), captureMeeting: LIVE });
     fakes.read = read(null);
     const html = page();
     expect(text(html)).not.toContain('This meeting is not on this Mac');
-    expect(text(html)).toContain('Live before the store answers');
+    expect(html).toMatch(PANEL);
+    expect(text(html)).toContain('Listening. Lines appear here as people speak.');
   });
 
   it('shows the transcript alone, with no pane buttons, while nothing else is mounted', () => {
@@ -284,11 +289,14 @@ describe('the meeting page', () => {
   });
 
   it('shows no transcript before the first read answers: it knows no lines to call missing', () => {
-    // Roger restarted, a past meeting opened from the sidebar: no live lines, main not answered.
-    fakes.shell = shell({ status: IDLE, segments: [line(B, 'b1', 500, 'Another meeting')] });
-    const html = page();
-    expect(text(html)).not.toContain('No lines were saved');
-    expect(html).not.toContain('class="transcript"');
+    // A past meeting opened from the sidebar, main not answered yet; also the meeting this window
+    // recorded last, opened again after Stop: a new page has heard none of its lines.
+    for (const opened of [shell({ status: IDLE }), shell({ status: IDLE, captureMeeting: LIVE })]) {
+      fakes.shell = opened;
+      const html = page();
+      expect(text(html)).not.toContain('Nothing was transcribed');
+      expect(html).not.toMatch(PANEL);
+    }
   });
 
   it('says it could not read the meeting when the first read fails, never a made-up title', () => {
@@ -301,27 +309,28 @@ describe('the meeting page', () => {
     expect(text(html)).not.toContain('Untitled meeting');
     expect(html).toMatch(/role="alert"[^>]*>.*database is locked/);
     expect(text(html)).toContain('The transcript shows here once Roger can read this meeting.');
-    expect(text(html)).not.toContain('No lines were saved');
-    expect(html).not.toContain('class="transcript"');
+    expect(text(html)).not.toContain('Nothing was transcribed');
+    expect(html).not.toMatch(PANEL);
   });
 
-  it('keeps the lines this window heard live when the first read fails', () => {
-    fakes.shell = shell({
-      status: { ...IDLE, meter: METER },
-      captureMeeting: { id: A, startedAt: '2026-10-06T09:00:00.000Z' },
-      segments: [line(A, 'l1', 2100, 'Heard live before Stop')],
-    });
+  it('keeps the transcript it showed while recording when no read has answered by Stop', () => {
+    // The panel holds the lines it heard live; taking it away until a read answers would drop
+    // them, and a read that keeps failing would leave the page without them for good. Seen as
+    // two renders of one page: recording, then after Stop with every read failed.
+    fakes.shell = shell({ status: recording(A), captureMeeting: LIVE });
+    fakes.later = [shell({ status: { ...IDLE, meter: METER }, captureMeeting: LIVE })];
     fakes.read = read(undefined, 'Roger could not read this meeting on this Mac: disk I/O error');
     const html = page();
-    expect(text(html)).toContain('Heard live before Stop');
+    // The page's own last render is the one after Stop: no Stop button, the meter kept.
+    expect(html).not.toContain('>Stop<');
+    expect(html).toContain('Last recording');
+    expect(html).toMatch(PANEL);
     expect(text(html)).not.toContain('The transcript shows here once');
+    expect(html).toMatch(/role="alert"[^>]*>.*disk I\/O error/);
   });
 
   it('shows the transcript of a meeting recording now before the first read answers', () => {
-    fakes.shell = shell({
-      status: recording(A),
-      captureMeeting: { id: A, startedAt: '2026-10-06T09:00:00.000Z' },
-    });
-    expect(text(page())).toContain('Lines appear here as people speak.');
+    fakes.shell = shell({ status: recording(A), captureMeeting: LIVE });
+    expect(text(page())).toContain('Listening. Lines appear here as people speak.');
   });
 });

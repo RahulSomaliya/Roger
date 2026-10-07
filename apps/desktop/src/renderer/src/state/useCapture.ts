@@ -1,8 +1,7 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import type { CaptureStatus, StartCaptureRequest } from '../../../shared/capture';
 import type { CaptureApi } from '../../../shared/ipc/capture';
 import type { Unsubscribe } from '../../../shared/ipc/unsubscribe';
-import type { AudioSource, InterimTranscript, TranscriptSegment } from '../../../shared/transcript';
 import { describeError } from '../app/describeError';
 import { AudioCaptureController, browserCaptureDevices } from '../audio/AudioCaptureController';
 import { describeMediaError } from '../audio/sources';
@@ -16,8 +15,6 @@ export interface CaptureView {
    * still shows here, where `status` alone misses it (meeting/recentMeetingsKey.ts).
    */
   lastMeetingId: string | null;
-  segments: TranscriptSegment[];
-  interim: Record<AudioSource, InterimTranscript | null>;
   /** An error raised on this side (device access), as opposed to `status.error` from main. */
   localError: string | null;
   busy: boolean;
@@ -65,11 +62,11 @@ export function lastNamedMeeting(previous: string | null, status: CaptureStatus)
   return status.meetingId ?? previous;
 }
 
-const NO_INTERIM: Record<AudioSource, InterimTranscript | null> = { mic: null, system: null };
-
 /**
  * Binds the UI to main's capture state machine and runs the renderer-side audio capture, for a
- * Start pressed here and for one main asks for (runStartRequests).
+ * Start pressed here and for one main asks for (runStartRequests). It keeps no transcript: the
+ * live transcript panel (transcript/useLiveTranscript.ts) subscribes to main's lines itself, so
+ * this view, which every page of the shell shares, renders nothing per line.
  */
 export function useCapture(): CaptureView {
   const roger = window.roger;
@@ -77,39 +74,25 @@ export function useCapture(): CaptureView {
   const [controller] = useState(() => new AudioCaptureController(roger, browserCaptureDevices()));
   const [status, setStatus] = useState<CaptureStatus | null>(null);
   const [lastMeetingId, setLastMeetingId] = useState<string | null>(null);
-  const [segments, setSegments] = useState<TranscriptSegment[]>([]);
-  const [interim, setInterim] = useState(NO_INTERIM);
   const [localError, setLocalError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const meetingId = useRef<string | null>(null);
+
+  // Every status main sends or answers goes through here, so lastMeetingId misses none.
+  const show = useCallback((next: CaptureStatus): void => {
+    setStatus(next);
+    setLastMeetingId((previous) => lastNamedMeeting(previous, next));
+  }, []);
 
   useEffect(() => {
     const follow = (next: CaptureStatus): void => {
-      if (next.meetingId !== null && next.meetingId !== meetingId.current) {
-        meetingId.current = next.meetingId;
-        setSegments([]);
-        setInterim(NO_INTERIM);
-      }
-      setStatus(next);
-      setLastMeetingId((previous) => lastNamedMeeting(previous, next));
+      show(next);
       // Main stopped on its own (no speech, the length cap, sleep): stop capturing too, a source
       // still starting included, or the microphone stays on with nothing listening. Never gate
       // this on `running`: it is false while the mic starts (see followMain). And while main
       // records, the mic captures: a page loaded mid-recording opens it here.
       controller.followMain(next);
     };
-    const unsubscribe = [
-      roger.onCaptureStatus(follow),
-      roger.onTranscriptSegment((segment) => {
-        setSegments((previous) =>
-          previous.some((s) => s.id === segment.id) ? previous : [...previous, segment],
-        );
-        setInterim((previous) => ({ ...previous, [segment.source]: null }));
-      }),
-      roger.onTranscriptInterim((next) => {
-        setInterim((previous) => ({ ...previous, [next.source]: next }));
-      }),
-    ];
+    const unsubscribe = roger.onCaptureStatus(follow);
     // Followed, not only shown: a page loaded mid-recording (a reload, the reload after a renderer
     // crash, a resume at launch) opens the mic at once, not at main's next status a second later.
     void roger.getCaptureStatus().then(follow);
@@ -119,10 +102,10 @@ export function useCapture(): CaptureView {
     };
     window.addEventListener('focus', refresh);
     return () => {
-      for (const off of unsubscribe) off();
+      unsubscribe();
       window.removeEventListener('focus', refresh);
     };
-  }, [roger, controller]);
+  }, [roger, controller, show]);
 
   const start = useCallback(
     async (request?: StartCaptureRequest) => {
@@ -130,7 +113,7 @@ export function useCapture(): CaptureView {
       setLocalError(null);
       try {
         const started = await roger.startCapture(request);
-        setStatus(started);
+        show(started);
         if (started.phase !== 'recording') return;
         try {
           // Joins the start main's own status may have begun already (followMain).
@@ -138,13 +121,13 @@ export function useCapture(): CaptureView {
         } catch (error) {
           setLocalError(`Microphone: ${describeMediaError(error)}`);
           await controller.stop();
-          setStatus(await roger.stopCapture());
+          show(await roger.stopCapture());
         }
       } finally {
         setBusy(false);
       }
     },
-    [roger, controller],
+    [roger, controller, show],
   );
 
   // A start main asks for runs the same path as a pressed Start. Shown like a microphone error:
@@ -161,12 +144,11 @@ export function useCapture(): CaptureView {
     setBusy(true);
     try {
       await controller.stop();
-      setStatus(await roger.stopCapture());
-      setInterim(NO_INTERIM);
+      show(await roger.stopCapture());
     } finally {
       setBusy(false);
     }
-  }, [roger, controller]);
+  }, [roger, controller, show]);
 
-  return { status, lastMeetingId, segments, interim, localError, busy, start, stop };
+  return { status, lastMeetingId, localError, busy, start, stop };
 }

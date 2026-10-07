@@ -1,5 +1,3 @@
-import { realpathSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
 import type { Page } from 'playwright-core';
 import { afterAll, beforeAll, expect, it } from 'vitest';
 import type { ForcedTheme } from '../preview/control';
@@ -65,40 +63,6 @@ const FULL_LIST = Array.from(
 
 /** One term over the 50-character limit, as someone might paste a full legal name. */
 const TOO_LONG = 'Northwind Traders International Holdings Limited Co';
-
-/**
- * The renderer file the preview serves at this URL: Vite serves files outside its root
- * (preview/) as `/@fs/<real path>`, the URL the app itself imports them from.
- */
-function servedUrl(path: string): string {
-  return `/@fs${realpathSync(fileURLToPath(new URL(path, import.meta.url)))}`;
-}
-
-const SLOTS_URL = servedUrl('../src/renderer/src/app/slots.ts');
-const SECTION_URL = servedUrl('../src/renderer/src/settings/VocabularySettings.tsx');
-
-/**
- * Mounts the section in the shell's `settings` slot, as M3-T9 will (app/slots/m3-transcript.ts,
- * wave 5), so the shots show it in the real Settings page with the real shell around it. The
- * entry joins the app's own `slots` object: importing the same URL gives the page's module, not a
- * copy, and SettingsPage reads the slot each time it renders. Before navigating to Settings.
- * Once M3-T9 has mounted the section, this adds nothing: a second entry would draw it twice, and
- * with one id React logs a duplicate key, failing every shot's console check.
- *
- * The page code is a string, not a function: Vitest rewrites every `import()` in this file to its
- * own loader (`__vite_ssr_dynamic_import__`), and Playwright would send that rewritten call to the
- * page, where it does not exist.
- */
-async function mountInSettings(page: Page): Promise<void> {
-  await page.evaluate(`(async () => {
-    const [{ slots }, { VocabularySettings }] = await Promise.all([
-      import(${JSON.stringify(SLOTS_URL)}),
-      import(${JSON.stringify(SECTION_URL)}),
-    ]);
-    if (slots.settings.some((entry) => entry.component === VocabularySettings)) return;
-    slots.settings.push({ id: 'm3-vocabulary', order: 10, component: VocabularySettings });
-  })()`);
-}
 
 /** Replaces the preview's stored list (the fake main, through window.roger). */
 async function storeList(page: Page, terms: readonly string[]): Promise<void> {
@@ -196,7 +160,6 @@ async function shoot(
 async function open(scenario: ScenarioId, theme: ForcedTheme, width: number) {
   const preview = await run.open({ scenario, theme, width });
   await qa.stopScenario(preview.page);
-  await mountInSettings(preview.page);
   return preview;
 }
 

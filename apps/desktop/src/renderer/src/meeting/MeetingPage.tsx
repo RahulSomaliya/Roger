@@ -67,13 +67,15 @@ export function MeetingPage({ meetingId }: { meetingId: string }) {
   // meeting main has not answered for yet keeps its regions, so its lines still show.
   const missing = read.value === null && phase === 'idle';
   // Before main's first answer, or when the first read failed, the page knows none of the stored
-  // lines: the transcript would say "No lines were saved for this meeting", false beside the
-  // sidebar's title, so the regions wait unless this meeting records now or this window heard
-  // its lines live. Main answers within a frame or two: a loading text would flash on every open.
-  const unread =
-    read.value === undefined &&
-    phase === 'idle' &&
-    !capture.segments.some((segment) => segment.meetingId === meetingId);
+  // lines: the transcript would say "Nothing was transcribed in this meeting", false beside the
+  // sidebar's title, so the regions wait unless this meeting records now. Main answers within a
+  // frame or two: a loading text would flash on every open. Once shown, the regions stay on this
+  // page: the transcript panel holds the lines it heard live (it subscribes only while mounted),
+  // so taking it away after Stop until a read answers would drop them, for good if reads fail.
+  // State set while rendering, so no frame shows the page without them.
+  const [regionsShown, setRegionsShown] = useState(false);
+  const unread = read.value === undefined && phase === 'idle' && !regionsShown;
+  if (!missing && !unread && !regionsShown) setRegionsShown(true);
   // Never a made-up title after a failed read ("Untitled meeting" was one): main names every
   // meeting it keeps, and the sidebar beside this page shows that name.
   const title = missing
