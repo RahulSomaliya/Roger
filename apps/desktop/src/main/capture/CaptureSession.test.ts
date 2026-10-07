@@ -14,6 +14,7 @@ import {
   CaptureSession,
   type CaptureSessionListeners,
   type CaptureSessionOptions,
+  type SourceWatermark,
 } from './CaptureSession';
 import { SttOpenBudget } from './SttOpenBudget';
 
@@ -30,14 +31,26 @@ class ScriptedStream implements SttStream {
   readonly emitter = new SttEventEmitter();
   readonly sent: Uint8Array[] = [];
   closed = false;
-  /** When set, close() stays pending until it settles: a vendor still sending its last lines. */
-  closeUntil: Promise<void> | null = null;
+  /** Dropped with no finish sequence (the offline suspend), rather than finished and closed. */
+  terminated = false;
+  /**
+   * Set by a test to play a vendor still finishing, sending its last lines (Stop's flush, a pause):
+   * close() stays pending until the test resolves it, or until a terminate cuts the finish short,
+   * as SttConnection's does. The one way this double holds a close open.
+   */
+  finishing: Gate<undefined> | null = null;
   send(pcm: Uint8Array): void {
     this.sent.push(pcm);
   }
   close(): Promise<void> {
     this.closed = true;
-    return this.closeUntil ?? Promise.resolve();
+    return this.finishing?.promise ?? Promise.resolve();
+  }
+  terminate(): Promise<void> {
+    this.terminated = true;
+    this.closed = true;
+    this.finishing?.resolve(undefined);
+    return Promise.resolve();
   }
   on(listener: SttEventListener): () => void {
     return this.emitter.on(listener);
@@ -170,8 +183,13 @@ function flush(): Promise<void> {
   return new Promise((resolve) => setImmediate(resolve));
 }
 
+interface Gate<T> {
+  promise: Promise<T>;
+  resolve(value: T): void;
+}
+
 /** A promise the test settles by hand. */
-function gate<T>(): { promise: Promise<T>; resolve(value: T): void } {
+function gate<T>(): Gate<T> {
   let resolve: (value: T) => void = () => undefined;
   const promise = new Promise<T>((res) => {
     resolve = res;
@@ -213,12 +231,19 @@ function recordingLogger(): { logger: Logger; messages: Record<string, unknown>[
   return { logger: recorder, messages };
 }
 
+/** A store that knows meeting m1 (started at 10 s), so its gap rows and capture events save. */
+function meetingStore(): InMemoryTranscriptStore {
+  const store = new InMemoryTranscriptStore();
+  store.createMeeting({ id: 'm1', title: 'T', startedAt: new Date(10_000).toISOString() });
+  return store;
+}
+
 /** Starts a session on a test clock with both streams open. */
 async function recording(overrides: Partial<CaptureSessionOptions> = {}) {
   const stt = new ControlledSpeechToText();
   const l = listeners();
   let now = 10_000;
-  const store = new InMemoryTranscriptStore();
+  const store = meetingStore();
   const s = session(stt, l, () => now, store, overrides);
   const opening = s.open();
   const mic = stt.succeed('mic');
@@ -467,6 +492,526 @@ describe('CaptureSession', () => {
     expect(store.countSegments('m1')).toBe(1);
     expect(l.failures).toEqual([]);
     await s.close();
+  });
+
+  /**
+   * M2-T6: the offline and asleep suspends, gap rows, capture events and the watermark, on top of
+   * the landed reopen. A gap is audio that reached main and got no line; a window with no audio at
+   * all (a stall) is only a capture event.
+   */
+  describe('suspends, gaps and watermarks', () => {
+    const chunk = (): Uint8Array => new Uint8Array(3200);
+
+    /** A credentials source that counts token fetches. */
+    function countedCredentials(): {
+      fetched: () => number;
+      refreshCredentials: CaptureSessionOptions['refreshCredentials'];
+    } {
+      let count = 0;
+      return {
+        fetched: () => count,
+        refreshCredentials: () => {
+          count += 1;
+          return Promise.resolve({ accessToken: 'fresh', settings });
+        },
+      };
+    }
+
+    function gaps(store: InMemoryTranscriptStore) {
+      return store
+        .listGaps('m1')
+        .map(({ source, startMs, endMs, reason }) => ({ source, startMs, endMs, reason }));
+    }
+
+    function eventKinds(store: InMemoryTranscriptStore): string[] {
+      return store.listCaptureEvents('m1').map(({ kind, source }) => `${source ?? '-'}:${kind}`);
+    }
+
+    it('goes offline at once: terminates both streams, holds audio, fetches no token, opens nothing', async () => {
+      const credentials = countedCredentials();
+      const { stt, l, s, mic, system, at } = await recording({
+        refreshCredentials: credentials.refreshCredentials,
+      });
+      pushContiguous(s, 'mic', 10_000, 10);
+      at(11_000);
+
+      s.suspendStreams('offline');
+
+      expect(mic.terminated).toBe(true);
+      expect(system.terminated).toBe(true);
+      expect(l.states.slice(-2)).toEqual(['mic:offline', 'system:offline']);
+      for (let i = 0; i < 50; i += 1) {
+        at(11_000 + i * 100);
+        s.pushAudio('mic', chunk(), 11_000 + i * 100);
+        s.pushAudio('system', chunk(), 11_000 + i * 100);
+      }
+      await flush();
+      expect(credentials.fetched()).toBe(0);
+      expect(stt.opens).toEqual(['mic', 'system']);
+      // Not a vendor failure: the offline warning reads the state (M2-T11).
+      expect(l.failures).toEqual([]);
+      await s.close();
+    });
+
+    it('back online, each source reopens with its next chunk through the budget, with no backoff wait', async () => {
+      let now = 10_000;
+      const budget = openBudget(() => now);
+      const { stt, l, s, system, at } = await recording({ budget });
+      // The call audio stream had just failed: its backoff would hold a reopen until 12 s.
+      system.emitter.emit({ type: 'closed', code: 1011, reason: 'timeout' });
+      s.suspendStreams('offline');
+      at(10_500);
+      now = 10_500;
+
+      s.resumeStreams('offline');
+      expect(l.states.slice(-2)).toEqual(['mic:paused', 'system:paused']);
+      s.pushAudio('mic', new Uint8Array(3200).fill(1), 10_400);
+      s.pushAudio('system', new Uint8Array(3200).fill(2), 10_400);
+      await flush();
+
+      expect(stt.opens).toEqual(['mic', 'system', 'mic', 'system']);
+      expect(budget.openedThisMeeting).toBe(4);
+      const mic = stt.succeed('mic');
+      const reopened = stt.succeed('system');
+      await flush();
+      expect(mic.sent.map((pcm) => pcm[0])).toEqual([1]);
+      expect(reopened.sent.map((pcm) => pcm[0])).toEqual([2]);
+      expect(l.states.slice(-2).sort()).toEqual(['mic:open', 'system:open']);
+      await s.close();
+    });
+
+    it("records the window from the watermark to the new stream's first audio as one offline gap", async () => {
+      const { stt, s, store, mic, at } = await recording();
+      pushContiguous(s, 'mic', 10_000, 100); // stream 0-10 s, captured 10-20 s
+      final(mic, 'last words', 7_000, 8_000); // the watermark: 8 s into the meeting
+      at(20_000);
+      s.suspendStreams('offline');
+      // 30 s offline; only the newest 3 s are held for the reopen.
+      for (let i = 0; i < 300; i += 1) {
+        at(20_000 + i * 100);
+        s.pushAudio('mic', chunk(), 20_000 + i * 100);
+      }
+      at(50_000);
+      s.resumeStreams('offline');
+      s.pushAudio('mic', chunk(), 50_000);
+      await flush();
+      const reopened = stt.succeed('mic');
+      await flush();
+
+      // The reopened stream carries 47.1 to 50.1 s: everything from the last line's end to that
+      // is lost to the live transcript, for M2-T16 to re-run from the backup.
+      expect(reopened.sent).toHaveLength(30);
+      expect(gaps(store)).toEqual([
+        { source: 'mic', startMs: 8_000, endMs: 37_100, reason: 'offline' },
+      ]);
+      await s.close();
+      expect(gaps(store)).toHaveLength(1); // Stop adds none: nothing is lost after the reopen
+    });
+
+    it('takes a dead socket through the landed retrying path, and its lost window becomes an stt_failed gap', async () => {
+      const { stt, l, s, store, system, at } = await recording();
+      pushContiguous(s, 'system', 10_000, 50); // captured 10-15 s
+      final(system, 'them', 1_000, 4_000);
+      at(15_000);
+      system.emitter.emit({
+        type: 'error',
+        message: 'Toy stopped answering: nothing received for 4 s',
+        fatal: true,
+      });
+      expect(system.closed).toBe(true);
+      expect(l.states.at(-1)).toBe('system:retrying');
+      expect(l.failures.at(-1)).toEqual([
+        'system',
+        'Toy stopped answering: nothing received for 4 s',
+        17_000,
+      ]);
+
+      // Audio goes on while the backoff runs; the reopen waits for it.
+      for (let t = 15_000; t < 17_000; t += 100) {
+        at(t);
+        s.pushAudio('system', chunk(), t);
+      }
+      expect(stt.opens).toEqual(['mic', 'system']);
+      at(17_000);
+      s.pushAudio('system', chunk(), 17_000);
+      await flush();
+      const reopened = stt.succeed('system');
+      await flush();
+
+      expect(reopened.sent).toHaveLength(21);
+      // From the last line's end (4 s) to the first held chunk (5 s): what the dead socket swallowed.
+      expect(gaps(store)).toEqual([
+        { source: 'system', startMs: 4_000, endMs: 5_000, reason: 'stt_failed' },
+      ]);
+      await s.close();
+    });
+
+    it('records a budget gap for the audio a refused reopen could not hold', async () => {
+      const stt = new ControlledSpeechToText();
+      const l = listeners();
+      let now = 10_000;
+      const store = meetingStore();
+      const budget = new SttOpenBudget({ perMinute: 2, perMeeting: 100 }, () => now);
+      budget.beginMeeting();
+      const s = session(stt, l, () => now, store, { budget });
+      const opening = s.open();
+      stt.succeed('mic');
+      stt.succeed('system');
+      await opening;
+      now = 40_000;
+      s.pauseSource('system', 30_000);
+
+      // Audio returns at 41 s, but Start's two opens fill the minute until 70 s.
+      for (let t = 41_000; t < 70_000; t += 100) {
+        now = t;
+        s.pushAudio('system', chunk(), t);
+      }
+      await flush();
+      expect(stt.opens).toEqual(['mic', 'system']);
+      expect(l.states.at(-1)).toBe('system:retrying');
+      now = 70_000;
+      s.pushAudio('system', chunk(), 70_000);
+      await flush();
+      stt.succeed('system');
+      await flush();
+
+      expect(gaps(store)).toEqual([
+        { source: 'system', startMs: 31_000, endMs: 57_100, reason: 'budget' },
+      ]);
+      await s.close();
+    });
+
+    it('records a stall with no audio as a capture event, never a gap', async () => {
+      const { stt, s, store, at } = await recording();
+      pushContiguous(s, 'system', 10_000, 10);
+      at(41_000);
+      s.pauseSource('system', 30_000);
+      at(60_000);
+      s.pushAudio('system', chunk(), 60_000);
+      await flush();
+      stt.succeed('system');
+      await flush();
+
+      expect(gaps(store)).toEqual([]);
+      expect(eventKinds(store)).toEqual(['system:stt-paused', 'system:stt-reopened']);
+      expect(store.listCaptureEvents('m1')[0]).toMatchObject({
+        offsetMs: 31_000,
+        detail: { silentForMs: 30_000 },
+      });
+      await s.close();
+    });
+
+    it('records at Stop the audio lost while offline, up to the last chunk', async () => {
+      const { s, store, mic, at } = await recording();
+      pushContiguous(s, 'mic', 10_000, 10); // offsets 0-1 s
+      final(mic, 'hello', 0, 500);
+      at(11_000);
+      s.suspendStreams('offline');
+      pushContiguous(s, 'mic', 11_000, 20); // offsets 1-3 s, never sent
+
+      await s.close();
+
+      expect(gaps(store)).toEqual([
+        { source: 'mic', startMs: 500, endMs: 3_000, reason: 'offline' },
+      ]);
+    });
+
+    it('keeps the loss of a source that gave up until Stop, which records it', async () => {
+      let now = 10_000;
+      const { s, store, system, at } = await recording({
+        budget: (() => {
+          const budget = new SttOpenBudget({ perMinute: 100, perMeeting: 2 }, () => now);
+          budget.beginMeeting();
+          return budget;
+        })(),
+      });
+      pushContiguous(s, 'system', 10_000, 10);
+      at(11_000);
+      now = 11_000;
+      system.emitter.emit({ type: 'closed', code: 1011, reason: 'timeout' });
+      // The meeting's opens are spent: the source will not reopen, and its audio is dropped.
+      pushContiguous(s, 'system', 11_000, 30);
+
+      await s.close();
+
+      expect(gaps(store)).toEqual([
+        { source: 'system', startMs: 0, endMs: 4_000, reason: 'stt_failed' },
+      ]);
+    });
+
+    it('finishes and closes both streams when the Mac sleeps, and opens nothing until resumed', async () => {
+      const credentials = countedCredentials();
+      const { stt, l, s, mic, system } = await recording({
+        refreshCredentials: credentials.refreshCredentials,
+      });
+
+      s.suspendStreams('asleep');
+
+      expect(mic.closed && system.closed).toBe(true);
+      expect(mic.terminated || system.terminated).toBe(false);
+      expect(l.states.slice(-2)).toEqual(['mic:paused', 'system:paused']);
+      s.pushAudio('mic', chunk(), 10_000);
+      await flush();
+      expect(credentials.fetched()).toBe(0);
+      expect(stt.opens).toEqual(['mic', 'system']);
+
+      s.resumeStreams('asleep');
+      s.pushAudio('mic', chunk(), 10_100);
+      await flush();
+      expect(credentials.fetched()).toBe(1);
+      expect(stt.opens).toEqual(['mic', 'system', 'mic']);
+      stt.succeed('mic'); // Stop waits for a reopen still connecting
+      await s.close();
+    });
+
+    it('stacks offline and asleep: nothing reopens until both are lifted', async () => {
+      const { stt, l, s } = await recording();
+      s.suspendStreams('asleep');
+      s.suspendStreams('offline');
+      expect(l.states.slice(-2)).toEqual(['mic:offline', 'system:offline']);
+
+      s.resumeStreams('asleep');
+      s.pushAudio('mic', chunk(), 10_000);
+      await flush();
+      expect(stt.opens).toEqual(['mic', 'system']);
+      expect(l.states.slice(-2)).toEqual(['mic:offline', 'system:offline']);
+
+      s.suspendStreams('asleep');
+      s.resumeStreams('offline');
+      expect(l.states.slice(-2)).toEqual(['mic:paused', 'system:paused']);
+      s.pushAudio('mic', chunk(), 10_100);
+      await flush();
+      expect(stt.opens).toEqual(['mic', 'system']);
+
+      s.resumeStreams('asleep');
+      s.pushAudio('mic', chunk(), 10_200);
+      await flush();
+      expect(stt.opens).toEqual(['mic', 'system', 'mic']);
+      stt.succeed('mic'); // Stop waits for a reopen still connecting
+      await s.close();
+    });
+
+    /**
+     * A stream asked to finish (a sleep, a pause, a closed source, Stop) is no longer the source's,
+     * so a finish that never completes loses the lines of its last audio with nothing else to say
+     * so. Its tail, from its own last line to the end of the audio it was sent, is a gap.
+     */
+    describe('a finish cut short', () => {
+      it("records a sleep's unfinished tail when going offline on wake cuts its finish short", async () => {
+        const { stt, s, store, mic, at } = await recording();
+        pushContiguous(s, 'mic', 10_000, 150); // 0-15 s in
+        final(mic, 'last words', 9_000, 10_000); // its latest line ends 10 s in
+        const finishing = gate<undefined>();
+        mic.finishing = finishing; // no closing turn yet when the Mac sleeps
+        at(25_000);
+        s.suspendStreams('asleep');
+        // On wake the 1 s poll sees the network gone before the finish ran out of time.
+        s.suspendStreams('offline');
+        expect(mic.terminated).toBe(true);
+        await flush();
+        s.resumeStreams('offline');
+        s.resumeStreams('asleep');
+        at(30_000);
+        s.pushAudio('mic', chunk(), 30_000); // 20 s in
+        await flush();
+        stt.succeed('mic');
+        await flush();
+
+        expect(gaps(store)).toEqual([
+          { source: 'mic', startMs: 10_000, endMs: 15_000, reason: 'offline' },
+        ]);
+        await s.close();
+        expect(gaps(store)).toHaveLength(1);
+      });
+
+      it("records a sleep's unfinished tail when the vendor never finished, from the stream's own last line", async () => {
+        const { l, s, store, mic, system, at } = await recording();
+        pushContiguous(s, 'mic', 10_000, 150);
+        pushContiguous(s, 'system', 10_000, 150);
+        final(mic, 'last words', 9_000, 10_000);
+        final(system, 'them', 9_000, 11_000);
+        const finishing = gate<undefined>();
+        mic.finishing = finishing;
+        at(25_000);
+        s.suspendStreams('asleep'); // the call audio stream finishes; the mic's never does
+        await flush();
+        // Sockets do not survive sleep: on wake the finish runs out of time. The line the core
+        // held comes first, then its word that the rest is lost.
+        final(mic, 'held', 10_500, 12_000);
+        mic.emitter.emit({
+          type: 'error',
+          message: 'Scripted did not finish the stream (code 1006): its last lines are lost',
+          fatal: true,
+        });
+        mic.emitter.emit({ type: 'closed', code: 1006, reason: null });
+        finishing.resolve(undefined);
+        await flush();
+
+        expect(gaps(store)).toEqual([
+          { source: 'mic', startMs: 12_000, endMs: 15_000, reason: 'stt_failed' },
+        ]);
+        // The source had left that stream already: nothing to reopen or show.
+        expect(l.failures).toEqual([]);
+        expect(s.watermark('mic')).toEqual({ finalEndMs: 12_000, closed: true });
+        expect(store.listCaptureEvents('m1').at(-1)).toMatchObject({
+          source: 'mic',
+          kind: 'stt-failed',
+          detail: {
+            stage: 'finish',
+            reason: 'Scripted did not finish the stream (code 1006): its last lines are lost',
+          },
+        });
+        await s.close();
+      });
+
+      it("records a replaced stream's unfinished tail even after the new stream's lines", async () => {
+        const { stt, s, store, system, at } = await recording();
+        pushContiguous(s, 'system', 10_000, 100); // 0-10 s in
+        final(system, 'them', 1_000, 6_000);
+        const finishing = gate<undefined>();
+        system.finishing = finishing;
+        at(41_000);
+        s.pauseSource('system', 31_000);
+        // Audio returns while the old stream still finishes, and the new one says a line.
+        at(42_000);
+        s.pushAudio('system', chunk(), 42_000);
+        await flush();
+        const reopened = stt.succeed('system');
+        await flush();
+        final(reopened, 'later', 0, 100); // 32 s in: past the old stream's tail
+        system.emitter.emit({ type: 'error', message: 'did not finish', fatal: true });
+        finishing.resolve(undefined);
+        await flush();
+
+        expect(gaps(store)).toEqual([
+          { source: 'system', startMs: 6_000, endMs: 10_000, reason: 'stt_failed' },
+        ]);
+        await s.close();
+      });
+
+      it('records the tail of a Stop the vendor never finished', async () => {
+        const { s, store, mic } = await recording();
+        pushContiguous(s, 'mic', 10_000, 50); // 0-5 s in
+        final(mic, 'hello', 0, 2_000);
+        const finishing = gate<undefined>();
+        mic.finishing = finishing;
+
+        const stopping = s.close();
+        mic.emitter.emit({ type: 'error', message: 'did not finish', fatal: true });
+        finishing.resolve(undefined);
+        await stopping;
+
+        expect(gaps(store)).toEqual([
+          { source: 'mic', startMs: 2_000, endMs: 5_000, reason: 'stt_failed' },
+        ]);
+      });
+    });
+
+    it('opens nothing for a reopen caught mid-token by the offline suspend, and terminates one that lands late', async () => {
+      const credentials = gate<{ accessToken: string; settings: typeof settings }>();
+      const { stt, l, s, system, at } = await recording({
+        refreshCredentials: () => credentials.promise,
+      });
+      system.emitter.emit({ type: 'closed', code: 1011, reason: 'timeout' });
+      at(12_000);
+      s.pushAudio('system', chunk(), 12_000);
+      await flush();
+      expect(l.states.at(-1)).toBe('system:connecting');
+
+      s.suspendStreams('offline');
+      expect(l.states.at(-1)).toBe('system:offline');
+      credentials.resolve({ accessToken: 'fresh', settings });
+      await flush();
+      expect(stt.opens).toEqual(['mic', 'system']);
+      await s.close();
+    });
+
+    it('terminates a reopen that lands after the Mac went offline', async () => {
+      const { stt, l, s, system, at } = await recording();
+      system.emitter.emit({ type: 'closed', code: 1011, reason: 'timeout' });
+      at(12_000);
+      s.pushAudio('system', chunk(), 12_000);
+      await flush(); // the token is in; the vendor is still connecting
+      expect(stt.opens).toEqual(['mic', 'system', 'system']);
+
+      s.suspendStreams('offline');
+      const late = stt.succeed('system');
+      await flush();
+
+      expect(late.terminated).toBe(true);
+      expect(late.sent).toEqual([]);
+      expect(l.states.at(-1)).toBe('system:offline');
+      await s.close();
+    });
+
+    it("publishes each source's watermark: its last line's end, and once its stream has closed", async () => {
+      const { stt, s, mic, system, at } = await recording();
+      const seen: [string, SourceWatermark][] = [];
+      s.onWatermark((source, watermark) => seen.push([source, watermark]));
+      pushContiguous(s, 'system', 10_000, 20);
+
+      final(system, 'them', 500, 1_200);
+      expect(s.watermark('system')).toEqual({ finalEndMs: 1_200, closed: false });
+      expect(seen).toEqual([['system', { finalEndMs: 1_200, closed: false }]]);
+
+      // A stall pause closes it: no line can come for the audio it got, once its close settled.
+      at(40_000);
+      s.pauseSource('system', 30_000);
+      expect(s.watermark('system').closed).toBe(false);
+      await flush();
+      expect(s.watermark('system')).toEqual({ finalEndMs: 1_200, closed: true });
+      expect(seen.at(-1)).toEqual(['system', { finalEndMs: 1_200, closed: true }]);
+
+      // Audio back: held for the reopen, so a line may come again.
+      s.pushAudio('system', chunk(), 40_000);
+      expect(s.watermark('system').closed).toBe(false);
+      await flush();
+      const reopened = stt.succeed('system');
+      await flush();
+      // A late line of the old stream that ends earlier never moves the watermark back.
+      final(reopened, 'later', 0, 100);
+      final(system, 'late and early', 100, 300);
+      expect(s.watermark('system').finalEndMs).toBe(30_100);
+
+      // A failed stream is not closed: it reconnects, and held audio may still bring a line.
+      mic.emitter.emit({ type: 'error', message: 'gone', fatal: true });
+      await flush();
+      expect(s.watermark('mic')).toEqual({ finalEndMs: null, closed: false });
+      await s.close();
+    });
+
+    it('writes a capture event for every pause, failure, suspend, resume and reopen', async () => {
+      const { stt, s, store, mic, at } = await recording();
+      pushContiguous(s, 'mic', 10_000, 10);
+      at(11_000);
+      mic.emitter.emit({ type: 'error', message: 'gone', fatal: true });
+      at(12_000);
+      s.suspendStreams('offline');
+      at(13_000);
+      s.resumeStreams('offline');
+      s.pushAudio('mic', chunk(), 13_000);
+      await flush();
+      stt.succeed('mic');
+      await flush();
+      at(45_000);
+      s.pauseSource('mic', 32_000);
+
+      expect(eventKinds(store)).toEqual([
+        'mic:stt-failed',
+        '-:stt-suspended',
+        '-:stt-resumed',
+        'mic:stt-reopened',
+        'mic:stt-paused',
+      ]);
+      expect(store.listCaptureEvents('m1').map(({ detail }) => detail)).toEqual([
+        { stage: 'stream', reason: 'gone', retryInMs: 2_000 },
+        { reason: 'offline' },
+        { reason: 'offline', suspendedForMs: 1_000 },
+        { heldMs: 100, droppedChunks: 0 },
+        { silentForMs: 32_000 },
+      ]);
+      await s.close();
+    });
   });
 
   describe('dating lines through the audio timeline', () => {
@@ -757,7 +1302,7 @@ describe('CaptureSession', () => {
       // At Stop the vendor sends its last final while the close is still pending (AssemblyAI's
       // ForceEndpoint and Terminate, Deepgram's Finalize): no event showed "goodbye" before it.
       const finishing = gate<undefined>();
-      mic.closeUntil = finishing.promise;
+      mic.finishing = finishing;
       const closing = s.close();
       await flush();
       expect(latencyLines(log.messages)).toEqual([]);
@@ -772,6 +1317,37 @@ describe('CaptureSession', () => {
         displayP50Ms: 1_500,
         finalP50Ms: 1_500,
       });
+    });
+
+    it("records Stop's gap before the latency line, and both see the line a close flushed", async () => {
+      const log = recordingLogger();
+      const { s, store, mic, at } = await recording({ logger: log.logger });
+      pushContiguous(s, 'mic', 12_000, 20); // stream 0-2 s, captured 12-14 s
+      const finishing = gate<undefined>();
+      mic.finishing = finishing;
+      at(14_000);
+      s.suspendStreams('asleep'); // the mic's finish is still on the way at Stop
+      pushContiguous(s, 'mic', 14_000, 10); // held while asleep: 4-5 s into the meeting
+      const closing = s.close();
+      await flush();
+      expect(latencyLines(log.messages)).toEqual([]);
+      expect(store.listGaps('m1')).toEqual([]);
+
+      at(14_500);
+      final(mic, 'goodnight', 0, 1_500, [[0, 1_500]]); // captured by 13.5 s
+      finishing.resolve(undefined);
+      await closing;
+
+      expect(latencyLines(log.messages)[0]?.mic).toMatchObject({ words: 1, displayP50Ms: 1_000 });
+      // The held audio never reached a vendor: lost from its first chunk to the last, after the
+      // flushed line's end (3.5 s), the watermark the gap may never start before.
+      expect(
+        store.listGaps('m1').map(({ source, startMs, endMs }) => [source, startMs, endMs]),
+      ).toEqual([['mic', 4_000, 5_000]]);
+      const order = log.messages.map((m) => m.message);
+      expect(order.indexOf('speech-to-text gap recorded')).toBeLessThan(
+        order.indexOf('stt latency'),
+      );
     });
 
     it('times a word the vendor ends just past a stall from before it, where its line is dated', async () => {

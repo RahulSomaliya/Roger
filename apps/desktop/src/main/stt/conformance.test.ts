@@ -31,6 +31,19 @@ const logger = createLogger({ level: 'error', format: 'json', sink: () => undefi
 const CHUNK_100_MS = 3200;
 const CLOSE_TIMEOUT_MS = 100;
 
+/** A logger whose warning and error messages the test reads back. */
+function recordingLogger(): { logger: Logger; warnings: string[] } {
+  const warnings: string[] = [];
+  return {
+    warnings,
+    logger: createLogger({
+      level: 'warn',
+      format: 'json',
+      sink: (line) => warnings.push((JSON.parse(line) as { message: string }).message),
+    }),
+  };
+}
+
 describe('the speech-to-text registry', () => {
   it('has a conformance entry for every network vendor', () => {
     const covered = new Set(CONFORMANCE_VENDORS.map((vendor) => vendor.provider));
@@ -151,7 +164,10 @@ describe.each(CONFORMANCE_VENDORS)('$provider conforms', (vendor) => {
     server.script.onBinary = (connection, frame) => {
       if (frame === 1) connection.socket.send(vendor.finalMessage('hello there'));
     };
-    const { stream, events } = await open();
+    // Room for the paced audio: a `realtime` vendor gets the second chunk 100 ms after ready, so
+    // under the suite's 100 ms deadline its finish raced the cut, and a finish cut short is a
+    // fatal error ("did not finish the stream"): the test failed now and then under load.
+    const { stream, events } = await open(stt({ closeTimeoutMs: 2_000 }));
 
     stream.send(new Uint8Array(CHUNK_100_MS));
     stream.send(new Uint8Array(CHUNK_100_MS));
@@ -199,7 +215,9 @@ describe.each(CONFORMANCE_VENDORS)('$provider conforms', (vendor) => {
 
     expect(Date.now() - started).toBeLessThan(CLOSE_TIMEOUT_MS + 900);
     expect(finishTexts()).toEqual(vendor.finishMessages);
-    expect(events.filter((event) => event.type === 'closed')).toHaveLength(1);
+    // A finish the deadline cut short lost its last lines: one fatal error says so (M2-T6).
+    expect(events.map((event) => event.type)).toEqual(['error', 'closed']);
+    expect(events[0]).toMatchObject({ type: 'error', fatal: true });
     await waitFor(() => server.last().closed);
   });
 
@@ -308,18 +326,6 @@ describe.each(CONFORMANCE_VENDORS)('$provider conforms', (vendor) => {
    * retire → close()). Such a close must not start a finish on a session the vendor already ended.
    */
   describe('when the listener closes the stream on its fatal error', () => {
-    function recordingLogger(): { logger: Logger; warnings: string[] } {
-      const warnings: string[] = [];
-      return {
-        warnings,
-        logger: createLogger({
-          level: 'warn',
-          format: 'json',
-          sink: (line) => warnings.push((JSON.parse(line) as { message: string }).message),
-        }),
-      };
-    }
-
     function closeOnFatal(stream: SttStream): Promise<void>[] {
       const closes: Promise<void>[] = [];
       stream.on((event) => {
@@ -544,6 +550,140 @@ describe.each(CONFORMANCE_VENDORS)('$provider conforms', (vendor) => {
         await stream.close();
       },
     );
+  });
+
+  /**
+   * Dead-socket detection (M2-T6) against the vendor's fake, on a manual clock: real timers only
+   * wake the check (every few ms here, every second in the app) and the clock decides what is due,
+   * so a clock step of 1 s here is one of the app's checks. ws gets no prompt error when the Mac's
+   * network goes down, so without this a dead socket swallows audio until TCP gives up.
+   */
+  describe('liveness', () => {
+    const TICK_MS = 5;
+    /** Long enough for several checks to run and for a frame to cross the loopback. */
+    const ticks = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, TICK_MS * 6));
+
+    function lively(
+      clock: ReturnType<typeof manualClock>,
+      options: Partial<SttVendorOptions> = {},
+    ): WebSocketSpeechToText {
+      return stt({
+        clock: clock.now,
+        paceClock: clock.now,
+        liveness: { pingIntervalMs: TICK_MS },
+        ...options,
+      });
+    }
+
+    it('pings only while audio flows', async () => {
+      const clock = manualClock(0);
+      const { stream } = await open(lively(clock, { keepAliveForMs: 1_000 }));
+      await ticks();
+      expect(server.last().pings).toBe(0);
+
+      stream.send(new Uint8Array(CHUNK_100_MS));
+      await waitFor(() => server.last().pings > 0);
+
+      clock.set(1_000); // nothing sent for the keep-alive window
+      await ticks();
+      const stalled = server.last().pings;
+      await ticks();
+      expect(server.last().pings).toBe(stalled);
+      await stream.close();
+    });
+
+    it.each([0, 400, 999])(
+      'declares a socket that stops answering dead at most 5 s after its last pong (check phase %i ms)',
+      async (phaseMs) => {
+        const clock = manualClock(0);
+        const { stream, events } = await open(lively(clock, { keepAliveForMs: 60_000 }));
+        stream.send(new Uint8Array(CHUNK_100_MS));
+        await waitFor(() => server.last().pings > 0);
+        await ticks(); // the last pongs are back, all at clock 0
+        server.last().answersPings = false;
+
+        let deadAtMs: number | null = null;
+        for (let atMs = phaseMs; atMs <= 6_000 && deadAtMs === null; atMs += 1_000) {
+          clock.set(atMs);
+          await ticks();
+          if (events.length > 0) deadAtMs = atMs;
+        }
+
+        expect(deadAtMs).toBeGreaterThanOrEqual(4_000);
+        expect(deadAtMs).toBeLessThanOrEqual(5_000);
+        await waitFor(() => events.some((event) => event.type === 'closed'));
+        expect(events.map((event) => event.type)).toEqual(['error', 'closed']);
+        expect(events[0]).toMatchObject({ type: 'error', fatal: true });
+        // Terminated, with no finish sequence sent into a dead connection.
+        expect(finishTexts()).toEqual([]);
+        await waitFor(() => server.last().closed);
+      },
+    );
+
+    it('falls back after 10 s when the vendor never answers a ping, says so, and stays open', async () => {
+      server.answersPings = false;
+      const clock = manualClock(0);
+      const log = recordingLogger();
+      const { stream, events } = await open(lively(clock, { logger: log.logger }));
+      stream.send(new Uint8Array(CHUNK_100_MS));
+      await waitFor(() => server.last().pings > 0);
+
+      for (const atMs of [4_000, 9_999]) {
+        clock.set(atMs);
+        await ticks();
+      }
+      expect(events).toEqual([]);
+
+      clock.set(10_000);
+      await ticks();
+      clock.set(20_000);
+      stream.send(new Uint8Array(CHUNK_100_MS));
+      await ticks();
+
+      expect(events).toEqual([]);
+      expect(log.warnings).toContain(
+        'stt vendor answers no ping: no dead-socket check on this stream until it does',
+      );
+      await stream.close();
+    });
+
+    it('keeps the check on a later stream of a vendor that answered pings, from its first ping', async () => {
+      const clock = manualClock(0);
+      const adapter = lively(clock);
+      const earlier = await open(adapter);
+      earlier.stream.send(new Uint8Array(CHUNK_100_MS));
+      await waitFor(() => server.last().pings > 0);
+      await ticks(); // its pongs are back
+      await earlier.stream.close();
+
+      // This stream's upstream dropped before its first pong: the adapter knows the vendor answers.
+      server.answersPings = false;
+      const { stream, events } = await open(adapter);
+      stream.send(new Uint8Array(CHUNK_100_MS));
+      await waitFor(() => server.last().pings > 0);
+      clock.set(5_000);
+      await waitFor(() => events.some((event) => event.type === 'closed'));
+
+      expect(events.map((event) => event.type)).toEqual(['error', 'closed']);
+      expect(events[0]).toMatchObject({ type: 'error', fatal: true });
+      await waitFor(() => server.last().closed);
+    });
+
+    it('terminates at once when the network is gone: no finish sequence, no fatal error', async () => {
+      answersFinish = false; // a finish would wait out the hard timeout
+      const { stream, events } = await open(stt({ closeTimeoutMs: 5_000 }));
+      stream.send(new Uint8Array(CHUNK_100_MS));
+      await waitFor(() => server.last().binaryFrames.length > 0);
+      expect('terminate' in stream).toBe(true);
+
+      const started = Date.now();
+      await stream.terminate?.();
+
+      expect(Date.now() - started).toBeLessThan(1_000);
+      expect(finishTexts()).toEqual([]);
+      expect(events.map((event) => event.type)).toEqual(['closed']);
+      await waitFor(() => server.last().closed);
+    });
   });
 
   it('meters sessions, connected time and audio on its clock', async () => {
