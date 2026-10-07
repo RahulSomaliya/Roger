@@ -1,14 +1,22 @@
 import type { AddressInfo } from 'node:net';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { WebSocketServer, type WebSocket } from 'ws';
+import { isRecord } from '../json';
 import { createLogger } from '../../logger';
+import type { TranscriptEvent } from '../core/SttProtocol';
 import { SttConnectError, type SttEvent, type SttStreamSettings } from '../SpeechToText';
 import { rawDataToString } from '../websocket';
 import {
   AssemblyAiSpeechToText,
   type AssemblyAiOptions,
+  assemblyAiProtocol,
   buildStreamingUrl,
 } from './AssemblyAiSpeechToText';
+import {
+  readWireFixture,
+  WIRE_FIXTURE_MODELS,
+  type WireFixtureModel,
+} from './fixtures/wireFixtures';
 
 const logger = createLogger({ level: 'error', format: 'json', sink: () => undefined });
 const settings: SttStreamSettings = {
@@ -60,6 +68,34 @@ describe('buildStreamingUrl', () => {
     expect(timeout(7_200_000)).toBe('3600');
   });
 
+  it('asks the Universal-3 Pro models for the stream language, and no other model', () => {
+    const query = (model: string, language = 'en') =>
+      Object.fromEntries(
+        new URL(
+          buildStreamingUrl(
+            'wss://streaming.assemblyai.com',
+            { ...settings, model, language },
+            't',
+            120_000,
+          ),
+        ).searchParams,
+      );
+
+    for (const model of ['universal-3-6-pro', 'universal-3-5-pro']) {
+      expect(query(model), model).toEqual({
+        speech_model: model,
+        sample_rate: '16000',
+        encoding: 'pcm_s16le',
+        language_codes: '["en"]',
+        inactivity_timeout: '120',
+        token: 't',
+      });
+    }
+    expect(query('universal-3-6-pro', 'de').language_codes).toBe('["de"]');
+    expect(query('universal-streaming-english')).not.toHaveProperty('language_codes');
+    expect(query('universal-streaming-multilingual')).not.toHaveProperty('language_codes');
+  });
+
   it('leaves format_turns off for models that always format (Universal-3 Pro)', () => {
     const url = new URL(
       buildStreamingUrl(
@@ -71,6 +107,28 @@ describe('buildStreamingUrl', () => {
     );
     expect(url.searchParams.get('speech_model')).toBe('universal-3-6-pro');
     expect(url.searchParams.has('format_turns')).toBe(false);
+  });
+
+  it('sends the jargon list as one keyterms_prompt JSON array, and none without a list', () => {
+    const query = (keyterms?: readonly string[]) =>
+      new URL(
+        buildStreamingUrl(
+          'wss://streaming.assemblyai.com',
+          keyterms === undefined ? settings : { ...settings, keyterms },
+          't',
+          120_000,
+        ),
+      ).searchParams;
+
+    const withList = query(['Linkt', 'order number', 'Roger & Co']);
+    expect(withList.getAll('keyterms_prompt')).toHaveLength(1);
+    expect(JSON.parse(withList.get('keyterms_prompt') ?? '')).toEqual([
+      'Linkt',
+      'order number',
+      'Roger & Co',
+    ]);
+    expect(query([]).has('keyterms_prompt')).toBe(false);
+    expect(query().has('keyterms_prompt')).toBe(false);
   });
 
   it('refuses an encoding it has no AssemblyAI name for', () => {
@@ -134,13 +192,47 @@ describe('AssemblyAiSpeechToText', () => {
     });
   });
 
-  async function open(options: Partial<AssemblyAiOptions> = {}, accessToken = 'temp-token') {
+  async function open(
+    options: Partial<AssemblyAiOptions> = {},
+    accessToken = 'temp-token',
+    streamSettings: SttStreamSettings = settings,
+  ) {
     const stt = new AssemblyAiSpeechToText({ logger, baseUrl, ...options });
-    const stream = await stt.openStream({ accessToken, settings, label: 'mic' });
+    const stream = await stt.openStream({ accessToken, settings: streamSettings, label: 'mic' });
     const events: SttEvent[] = [];
     stream.on((event) => events.push(event));
     return { stream, events };
   }
+
+  it('asks the vendor for what each model takes, with the jargon list', async () => {
+    const keyterms = ['Linkt', 'order number'];
+    const asked: Record<string, Record<string, string>> = {};
+    for (const model of ['universal-streaming-english', 'universal-3-6-pro']) {
+      const { stream } = await open({}, 'temp-token', { ...settings, model, keyterms });
+      asked[model] = Object.fromEntries(new URL(log.url, 'ws://x').searchParams);
+      await stream.close();
+    }
+
+    const common = {
+      sample_rate: '16000',
+      encoding: 'pcm_s16le',
+      keyterms_prompt: JSON.stringify(keyterms),
+      inactivity_timeout: '120',
+      token: 'temp-token',
+    };
+    expect(asked).toEqual({
+      'universal-streaming-english': {
+        ...common,
+        speech_model: 'universal-streaming-english',
+        format_turns: 'true',
+      },
+      'universal-3-6-pro': {
+        ...common,
+        speech_model: 'universal-3-6-pro',
+        language_codes: '["en"]',
+      },
+    });
+  });
 
   it('asks the vendor for the configured inactivity timeout', async () => {
     const { stream } = await open({ vendorIdleTimeoutMs: 300_000 });
@@ -243,8 +335,35 @@ describe('AssemblyAiSpeechToText', () => {
     await new Promise((resolve) => setTimeout(resolve, 20));
     await stream.close();
 
-    expect(events.map((e) => e.type)).toEqual(['final', 'closed']);
+    // The held turn is saved first; then the core reports the finish it never got (M2-T6).
+    expect(events.map((e) => e.type)).toEqual(['final', 'error', 'closed']);
     expect(events[0]).toMatchObject({ text: 'cut off' });
+    expect(events[1]).toMatchObject({ type: 'error', fatal: true });
+  });
+
+  it('saves a Pro end of turn at once, formatted or not, and only once', async () => {
+    script.onAudio = (socket, frame) => {
+      // The Pro models format every turn and send its end once. This one says it is unformatted:
+      // a rule read from turn_is_formatted alone would hold it for a copy that never comes.
+      if (frame === 1) socket.send(turn(0, 'My name is Sonny.', { endOfTurn: true }));
+      // A copy of a turn already saved is dropped, as on Universal-Streaming.
+      if (frame === 2)
+        socket.send(turn(0, 'My name is Sonny!', { endOfTurn: true, formatted: true }));
+    };
+    const { stream, events } = await open({ formattedTurnWaitMs: 10_000 }, 'temp-token', {
+      ...settings,
+      model: 'universal-3-6-pro',
+    });
+
+    stream.send(new Uint8Array(CHUNK_100_MS));
+    await waitFor(() => events.some((e) => e.type === 'final'), 1_000);
+    stream.send(new Uint8Array(CHUNK_100_MS));
+    await waitFor(() => log.binaryFrames.length === 2);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    await stream.close();
+
+    expect(events.map((e) => e.type)).toEqual(['final', 'closed']);
+    expect(events[0]).toMatchObject({ type: 'final', text: 'My name is Sonny.', startMs: 100 });
   });
 
   it('saves a formatted-only end of turn at once', async () => {
@@ -418,6 +537,144 @@ describe('AssemblyAiSpeechToText', () => {
     );
   });
 
+  describe('with a jargon list', () => {
+    const withList: SttStreamSettings = { ...settings, keyterms: ['Linkt', 'Roger'] };
+
+    async function refusal(
+      onConnect: (socket: WebSocket) => void,
+      streamSettings = withList,
+    ): Promise<SttConnectError> {
+      script.onConnect = onConnect;
+      const error = await open({}, 'temp-token', streamSettings).catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(SttConnectError);
+      return error as SttConnectError;
+    }
+
+    it('blames a close before Begin on the list, except for the token and session-limit codes', async () => {
+      const rejected = await refusal((socket) => {
+        socket.close(3005, 'Session Cancelled: An error occurred');
+      });
+      expect(rejected.keytermsRejected).toBe(true);
+      expect(rejected.message).toBe(
+        'AssemblyAI ended the connection before the session began ' +
+          '(code 3005: Session Cancelled: An error occurred); the jargon list (2 terms) was rejected',
+      );
+
+      // A bad token or a busy account: a reopen without the list would fail the same way.
+      for (const [code, reason] of [
+        [1008, 'Unauthorized Connection: Missing Authorization header'],
+        [3009, 'Unauthorized Connection: Too many concurrent sessions'],
+        [1008, 'Unauthorized connection: Too many concurrent sessions'],
+      ] as const) {
+        const error = await refusal((socket) => {
+          socket.close(code, reason);
+        });
+        expect(error.keytermsRejected, `${code} ${reason}`).toBe(false);
+      }
+    });
+
+    it('never blames the list when none was sent', async () => {
+      const error = await refusal((socket) => {
+        socket.close(3005, 'Session Cancelled: An error occurred');
+      }, settings);
+      expect(error.keytermsRejected).toBe(false);
+    });
+
+    it('never blames the list for a connection that dropped without a close frame (1006)', async () => {
+      const error = await refusal((socket) => {
+        socket.terminate();
+      });
+      expect(error.keytermsRejected).toBe(false);
+      expect(error.message).toContain('code 1006');
+    });
+
+    it('never blames the list for a refused handshake', async () => {
+      rejectWith = 400;
+      const error = await open({}, 'temp-token', withList).catch((e: unknown) => e);
+      expect((error as SttConnectError).keytermsRejected).toBe(false);
+    });
+  });
+
+  describe('logs', () => {
+    let lines: { level: string; message: string; asked?: unknown; running?: unknown }[];
+    let raw: string[];
+    const recording = () =>
+      createLogger({
+        level: 'debug',
+        format: 'json',
+        sink: (line) => {
+          raw.push(line);
+          lines.push(JSON.parse(line) as (typeof lines)[number]);
+        },
+      });
+
+    beforeEach(() => {
+      lines = [];
+      raw = [];
+    });
+
+    function beginRunning(model: string | null): (socket: WebSocket) => void {
+      return (socket) => {
+        socket.send(
+          JSON.stringify({
+            type: 'Begin',
+            id: 'session-1',
+            expires_at: 1772570132,
+            ...(model === null ? {} : { configuration: { model, mode: 'balanced' } }),
+          }),
+        );
+      };
+    }
+
+    const modelWarnings = () =>
+      lines.filter((line) => line.message === 'assemblyai runs another model than asked for');
+
+    it('warns when Begin says the session runs another model than the one asked for', async () => {
+      // AssemblyAI ignores what it does not know and runs a model of its choosing (M3 plan).
+      script.onConnect = beginRunning('universal-streaming-english');
+      const { stream } = await open({ logger: recording() }, 'temp-token', {
+        ...settings,
+        model: 'universal-3-6-pro',
+      });
+      await stream.close();
+
+      expect(modelWarnings()).toEqual([
+        expect.objectContaining({
+          level: 'warn',
+          asked: 'universal-3-6-pro',
+          running: 'universal-streaming-english',
+        }),
+      ]);
+    });
+
+    it('says nothing when Begin names the model asked for, or none', async () => {
+      for (const model of ['universal-streaming-english', null]) {
+        script.onConnect = beginRunning(model);
+        const { stream } = await open({ logger: recording() });
+        await stream.close();
+      }
+      expect(lines.some((line) => line.message === 'stt stream open')).toBe(true);
+      expect(modelWarnings()).toEqual([]);
+    });
+
+    it('never writes the token, which rides in the URL, into a log line', async () => {
+      const token = 'temp-token-c2VjcmV0';
+      const withList = { ...settings, keyterms: ['Linkt'], model: 'universal-3-6-pro' };
+      script.onConnect = beginRunning('universal-streaming-english');
+      const { stream } = await open({ logger: recording() }, token, withList);
+      stream.send(new Uint8Array(CHUNK_100_MS));
+      await stream.close();
+      script.onConnect = (socket) => {
+        socket.close(3005, 'Session Cancelled: An error occurred');
+      };
+      await open({ logger: recording() }, token, withList).catch((e: unknown) => e);
+
+      expect(lines.some((line) => line.message === 'stt connect failed')).toBe(true);
+      expect(modelWarnings()).toHaveLength(1);
+      expect(raw.join('\n')).not.toContain(token);
+    });
+  });
+
   it('reports a rejected handshake as a connect error with the status code', async () => {
     rejectWith = 401;
     const error = await open().catch((e: unknown) => e);
@@ -445,6 +702,133 @@ describe('AssemblyAiSpeechToText', () => {
     expect(events.at(-1)?.type).toBe('closed');
   });
 });
+
+/**
+ * Each model's wire file (fixtures/wireFixtures.ts) through the protocol's session, as the core
+ * hands it the vendor's messages. Properties only, so a recording from close step 0 keeps it green.
+ */
+describe.each(WIRE_FIXTURE_MODELS)('the %s wire through the protocol', (model) => {
+  it('saves one line per finished turn as it ends, the formatted copy when there is one', () => {
+    const lines = readWireFixture(model);
+    const { saved, releasedByTimer, warnings } = readThroughProtocol(model, lines);
+
+    // Nothing waited for a copy that never came: the wait timer released nothing, and said so.
+    expect(releasedByTimer).toEqual([]);
+    expect(warnings).toEqual([]);
+    expect(saved.map((event) => event.text)).toEqual(finishedTurnTexts(lines));
+    for (const event of saved) expect(event.words.length).toBeGreaterThan(0);
+  });
+
+  // A recording may hold either (a short noise can end a turn with no words): the expected lines
+  // must read them as the parser does, or a correct adapter fails on the committed recording.
+  it('expects no line for a turn that ended blank, and a padded one trimmed', () => {
+    const lines = withBlankAndPaddedTurns(readWireFixture(model));
+    const { saved, releasedByTimer, warnings } = readThroughProtocol(model, lines);
+
+    expect(releasedByTimer).toEqual([]);
+    expect(warnings).toEqual([]);
+    expect(saved.map((event) => event.text)).toEqual(finishedTurnTexts(lines));
+  });
+});
+
+/**
+ * The wire's messages through the protocol's session, as the core hands them over, on fake timers
+ * run well past any wait: the finals each message saved, the lines the wait timer released, and
+ * every warning logged. No message may be unreadable.
+ */
+function readThroughProtocol(
+  model: WireFixtureModel,
+  lines: string[],
+): {
+  saved: Extract<SttEvent, { type: 'final' }>[];
+  releasedByTimer: TranscriptEvent[];
+  warnings: string[];
+} {
+  vi.useFakeTimers();
+  try {
+    const warnings: string[] = [];
+    const releasedByTimer: TranscriptEvent[] = [];
+    const session = assemblyAiProtocol().session({
+      logger: createLogger({
+        level: 'warn',
+        format: 'json',
+        sink: (line) => warnings.push(line),
+      }),
+      settings: { ...settings, model },
+      audioSentMs: () => 0,
+      emit: (event) => releasedByTimer.push(event),
+    });
+    const saved: Extract<SttEvent, { type: 'final' }>[] = [];
+    for (const line of lines) {
+      const message = session.read(line);
+      expect(message.kind, line.slice(0, 40)).not.toBe('invalid');
+      if (message.kind === 'transcript' || message.kind === 'finished') {
+        for (const event of message.events) if (event.type === 'final') saved.push(event);
+      }
+    }
+    expect(session.release()).toEqual([]);
+    vi.advanceTimersByTime(60_000);
+    return { saved, releasedByTimer, warnings };
+  } finally {
+    vi.useRealTimers();
+  }
+}
+
+/**
+ * The wire with two turns added right after its last finished one, each a copy of that turn's
+ * end-of-turn messages so it keeps the model's shape (once on Pro; unformatted, then formatted on
+ * Universal-Streaming): one whose transcript is blank, then one whose transcript is padded.
+ */
+function withBlankAndPaddedTurns(lines: string[]): string[] {
+  let lastEnd = -1;
+  let lastTurn: Record<string, unknown>[] = [];
+  lines.forEach((line, index) => {
+    const message: unknown = JSON.parse(line);
+    if (!isRecord(message) || message.type !== 'Turn' || message.end_of_turn !== true) return;
+    if (message.turn_order !== lastTurn[0]?.turn_order) lastTurn = [];
+    lastTurn.push(message);
+    lastEnd = index;
+  });
+  const order = lastTurn[0]?.turn_order;
+  if (typeof order !== 'number') throw new Error('the wire holds no finished turn');
+  const copy = (offset: number, transcript: (text: string) => string): string[] =>
+    lastTurn.map((message) =>
+      JSON.stringify({
+        ...message,
+        turn_order: order + offset,
+        transcript: transcript(typeof message.transcript === 'string' ? message.transcript : ''),
+      }),
+    );
+  return [
+    ...lines.slice(0, lastEnd + 1),
+    ...copy(1, () => ' '),
+    ...copy(2, (text) => `  ${text} `),
+    ...lines.slice(lastEnd + 1),
+  ];
+}
+
+/**
+ * Read straight from the wire, apart from the parser: per turn_order, in order, the trimmed
+ * transcript of its formatted end of turn when the vendor sent one, else of its first end of turn.
+ * An end of turn whose transcript is blank counts as not sent, as the parser ignores it
+ * (messages.ts, 'Turn(empty)'): kept, a recording with one would fail a correct adapter.
+ */
+function finishedTurnTexts(lines: string[]): string[] {
+  const turns = new Map<number, { text: string; formatted: boolean }>();
+  for (const line of lines) {
+    const message: unknown = JSON.parse(line);
+    if (!isRecord(message) || message.type !== 'Turn' || message.end_of_turn !== true) continue;
+    const { turn_order: order, transcript, turn_is_formatted: formatted } = message;
+    if (typeof order !== 'number' || typeof transcript !== 'string') continue;
+    const text = transcript.trim();
+    if (text === '') continue;
+    const seen = turns.get(order);
+    if (seen === undefined || (!seen.formatted && formatted === true)) {
+      turns.set(order, { text, formatted: formatted === true });
+    }
+  }
+  return [...turns.values()].map((turn) => turn.text);
+}
 
 function begin(): string {
   return JSON.stringify({ type: 'Begin', id: 'session-1', expires_at: 1772570132 });

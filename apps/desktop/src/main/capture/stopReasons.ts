@@ -16,12 +16,27 @@ export type StopReason =
   | 'quit'
   /** G4: the main window closed. */
   | 'window-closed'
-  /** G4: the renderer process crashed or was killed: no page captures audio any more. */
+  /**
+   * G4: the page could not be brought back, so no page captures the mic: it did not load (a crash's
+   * reload or one someone asked for), the page a crash's reload brought up crashed before it
+   * loaded, or the page kept crashing (lifecycle.ts, RENDERER_CRASH_LIMIT). A crash alone or a
+   * reload no longer stops (M2 D7): the reloaded page reopens the mic. There was a `page-reloaded`
+   * reason until M2-T12; old rows keep it.
+   */
   | 'renderer-gone'
-  /** G4: the page reloaded or navigated: the page that captured audio is gone. */
-  | 'page-reloaded'
-  /** G4: the Mac is going to sleep; a socket left open bills until the vendor's idle timeout. */
-  | 'system-sleep';
+  /**
+   * G4: the Mac slept for costGuards.noSpeechStopMs or more; the stop comes at wake
+   * (power/PowerCoordinator.ts, M2-T18). A shorter sleep only pauses both sessions, and the
+   * recording goes on.
+   */
+  | 'system-sleep'
+  /**
+   * No call app has held the mic since the one that was in use at Start let go, for its release
+   * debounce (detect/CallDetector.ts, M2-T17b). Roger's own stop, through the normal one: the
+   * no-speech and 4-hour stops stay as the backstop for a recording that never saw a call app.
+   * `stt_usage.stop_reason` is bounded free text, so the API takes it with no change.
+   */
+  | 'call-ended';
 
 /**
  * What the status shows after Roger stopped a recording itself. Null for a Stop someone pressed,
@@ -43,16 +58,19 @@ export function stopNotice(
       return `Stopped at ${time}: one recording is capped at ${spell(guards.maxRecordingMs)}.`;
     case 'quit':
     case 'window-closed':
-      // The notice lives in memory and Roger is exiting: a closed window quits it (index.ts,
-      // window-all-closed). Cmd+Q showed it for one frame at most. Keeping one across launches
-      // would need it saved and read back at startup; the log and stt_usage.stop_reason have it.
+      // The notice lives in memory and Roger is exiting: only a quit exits (closing the window
+      // hides it, M5-T11), and `window-closed` is the window's `closed`, which with close-hides
+      // comes only while quitting (lifecycle.ts). Cmd+Q showed it for one frame at most. Keeping
+      // one across launches would need it saved and read back at startup; the log and
+      // stt_usage.stop_reason have it.
       return null;
     case 'renderer-gone':
-      return `Stopped at ${time} because the Roger window crashed${detail === null ? '' : ` (${detail})`}.`;
-    case 'page-reloaded':
-      return `Stopped at ${time} because the Roger window reloaded.`;
+      return `Stopped at ${time} because the Roger window could not reload${detail === null ? '' : ` (${detail})`}.`;
     case 'system-sleep':
       return `Stopped at ${time} because the Mac went to sleep.`;
+    case 'call-ended':
+      // `detail` is the call app's name, as the offer card showed it.
+      return `Stopped at ${time}: the call${detail === null ? '' : ` in ${detail}`} ended.`;
   }
 }
 

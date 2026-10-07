@@ -47,7 +47,7 @@ speech-to-text, saved on the Mac, uploaded to Postgres through the API, read bac
 | STT vendor for M1 | AssemblyAI Universal-Streaming English (v3 websocket, `pcm_s16le` at 16 kHz in 50 to 1000 ms messages, `format_turns` with one saved line per turn, temporary token as the `token` query parameter, `Terminate` then wait for `Termination` on stop). Owner decision, 2026-10-06; Deepgram nova-3 until then. | Deepgram nova-3 (kept as the second adapter: `interim_results`, `KeepAlive` every 5 s, `Finalize` then `CloseStream` on stop), OpenAI Realtime | The owner's reasons: AssemblyAI lists Granola as a customer, live text is about $0.15 an hour per stream (billed for the time the stream is open), and the free hours are generous. Documented temporary tokens and a simple binary websocket. Bake-off is M3. |
 | Token flow | `POST /v1/stt/token` returns provider + 30 s token + stream settings | Key in the desktop `.env` | House rule 3. Also makes "swap vendor" an API config change. |
 | STT connection lifecycle | One core for every websocket vendor (`SttConnection`); an adapter only describes its protocol (`SttProtocol`); a registry of vendors on each side; a conformance suite every vendor must pass, failing on any socket left open | A socket lifecycle per adapter | Owner ask, 2026-10-06: changing provider must be easy and opening and closing careful. Vendors bill open time, so a lifecycle per adapter leaks per adapter. |
-| STT cost guards | A failed or ended source closes its session at once; a source silent for 30 s closes it and reopens with audio, a fresh token and a 3 s held buffer; vendor failures reopen after a doubling backoff; every open (Start's included, both sources) passes one limiter, 4 a minute and 30 a meeting; a recording stops after 15 minutes with no final line, at 4 hours, and on quit (5 s bound), sleep, window close, crash or reload; AssemblyAI streams set `inactivity_timeout` 120 s and the API asks for the 3-hour cap explicitly; Deepgram's KeepAlive runs only while audio flows. Numbers in `apps/desktop/src/main/costGuards.ts`, overridable, validated. Usage metered per source and meeting: status line, logs, SQLite `stt_usage`. | Silence-gated streaming (a session open only while someone speaks, with a pre-roll buffer) | Owner ask, 2026-10-06: be super conservative with cost. AssemblyAI bills every open second, $0.15 an hour per stream, two a meeting; a forgotten recording overnight was about $4.20. Gating on speech needs voice detection and a pre-roll to keep first words: M2/M3. |
+| STT cost guards | A failed or ended source closes its session at once; a source silent for 30 s closes it and reopens with audio, a fresh token and a 3 s held buffer; vendor failures reopen after a doubling backoff; every open (Start's included, both sources) passes one limiter, 4 a minute and 30 a meeting; a recording stops after 15 minutes with no final line, at 4 hours, and on quit (5 s bound), sleep, window close, crash or reload; AssemblyAI streams set `inactivity_timeout` 120 s and the API asks for the 3-hour cap explicitly; Deepgram's KeepAlive runs only while audio flows. Numbers in `apps/desktop/src/main/costGuards.ts`, overridable, validated. Usage metered per source and meeting: status line, logs, SQLite `stt_usage`. | Silence-gated streaming (a session open only while someone speaks, with a pre-roll buffer) | Owner ask, 2026-10-06: be super conservative with cost. AssemblyAI bills every open second, $0.15 an hour per stream, two a meeting; a forgotten recording overnight was about $4.20. Gating on speech needs voice detection and a pre-roll to keep first words: M3-T20. |
 | Local safety copy | `node:sqlite` (built into Electron 44's Node), WAL, append-only `segments` rows with `synced_at` | `better-sqlite3` | No native rebuild, no ABI mismatch between vitest and Electron. |
 | Upload | `TranscriptUploader` polls unsynced rows every 2 s, batches up to 200, exponential backoff on failure, marks `synced_at` | Upload each segment as it arrives | Fewer requests, same guarantee: nothing is lost locally. |
 | Ids | Desktop generates UUIDv4 for meetings and segments; the API inserts and ignores ids it already has | Server ids | Retries and replays are safe (house rule 7). |
@@ -111,7 +111,7 @@ getDisplayMedia ───┤ worklet  ├─ SttStream(mic)  ──┐  final �
 | AssemblyAI ends every session after 3 hours (the API asks for that cap explicitly) | Error 3008 and close mid-call | Roger reopens a fresh session after 2 s, through the open limiter; the few seconds in between are not transcribed (no audio backup until M2). A recording stops at 4 hours anyway. |
 | AssemblyAI lets a free account start only 5 sessions a minute ([rate limits](https://www.assemblyai.com/docs/streaming/rate-limits), 2026-10-06), and every Start opens two | The vendor refuses after the handshake with "Too many concurrent sessions" (close 1008 or 3009; the vendor's pages disagree) | Roger's own limiter allows 4 opens a minute across meetings and both sources, so a third quick Start is refused before any socket, saying when to try; reopens spend the same budget. |
 | AssemblyAI bills the time a session is open, not the audio sent | A dead or silent system stream costs as much as a live one: about $0.30 per call hour for both | The cost guards: a failed source closes at once, a silent one after 30 s, no final line for 15 minutes stops the recording, 4 hours stops any; the status line shows the running cost. |
-| The reopen flush trips AssemblyAI's faster-than-real-time rule | A reopened stream closes with 3007 right after it opens | The held audio is capped at 3 s; lower `sttReopenBufferSeconds`, or pace the flush (M2). |
+| The reopen flush trips AssemblyAI's faster-than-real-time rule | A reopened stream closes with 3007 right after it opens | The held audio is capped at 3 s; lower `sttReopenBufferSeconds`; M3-T18 paces every send in the shared STT core. Closed on `phase-2` by M3-T18 (2026-10-06): the core paces held audio at real time on a monotonic clock. |
 | The Mac sleeps in the middle of a stop | The socket stays half-open on the vendor's side | `inactivity_timeout` (120 s) closes it there; the finish timer terminates Roger's side on wake. |
 | API down mid-call | Uploader backoff visible in status line ("12 lines waiting") | Rows stay local with `synced_at NULL`; uploader resumes. Meeting `end` is retried too. |
 | Vendor message format drifts | Parsing tests fail; unknown message types are logged, not fatal | Adapter isolates the shape. |
@@ -122,9 +122,9 @@ The M1 wrap-up left these alone on purpose. Each has an owner.
 
 | Gap | What happens today | Owner |
 | --- | --- | --- |
-| Audio while a speech-to-text session reconnects (a network blip, AssemblyAI's 3-hour cap) | The session reopens after its backoff, but only the last 3 s of audio are held, so speech during the wait is not transcribed. Lines already final stay saved. | M2 (audio backup and replay) |
-| Silence-gated streaming with a pre-roll buffer | A session stays open, billed, through silence while chunks flow (only a source that sends nothing closes, after 30 s; the 15-minute no-speech stop bounds the rest). Opening only while someone speaks needs voice detection and a pre-roll so first words are kept. | M2/M3 |
-| Speech-to-text usage upload | Each meeting's usage stays in the Mac's `stt_usage` table and the logs. | M3 |
+| Audio while a speech-to-text session reconnects (a network blip, AssemblyAI's 3-hour cap) | The session reopens after its backoff, but only the last 3 s of audio are held, so speech during the wait is not transcribed. Lines already final stay saved. | M2 (M2-T6 gap rows, T15 audio backup, T16 gap re-run) |
+| Silence-gated streaming with a pre-roll buffer | A session stays open, billed, through silence while chunks flow (only a source that sends nothing closes, after 30 s; the 15-minute no-speech stop bounds the rest). Opening only while someone speaks needs voice detection and a pre-roll so first words are kept. | M3 (M3-T20) |
+| Speech-to-text usage upload | Each meeting's usage stays in the Mac's `stt_usage` table and the logs. | M3 (M3-T19a, T19b) |
 | Warning when a live stream carries only silence | A stream that hears nothing still looks live. | M2 |
 | MCP transcript slicing | `get_transcript` returns the whole call in one block, so a long enough call can exceed an MCP client's output cap. | M7 |
 | Automated tests for the renderer capture code | `getUserMedia`, `getDisplayMedia` and the worklet wiring are only checked by a real call. The controller's start and stop rules run against fake devices. | M2 |
@@ -163,6 +163,64 @@ should-fixes, all fixed with regression tests.
   stable per-Mac identity.
 - In dev mode the terminal is the app macOS checks, and no common terminal carries
   `NSAudioCaptureUsageDescription`, so call audio must be tested from the installed app.
+
+**2026-10-06, field report: grants lost after a restart (M2-T1, read from the `tccd` log):**
+
+- Symptoms: after a restart the installed app said it could not detect system audio, and it
+  asked for the mic again although System Settings showed Roger allowed.
+- The log names the cause: 11 lines of `Failed to match existing code requirement for subject
+  ai.linkt.roger and service ...`, one at 11:46 and the rest from 14:12 to 14:15, for
+  `kTCCServiceMicrophone` (then a new mic prompt), `kTCCServiceScreenCapture` and
+  `kTCCServiceAudioCapture`. Those builds were ad-hoc signed (`cdhash H"..."`), so each rebuild
+  changed the requirement the grants were pinned to. With ScreenCapture refused,
+  `desktopCapturer.getSources` returns nothing, hence "No screen source is available for system
+  audio".
+- 14:22:55: TCC deleted Roger's three records (`install-mac.sh` resets them when the signing
+  identity changes). The app installed at 14:24 is signed `identifier "ai.linkt.roger" and
+  certificate leaf = H"b457..."`, which survives rebuilds (commit 30e137c). At 16:56 the log had
+  no mismatch line for Roger since that install.
+- Two copies of Roger.app exist, `/Applications` and `apps/desktop/dist/mac-arm64`; only the
+  `/Applications` one is launched.
+- Both launches in that window (14:15 and 14:24) also logged an Error-level `attempted to call
+  TCCAccessRequest for kTCCServiceAccessibility without the recommended ... entitlement`. Roger's
+  code asks for no Accessibility access; the line comes from Electron at launch and is not a grant
+  problem.
+- Recipe (compare a hit with `codesign -d -r- /Applications/Roger.app`):
+
+  ```bash
+  /usr/bin/log show --last 1d \
+    --predicate 'subsystem == "com.apple.TCC" AND eventMessage CONTAINS[c] "roger"' \
+    | grep 'Failed to match existing code requirement'
+  ```
+- The app can now read its own signature: `src/main/signing.ts` reports `local-identity`,
+  `developer-id`, `adhoc` or `unsigned` and a hash of the requirement, which "system audio
+  verified" is stored against. M2-T10 and M2-T19 call it at startup.
+
+**Pending: M2-T1's Mac check (a person).** On the installed app: Start, grant, quit, relaunch,
+Start again. Pass: no new prompt, call audio present, and the recipe above shows no new mismatch
+line. Then open each link in `src/main/settingsPanes.ts` on macOS 26 and record where it lands in
+the M2 exit check log.
+
+**2026-10-06, live AssemblyAI run on the installed app (mock meeting, main at 77960a1):**
+
+- The M2-T1 Mac check passed (owner): Start, grant, quit, relaunch, Start again with no new prompt
+  and call audio present. Roger is listed under Screen & System Audio Recording, where Granola is
+  under System Audio Recording Only; the M2 Swift helper moves Roger there.
+- API on `STT_PROVIDER=assemblyai`: `/v1/stt/token` returned a live temporary token, model
+  `universal-streaming-english`, `price_per_hour_usd` 0.15.
+- A 32-second mock meeting (macOS `say`, voice Samantha, played through the speakers with
+  `afplay` as call audio) was recorded by driving the app over the Chrome DevTools protocol. Both
+  sessions opened, ran about 39 s each, ended with `Terminate` and close code 1000, and dropped no
+  audio. Meter: "AssemblyAI · 1m 13s connected · under $0.01" (about $0.0016 per stream).
+- Them: word error rate 3/85 (3.5%) against the script, leaving out the first seven words, which
+  played before capture started. Errors: "Linked" for Linkt, "Pritaya" for Priya, "sink" for
+  sync (jargon: M3).
+- Me: the mic heard the speakers and produced a lower-quality copy of the same words. This is the
+  echo M2's filter hides (M2-T14a built, M2-T14b wires it); with headphones there is none.
+- AssemblyAI made one 30-second turn of the whole monologue (the synthetic voice never pauses long
+  enough to end a turn).
+- Claude Code (headless, MCP over `/mcp` with the bearer header) quoted Them's two action items
+  word for word with the timestamp.
 
 **Pending: the real-call check.** A 30-minute Google Meet call with `STT_PROVIDER=assemblyai` and
 an AssemblyAI key on the API (owner decision, 2026-10-06: AssemblyAI replaces Deepgram as the

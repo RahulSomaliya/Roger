@@ -15,6 +15,14 @@ import {
  * Close reasons, per https://developers.deepgram.com/docs/stt-troubleshooting-websocket-data-and-net-errors
  * (read 2026-10-06): 1008 DATA-0000 (audio not decodable), 1011 NET-0000 (no result sent in
  * time), NET-0001 (nothing received in time), NET-0002 (no audio within the no-audio timeout).
+ *
+ * Jargon, per https://developers.deepgram.com/docs/keyterm (read 2026-10-06): one `keyterm`
+ * parameter per term, URL-encoded, 500 tokens at most across all of them; past that Deepgram
+ * refuses the whole request with HTTP 400 at the handshake (keytermsRejected).
+ *
+ * Training, per https://developers.deepgram.com/docs/the-deepgram-model-improvement-partnership-program
+ * (read 2026-10-06): pay-as-you-go audio joins the Model Improvement Program unless each request
+ * sends `mip_opt_out=true`. Roger promises it never trains on calls, so every URL carries it.
  */
 
 export const DEEPGRAM_DEFAULT_BASE_URL = 'wss://api.deepgram.com';
@@ -32,7 +40,11 @@ export interface DeepgramProtocolOptions {
 
 export type DeepgramOptions = WebSocketSttOptions & DeepgramProtocolOptions;
 
-/** The query string Deepgram's `/v1/listen` websocket expects for raw PCM. */
+/**
+ * The query string Deepgram's `/v1/listen` websocket expects for raw PCM. `mip_opt_out=true` is not
+ * a setting: without it Deepgram may train on the call (file header). Keyterms go in as given; the
+ * core has already cut them to the shared limits (keyterms.ts).
+ */
 export function buildListenUrl(baseUrl: string, settings: SttStreamSettings): string {
   const url = new URL('/v1/listen', baseUrl);
   const params: Record<string, string> = {
@@ -44,8 +56,13 @@ export function buildListenUrl(baseUrl: string, settings: SttStreamSettings): st
     interim_results: 'true',
     punctuate: 'true',
     smart_format: 'true',
+    mip_opt_out: 'true',
   };
   for (const [key, value] of Object.entries(params)) url.searchParams.set(key, value);
+  // Spaces as %20, not URLSearchParams' '+': only a form decoder reads '+' as a space, so a
+  // multi-word term could reach the vendor as "order+number". encodeURIComponent never writes '+'.
+  const keyterms = (settings.keyterms ?? []).map((term) => `keyterm=${encodeURIComponent(term)}`);
+  if (keyterms.length > 0) url.search = [url.searchParams.toString(), ...keyterms].join('&');
   return url.toString();
 }
 
@@ -69,6 +86,8 @@ export function deepgramProtocol(options: DeepgramProtocolOptions = {}): SttProt
     // (SttConnection keepAliveForMs): never once Stop or a failure began, never for a stalled
     // source, which Deepgram then closes itself.
     keepAlive: { message: DEEPGRAM_KEEP_ALIVE, intervalMs: 5_000 },
+    // No rate rule documented, so a reopen's held audio goes at once instead of lagging.
+    audioPacing: 'none',
     session: () => ({
       encodeAudio: (pcm) => [pcm],
       // Finalize flushes buffered audio into final results; CloseStream then ends the session.
@@ -78,6 +97,11 @@ export function deepgramProtocol(options: DeepgramProtocolOptions = {}): SttProt
     }),
     describeClose: describeDeepgramClose,
     connectAdvice: () => null,
+    // A list past Deepgram's 500 tokens fails the whole handshake with HTTP 400 (file header). A
+    // 400 for another reason (a model name it does not know) fails again on the one reopen without
+    // the list, and that error carries both reasons (M3-T4b). Any other status (401 bad grant, 402
+    // out of credit, 429) is not the list's fault: a reopen without it would fail the same way.
+    keytermsRejected: (refusal) => refusal.kind === 'http-status' && refusal.status === 400,
   };
 }
 

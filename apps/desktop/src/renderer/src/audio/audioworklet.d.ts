@@ -16,3 +16,6 @@ declare function registerProcessor(
 
 /** The AudioContext sample rate, as seen from inside the worklet. */
 declare const sampleRate: number;
+
+/** The frame of the first sample of the block being processed, on the AudioContext's clock. */
+declare const currentFrame: number;

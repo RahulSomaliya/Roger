@@ -1,0 +1,3 @@
+# Build output: the Swift audio helper (scripts/build-native.sh) and the benchmark CLI bundle.
+native/bin/
+bench/dist/

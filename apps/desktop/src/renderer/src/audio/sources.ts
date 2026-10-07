@@ -1,8 +1,9 @@
 /** Opening the two MediaStreams. Nothing else in the renderer talks to getUserMedia. */
 
-export function openMicrophoneStream(): Promise<MediaStream> {
+/** The default input: no device id, so a reopen after a device change follows the default. */
+export function openMicrophoneStream(mediaDevices: MediaDevices): Promise<MediaStream> {
   // Raw audio: Chromium's processing adds latency and distorts speech. Echo handling is M2's job.
-  return navigator.mediaDevices.getUserMedia({
+  return mediaDevices.getUserMedia({
     audio: {
       echoCancellation: false,
       noiseSuppression: false,
@@ -17,13 +18,16 @@ export function openMicrophoneStream(): Promise<MediaStream> {
  * System audio through Chromium's desktop capture. On macOS 14.2+ Chromium uses a Core Audio tap
  * for this; the video track is a required part of the request and is stopped immediately.
  */
-export async function openSystemAudioStream(sourceId: string): Promise<MediaStream> {
+export async function openSystemAudioStream(
+  sourceId: string,
+  mediaDevices: MediaDevices,
+): Promise<MediaStream> {
   // `mandatory` / chromeMediaSource are Chromium extensions absent from lib.dom.
   const constraints = {
     audio: { mandatory: { chromeMediaSource: 'desktop' } },
     video: { mandatory: { chromeMediaSource: 'desktop', chromeMediaSourceId: sourceId } },
   } as unknown as MediaStreamConstraints;
-  const stream = await navigator.mediaDevices.getUserMedia(constraints);
+  const stream = await mediaDevices.getUserMedia(constraints);
   for (const track of stream.getVideoTracks()) {
     track.stop();
     stream.removeTrack(track);

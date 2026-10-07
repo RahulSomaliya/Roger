@@ -1,0 +1,23 @@
+{
+  "id": "standup",
+  "name": "Standup",
+  "description": "A team standup: what each person did, what they will do next and what blocks them.",
+  "sections": [
+    {
+      "heading": "Yesterday",
+      "guidance": "What each person finished or moved forward since the last standup, grouped by person."
+    },
+    {
+      "heading": "Today",
+      "guidance": "What each person will work on next, grouped by person."
+    },
+    {
+      "heading": "Blockers",
+      "guidance": "Anything stopping someone, who raised it and who can unblock it."
+    },
+    {
+      "heading": "Action items",
+      "guidance": "Follow-ups agreed during the standup, as Owner: what, by when."
+    }
+  ]
+}

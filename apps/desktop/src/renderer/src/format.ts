@@ -2,6 +2,7 @@ import {
   AUDIO_SOURCE_LABEL,
   NO_AUDIO_WARNING_MS,
   type SourceHealth,
+  type SttMeter,
   type SttMeterStatus,
   type SttStreamState,
   type UploadStatus,
@@ -17,12 +18,20 @@ export function formatOffset(ms: number): string {
   return [hours, minutes, seconds].map((n) => String(n).padStart(2, '0')).join(':');
 }
 
+/**
+ * Every chunk is 100 ms of audio, from the renderer (`CHUNK_SAMPLES` in
+ * audio/AudioCaptureController.ts) and from the helper's tap (`TAP_CHUNK_MS` in
+ * main/audio/system/TapSystemAudio.ts). Change the three together.
+ */
+const CHUNK_MS = 100;
+
 export function describeHealth(health: SourceHealth, chunks: number): string {
   switch (health) {
     case 'pending':
       return 'waiting for audio';
     case 'active':
-      return chunks === 0 ? 'open, no audio yet' : `${(chunks / 10).toFixed(0)}s captured`;
+      // As formatDuration, like the connected time beside it: "39m 52s", never "2392s".
+      return chunks === 0 ? 'open, no audio yet' : `${formatDuration(chunks * CHUNK_MS)} captured`;
     case 'stalled':
       return `no audio for over ${NO_AUDIO_WARNING_MS / 1000} s`;
     case 'ended':
@@ -32,26 +41,73 @@ export function describeHealth(health: SourceHealth, chunks: number): string {
   }
 }
 
-/** A session's state as people read it: "transcribing" only while its source sends audio. */
+/**
+ * A source's speech-to-text session as its row's label says it (components/capture/StreamStatus):
+ * short, because the row shows why beside it (`streamMessages`). "Transcribing" only while its
+ * source sends audio; "Reconnecting" only while the audio a reopen waits for flows, because a
+ * source reopens with its next chunk, never on a timer (CaptureSession.pushAudio).
+ *
+ * No default case, here or in streamTone: a new SttStreamState fails the type check (TS2366) until
+ * both say how it reads (section 3.1 of docs/plans/phase-2-build-order.md).
+ */
 export function describeStream(state: SttStreamState, health: SourceHealth): string {
   switch (state) {
     case 'closed':
       // No vendor session: before Start, after Stop, or the source failed or ended.
-      return 'not connected';
+      return 'Not connected';
     case 'connecting':
-      return 'connecting';
+      return 'Connecting';
     case 'open':
       // Open but fed nothing: billed, not transcribing. It closes after the stall window.
-      if (health === 'pending') return 'connected, no audio yet';
-      if (health === 'stalled') return 'connected, no audio';
-      return 'transcribing';
+      if (health === 'active') return 'Transcribing';
+      return health === 'pending' ? 'Connected, no audio yet' : 'Connected, no audio';
     case 'paused':
-      return 'paused, no audio';
+      // Chunks still arriving while it is paused: the silence gate closed it (M3-T20), since a
+      // stall sends none and a stall's source reopens with its very next chunk. The gate reopens
+      // it only on speech, so "Paused" would read as a fault on every quiet mic.
+      if (health === 'active') return 'Closed while silent, reopens on speech';
+      // Closed until its audio returns: a stall, or the Mac asleep. The message says which.
+      return 'Paused';
     case 'retrying':
-      // A reopen starts only with the source's next chunk: with none arriving, none is attempted.
-      if (health === 'pending' || health === 'stalled')
-        return 'not connected, reconnects with audio';
-      return 'reconnecting';
+      if (health === 'active') return 'Reconnecting';
+      // A stopped source never sends the chunk a reopen needs (G1 closes it at once).
+      if (health === 'ended' || health === 'error') return 'Not connected';
+      // The wait may be over, but with no chunk arriving no reopen is attempted.
+      return 'Reconnects with audio';
+    case 'offline':
+      // Not the vendor's fault, and nothing reopens until the network is back, so never
+      // "Reconnecting"; the message and the banner's offline warning say so.
+      return 'Offline';
+    case 'error':
+      // Ended for this meeting; the message says why (a refused open, a fatal vendor error).
+      return 'Failed';
+  }
+}
+
+/**
+ * How a source's row colours its label: `ok` only while its words reach the vendor, `warn` while
+ * they do not but will once audio or the network returns, `error` once they never will this
+ * meeting, `pending` while a session starts, `off` with none.
+ */
+export type StreamTone = 'ok' | 'pending' | 'warn' | 'error' | 'off';
+
+export function streamTone(state: SttStreamState, health: SourceHealth): StreamTone {
+  switch (state) {
+    case 'closed':
+      return 'off';
+    case 'connecting':
+      return 'pending';
+    case 'open':
+      // Every Start passes through "connected, no audio yet" for a moment: not a warning.
+      if (health === 'active') return 'ok';
+      return health === 'pending' ? 'pending' : 'warn';
+    case 'paused':
+      // The silence gate's pause (describeStream): nothing is being said, so nothing is lost. A
+      // warning colour there would sit on every muted mic for most of a call.
+      return health === 'active' ? 'off' : 'warn';
+    case 'retrying':
+    case 'offline':
+      return 'warn';
     case 'error':
       return 'error';
   }
@@ -105,22 +161,49 @@ export function describeCost(usd: number | null): string {
 /**
  * The status line: what the vendor bills for this meeting so far (open time, silent or not). The
  * time sums both sources' sessions, each billed on its own, so a 12m 30s call with both open
- * reads "25m 00s connected".
+ * reads "25m 00s connected". What the silence gate saved follows ("saved about $0.03 in silence").
  */
 export function describeMeter(meter: SttMeterStatus): string {
   const { total } = meter;
-  return `${meter.vendorName} · ${formatDuration(total.connectedMs)} connected · ${describeCost(total.estimatedCostUsd)}`;
+  const line = `${meter.vendorName} · ${formatDuration(total.connectedMs)} connected · ${describeCost(total.estimatedCostUsd)}`;
+  const saved = describeSilenceSaved(total);
+  return saved === null ? line : `${line} · ${saved}`;
 }
 
 /** The rest of the meter, for the line's tooltip. */
 export function meterDetails(meter: SttMeterStatus): string {
   const { total } = meter;
   const sessions = `${total.sessionsOpened} session${total.sessionsOpened === 1 ? '' : 's'} opened`;
+  const closed = describeClosedInSilence(total);
   const perSource = AUDIO_SOURCES.map((source) => {
     const used = meter.sources[source];
-    return `${AUDIO_SOURCE_LABEL[source]}: ${formatDuration(used.connectedMs)} connected, ${describeCost(used.estimatedCostUsd)}.`;
+    const sourceClosed = describeClosedInSilence(used);
+    return `${AUDIO_SOURCE_LABEL[source]}: ${formatDuration(used.connectedMs)} connected, ${describeCost(used.estimatedCostUsd)}${sourceClosed === null ? '' : `, ${sourceClosed}`}.`;
   });
-  return [`${sessions} · ${formatDuration(total.audioSentMs)} of audio sent.`, ...perSource].join(
-    ' ',
-  );
+  const parts = [
+    `${sessions} · ${formatDuration(total.audioSentMs)} of audio sent${closed === null ? '' : ` · ${closed}`}.`,
+    ...perSource,
+  ];
+  if (meter.silenceGate === 'spent') {
+    parts.push('Silence gate off for this meeting: its reopens are spent.');
+  }
+  return parts.join(' ');
+}
+
+/**
+ * What the silence gate saved (M3-T20), for the meter line: the money when it is known and more
+ * than nothing, else the time it kept sessions closed. Null when it closed none: a meter built
+ * without the gate fields (other tasks' fixtures) reads exactly as before.
+ */
+function describeSilenceSaved(meter: SttMeter): string | null {
+  const closed = describeClosedInSilence(meter);
+  if (closed === null) return null;
+  const saved = meter.estimatedSavedUsd ?? null;
+  return saved === null || saved <= 0 ? closed : `saved ${describeCost(saved)} in silence`;
+}
+
+/** "12m 00s closed in silence", or null when the gate kept nothing closed. */
+function describeClosedInSilence(meter: SttMeter): string | null {
+  const gatedMs = meter.gatedMs ?? 0;
+  return gatedMs > 0 ? `${formatDuration(gatedMs)} closed in silence` : null;
 }

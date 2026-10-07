@@ -1,9 +1,41 @@
+import type {
+  CalendarAttendee,
+  CalendarProvider,
+  MeetingCalendarEvent,
+  ResponseStatus,
+} from '../../shared/calendar';
+import type { StartSource } from '../../shared/capture';
 import type { TranscriptSegment } from '../../shared/transcript';
+import { type ApiConnection, type ApiRequest, createApiRequest } from './http';
+
+// Re-exported: the uploader and its tests import ApiError from here.
+export { ApiError } from './http';
 
 /**
- * Typed client for the Roger API (docs/api-contract.md). The desktop speaks camelCase; the wire
- * speaks snake_case; the mapping lives here and nowhere else.
+ * Typed client for the Roger API's meeting and STT token routes (docs/api-contract.md), on the
+ * shared HTTP core in ./http.ts. Other features' routes have their own client files. The desktop
+ * speaks camelCase; the wire speaks snake_case; each client maps its own routes, never a caller.
  */
+
+/** The contract's `CalendarAttendee`, as the wire spells it. */
+export interface CalendarAttendeeDto {
+  email: string;
+  display_name: string | null;
+  response_status: ResponseStatus;
+  is_self: boolean;
+  is_organizer: boolean;
+}
+
+/** The contract's `MeetingCalendarEvent`: the event a meeting was started for. */
+export interface MeetingCalendarEventDto {
+  provider: CalendarProvider;
+  event_id: string;
+  ical_uid: string | null;
+  recurring_event_id: string | null;
+  scheduled_start: string;
+  scheduled_end: string;
+  attendees: CalendarAttendeeDto[];
+}
 
 export interface MeetingDto {
   id: string;
@@ -13,8 +45,19 @@ export interface MeetingDto {
   started_at: string;
   ended_at: string | null;
   segment_count: number;
+  start_source: StartSource;
+  calendar_event: MeetingCalendarEventDto | null;
   created_at: string;
   updated_at: string;
+}
+
+/** A meeting as the uploader creates it in Postgres (`POST /v1/meetings`). */
+export interface NewMeeting {
+  id: string;
+  title: string;
+  startedAt: string;
+  startSource: StartSource;
+  calendarEvent: MeetingCalendarEvent | null;
 }
 
 export interface SttTokenResponse {
@@ -29,59 +72,65 @@ export interface SttTokenResponse {
     /**
      * USD per hour of one open stream; null when the API knows no price for the model. Optional
      * here although the contract requires it: an API older than the field omits it, and this
-     * response is cast, not validated (request<T>), so it arrives as undefined. Map it with
-     * `?? null` (CaptureService.resolveStt): undefined passes every `=== null` check in the meter
-     * and the status line read "about $NaN".
+     * response is cast, not validated (ApiRequest, http.ts), so it arrives as undefined. Map it
+     * with `?? null` (CaptureService.resolveStt): undefined passes every `=== null` check in the
+     * meter and the status line read "about $NaN".
      */
     price_per_hour_usd?: number | null;
+    /**
+     * USD per hour of one stream opened with no keyterms: the base price alone, never the vendor's
+     * keyterm surcharge, and the same as `price_per_hour_usd` when `keyterms` is empty (contract,
+     * `POST /v1/stt/token`). The vendor bills a stream by what it was opened with, so a stream
+     * opened with `keyterms: []` from a token that carried a list is metered at this price: M3-T4b's
+     * reopen after the vendor refused the list, and every stream of a bench `--no-keyterms` run
+     * (bench/run/credentials.ts). Null when the API knows no base price. Optional for the same
+     * reason as `price_per_hour_usd`: an API older than the field omits it, so it arrives as
+     * undefined; meter such a stream at `price_per_hour_usd` (it errs high), mapped as above.
+     */
+    price_per_hour_usd_without_keyterms?: number | null;
+    /**
+     * The workspace's jargon list for the vendor, [] when it has none. Never missing here, unlike
+     * the price: getSttToken fills [] for an API older than the list, which omits it (the response
+     * is cast, so it would arrive as undefined).
+     */
+    keyterms: string[];
   };
 }
+
+/** The token response as it arrives: an API older than the jargon list sends no `keyterms`. */
+type SttTokenWire = Omit<SttTokenResponse, 'stream'> & {
+  stream: Omit<SttTokenResponse['stream'], 'keyterms'> & { keyterms?: string[] };
+};
 
 export interface SegmentsAppendResult {
   accepted: number;
   duplicates: number;
 }
 
-export class ApiError extends Error {
-  constructor(
-    readonly status: number,
-    readonly code: string,
-    message: string,
-  ) {
-    super(message);
-    this.name = 'ApiError';
-  }
-
-  get isNotFound(): boolean {
-    return this.status === 404;
-  }
-}
-
-export interface ApiClientOptions {
-  baseUrl: string;
-  token: string;
-  fetchImpl?: typeof fetch;
-  timeoutMs?: number;
-}
-
 export class ApiClient {
-  private readonly fetchImpl: typeof fetch;
-  private readonly timeoutMs: number;
+  private readonly request: ApiRequest;
 
-  constructor(private readonly options: ApiClientOptions) {
-    this.fetchImpl = options.fetchImpl ?? globalThis.fetch;
-    this.timeoutMs = options.timeoutMs ?? 10_000;
+  constructor(connection: ApiConnection) {
+    this.request = createApiRequest(connection);
   }
 
-  getSttToken(): Promise<SttTokenResponse> {
-    return this.request<SttTokenResponse>('POST', '/v1/stt/token');
+  async getSttToken(): Promise<SttTokenResponse> {
+    const token = await this.request<SttTokenWire>('POST', '/v1/stt/token');
+    return { ...token, stream: { ...token.stream, keyterms: token.stream.keyterms ?? [] } };
   }
 
-  createMeeting(input: { id: string; title: string; startedAt: string }): Promise<MeetingDto> {
+  /**
+   * The create carries how the meeting was started and its calendar event: the API stores them
+   * only from the create that makes the meeting, never from a re-send (contract).
+   */
+  createMeeting(input: NewMeeting): Promise<MeetingDto> {
     return this.request<MeetingDto>('POST', '/v1/meetings', {
       id: input.id,
       title: input.title,
       started_at: input.startedAt,
+      start_source: input.startSource,
+      calendar_event:
+        input.calendarEvent === null ? null : calendarEventToWire(input.calendarEvent),
     });
   }
 
@@ -98,45 +147,6 @@ export class ApiClient {
       ended_at: endedAt,
     });
   }
-
-  private async request<T>(method: 'GET' | 'POST', path: string, body?: unknown): Promise<T> {
-    const controller = new AbortController();
-    const timer = setTimeout(() => {
-      controller.abort();
-    }, this.timeoutMs);
-    let response: Response;
-    try {
-      response = await this.fetchImpl(`${this.options.baseUrl}${path}`, {
-        method,
-        headers: {
-          Authorization: `Bearer ${this.options.token}`,
-          Accept: 'application/json',
-          ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
-        },
-        body: body === undefined ? null : JSON.stringify(body),
-        signal: controller.signal,
-      });
-    } catch (error) {
-      const reason = controller.signal.aborted
-        ? `timed out after ${this.timeoutMs} ms`
-        : describe(error);
-      throw new ApiError(0, 'network_error', `${method} ${path} failed: ${reason}`);
-    } finally {
-      clearTimeout(timer);
-    }
-    const text = await response.text();
-    if (!response.ok) throw toApiError(response.status, text, method, path);
-    try {
-      // The contract promises JSON on every 2xx; the caller's type parameter names the shape.
-      return JSON.parse(text) as T;
-    } catch {
-      throw new ApiError(
-        response.status,
-        'invalid_response',
-        `${method} ${path} returned non-JSON`,
-      );
-    }
-  }
 }
 
 /**
@@ -145,6 +155,32 @@ export class ApiClient {
  */
 export type UploadApi = Pick<ApiClient, 'createMeeting' | 'appendSegments' | 'endMeeting'>;
 export type SttTokenApi = Pick<ApiClient, 'getSttToken'>;
+
+/**
+ * The event a meeting was started for, as the create sends it. Calendar events coming the other
+ * way, from `GET /v1/calendar/events`, are mapped in calendarClient.ts (M5-T6).
+ */
+function calendarEventToWire(event: MeetingCalendarEvent): MeetingCalendarEventDto {
+  return {
+    provider: event.provider,
+    event_id: event.eventId,
+    ical_uid: event.icalUid,
+    recurring_event_id: event.recurringEventId,
+    scheduled_start: event.scheduledStart,
+    scheduled_end: event.scheduledEnd,
+    attendees: event.attendees.map(attendeeToWire),
+  };
+}
+
+function attendeeToWire(attendee: CalendarAttendee): CalendarAttendeeDto {
+  return {
+    email: attendee.email,
+    display_name: attendee.displayName,
+    response_status: attendee.responseStatus,
+    is_self: attendee.isSelf,
+    is_organizer: attendee.isOrganizer,
+  };
+}
 
 function segmentToWire(segment: TranscriptSegment): Record<string, unknown> {
   return {
@@ -165,30 +201,4 @@ function segmentToWire(segment: TranscriptSegment): Record<string, unknown> {
             confidence: word.confidence,
           })),
   };
-}
-
-function toApiError(status: number, text: string, method: string, path: string): ApiError {
-  try {
-    const parsed: unknown = JSON.parse(text);
-    if (
-      typeof parsed === 'object' &&
-      parsed !== null &&
-      'error' in parsed &&
-      typeof parsed.error === 'object' &&
-      parsed.error !== null &&
-      'code' in parsed.error &&
-      'message' in parsed.error
-    ) {
-      return new ApiError(status, String(parsed.error.code), String(parsed.error.message));
-    }
-  } catch {
-    // fall through: not the contract envelope
-  }
-  return new ApiError(status, 'http_error', `${method} ${path} returned HTTP ${status}`);
-}
-
-function describe(error: unknown): string {
-  if (error instanceof Error)
-    return error.cause instanceof Error ? error.cause.message : error.message;
-  return String(error);
 }

@@ -11,6 +11,7 @@ import {
   describeStream,
   describeUpload,
   formatOffset,
+  streamTone,
 } from './format';
 
 const upload = (overrides: Partial<UploadStatus>): UploadStatus => ({
@@ -37,27 +38,84 @@ describe('formatOffset', () => {
 describe('describeHealth', () => {
   it('says how long a stalled source has been without audio', () => {
     expect(describeHealth('stalled', 12)).toBe('no audio for over 5 s');
-    expect(describeHealth('active', 25)).toBe('3s captured');
     expect(describeHealth('ended', 25)).toBe('stopped');
+  });
+
+  it('gives what a source captured as the connected time beside it reads, not in seconds', () => {
+    // 100 ms chunks: 25 are 2.5 s, floored as formatDuration floors.
+    expect(describeHealth('active', 25)).toBe('2s captured');
+    // A 40-minute call read "2392s captured".
+    expect(describeHealth('active', 23_920)).toBe('39m 52s captured');
+    expect(describeHealth('active', 0)).toBe('open, no audio yet');
   });
 });
 
 describe('describeStream', () => {
-  it('says transcribing only for an open session, and not connected for a closed one', () => {
-    expect(describeStream('open', 'active')).toBe('transcribing');
-    expect(describeStream('closed', 'error')).toBe('not connected');
-    expect(describeStream('connecting', 'active')).toBe('connecting');
+  // The row's label (StreamStatus): short, because the row shows why beside it (streamMessages).
+  it('says Transcribing only for an open session, and Not connected for a closed one', () => {
+    expect(describeStream('open', 'active')).toBe('Transcribing');
+    expect(describeStream('closed', 'error')).toBe('Not connected');
+    expect(describeStream('connecting', 'active')).toBe('Connecting');
   });
 
-  it('never says transcribing while its source sends no audio', () => {
-    expect(describeStream('open', 'pending')).toBe('connected, no audio yet');
-    expect(describeStream('open', 'stalled')).toBe('connected, no audio');
+  it('never says Transcribing while its source sends no audio', () => {
+    expect(describeStream('open', 'pending')).toBe('Connected, no audio yet');
+    expect(describeStream('open', 'stalled')).toBe('Connected, no audio');
+    // A dead track sends nothing either; G1 closes its session at once.
+    expect(describeStream('open', 'ended')).toBe('Connected, no audio');
+    expect(describeStream('open', 'error')).toBe('Connected, no audio');
   });
 
-  it('says reconnecting only while the source sends the audio a reopen waits for', () => {
-    expect(describeStream('retrying', 'active')).toBe('reconnecting');
-    expect(describeStream('retrying', 'stalled')).toBe('not connected, reconnects with audio');
-    expect(describeStream('retrying', 'pending')).toBe('not connected, reconnects with audio');
+  it('says Reconnecting only while the source sends the audio a reopen waits for', () => {
+    expect(describeStream('retrying', 'active')).toBe('Reconnecting');
+    expect(describeStream('retrying', 'stalled')).toBe('Reconnects with audio');
+    expect(describeStream('retrying', 'pending')).toBe('Reconnects with audio');
+    // A stopped source never sends the chunk a reopen needs.
+    expect(describeStream('retrying', 'ended')).toBe('Not connected');
+    expect(describeStream('retrying', 'error')).toBe('Not connected');
+  });
+
+  it('says Offline apart from a vendor failure, whatever its source sends', () => {
+    expect(describeStream('offline', 'active')).toBe('Offline');
+    expect(describeStream('offline', 'stalled')).toBe('Offline');
+  });
+
+  it('says Paused for a closed session that reopens with audio, and Failed for one that never will', () => {
+    expect(describeStream('paused', 'stalled')).toBe('Paused');
+    expect(describeStream('paused', 'pending')).toBe('Paused');
+    expect(describeStream('error', 'active')).toBe('Failed');
+  });
+
+  it("tells the silence gate's pause from a stall by the audio still arriving", () => {
+    // Chunks keep coming and none is speech: the gate closed it (M3-T20), not a broken path.
+    expect(describeStream('paused', 'active')).toBe('Closed while silent, reopens on speech');
+  });
+});
+
+describe('streamTone', () => {
+  it('is ok only while a session transcribes audio', () => {
+    expect(streamTone('open', 'active')).toBe('ok');
+    expect(streamTone('open', 'stalled')).toBe('warn');
+    expect(streamTone('open', 'ended')).toBe('warn');
+  });
+
+  it('waits quietly while a session starts, and stays off when there is none', () => {
+    expect(streamTone('connecting', 'pending')).toBe('pending');
+    // Connected a moment before the first chunk: every Start passes through it.
+    expect(streamTone('open', 'pending')).toBe('pending');
+    expect(streamTone('closed', 'pending')).toBe('off');
+  });
+
+  it('stays off while the silence gate keeps a session closed: nothing is being said', () => {
+    expect(streamTone('paused', 'active')).toBe('off');
+  });
+
+  it('warns while the words are not reaching the vendor, and errs once they never will', () => {
+    expect(streamTone('paused', 'stalled')).toBe('warn');
+    expect(streamTone('paused', 'pending')).toBe('warn');
+    expect(streamTone('retrying', 'active')).toBe('warn');
+    expect(streamTone('offline', 'active')).toBe('warn');
+    expect(streamTone('error', 'active')).toBe('error');
   });
 });
 
@@ -100,6 +158,8 @@ describe('describeSourceConnected', () => {
     expect(describeSourceConnected('closed', 12_000)).toBe('was connected 12s');
     expect(describeSourceConnected('paused', 75_000)).toBe('was connected 1m 15s');
     expect(describeSourceConnected('retrying', 12_000)).toBe('was connected 12s');
+    // Offline terminates the socket at once: nothing is connected while it lasts.
+    expect(describeSourceConnected('offline', 12_000)).toBe('was connected 12s');
   });
 
   it('shows nothing before any session opened, and never "0s"', () => {
@@ -139,5 +199,55 @@ describe('describeMeter', () => {
       '3 sessions opened · 12m 25s of audio sent. Mic (me): 6m 15s connected, about $0.02. ' +
         'Call audio (them): 6m 15s connected, about $0.02.',
     );
+  });
+
+  describe('with the silence gate (M3-T20)', () => {
+    const gated: SttMeterStatus = {
+      ...status,
+      total: { ...status.total, gatedMs: 720_000, estimatedSavedUsd: 0.03 },
+      sources: {
+        mic: { ...status.sources.mic, gatedMs: 720_000, estimatedSavedUsd: 0.03 },
+        system: { ...status.sources.system, gatedMs: 0, estimatedSavedUsd: 0 },
+      },
+      silenceGate: 'on',
+    };
+
+    it('adds what the gate saved to the line', () => {
+      expect(describeMeter(gated)).toBe(
+        'AssemblyAI · 12m 30s connected · about $0.03 · saved about $0.03 in silence',
+      );
+      const small = { ...gated, total: { ...gated.total, estimatedSavedUsd: 0.001 } };
+      expect(describeMeter(small)).toMatch(/ · saved under \$0\.01 in silence$/);
+    });
+
+    it('says the time closed when the price is unknown, missing or nothing', () => {
+      const { estimatedSavedUsd: _saved, ...withoutSaved } = gated.total;
+      for (const total of [
+        { ...gated.total, estimatedSavedUsd: null },
+        withoutSaved,
+        { ...gated.total, estimatedSavedUsd: 0 },
+      ] satisfies SttMeter[]) {
+        expect(describeMeter({ ...gated, total })).toBe(
+          'AssemblyAI · 12m 30s connected · about $0.03 · 12m 00s closed in silence',
+        );
+      }
+    });
+
+    it('reads a meter without the gate fields, as other tasks build it, as before', () => {
+      // M2-T20a's tests and shots and M4-S3's fixtures build SttMeter values without them.
+      expect(describeMeter({ ...status, silenceGate: 'off' })).toBe(describeMeter(status));
+      expect(meterDetails({ ...status, silenceGate: 'on' })).toBe(meterDetails(status));
+    });
+
+    it("gives each source's closed time in the details, and says when the gate is spent", () => {
+      expect(meterDetails(gated)).toBe(
+        '3 sessions opened · 12m 25s of audio sent · 12m 00s closed in silence. ' +
+          'Mic (me): 6m 15s connected, about $0.02, 12m 00s closed in silence. ' +
+          'Call audio (them): 6m 15s connected, about $0.02.',
+      );
+      expect(meterDetails({ ...gated, silenceGate: 'spent' })).toBe(
+        `${meterDetails(gated)} Silence gate off for this meeting: its reopens are spent.`,
+      );
+    });
   });
 });

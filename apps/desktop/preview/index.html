@@ -1,0 +1,29 @@
+<!doctype html>
+<!--
+  The renderer preview: src/renderer/src/main.tsx in a browser tab with a fake window.roger.
+  `data-state` goes loading, then ready once the scenario is drawn (or error, with data-error);
+  qa/driver.ts waits on it.
+-->
+<html lang="en" data-state="loading">
+  <head>
+    <meta charset="UTF-8" />
+    <!-- src/renderer/index.html's policy, unchanged (index.test.ts fails if they differ). It keeps
+         the network in main: an image from another host or a fetch to the API is refused here as
+         in Electron, and the refusal is a console error that fails the QA check. Vite's dev server
+         puts React Refresh's inline preamble at the very top of <head>, before this tag, and a
+         meta policy covers only what follows it, so `script-src 'self'` lets the preamble run. -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src 'self' blob:; connect-src 'self' ws://localhost:* ws://127.0.0.1:*; worker-src 'self' blob:"
+    />
+    <title>Roger preview</title>
+    <!-- No icon request: a browser asks for /favicon.ico (Electron never does), and its 404 is a
+         console error that fails every QA check. -->
+    <link rel="icon" href="data:," />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="./main.tsx"></script>
+  </body>
+</html>

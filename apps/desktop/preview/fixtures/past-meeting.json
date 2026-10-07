@@ -1,0 +1,161 @@
+{
+  "meetingId": "5c1d7a4e-2f3b-4c8a-9e61-0d2b7f4a9c13",
+  "title": "Daily standup",
+  "startedAt": "2026-10-05T09:30:04.000Z",
+  "sttProvider": "assemblyai",
+  "meter": {
+    "vendorName": "AssemblyAI",
+    "sources": {
+      "mic": {
+        "sessionsOpened": 2,
+        "connectedMs": 197400,
+        "audioSentMs": 196800,
+        "estimatedCostUsd": 0.0082
+      },
+      "system": {
+        "sessionsOpened": 1,
+        "connectedMs": 198200,
+        "audioSentMs": 198200,
+        "estimatedCostUsd": 0.0083
+      }
+    }
+  },
+  "lines": [
+    {
+      "source": "system",
+      "startMs": 2100,
+      "endMs": 4300,
+      "text": "Morning! Can everyone hear me?"
+    },
+    { "source": "mic", "startMs": 4900, "endMs": 6200, "text": "Yep, loud and clear." },
+    {
+      "source": "system",
+      "startMs": 6800,
+      "endMs": 14600,
+      "text": "Great. Let's go in the usual order, so Priyanka first, then Maximilian, then you, then I'll wrap with the release checklist."
+    },
+    {
+      "source": "system",
+      "startMs": 15200,
+      "endMs": 31800,
+      "text": "So yesterday I finished the retry logic for the uploader. It now backs off from two seconds up to thirty, and the status line says how many lines are waiting. I tested it by pulling the network cable mid-call and every line made it to Postgres within a minute of plugging it back in."
+    },
+    { "source": "mic", "startMs": 32400, "endMs": 34100, "text": "Nice. How many lines was that?" },
+    {
+      "source": "system",
+      "startMs": 34700,
+      "endMs": 40900,
+      "text": "About fifteen hundred from a forty minute call, and zero duplicates, because the segment ids are generated on the Mac."
+    },
+    { "source": "mic", "startMs": 41500, "endMs": 42400, "text": "Perfect." },
+    {
+      "source": "system",
+      "startMs": 43000,
+      "endMs": 52700,
+      "text": "Today I'm picking up IA-214, the one about the permission screen. The ticket is at https://linear.app/linkt/issue/IA-214/permission-screen-names-the-system-settings-pane-and-the-switch-to-flip if anyone wants to follow along."
+    },
+    { "source": "system", "startMs": 53300, "endMs": 55000, "text": "No blockers from me." },
+    {
+      "source": "system",
+      "startMs": 56200,
+      "endMs": 66400,
+      "text": "Okay, Maximilian Okonkwo-Vandersloot here, sorry, my camera's being weird. I spent most of yesterday on the call audio helper."
+    },
+    {
+      "source": "system",
+      "startMs": 67000,
+      "endMs": 83500,
+      "text": "The short version is that macOS pins the privacy grant to the code signature, so every ad-hoc build silently loses call audio even though System Settings still shows Roger switched on. With the stable signing identity it survives a quit and relaunch. I checked the tccd log and there's no 'Failed to match existing code requirement' line any more."
+    },
+    {
+      "source": "mic",
+      "startMs": 84100,
+      "endMs": 87200,
+      "text": "So the field report from Tuesday is fixed?"
+    },
+    {
+      "source": "system",
+      "startMs": 87800,
+      "endMs": 94600,
+      "text": "I think so, but I want one real thirty minute Meet call on the installed app before I say it out loud."
+    },
+    { "source": "mic", "startMs": 95200, "endMs": 96900, "text": "Fair. Can you do that today?" },
+    {
+      "source": "system",
+      "startMs": 97500,
+      "endMs": 104300,
+      "text": "Yes, I've got the Northwind demo at two, I'll record that one. If it works I'll paste the stt meter line into the channel."
+    },
+    { "source": "mic", "startMs": 104900, "endMs": 105600, "text": "Great." },
+    {
+      "source": "mic",
+      "startMs": 107000,
+      "endMs": 121800,
+      "text": "Okay, me. Yesterday I got the notes prompt down to about fifteen thousand tokens for an hour-long call, so a full call costs well under a cent with the current model. The citations come back as L-numbers and we map them to segment ids on the API side."
+    },
+    {
+      "source": "mic",
+      "startMs": 122400,
+      "endMs": 133900,
+      "text": "Today I'm on the long-call path: anything over the budget gets split into windows of whole lines with twenty lines of overlap, then one reduce pass merges them."
+    },
+    {
+      "source": "system",
+      "startMs": 134500,
+      "endMs": 137600,
+      "text": "Does the reduce pass keep the citations?"
+    },
+    {
+      "source": "mic",
+      "startMs": 138200,
+      "endMs": 146900,
+      "text": "It does, the refs stay global across windows. The reduce step just can't cite a line that no window cited, so it can't invent sources."
+    },
+    { "source": "system", "startMs": 147500, "endMs": 148400, "text": "Makes sense." },
+    {
+      "source": "mic",
+      "startMs": 149000,
+      "endMs": 151300,
+      "text": "No blockers, but I'd love a second pair of eyes on the eval report on Thursday."
+    },
+    {
+      "source": "system",
+      "startMs": 151900,
+      "endMs": 153400,
+      "text": "I can do Thursday morning."
+    },
+    { "source": "mic", "startMs": 154000, "endMs": 155200, "text": "Thanks, Priyanka." },
+    {
+      "source": "system",
+      "startMs": 156800,
+      "endMs": 169900,
+      "text": "Alright, release checklist. One: AssemblyAI training opt-out is done in the dashboard, I have the screenshot. Two: the cost guards are on by default. Three: we still need the thirty minute real call logged in the M1 exit check before Rahul merges."
+    },
+    {
+      "source": "system",
+      "startMs": 170500,
+      "endMs": 176800,
+      "text": "Maximilian's two o'clock covers number three if it goes well, so we could close M1 by end of day."
+    },
+    { "source": "mic", "startMs": 177400, "endMs": 179100, "text": "And if it doesn't go well?" },
+    {
+      "source": "system",
+      "startMs": 179700,
+      "endMs": 188400,
+      "text": "Then we read the tccd log first, before touching any code. Nine times out of ten it's the grant, not us."
+    },
+    {
+      "source": "mic",
+      "startMs": 189000,
+      "endMs": 190200,
+      "text": "Ha. Okay, sounds like a plan."
+    },
+    {
+      "source": "system",
+      "startMs": 190800,
+      "endMs": 193600,
+      "text": "Anything else? No? Thanks everyone, see you tomorrow."
+    },
+    { "source": "mic", "startMs": 194200, "endMs": 195100, "text": "Bye!" }
+  ]
+}

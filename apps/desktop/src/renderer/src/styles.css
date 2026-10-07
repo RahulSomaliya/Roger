@@ -1,27 +1,10 @@
+/* Every colour, light and dark (theme/tokens.css). Rules here and in other files only read them. */
+@import './theme/tokens.css';
+
 :root {
-  color-scheme: light dark;
-  --bg: #f6f6f4;
-  --panel: #ffffff;
-  --ink: #1d1d1b;
-  --muted: #6b6b66;
-  --line: #e4e4df;
-  --accent: #2563eb;
-  --danger: #dc2626;
-  --ok: #16a34a;
-  --warn: #d97706;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
   font-size: 14px;
   line-height: 1.45;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #161615;
-    --panel: #1f1f1d;
-    --ink: #ececea;
-    --muted: #9a9a94;
-    --line: #2f2f2c;
-  }
 }
 
 * {
@@ -34,45 +17,6 @@ body {
   color: var(--ink);
 }
 
-.app {
-  display: flex;
-  flex-direction: column;
-  height: 100vh;
-  padding: 16px;
-  gap: 12px;
-}
-
-.header {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-}
-
-.header h1 {
-  margin: 0;
-  font-size: 20px;
-  font-weight: 650;
-}
-
-.phase {
-  font-size: 12px;
-  font-weight: 600;
-  padding: 2px 8px;
-  border-radius: 999px;
-  background: var(--line);
-  color: var(--muted);
-}
-
-.phase-recording {
-  background: color-mix(in srgb, var(--danger) 15%, transparent);
-  color: var(--danger);
-}
-
-.controls {
-  display: flex;
-  justify-content: center;
-}
-
 .button {
   min-width: 160px;
   padding: 12px 20px;
@@ -80,7 +24,7 @@ body {
   border-radius: 10px;
   font-size: 16px;
   font-weight: 650;
-  color: white;
+  color: var(--on-accent);
   cursor: pointer;
 }
 
@@ -100,15 +44,15 @@ body {
 .error {
   padding: 10px 12px;
   border-radius: 8px;
-  background: color-mix(in srgb, var(--danger) 12%, transparent);
-  color: var(--danger);
+  background: var(--danger-bg);
+  color: var(--danger-ink);
 }
 
 /* Roger stopped a recording on its own (no speech, the length cap, sleep, quit). */
 .notice {
   padding: 10px 12px;
   border-radius: 8px;
-  background: color-mix(in srgb, var(--warn) 14%, transparent);
+  background: var(--warn-bg);
   color: var(--ink);
 }
 
@@ -143,7 +87,7 @@ body {
 .health-ended dd,
 .health-error dd,
 .save-failed dd {
-  color: var(--danger);
+  color: var(--danger-ink);
 }
 
 .upload-backoff dd {
@@ -156,42 +100,4 @@ body {
 
 .muted {
   color: var(--muted);
-}
-
-.transcript {
-  flex: 1;
-  overflow-y: auto;
-  padding: 10px 12px;
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  background: var(--panel);
-}
-
-.line {
-  display: grid;
-  grid-template-columns: 64px 48px 1fr;
-  gap: 8px;
-  margin: 0 0 6px;
-}
-
-.line .time {
-  color: var(--muted);
-  font-variant-numeric: tabular-nums;
-}
-
-.line .speaker {
-  font-weight: 600;
-}
-
-.speaker-them .speaker {
-  color: var(--accent);
-}
-
-.line.interim {
-  opacity: 0.6;
-  font-style: italic;
-}
-
-.empty {
-  margin: 0;
 }

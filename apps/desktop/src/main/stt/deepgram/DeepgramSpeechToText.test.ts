@@ -1,7 +1,7 @@
 import type { AddressInfo } from 'node:net';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { WebSocketServer, type WebSocket } from 'ws';
-import { createLogger } from '../../logger';
+import { createLogger, type Logger } from '../../logger';
 import { SttConnectError, type SttEvent, type SttStreamSettings } from '../SpeechToText';
 import { rawDataToString } from '../websocket';
 import { buildListenUrl, DeepgramSpeechToText } from './DeepgramSpeechToText';
@@ -35,7 +35,37 @@ describe('buildListenUrl', () => {
       interim_results: 'true',
       punctuate: 'true',
       smart_format: 'true',
+      mip_opt_out: 'true',
     });
+  });
+
+  it('always opts out of model training, list or no list', () => {
+    for (const each of [
+      settings,
+      { ...settings, keyterms: [] },
+      { ...settings, keyterms: ['L'] },
+    ]) {
+      const url = new URL(buildListenUrl('wss://api.deepgram.com', each));
+      expect(url.searchParams.getAll('mip_opt_out')).toEqual(['true']);
+    }
+  });
+
+  it('sends one keyterm per term, spaces encoded as %20', () => {
+    const raw = buildListenUrl('wss://api.deepgram.com', {
+      ...settings,
+      keyterms: ['Linkt', 'order number', 'R&D'],
+    });
+
+    expect(new URL(raw).searchParams.getAll('keyterm')).toEqual(['Linkt', 'order number', 'R&D']);
+    // %20, never '+': a form-decoded '+' is a space, but a plain percent-decoder keeps it a '+'.
+    expect(raw).toContain('keyterm=Linkt&keyterm=order%20number&keyterm=R%26D');
+  });
+
+  it('sends no keyterm without a list', () => {
+    for (const each of [settings, { ...settings, keyterms: [] }]) {
+      const raw = buildListenUrl('wss://api.deepgram.com', each);
+      expect(raw).not.toContain('keyterm');
+    }
   });
 });
 
@@ -44,13 +74,17 @@ describe('DeepgramSpeechToText', () => {
   let baseUrl: string;
   let log: ServerLog;
   let rejectWith: number | null;
+  /** Every handshake attempted, refused ones too. */
+  let handshakes: number;
 
   beforeEach(async () => {
     rejectWith = null;
+    handshakes = 0;
     log = { headers: {}, url: '', text: [], binaryBytes: 0 };
     server = new WebSocketServer({
       port: 0,
       verifyClient: (_info, done) => {
+        handshakes += 1;
         if (rejectWith !== null) done(false, rejectWith, 'nope');
         else done(true);
       },
@@ -140,6 +174,57 @@ describe('DeepgramSpeechToText', () => {
     expect((error as SttConnectError).statusCode).toBe(401);
   });
 
+  it('sends the jargon list cut to the shared limits, with a warning', async () => {
+    const recorded = recordingLogger();
+    const stt = new DeepgramSpeechToText({ logger: recorded.logger, baseUrl });
+    const keyterms = Array.from({ length: 120 }, (_, index) => `Term${index}`);
+    const stream = await stt.openStream({
+      accessToken: 't',
+      settings: { ...settings, keyterms },
+      label: 'mic',
+    });
+    await stream.close();
+
+    const sent = new URL(log.url, 'ws://local').searchParams.getAll('keyterm');
+    expect(sent).toEqual(keyterms.slice(0, 100));
+    expect(recorded.warnings).toContain('stt keyterms cut to the vendor limits');
+  });
+
+  it('rejects an HTTP 400 with keyterms as a rejected jargon list, after one handshake', async () => {
+    rejectWith = 400;
+    const stt = new DeepgramSpeechToText({ logger, baseUrl });
+    const error = await stt
+      .openStream({
+        accessToken: 't',
+        settings: { ...settings, keyterms: ['Linkt'] },
+        label: 'mic',
+      })
+      .catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(SttConnectError);
+    expect((error as SttConnectError).keytermsRejected).toBe(true);
+    expect((error as SttConnectError).statusCode).toBe(400);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(handshakes).toBe(1);
+  });
+
+  it('reports an HTTP 400 without keyterms, or another status with them, as a plain connect error', async () => {
+    const stt = new DeepgramSpeechToText({ logger, baseUrl });
+    for (const [status, keyterms] of [
+      [400, []],
+      [401, ['Linkt']],
+    ] as const) {
+      rejectWith = status;
+      const error = await stt
+        .openStream({ accessToken: 't', settings: { ...settings, keyterms }, label: 'mic' })
+        .catch((e: unknown) => e);
+
+      expect(error).toBeInstanceOf(SttConnectError);
+      expect((error as SttConnectError).keytermsRejected).toBe(false);
+      expect((error as SttConnectError).statusCode).toBe(status);
+    }
+  });
+
   it('says what a Deepgram close reason means when it ends the stream mid-call', async () => {
     server.removeAllListeners('connection');
     server.on('connection', (socket: WebSocket) => {
@@ -176,6 +261,18 @@ describe('DeepgramSpeechToText', () => {
     expect(Date.now() - started).toBeLessThan(2000);
   });
 });
+
+function recordingLogger(): { logger: Logger; warnings: string[] } {
+  const warnings: string[] = [];
+  return {
+    warnings,
+    logger: createLogger({
+      level: 'warn',
+      format: 'json',
+      sink: (line) => warnings.push((JSON.parse(line) as { message: string }).message),
+    }),
+  };
+}
 
 function results(transcript: string, isFinal: boolean): string {
   return JSON.stringify({

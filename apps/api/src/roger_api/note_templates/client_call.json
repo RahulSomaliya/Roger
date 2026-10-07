@@ -1,0 +1,31 @@
+{
+  "id": "client_call",
+  "name": "Client call",
+  "description": "A call with a client or prospect: their needs, what we proposed and the next steps.",
+  "sections": [
+    {
+      "heading": "Context",
+      "guidance": "Who the client is, why the call happened and where things stand with them."
+    },
+    {
+      "heading": "Their needs",
+      "guidance": "Goals, problems and requirements the client described, close to their own words."
+    },
+    {
+      "heading": "What we proposed",
+      "guidance": "What we showed, offered or proposed, and how the client reacted to each."
+    },
+    {
+      "heading": "Concerns",
+      "guidance": "Objections, risks and worries the client raised, and any answer given on the call."
+    },
+    {
+      "heading": "Budget and timeline",
+      "guidance": "Budget, pricing, dates and how the client decides, only as they were stated."
+    },
+    {
+      "heading": "Next steps",
+      "guidance": "Follow-ups agreed on either side, as Owner: what, by when."
+    }
+  ]
+}

@@ -16,6 +16,13 @@ export interface SttStreamSettings {
    * server-side). Null when the API knows no price. Only used to estimate cost in logs.
    */
   pricePerHourUsd: number | null;
+  /**
+   * The workspace's jargon list, so the vendor spells those words right. Missing means none.
+   * SttConnection cuts it to the shared limits (keyterms.ts) before the protocol maps it to the
+   * vendor's parameter; a vendor that refuses it fails the connect with
+   * SttConnectError.keytermsRejected.
+   */
+  keyterms?: readonly string[];
 }
 
 export interface OpenStreamOptions {
@@ -44,8 +51,21 @@ export type SttEventListener = (event: SttEvent) => void;
 export interface SttStream {
   /** Send Int16 little-endian mono PCM at `settings.sampleRate`. Safe to call before open completes. */
   send(pcm: Uint8Array): void;
-  /** Flush pending audio, collect the last finals and close. Resolves once the stream is closed. */
+  /**
+   * Flush pending audio, collect the last finals and close. Resolves once the stream is closed. A
+   * finish that ends before the vendor completed it (its deadline, a dropped connection) reports
+   * one fatal error before "closed": the lines of its last audio never came, and CaptureSession
+   * records that tail as a gap, which a quiet close would lose (M2-T6).
+   */
   close(): Promise<void>;
+  /**
+   * Drop the connection now, with no finish sequence (M2-T6: the Mac went offline, so a finish
+   * could only wait out its deadline while a half-open socket may still bill). Lines the adapter
+   * held still arrive before "closed"; audio the vendor had not finished with is lost to this
+   * stream, and CaptureSession records it as a gap. Resolves once closed. Optional: a stream with
+   * no socket (the fake) has nothing to drop, and its caller closes it instead.
+   */
+  terminate?(): Promise<void>;
   on(listener: SttEventListener): () => void;
 }
 
@@ -62,12 +82,22 @@ export interface SpeechToText {
 }
 
 export class SttConnectError extends Error {
+  /**
+   * The vendor refused the connect over the jargon list (SttProtocol.keytermsRejected). The core
+   * set it with the socket already closed and did not retry. CaptureSession reopens that source
+   * once without keyterms, through SttOpenBudget like any open (M3-T4b); a retry anywhere else, an
+   * adapter's or a loop's, would open billed sessions the budget never saw (house rule 9).
+   */
+  readonly keytermsRejected: boolean;
+
   constructor(
     message: string,
     readonly statusCode: number | null = null,
+    options: { keytermsRejected?: boolean } = {},
   ) {
     super(message);
     this.name = 'SttConnectError';
+    this.keytermsRejected = options.keytermsRejected ?? false;
   }
 }
 

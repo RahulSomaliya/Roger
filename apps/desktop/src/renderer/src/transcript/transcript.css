@@ -1,0 +1,125 @@
+/*
+ * The transcript panel (LiveTranscript.tsx). Colours come only from the theme tokens
+ * (theme/tokens.css, light and dark); theme/noLiteralColours.test.ts fails on a literal colour.
+ * Text in the accent hue reads --accent-ink, never the --accent fill (tokens.test.ts).
+ *
+ * The panel fills the box it is given and scrolls itself, so following live and "Jump to live"
+ * work only in a box with a height: the meeting page's transcript region is a flex child of a
+ * page as tall as the window. In a box that grows with its content nothing scrolls inside it.
+ * A cited line's highlight (`data-cited`) is transcriptNavigator.css's (M4-T21).
+ */
+
+.live-transcript {
+  position: relative;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+}
+
+/*
+ * No scroll anchoring: the panel tells the reader's scroll from its own by the view's position
+ * (liveTranscriptModel.ts `scrolledAway`), and Chrome's anchoring moves the view by itself when a
+ * row above it changes height, which would read as the reader scrolling up and pause following.
+ * Following puts the view at the bottom itself; a reader scrolled up keeps the place anyway, as
+ * new rows and interims land below it.
+ */
+.live-transcript-lines {
+  flex: 1;
+  min-height: 0;
+  padding: 10px 12px;
+  overflow-y: auto;
+  overflow-anchor: none;
+  border-radius: inherit;
+}
+
+.live-transcript-lines:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+
+.live-transcript-empty {
+  margin: 0;
+  color: var(--muted);
+}
+
+/* Time, speaker, text: fixed columns, so every line's text starts at the same place. */
+.transcript-line {
+  display: grid;
+  grid-template-columns: 4.6em 3em minmax(0, 1fr);
+  gap: 8px;
+  margin: 0;
+  padding: 3px 0;
+}
+
+.transcript-line-time {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.transcript-line-speaker {
+  font-weight: 600;
+}
+
+.transcript-line[data-speaker='them'] .transcript-line-speaker {
+  color: var(--accent-ink);
+}
+
+/* A pasted link or a long name must wrap, never push the page sideways. */
+.transcript-line-text {
+  overflow-wrap: anywhere;
+}
+
+/* Words that may still change. */
+.transcript-line[data-interim] .transcript-line-speaker,
+.transcript-line[data-interim] .transcript-line-text {
+  color: var(--interim-ink);
+}
+
+.transcript-line[data-interim] .transcript-line-text {
+  font-style: italic;
+}
+
+/* A line the echo filter hid, shown because the reader asked to see hidden lines. */
+.transcript-line[data-echo] .transcript-line-speaker,
+.transcript-line[data-echo] .transcript-line-text {
+  color: var(--hidden-ink);
+}
+
+.transcript-line-echo {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 6px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 11px;
+  font-style: normal;
+  line-height: 16px;
+  vertical-align: 1px;
+}
+
+.jump-to-live {
+  position: absolute;
+  bottom: 12px;
+  left: 50%;
+  padding: 6px 14px;
+  border: none;
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--on-accent);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+  transform: translateX(-50%);
+}
+
+.jump-to-live:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}

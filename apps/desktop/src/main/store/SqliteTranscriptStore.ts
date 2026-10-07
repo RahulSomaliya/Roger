@@ -1,22 +1,55 @@
 import { DatabaseSync, type SQLOutputValue, type StatementSync } from 'node:sqlite';
+import type { MeetingCalendarEvent } from '../../shared/calendar';
+import { isStartSource, type StartSource } from '../../shared/capture';
 import {
   isAudioSource,
   type AudioSource,
   type TranscriptSegment,
   type TranscriptWord,
 } from '../../shared/transcript';
-import type { SttUsage } from '../stt/usage';
+import {
+  canonicalInstant,
+  checkAudioPath,
+  checkGapWindow,
+  checkListLimit,
+  checkStartSource,
+  checkTrim,
+  holdsSentUsage,
+} from './storeChecks';
 import type {
+  AppStateEntry,
+  AudioFile,
+  AudioFileFormat,
+  CaptureEvent,
+  GapReason,
+  JsonObject,
   LocalMeeting,
+  MeetingStopReason,
   MeetingSttUsage,
+  NewAudioFile,
+  NewCaptureEvent,
   NewLocalMeeting,
+  NewTranscriptGap,
   RemoteState,
+  SegmentOrigin,
+  SegmentTrim,
+  SourceSttUsage,
+  StoredSegment,
+  SuppressedReason,
+  TranscriptGap,
   TranscriptStore,
 } from './TranscriptStore';
 
 /**
  * Ordered, forward-only migrations tracked with `PRAGMA user_version`.
  * Add a new entry for every schema change; never edit an applied one.
+ *
+ * Each upgrade test winds a file back to the schema before its migration, and `migrate()` then
+ * re-runs every entry above `user_version`. So a wind-back must also undo every later migration,
+ * or an `ALTER TABLE ... ADD COLUMN` runs twice and fails with "duplicate column name". With a new
+ * migration, add its wind-back to the test file, call it first in the one before (as
+ * `windBackToSchema5` must then call `windBackToSchema6`), and raise the `user_version` the
+ * upgrade tests expect.
  */
 const MIGRATIONS: readonly string[] = [
   `
@@ -67,12 +100,141 @@ const MIGRATIONS: readonly string[] = [
     updated_at TEXT NOT NULL
   );
   `,
+  // M2 (capture you can trust): echo state, holds and origin on lines, why a meeting stopped,
+  // gaps to re-run, the audio backup, capture events and device state. stt_usage is untouched.
+  // `workspace_id` is NULL until M6 sign-in gives the Mac a workspace (M2 D9).
+  `
+  ALTER TABLE segments ADD COLUMN suppressed_reason TEXT CHECK (suppressed_reason IN ('echo'));
+  ALTER TABLE segments ADD COLUMN echo_of TEXT;
+  ALTER TABLE segments ADD COLUMN original_text TEXT;
+  ALTER TABLE segments ADD COLUMN original_words_json TEXT;
+  ALTER TABLE segments ADD COLUMN upload_after TEXT;
+  ALTER TABLE segments ADD COLUMN origin TEXT NOT NULL DEFAULT 'live'
+    CHECK (origin IN ('live', 'rerun'));
+  CREATE INDEX segments_held ON segments (meeting_id, start_ms)
+    WHERE upload_after IS NOT NULL AND synced_at IS NULL;
+  ALTER TABLE meetings ADD COLUMN stop_reason TEXT;
+  CREATE TABLE transcript_gaps (
+    id TEXT PRIMARY KEY,
+    workspace_id TEXT,
+    meeting_id TEXT NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
+    source TEXT NOT NULL CHECK (source IN ('mic', 'system')),
+    start_ms INTEGER NOT NULL,
+    end_ms INTEGER NOT NULL,
+    reason TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    recovered_at TEXT,
+    recover_error TEXT,
+    CHECK (end_ms > start_ms)
+  );
+  CREATE INDEX transcript_gaps_by_meeting ON transcript_gaps (meeting_id, start_ms);
+  CREATE INDEX transcript_gaps_unrecovered ON transcript_gaps (created_at)
+    WHERE recovered_at IS NULL;
+  CREATE TABLE audio_files (
+    id TEXT PRIMARY KEY,
+    workspace_id TEXT,
+    meeting_id TEXT NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
+    source TEXT NOT NULL CHECK (source IN ('mic', 'system')),
+    start_ms INTEGER NOT NULL,
+    end_ms INTEGER CHECK (end_ms IS NULL OR end_ms >= start_ms),
+    path TEXT NOT NULL,
+    format TEXT NOT NULL CHECK (format IN ('wav', 'm4a')),
+    bytes INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    closed_at TEXT,
+    deleted_at TEXT
+  );
+  CREATE INDEX audio_files_by_meeting ON audio_files (meeting_id, start_ms);
+  CREATE INDEX audio_files_kept ON audio_files (meeting_id) WHERE deleted_at IS NULL;
+  CREATE TABLE capture_events (
+    id INTEGER PRIMARY KEY,
+    workspace_id TEXT,
+    meeting_id TEXT NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
+    at TEXT NOT NULL,
+    offset_ms INTEGER NOT NULL,
+    source TEXT CHECK (source IN ('mic', 'system')),
+    kind TEXT NOT NULL,
+    detail_json TEXT NOT NULL DEFAULT '{}'
+  );
+  CREATE INDEX capture_events_by_meeting ON capture_events (meeting_id, id);
+  CREATE TABLE app_state (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+  `,
+  // M5 (calendar): how a meeting was started and the event it was started for, both sent with its
+  // create. The CHECK lists StartSource's five values (shared/capture.ts, the API's 0004_calendar
+  // the same): a sixth needs a migration of its own, never an edit here. The index serves
+  // findMeetingIdsByEventIds (MEETING_IDS_BY_EVENT_IDS reads it through the same expression), and
+  // since it reads the column, SQLite refuses a write of broken JSON ("malformed JSON").
+  `
+  ALTER TABLE meetings ADD COLUMN start_source TEXT NOT NULL DEFAULT 'manual'
+    CHECK (start_source IN ('manual', 'notification', 'home', 'tray', 'call_detected'));
+  ALTER TABLE meetings ADD COLUMN calendar_event_json TEXT;
+  CREATE INDEX meetings_by_calendar_event
+    ON meetings (json_extract(calendar_event_json, '$.eventId'))
+    WHERE calendar_event_json IS NOT NULL;
+  `,
+  // M3 (STT usage upload): the uploader's mark, which every save clears so a row saved again after
+  // its upload is sent again, and the stream time the silence gate kept closed (M3-T20 fills it).
+  // Every row from before reads as not uploaded, so each goes up once. The index serves
+  // STT_USAGE_TO_UPLOAD, the uploader's list every 30 s.
+  `
+  ALTER TABLE stt_usage ADD COLUMN synced_at TEXT;
+  ALTER TABLE stt_usage ADD COLUMN gated_ms INTEGER NOT NULL DEFAULT 0;
+  CREATE INDEX stt_usage_unsynced ON stt_usage (updated_at, meeting_id) WHERE synced_at IS NULL;
+  `,
 ];
+
+/**
+ * The meetings started for any of a JSON array of event ids, oldest first, so that each event's
+ * last row is its newest meeting. Its WHERE spells the index's expression and condition
+ * (migration 5) exactly, or SQLite parses the JSON of every meeting instead; the store test reads
+ * the query plan. Exported for that test.
+ */
+export const MEETING_IDS_BY_EVENT_IDS = `SELECT id, json_extract(calendar_event_json, '$.eventId') AS event_id
+  FROM meetings
+  WHERE calendar_event_json IS NOT NULL
+    AND json_extract(calendar_event_json, '$.eventId') IN (SELECT value FROM json_each(?))
+  ORDER BY started_at ASC, id ASC`;
+
+/**
+ * The usage rows to upload (TranscriptStore.listSttUsageToUpload). Its WHERE repeats the index's
+ * condition and its ORDER BY the index's columns (migration 6), or SQLite reads every meeting's
+ * row and sorts them; the store test reads the query plan. Exported for that test. Text order on
+ * `updated_at` is right while every save writes it in `toISOString` form, as CaptureService does.
+ * The sort in InMemoryTranscriptStore.listSttUsageToUpload is its twin: change both.
+ */
+export const STT_USAGE_TO_UPLOAD = `SELECT * FROM stt_usage WHERE synced_at IS NULL
+  ORDER BY updated_at ASC, meeting_id ASC LIMIT ?`;
+
+/**
+ * A line can upload when it is not uploaded, not rejected, not hidden and not held: `upload_after`
+ * unset or past `:now`. The list and the count share it, or "N lines waiting" never reaches zero
+ * while a line is hidden; so does `meetingsNeedingSync`, or a meeting ended remotely comes back for
+ * a line the uploader then finds nothing to send for (or never comes back for one it would). The
+ * compare is on text, which is right only because `holdSegment` writes every instant in
+ * `toISOString` form (storeChecks.canonicalInstant). `canUpload` in InMemoryTranscriptStore is its
+ * twin: change both.
+ */
+const CAN_UPLOAD = `synced_at IS NULL AND rejected_at IS NULL AND suppressed_reason IS NULL
+  AND (upload_after IS NULL OR upload_after <= :now)`;
+
+/**
+ * Held: waiting on the echo sink. The same lines `listHeldSegments` settles at startup and
+ * `countHeldSegments` counts for the uploader's end rule. `isHeld` in InMemoryTranscriptStore is
+ * its twin: change both.
+ */
+const HELD = `upload_after IS NOT NULL AND synced_at IS NULL AND rejected_at IS NULL
+  AND suppressed_reason IS NULL`;
 
 type Row = Record<string, SQLOutputValue>;
 
 export class SqliteTranscriptStore implements TranscriptStore {
   private readonly db: DatabaseSync;
+  /** Lines the uploader is sending (markSegmentsSent); in memory on purpose, see there. */
+  private readonly sent = new Set<string>();
   private readonly statements: {
     insertMeeting: StatementSync;
     getMeeting: StatementSync;
@@ -80,6 +242,9 @@ export class SqliteTranscriptStore implements TranscriptStore {
     setRemoteState: StatementSync;
     deleteEmptyMeeting: StatementSync;
     endLeftOpen: StatementSync;
+    openMeetings: StatementSync;
+    setStopReason: StatementSync;
+    getStopReason: StatementSync;
     resetSync: StatementSync;
     meetingsNeedingSync: StatementSync;
     insertSegment: StatementSync;
@@ -89,8 +254,42 @@ export class SqliteTranscriptStore implements TranscriptStore {
     countUnsynced: StatementSync;
     countRejected: StatementSync;
     countSegments: StatementSync;
+    getSegment: StatementSync;
+    segmentsOverlapping: StatementSync;
+    suppress: StatementSync;
+    trim: StatementSync;
+    unhide: StatementSync;
+    hold: StatementSync;
+    release: StatementSync;
+    heldSegments: StatementSync;
+    heldSegmentsOfMeeting: StatementSync;
+    countHeld: StatementSync;
     saveSttUsage: StatementSync;
     getSttUsage: StatementSync;
+    sttUsageToUpload: StatementSync;
+    markSttUsageSynced: StatementSync;
+    insertGap: StatementSync;
+    gaps: StatementSync;
+    unrecoveredGaps: StatementSync;
+    unrecoveredGapsOfMeeting: StatementSync;
+    gapRecovered: StatementSync;
+    gapRecoverError: StatementSync;
+    insertAudioFile: StatementSync;
+    audioFileMeeting: StatementSync;
+    closeAudioFile: StatementSync;
+    encodeAudioFile: StatementSync;
+    audioFiles: StatementSync;
+    openAudioFiles: StatementSync;
+    meetingIdsWithAudio: StatementSync;
+    deleteMeetingAudio: StatementSync;
+    insertCaptureEvent: StatementSync;
+    captureEvents: StatementSync;
+    getAppState: StatementSync;
+    setAppState: StatementSync;
+    deleteAppState: StatementSync;
+    recentMeetings: StatementSync;
+    meetingLines: StatementSync;
+    meetingIdsByEventIds: StatementSync;
   };
 
   /** `path` may be `:memory:` for tests. */
@@ -107,8 +306,9 @@ export class SqliteTranscriptStore implements TranscriptStore {
     this.migrate();
     this.statements = {
       insertMeeting: this.db.prepare(
-        `INSERT OR IGNORE INTO meetings (id, title, started_at, ended_at, remote_state, created_at, updated_at)
-         VALUES (?, ?, ?, NULL, 'pending', ?, ?)`,
+        `INSERT OR IGNORE INTO meetings
+           (id, title, started_at, ended_at, remote_state, start_source, calendar_event_json, created_at, updated_at)
+         VALUES (?, ?, ?, NULL, 'pending', ?, ?, ?, ?)`,
       ),
       getMeeting: this.db.prepare(`SELECT * FROM meetings WHERE id = ?`),
       endMeeting: this.db.prepare(
@@ -117,29 +317,47 @@ export class SqliteTranscriptStore implements TranscriptStore {
       setRemoteState: this.db.prepare(
         `UPDATE meetings SET remote_state = ?, updated_at = ? WHERE id = ?`,
       ),
+      // The audio check guards the cascade; no gap check on purpose: see
+      // TranscriptStore.deleteMeetingIfEmpty.
       deleteEmptyMeeting: this.db.prepare(
-        `DELETE FROM meetings WHERE id = ? AND NOT EXISTS (SELECT 1 FROM segments WHERE meeting_id = ?)`,
+        `DELETE FROM meetings WHERE id = :id
+           AND NOT EXISTS (SELECT 1 FROM segments WHERE meeting_id = :id)
+           AND NOT EXISTS (SELECT 1 FROM audio_files WHERE meeting_id = :id AND deleted_at IS NULL)`,
       ),
       endLeftOpen: this.db.prepare(
         `UPDATE meetings
          SET ended_at = COALESCE((SELECT MAX(created_at) FROM segments WHERE meeting_id = meetings.id), started_at),
-             updated_at = ?
-         WHERE ended_at IS NULL`,
+             stop_reason = COALESCE(stop_reason, 'crash'),
+             updated_at = :updatedAt
+         WHERE ended_at IS NULL AND id IS NOT :keepOpenId`,
       ),
+      openMeetings: this.db.prepare(
+        `SELECT * FROM meetings WHERE ended_at IS NULL ORDER BY started_at ASC, id ASC`,
+      ),
+      setStopReason: this.db.prepare(
+        `UPDATE meetings SET stop_reason = ?, updated_at = ? WHERE id = ?`,
+      ),
+      getStopReason: this.db.prepare(`SELECT stop_reason FROM meetings WHERE id = ?`),
       resetSync: this.db.prepare(
         `UPDATE segments SET synced_at = NULL WHERE meeting_id = ? AND rejected_at IS NULL`,
       ),
+      // A meeting ended remotely comes back while it has a line that can upload; the uploader then
+      // re-sends its end (TranscriptStore.listMeetingsNeedingSync). The subquery is correlated on
+      // purpose: CAN_UPLOAD's columns are the segment's, and `meetings` has none of them.
       meetingsNeedingSync: this.db.prepare(
-        `SELECT * FROM meetings WHERE remote_state != 'ended' ORDER BY started_at ASC, id ASC`,
+        `SELECT * FROM meetings
+         WHERE remote_state != 'ended'
+            OR EXISTS (SELECT 1 FROM segments WHERE segments.meeting_id = meetings.id AND ${CAN_UPLOAD})
+         ORDER BY started_at ASC, id ASC`,
       ),
       insertSegment: this.db.prepare(
         `INSERT OR IGNORE INTO segments
-           (id, meeting_id, source, speaker, start_ms, end_ms, text, confidence, words_json, created_at, synced_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+           (id, meeting_id, source, speaker, start_ms, end_ms, text, confidence, words_json, created_at, synced_at, origin)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
       ),
       unsyncedSegments: this.db.prepare(
-        `SELECT * FROM segments WHERE meeting_id = ? AND synced_at IS NULL AND rejected_at IS NULL
-         ORDER BY start_ms ASC, source ASC, id ASC LIMIT ?`,
+        `SELECT * FROM segments WHERE meeting_id = :meetingId AND ${CAN_UPLOAD}
+         ORDER BY start_ms ASC, source ASC, id ASC LIMIT :limit`,
       ),
       markSynced: this.db.prepare(
         `UPDATE segments SET synced_at = ? WHERE id = ? AND synced_at IS NULL`,
@@ -147,18 +365,56 @@ export class SqliteTranscriptStore implements TranscriptStore {
       markRejected: this.db.prepare(
         `UPDATE segments SET rejected_at = ?, rejected_reason = ? WHERE id = ? AND synced_at IS NULL`,
       ),
-      countUnsynced: this.db.prepare(
-        `SELECT COUNT(*) AS n FROM segments WHERE synced_at IS NULL AND rejected_at IS NULL`,
-      ),
+      countUnsynced: this.db.prepare(`SELECT COUNT(*) AS n FROM segments WHERE ${CAN_UPLOAD}`),
       countRejected: this.db.prepare(
         `SELECT COUNT(*) AS n FROM segments WHERE rejected_at IS NOT NULL`,
       ),
       countSegments: this.db.prepare(`SELECT COUNT(*) AS n FROM segments WHERE meeting_id = ?`),
+      getSegment: this.db.prepare(`SELECT * FROM segments WHERE id = ?`),
+      segmentsOverlapping: this.db.prepare(
+        `SELECT * FROM segments
+         WHERE meeting_id = :meetingId AND source = :source AND start_ms <= :toMs AND end_ms >= :fromMs
+         ORDER BY start_ms ASC, id ASC`,
+      ),
+      // Echo writes touch only lines not marked uploaded: Postgres keeps what it was sent.
+      // `synced_at IS NULL` cannot see a request still out: the methods refuse a sent line first
+      // (TranscriptStore.markSegmentsSent).
+      suppress: this.db.prepare(
+        `UPDATE segments SET suppressed_reason = ?, echo_of = ?, upload_after = NULL
+         WHERE id = ? AND synced_at IS NULL`,
+      ),
+      // The right-hand sides read the row as it was, so the first trim's text is the one kept.
+      trim: this.db.prepare(
+        `UPDATE segments
+         SET original_text = COALESCE(original_text, text),
+             original_words_json = CASE WHEN original_text IS NULL THEN words_json ELSE original_words_json END,
+             text = ?, words_json = ?, echo_of = ?
+         WHERE id = ? AND synced_at IS NULL`,
+      ),
+      unhide: this.db.prepare(
+        `UPDATE segments SET suppressed_reason = NULL, echo_of = NULL
+         WHERE id = ? AND suppressed_reason IS NOT NULL`,
+      ),
+      hold: this.db.prepare(
+        `UPDATE segments SET upload_after = ? WHERE id = ? AND synced_at IS NULL`,
+      ),
+      release: this.db.prepare(`UPDATE segments SET upload_after = NULL WHERE id = ?`),
+      heldSegments: this.db.prepare(
+        `SELECT * FROM segments WHERE ${HELD} ORDER BY meeting_id ASC, start_ms ASC, source ASC, id ASC`,
+      ),
+      heldSegmentsOfMeeting: this.db.prepare(
+        `SELECT * FROM segments WHERE meeting_id = ? AND ${HELD}
+         ORDER BY start_ms ASC, source ASC, id ASC`,
+      ),
+      countHeld: this.db.prepare(
+        `SELECT COUNT(*) AS n FROM segments WHERE meeting_id = ? AND ${HELD}`,
+      ),
+      // Every save clears the upload mark (TranscriptStore.saveSttUsage); an insert starts without.
       saveSttUsage: this.db.prepare(
         `INSERT INTO stt_usage
            (meeting_id, provider, sessions_opened, connected_ms, audio_sent_ms, dropped_chunks,
-            estimated_cost_usd, by_source_json, stop_reason, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            estimated_cost_usd, by_source_json, gated_ms, stop_reason, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT (meeting_id) DO UPDATE SET
            provider = excluded.provider,
            sessions_opened = excluded.sessions_opened,
@@ -167,16 +423,109 @@ export class SqliteTranscriptStore implements TranscriptStore {
            dropped_chunks = excluded.dropped_chunks,
            estimated_cost_usd = excluded.estimated_cost_usd,
            by_source_json = excluded.by_source_json,
+           gated_ms = excluded.gated_ms,
            stop_reason = excluded.stop_reason,
-           updated_at = excluded.updated_at`,
+           updated_at = excluded.updated_at,
+           synced_at = NULL`,
       ),
       getSttUsage: this.db.prepare(`SELECT * FROM stt_usage WHERE meeting_id = ?`),
+      sttUsageToUpload: this.db.prepare(STT_USAGE_TO_UPLOAD),
+      markSttUsageSynced: this.db.prepare(
+        `UPDATE stt_usage SET synced_at = ? WHERE meeting_id = ? AND synced_at IS NULL`,
+      ),
+      insertGap: this.db.prepare(
+        `INSERT OR IGNORE INTO transcript_gaps
+           (id, meeting_id, source, start_ms, end_ms, reason, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      ),
+      gaps: this.db.prepare(
+        `SELECT * FROM transcript_gaps WHERE meeting_id = ? ORDER BY start_ms ASC, source ASC, id ASC`,
+      ),
+      unrecoveredGaps: this.db.prepare(
+        `SELECT * FROM transcript_gaps WHERE recovered_at IS NULL
+         ORDER BY created_at ASC, start_ms ASC, id ASC`,
+      ),
+      unrecoveredGapsOfMeeting: this.db.prepare(
+        `SELECT * FROM transcript_gaps WHERE meeting_id = ? AND recovered_at IS NULL
+         ORDER BY created_at ASC, start_ms ASC, id ASC`,
+      ),
+      gapRecovered: this.db.prepare(
+        `UPDATE transcript_gaps SET recovered_at = ?, recover_error = NULL WHERE id = ?`,
+      ),
+      gapRecoverError: this.db.prepare(
+        `UPDATE transcript_gaps SET recover_error = ? WHERE id = ? AND recovered_at IS NULL`,
+      ),
+      // Not OR IGNORE: only an id clash may be skipped, and addAudioFile checks whose id it was.
+      insertAudioFile: this.db.prepare(
+        `INSERT INTO audio_files
+           (id, meeting_id, source, start_ms, path, format, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT (id) DO NOTHING`,
+      ),
+      audioFileMeeting: this.db.prepare(`SELECT meeting_id FROM audio_files WHERE id = ?`),
+      closeAudioFile: this.db.prepare(
+        `UPDATE audio_files SET end_ms = ?, bytes = ?, closed_at = ? WHERE id = ?`,
+      ),
+      encodeAudioFile: this.db.prepare(
+        `UPDATE audio_files SET path = ?, format = ?, bytes = ? WHERE id = ?`,
+      ),
+      audioFiles: this.db.prepare(
+        `SELECT * FROM audio_files WHERE meeting_id = ? AND deleted_at IS NULL
+         ORDER BY start_ms ASC, source ASC, id ASC`,
+      ),
+      openAudioFiles: this.db.prepare(
+        `SELECT * FROM audio_files WHERE closed_at IS NULL AND deleted_at IS NULL
+         ORDER BY created_at ASC, start_ms ASC, source ASC, id ASC`,
+      ),
+      meetingIdsWithAudio: this.db.prepare(
+        `SELECT DISTINCT meeting_id FROM audio_files WHERE deleted_at IS NULL ORDER BY meeting_id ASC`,
+      ),
+      deleteMeetingAudio: this.db.prepare(
+        `UPDATE audio_files SET deleted_at = ? WHERE meeting_id = ? AND deleted_at IS NULL`,
+      ),
+      insertCaptureEvent: this.db.prepare(
+        `INSERT INTO capture_events (meeting_id, at, offset_ms, source, kind, detail_json)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+      ),
+      captureEvents: this.db.prepare(
+        `SELECT * FROM capture_events WHERE meeting_id = ? ORDER BY id ASC`,
+      ),
+      getAppState: this.db.prepare(`SELECT value, updated_at FROM app_state WHERE key = ?`),
+      setAppState: this.db.prepare(
+        `INSERT INTO app_state (key, value, updated_at) VALUES (?, ?, ?)
+         ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
+      ),
+      deleteAppState: this.db.prepare(`DELETE FROM app_state WHERE key = ?`),
+      // Text order on started_at: see NewLocalMeeting.startedAt. The sort in
+      // InMemoryTranscriptStore.listMeetings is its twin: change both.
+      recentMeetings: this.db.prepare(
+        `SELECT * FROM meetings ORDER BY started_at DESC, id DESC LIMIT ?`,
+      ),
+      // compareTranscriptOrder (src/shared/meetings.ts) in SQL: `source ASC` puts the mic first
+      // only because 'mic' sorts before 'system', and BINARY order on these ASCII ids is JS `<`.
+      // segments_by_meeting (meeting_id, start_ms) serves it.
+      meetingLines: this.db.prepare(
+        `SELECT * FROM segments WHERE meeting_id = ? AND suppressed_reason IS NULL
+         ORDER BY start_ms ASC, source ASC, id ASC`,
+      ),
+      meetingIdsByEventIds: this.db.prepare(MEETING_IDS_BY_EVENT_IDS),
     };
   }
 
   createMeeting(meeting: NewLocalMeeting): void {
+    const startSource = meeting.startSource ?? 'manual';
+    checkStartSource(meeting.id, startSource);
+    const event = meeting.calendarEvent ?? null;
     const now = this.now();
-    this.statements.insertMeeting.run(meeting.id, meeting.title, meeting.startedAt, now, now);
+    this.statements.insertMeeting.run(
+      meeting.id,
+      meeting.title,
+      meeting.startedAt,
+      startSource,
+      event === null ? null : JSON.stringify(event),
+      now,
+      now,
+    );
   }
 
   getMeeting(id: string): LocalMeeting | null {
@@ -193,11 +542,25 @@ export class SqliteTranscriptStore implements TranscriptStore {
   }
 
   deleteMeetingIfEmpty(id: string): boolean {
-    return this.statements.deleteEmptyMeeting.run(id, id).changes > 0;
+    return this.statements.deleteEmptyMeeting.run({ id }).changes > 0;
   }
 
-  endMeetingsLeftOpen(updatedAt: string): number {
-    return Number(this.statements.endLeftOpen.run(updatedAt).changes);
+  endMeetingsLeftOpen(updatedAt: string, keepOpenId?: string): number {
+    return Number(
+      this.statements.endLeftOpen.run({ updatedAt, keepOpenId: keepOpenId ?? null }).changes,
+    );
+  }
+
+  listOpenMeetings(): LocalMeeting[] {
+    return this.statements.openMeetings.all().map(rowToMeeting);
+  }
+
+  setMeetingStopReason(id: string, reason: MeetingStopReason): void {
+    this.statements.setStopReason.run(reason, this.now(), id);
+  }
+
+  getMeetingStopReason(id: string): string | null {
+    return optionalText(this.statements.getStopReason.get(id), 'stop_reason');
   }
 
   resetSyncForMeeting(id: string): void {
@@ -205,10 +568,10 @@ export class SqliteTranscriptStore implements TranscriptStore {
   }
 
   listMeetingsNeedingSync(): LocalMeeting[] {
-    return this.statements.meetingsNeedingSync.all().map(rowToMeeting);
+    return this.statements.meetingsNeedingSync.all({ now: this.now() }).map(rowToMeeting);
   }
 
-  appendSegment(segment: TranscriptSegment): void {
+  appendSegment(segment: TranscriptSegment, origin: SegmentOrigin = 'live'): void {
     this.statements.insertSegment.run(
       segment.id,
       segment.meetingId,
@@ -220,11 +583,18 @@ export class SqliteTranscriptStore implements TranscriptStore {
       segment.confidence,
       segment.words === null ? null : JSON.stringify(segment.words),
       segment.createdAt,
+      origin,
     );
   }
 
   listUnsyncedSegments(meetingId: string, limit: number): TranscriptSegment[] {
-    return this.statements.unsyncedSegments.all(meetingId, limit).map(rowToSegment);
+    return this.statements.unsyncedSegments
+      .all({ meetingId, limit, now: this.now() })
+      .map(rowToSegment);
+  }
+
+  markSegmentsSent(ids: readonly string[]): void {
+    for (const id of ids) this.sent.add(id);
   }
 
   markSegmentsSynced(ids: string[], syncedAt: string): void {
@@ -232,14 +602,17 @@ export class SqliteTranscriptStore implements TranscriptStore {
     this.transaction(() => {
       for (const id of ids) this.statements.markSynced.run(syncedAt, id);
     });
+    // After the commit: a failed write keeps the lines refused, as a failed request does.
+    for (const id of ids) this.sent.delete(id);
   }
 
   markSegmentRejected(id: string, reason: string, rejectedAt: string): void {
     this.statements.markRejected.run(rejectedAt, reason, id);
+    this.sent.delete(id);
   }
 
   countUnsyncedSegments(): number {
-    return Number(this.statements.countUnsynced.get()?.n ?? 0);
+    return Number(this.statements.countUnsynced.get({ now: this.now() })?.n ?? 0);
   }
 
   countRejectedSegments(): number {
@@ -248,6 +621,63 @@ export class SqliteTranscriptStore implements TranscriptStore {
 
   countSegments(meetingId: string): number {
     return Number(this.statements.countSegments.get(meetingId)?.n ?? 0);
+  }
+
+  getSegment(id: string): StoredSegment | null {
+    const row = this.statements.getSegment.get(id);
+    return row ? rowToStoredSegment(row) : null;
+  }
+
+  listSegmentsOverlapping(
+    meetingId: string,
+    source: AudioSource,
+    fromMs: number,
+    toMs: number,
+  ): StoredSegment[] {
+    return this.statements.segmentsOverlapping
+      .all({ meetingId, source, fromMs, toMs })
+      .map(rowToStoredSegment);
+  }
+
+  suppressSegment(id: string, reason: SuppressedReason, echoOf: string): boolean {
+    if (this.sent.has(id)) return false;
+    return this.statements.suppress.run(reason, echoOf, id).changes > 0;
+  }
+
+  trimSegment(id: string, trim: SegmentTrim): boolean {
+    checkTrim(id, trim);
+    if (this.sent.has(id)) return false;
+    const words = trim.words === null ? null : JSON.stringify(trim.words);
+    return this.statements.trim.run(trim.text, words, trim.echoOf, id).changes > 0;
+  }
+
+  unhideSegment(id: string): boolean {
+    return this.statements.unhide.run(id).changes > 0;
+  }
+
+  holdSegment(id: string, uploadAfter: string): boolean {
+    const until = canonicalInstant(uploadAfter, `hold of segment ${id}`);
+    if (this.sent.has(id)) return false;
+    return this.statements.hold.run(until, id).changes > 0;
+  }
+
+  releaseSegments(ids: readonly string[]): void {
+    if (ids.length === 0) return;
+    this.transaction(() => {
+      for (const id of ids) this.statements.release.run(id);
+    });
+  }
+
+  listHeldSegments(meetingId?: string): StoredSegment[] {
+    const rows =
+      meetingId === undefined
+        ? this.statements.heldSegments.all()
+        : this.statements.heldSegmentsOfMeeting.all(meetingId);
+    return rows.map(rowToStoredSegment);
+  }
+
+  countHeldSegments(meetingId: string): number {
+    return Number(this.statements.countHeld.get(meetingId)?.n ?? 0);
   }
 
   saveSttUsage(usage: MeetingSttUsage): void {
@@ -261,6 +691,7 @@ export class SqliteTranscriptStore implements TranscriptStore {
       total.droppedChunks,
       total.estimatedCostUsd,
       JSON.stringify(usage.bySource),
+      usage.gatedMs ?? 0,
       usage.stopReason,
       usage.updatedAt,
     );
@@ -269,6 +700,153 @@ export class SqliteTranscriptStore implements TranscriptStore {
   getSttUsage(meetingId: string): MeetingSttUsage | null {
     const row = this.statements.getSttUsage.get(meetingId);
     return row ? rowToSttUsage(row) : null;
+  }
+
+  listSttUsageToUpload(limit: number): MeetingSttUsage[] {
+    checkListLimit(limit, 'speech-to-text usage');
+    return this.statements.sttUsageToUpload.all(limit).map(rowToSttUsage);
+  }
+
+  markSttUsageSynced(sent: MeetingSttUsage, syncedAt: string): boolean {
+    // Read, compared and written in one synchronous turn: no save can land in between, and the
+    // single-instance lock keeps every other process off this file.
+    const stored = this.getSttUsage(sent.meetingId);
+    if (stored === null || !holdsSentUsage(stored, sent)) return false;
+    return this.statements.markSttUsageSynced.run(syncedAt, sent.meetingId).changes > 0;
+  }
+
+  addGap(gap: NewTranscriptGap): void {
+    checkGapWindow(gap.id, gap.startMs, gap.endMs);
+    withContext(`gap ${gap.id} of meeting ${gap.meetingId}`, () =>
+      this.statements.insertGap.run(
+        gap.id,
+        gap.meetingId,
+        gap.source,
+        gap.startMs,
+        gap.endMs,
+        gap.reason,
+        gap.createdAt,
+      ),
+    );
+  }
+
+  listGaps(meetingId: string): TranscriptGap[] {
+    return this.statements.gaps.all(meetingId).map(rowToGap);
+  }
+
+  listUnrecoveredGaps(meetingId?: string): TranscriptGap[] {
+    const rows =
+      meetingId === undefined
+        ? this.statements.unrecoveredGaps.all()
+        : this.statements.unrecoveredGapsOfMeeting.all(meetingId);
+    return rows.map(rowToGap);
+  }
+
+  markGapRecovered(id: string, recoveredAt: string): void {
+    this.statements.gapRecovered.run(recoveredAt, id);
+  }
+
+  setGapRecoverError(id: string, error: string): void {
+    this.statements.gapRecoverError.run(error, id);
+  }
+
+  addAudioFile(file: NewAudioFile): void {
+    checkAudioPath(file.path);
+    withContext(`audio file ${file.id} of meeting ${file.meetingId}`, () => {
+      const inserted = this.statements.insertAudioFile.run(
+        file.id,
+        file.meetingId,
+        file.source,
+        file.startMs,
+        file.path,
+        file.format,
+        file.createdAt,
+      );
+      if (inserted.changes > 0) return;
+      // A re-send of this meeting's file is a no-op; another meeting's id is a clash (NewAudioFile.id).
+      const holder = optionalText(this.statements.audioFileMeeting.get(file.id), 'meeting_id');
+      if (holder !== file.meetingId) throw new Error(`the id already belongs to meeting ${holder}`);
+    });
+  }
+
+  closeAudioFile(id: string, closed: { endMs: number; bytes: number; closedAt: string }): void {
+    withContext(`closing audio file ${id}`, () =>
+      this.statements.closeAudioFile.run(closed.endMs, closed.bytes, closed.closedAt, id),
+    );
+  }
+
+  markAudioFileEncoded(
+    id: string,
+    encoded: { path: string; format: AudioFileFormat; bytes: number },
+  ): void {
+    checkAudioPath(encoded.path);
+    this.statements.encodeAudioFile.run(encoded.path, encoded.format, encoded.bytes, id);
+  }
+
+  listAudioFiles(meetingId: string): AudioFile[] {
+    return this.statements.audioFiles.all(meetingId).map(rowToAudioFile);
+  }
+
+  listOpenAudioFiles(): AudioFile[] {
+    return this.statements.openAudioFiles.all().map(rowToAudioFile);
+  }
+
+  listMeetingIdsWithAudio(): string[] {
+    return this.statements.meetingIdsWithAudio.all().map((row) => text(row, 'meeting_id'));
+  }
+
+  markMeetingAudioDeleted(meetingId: string, deletedAt: string): number {
+    return Number(this.statements.deleteMeetingAudio.run(deletedAt, meetingId).changes);
+  }
+
+  addCaptureEvent(event: NewCaptureEvent): number {
+    const result = withContext(`capture event ${event.kind} of meeting ${event.meetingId}`, () =>
+      this.statements.insertCaptureEvent.run(
+        event.meetingId,
+        event.at,
+        event.offsetMs,
+        event.source,
+        event.kind,
+        JSON.stringify(event.detail ?? {}),
+      ),
+    );
+    return Number(result.lastInsertRowid);
+  }
+
+  listCaptureEvents(meetingId: string): CaptureEvent[] {
+    return this.statements.captureEvents.all(meetingId).map(rowToCaptureEvent);
+  }
+
+  getAppState(key: string): AppStateEntry | null {
+    const row = this.statements.getAppState.get(key);
+    return row ? { value: text(row, 'value'), updatedAt: text(row, 'updated_at') } : null;
+  }
+
+  setAppState(key: string, value: string, updatedAt: string): void {
+    this.statements.setAppState.run(key, value, updatedAt);
+  }
+
+  deleteAppState(key: string): void {
+    this.statements.deleteAppState.run(key);
+  }
+
+  listMeetings(limit: number): LocalMeeting[] {
+    checkListLimit(limit, 'meetings');
+    return this.statements.recentMeetings.all(limit).map(rowToMeeting);
+  }
+
+  listSegments(meetingId: string): TranscriptSegment[] {
+    return this.statements.meetingLines.all(meetingId).map(rowToSegment);
+  }
+
+  findMeetingIdsByEventIds(eventIds: readonly string[]): Map<string, string> {
+    const found = new Map<string, string>();
+    if (eventIds.length === 0) return found;
+    // Oldest first: a later row of the same event replaces the one before, so the newest stays.
+    for (const row of this.statements.meetingIdsByEventIds.all(JSON.stringify(eventIds))) {
+      found.set(text(row, 'event_id'), text(row, 'id'));
+    }
+    return found;
   }
 
   close(): void {
@@ -308,6 +886,8 @@ function rowToMeeting(row: Row): LocalMeeting {
     startedAt: text(row, 'started_at'),
     endedAt: row.ended_at === null || row.ended_at === undefined ? null : text(row, 'ended_at'),
     remoteState: remoteState(row.remote_state),
+    startSource: startSource(row.start_source),
+    calendarEvent: parseCalendarEvent(row),
   };
 }
 
@@ -315,8 +895,10 @@ function rowToSegment(row: Row): TranscriptSegment {
   const source = row.source;
   if (!isAudioSource(source)) throw new Error(`corrupt segment row: source=${String(source)}`);
   const speaker = text(row, 'speaker');
+  // Not the value: unlike source, speaker has no CHECK in the schema, so a bad row can hold any
+  // text, and every reader logs a failed read's message (the uploader's tick, meetings-ipc.ts).
   if (speaker !== 'me' && speaker !== 'them')
-    throw new Error(`corrupt segment row: speaker=${speaker}`);
+    throw new Error(`corrupt segment row ${String(row.id)}: speaker is not me or them`);
   return {
     id: text(row, 'id'),
     meetingId: text(row, 'meeting_id'),
@@ -327,15 +909,77 @@ function rowToSegment(row: Row): TranscriptSegment {
     text: text(row, 'text'),
     confidence:
       row.confidence === null || row.confidence === undefined ? null : Number(row.confidence),
-    words: parseWords(row.words_json),
+    words: parseWords(row, 'words_json'),
     createdAt: text(row, 'created_at'),
+  };
+}
+
+function rowToStoredSegment(row: Row): StoredSegment {
+  return {
+    ...rowToSegment(row),
+    origin: segmentOrigin(row.origin),
+    suppressedReason: suppressedReason(row.suppressed_reason),
+    echoOf: optionalText(row, 'echo_of'),
+    originalText: optionalText(row, 'original_text'),
+    originalWords: parseWords(row, 'original_words_json'),
+    uploadAfter: optionalText(row, 'upload_after'),
+    syncedAt: optionalText(row, 'synced_at'),
+  };
+}
+
+function rowToGap(row: Row): TranscriptGap {
+  return {
+    id: text(row, 'id'),
+    meetingId: text(row, 'meeting_id'),
+    source: audioSource(row.source, 'transcript_gaps'),
+    startMs: Number(row.start_ms),
+    endMs: Number(row.end_ms),
+    reason: gapReason(row.reason),
+    createdAt: text(row, 'created_at'),
+    recoveredAt: optionalText(row, 'recovered_at'),
+    recoverError: optionalText(row, 'recover_error'),
+  };
+}
+
+function rowToAudioFile(row: Row): AudioFile {
+  const format = row.format;
+  if (format !== 'wav' && format !== 'm4a')
+    throw new Error(`corrupt audio_files row: format=${String(format)}`);
+  return {
+    id: text(row, 'id'),
+    meetingId: text(row, 'meeting_id'),
+    source: audioSource(row.source, 'audio_files'),
+    startMs: Number(row.start_ms),
+    endMs: row.end_ms === null || row.end_ms === undefined ? null : Number(row.end_ms),
+    path: text(row, 'path'),
+    format,
+    bytes: Number(row.bytes),
+    createdAt: text(row, 'created_at'),
+    closedAt: optionalText(row, 'closed_at'),
+    deletedAt: optionalText(row, 'deleted_at'),
+  };
+}
+
+function rowToCaptureEvent(row: Row): CaptureEvent {
+  const source = row.source;
+  if (source !== null && !isAudioSource(source))
+    throw new Error(`corrupt capture_events row: source=${String(source)}`);
+  return {
+    id: Number(row.id),
+    meetingId: text(row, 'meeting_id'),
+    at: text(row, 'at'),
+    offsetMs: Number(row.offset_ms),
+    source,
+    kind: text(row, 'kind'),
+    detail: parseDetail(text(row, 'detail_json')),
   };
 }
 
 function rowToSttUsage(row: Row): MeetingSttUsage {
   const cost = row.estimated_cost_usd;
+  const meetingId = text(row, 'meeting_id');
   return {
-    meetingId: text(row, 'meeting_id'),
+    meetingId,
     provider: text(row, 'provider'),
     total: {
       sessionsOpened: Number(row.sessions_opened),
@@ -344,24 +988,126 @@ function rowToSttUsage(row: Row): MeetingSttUsage {
       droppedChunks: Number(row.dropped_chunks),
       estimatedCostUsd: cost === null || cost === undefined ? null : Number(cost),
     },
-    // Written by saveSttUsage from a typed Record<AudioSource, SttUsage>; the cast restores it.
-    bySource: JSON.parse(text(row, 'by_source_json')) as Record<AudioSource, SttUsage>,
+    bySource: parseBySource(meetingId, text(row, 'by_source_json')),
+    gatedMs: Number(row.gated_ms),
     stopReason:
       row.stop_reason === null || row.stop_reason === undefined ? null : text(row, 'stop_reason'),
     updatedAt: text(row, 'updated_at'),
   };
 }
 
-function parseWords(value: SQLOutputValue | undefined): TranscriptWord[] | null {
+function parseWords(row: Row, key: 'words_json' | 'original_words_json'): TranscriptWord[] | null {
+  const value = row[key];
   if (typeof value !== 'string') return null;
-  // Written by appendSegment from a typed TranscriptWord[]; the cast restores that type.
-  return JSON.parse(value) as TranscriptWord[];
+  let words: unknown;
+  try {
+    words = JSON.parse(value);
+  } catch {
+    // Not the SyntaxError's message: V8 quotes the text near the fault, words someone said, and
+    // every reader logs a failed read's message (the uploader's tick, meetings-ipc.ts).
+    throw new Error(`corrupt segment row ${String(row.id)}: ${key} is not JSON`);
+  }
+  // Written by appendSegment or trimSegment from a typed TranscriptWord[]; the cast restores it.
+  return words as TranscriptWord[];
+}
+
+function parseBySource(meetingId: string, json: string): Record<AudioSource, SourceSttUsage> {
+  let bySource: unknown;
+  try {
+    bySource = JSON.parse(json);
+  } catch {
+    // Named by its meeting: the uploader lists many rows at once, and a SyntaxError names none.
+    throw new Error(`corrupt stt_usage row ${meetingId}: by_source_json is not JSON`);
+  }
+  // Written by saveSttUsage from a typed Record<AudioSource, SourceSttUsage>; the cast restores it.
+  return bySource as Record<AudioSource, SourceSttUsage>;
+}
+
+function parseCalendarEvent(row: Row): MeetingCalendarEvent | null {
+  const value = row.calendar_event_json;
+  if (value === null || value === undefined) return null;
+  if (typeof value !== 'string') {
+    throw new Error(
+      `corrupt meeting row ${String(row.id)}: calendar_event_json is ${typeof value}`,
+    );
+  }
+  let event: unknown;
+  try {
+    event = JSON.parse(value);
+  } catch {
+    // Not the SyntaxError's message: V8 quotes the text near the fault, an invite's ids and the
+    // names of the people on it, and every reader logs a failed read's message.
+    throw new Error(`corrupt meeting row ${String(row.id)}: calendar_event_json is not JSON`);
+  }
+  // Written by createMeeting from a typed MeetingCalendarEvent; the cast restores it.
+  return event as MeetingCalendarEvent;
+}
+
+function parseDetail(json: string): JsonObject {
+  const value: unknown = JSON.parse(json);
+  if (typeof value !== 'object' || value === null || Array.isArray(value))
+    throw new Error('corrupt capture_events row: detail_json is not an object');
+  // Written by addCaptureEvent from a typed JsonObject; the cast restores that type.
+  return value as JsonObject;
+}
+
+/** Run one write and name what it was for: SQLite's own message ("FOREIGN KEY constraint failed") does not. */
+function withContext<T>(what: string, write: () => T): T {
+  try {
+    return write();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`could not write ${what}: ${message}`, { cause: error });
+  }
 }
 
 function text(row: Row, key: string): string {
   const value = row[key];
   if (typeof value !== 'string') throw new Error(`corrupt row: ${key} is ${typeof value}`);
   return value;
+}
+
+function optionalText(row: Row | undefined, key: string): string | null {
+  if (row === undefined) return null;
+  const value = row[key];
+  if (value === null || value === undefined) return null;
+  if (typeof value !== 'string') throw new Error(`corrupt row: ${key} is ${typeof value}`);
+  return value;
+}
+
+function audioSource(value: SQLOutputValue | undefined, table: string): AudioSource {
+  if (!isAudioSource(value)) throw new Error(`corrupt ${table} row: source=${String(value)}`);
+  return value;
+}
+
+function segmentOrigin(value: SQLOutputValue | undefined): SegmentOrigin {
+  if (value === 'live' || value === 'rerun') return value;
+  throw new Error(`corrupt segment row: origin=${String(value)}`);
+}
+
+function suppressedReason(value: SQLOutputValue | undefined): SuppressedReason | null {
+  if (value === null || value === undefined) return null;
+  if (value === 'echo') return value;
+  throw new Error(`corrupt segment row: suppressed_reason=${String(value)}`);
+}
+
+/** Every GapReason: the column has no CHECK, so a value missing here makes each read throw. */
+function gapReason(value: SQLOutputValue | undefined): GapReason {
+  if (
+    value === 'stt_failed' ||
+    value === 'offline' ||
+    value === 'asleep' ||
+    value === 'budget' ||
+    value === 'crash'
+  ) {
+    return value;
+  }
+  throw new Error(`corrupt transcript_gaps row: reason=${String(value)}`);
+}
+
+function startSource(value: SQLOutputValue | undefined): StartSource {
+  if (isStartSource(value)) return value;
+  throw new Error(`corrupt meeting row: start_source=${String(value)}`);
 }
 
 function remoteState(value: SQLOutputValue | undefined): RemoteState {

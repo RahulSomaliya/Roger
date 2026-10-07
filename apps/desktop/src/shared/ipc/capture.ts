@@ -1,0 +1,163 @@
+import type {
+  AudioSourceState,
+  CaptureReport,
+  CaptureStatus,
+  StartCaptureRequest,
+  TranscriptSegmentChange,
+} from '../capture';
+import type { AudioSource, InterimTranscript, TranscriptSegment } from '../transcript';
+import type { Unsubscribe } from './unsubscribe';
+
+/**
+ * Capture's channels. Main registers them in src/main/ipc.ts and validates every renderer payload
+ * in src/main/ipc-validation.ts first.
+ */
+export const captureChannels = {
+  /** renderer → main, invoke */
+  CaptureStart: 'capture:start',
+  CaptureStop: 'capture:stop',
+  CaptureGetStatus: 'capture:get-status',
+  AudioGetSystemSource: 'audio:get-system-source',
+  CaptureGetReport: 'capture:get-report',
+  CaptureRerunGaps: 'capture:rerun-gaps',
+  AudioDeleteMeeting: 'audio:delete-meeting',
+  AudioListKeptForRerun: 'audio:list-kept-for-rerun',
+  TranscriptUnhideSegment: 'transcript:unhide-segment',
+  CaptureTakePendingStart: 'capture:take-pending-start',
+  /** renderer → main, fire and forget */
+  AudioChunk: 'audio:chunk',
+  AudioSourceState: 'audio:source-state',
+  /** main → renderer events */
+  CaptureStatusChanged: 'capture:status-changed',
+  TranscriptSegment: 'transcript:segment',
+  TranscriptInterim: 'transcript:interim',
+  TranscriptSegmentChanged: 'transcript:segment-changed',
+  /** No payload: a start request waits in main; take it with CaptureTakePendingStart. */
+  CaptureStartRequested: 'capture:start-requested',
+} as const;
+
+/**
+ * The one audio format the renderer sends: every PCM chunk crossing IPC is PCM_ENCODING at
+ * PCM_SAMPLE_RATE. The API's STT stream settings must name the same pair; main refuses to start a
+ * session otherwise (src/main/stt/streamSettings.ts), because a vendor told another rate
+ * transcribes garbage and reports no error.
+ */
+export const PCM_SAMPLE_RATE = 16_000;
+/** Int16 little-endian mono, which is what the PCM worklet produces. */
+export const PCM_ENCODING = 'linear16';
+
+export interface AudioChunkMessage {
+  source: AudioSource;
+  /** PCM_ENCODING mono PCM at PCM_SAMPLE_RATE. */
+  pcm: ArrayBuffer;
+  /**
+   * Wall clock (epoch ms) of the chunk's first sample, taken where it was captured (M2-T12).
+   * Arrival times in main jitter, which would split the audio timeline falsely (M2 design,
+   * "Timeline"). Main refuses a chunk whose value is not finite or is more than a day from now.
+   * The renderer sends it with every chunk (M2-T12); main dates a chunk without one by its
+   * arrival, which jitters as above.
+   *
+   * Build it per chunk as `Date.now()` minus the first frame's age on the monotonic clock
+   * (`performance.now()` less the frame's `performanceTime`, mapped through
+   * `AudioContext.getOutputTimestamp()`), as the M2 design's "Timeline" row says. Never
+   * `performance.timeOrigin + performanceTime`: on macOS Chromium's monotonic clock stops while
+   * the Mac sleeps, so that sum falls behind the wall clock by every sleep since the page loaded,
+   * and the page lives for days once closing the window hides it (M5-T11). Under a day the mic's
+   * lines land hours early and miss the ±700 ms echo window; past a day main refuses every mic
+   * chunk.
+   * Anchoring once per capture is not enough either: a recording that lives through a sleep drifts.
+   */
+  capturedAtMs?: number;
+}
+
+export interface AudioSourceStateMessage {
+  source: AudioSource;
+  state: AudioSourceState;
+  message?: string;
+}
+
+/**
+ * A request about one meeting. Main refuses an id that is not a lowercase UUIDv4: meeting ids
+ * name folders on disk (`userData/audio/<id>`), and a renderer-supplied `../x` would otherwise be
+ * a path-traversal delete.
+ */
+export interface MeetingRequest {
+  meetingId: string;
+}
+
+/** A request about one line of a meeting; both ids are UUIDv4s, as for MeetingRequest. */
+export interface SegmentRequest {
+  meetingId: string;
+  segmentId: string;
+}
+
+/**
+ * A meeting whose audio is kept past its retention for a re-run (M2 D5): a gap of it is not yet
+ * filled (a failed re-run counts). Home's card lists these (M2-T20b).
+ */
+export interface MeetingKeptForRerun {
+  meetingId: string;
+  title: string;
+  /**
+   * ISO 8601 instant, UTC, when its audio is deleted, by the same rule as its report's
+   * `backup.keepUntil` (audioKeep); null while the meeting is open (being recorded), when nothing
+   * deletes it.
+   */
+  keepUntil: string | null;
+}
+
+/** Capture's part of `window.roger`. */
+export interface CaptureApi {
+  /**
+   * Starts a recording. `request` says how it was started, its title and its calendar event (M5);
+   * left out, a plain manual Start. Main refuses a request that does not check
+   * (parseStartCaptureRequest) by rejecting, naming the field; every other refusal comes back as
+   * the status's `error`. Sent while a stop is under way, it starts once the stop is done; while a
+   * recording starts or runs, it answers that recording's status, and the request is not applied
+   * (main logs it): CaptureService.start.
+   */
+  startCapture(request?: StartCaptureRequest): Promise<CaptureStatus>;
+  /**
+   * Main has a start request for this window (a click on the prompt panel, M5): take it with
+   * takePendingStart and start with it. The event carries nothing, so a request runs once
+   * however many pages hear it. Main does not wait for a listener: a page also takes one as it
+   * loads (useCapture), which is how a window still loading gets a click made meanwhile.
+   */
+  onStartRequested(listener: () => void): Unsubscribe;
+  /**
+   * The start request waiting in main, once: null when none waits, another page took it, or it
+   * waited more than 60 s (CaptureService.takePendingStart).
+   */
+  takePendingStart(): Promise<StartCaptureRequest | null>;
+  stopCapture(): Promise<CaptureStatus>;
+  getCaptureStatus(): Promise<CaptureStatus>;
+  /** A desktopCapturer source id for system audio, or null when none is available. */
+  getSystemAudioSourceId(): Promise<string | null>;
+  sendAudioChunk(message: AudioChunkMessage): void;
+  reportAudioSourceState(message: AudioSourceStateMessage): void;
+  onCaptureStatus(listener: (status: CaptureStatus) => void): Unsubscribe;
+  onTranscriptSegment(listener: (segment: TranscriptSegment) => void): Unsubscribe;
+  onTranscriptInterim(listener: (interim: InterimTranscript) => void): Unsubscribe;
+  /** What the echo filter did to a line (hide, trim, unhide), live or later (M2-T14b). */
+  onTranscriptSegmentChanged(listener: (change: TranscriptSegmentChange) => void): Unsubscribe;
+  /** What happened to a meeting's capture: gaps, events, echo counts, its audio backup. */
+  getCaptureReport(request: MeetingRequest): Promise<CaptureReport>;
+  /**
+   * Re-runs the meeting's gaps from its audio backup (M2-T16) and answers the report after it.
+   * Refused while a recording runs; progress shows in `CaptureStatus.rerun` meanwhile.
+   */
+  rerunGaps(request: MeetingRequest): Promise<CaptureReport>;
+  /** Deletes the meeting's local audio backup (its lines stay) and answers the report after it. */
+  deleteMeetingAudio(request: MeetingRequest): Promise<CaptureReport>;
+  /**
+   * Every meeting whose audio is kept for a re-run, newest first (M2-T16). Ask again after a
+   * re-run or a delete: neither sends an event that changes this list.
+   */
+  listMeetingsKeptForRerun(): Promise<MeetingKeptForRerun[]>;
+  /**
+   * Shows a hidden echo line again, which uploads it; a segment change event follows. Only a
+   * `hidden` line: a `trimmed` one already uploads, and main's store will not unhide it
+   * (TranscriptStore.unhideSegment), so offer no Unhide on trimmed text.
+   */
+  unhideSegment(request: SegmentRequest): Promise<void>;
+}

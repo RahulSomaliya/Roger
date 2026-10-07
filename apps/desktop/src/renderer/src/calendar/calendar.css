@@ -1,0 +1,394 @@
+/*
+ * The calendar's screens (M5-T12): Home's Today (TodaySection.tsx, NextMeetingCard.tsx,
+ * ConnectCalendarCard.tsx), the status banner (CalendarStatusBanner.tsx), the Settings section
+ * (CalendarSettings.tsx) and the meeting page's notice banner (NoticeBanner.tsx). They reuse
+ * app.css (.card, .empty-state, .shell-button) and styles.css (.error, .notice). Colours only from
+ * theme/tokens.css (noLiteralColours.test.ts fails on a literal one); text reads the ink tokens
+ * (--ink, --muted, --accent-ink, --danger-ink), never a fill (tokens.test.ts).
+ */
+
+/* The primary button: a fill under --on-accent text, as M1's Start. Two classes, so it beats
+   .shell-button's panel fill whichever stylesheet loads last. */
+.shell-button.calendar-start {
+  border-color: transparent;
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+.shell-button.calendar-start:hover {
+  background: var(--accent);
+  filter: brightness(1.08);
+}
+
+/* app.css gives .shell-button no disabled look; the calendar's buttons wait on a recording or a save. */
+.calendar-today .shell-button:disabled,
+.calendar-settings .shell-button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.calendar-status {
+  margin: 0;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+/* An error with the button that retries it, on one row that wraps. */
+.calendar-problem {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  overflow-wrap: anywhere;
+}
+
+.calendar-problem > span {
+  flex: 1 1 240px;
+  min-width: 0;
+}
+
+/* Connect card */
+
+.calendar-connect {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+.calendar-connect-title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 650;
+}
+
+.calendar-connect-text {
+  margin: 0;
+  max-width: 60ch;
+  color: var(--muted);
+}
+
+.calendar-connect-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.calendar-connect-error {
+  overflow-wrap: anywhere;
+}
+
+/* Today */
+
+.calendar-today {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+.calendar-today-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 12px;
+}
+
+.calendar-today-title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 650;
+}
+
+.calendar-today-date {
+  margin: 0;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.calendar-allday {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.calendar-chip {
+  max-width: 100%;
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: var(--chip-bg);
+  color: var(--ink);
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.calendar-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.calendar-row,
+.calendar-next {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  padding: 10px 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+}
+
+.calendar-next {
+  padding: 14px 16px;
+  border-color: var(--accent);
+}
+
+.calendar-when {
+  flex: none;
+  min-width: 124px;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+}
+
+.calendar-what,
+.calendar-next-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.calendar-kicker {
+  margin: 0 0 2px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--accent-ink);
+}
+
+.calendar-title {
+  margin: 0;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.calendar-meta {
+  margin: 2px 0 0;
+  font-size: 13px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.calendar-action {
+  flex: none;
+}
+
+/* A meeting that is over, and one the user declined: quieter, the declined also last. */
+.calendar-over .calendar-title,
+.calendar-declined .calendar-title,
+.calendar-declined.calendar-chip {
+  color: var(--muted);
+}
+
+.calendar-declined .calendar-title {
+  font-weight: 500;
+  text-decoration: line-through;
+}
+
+/* The row's time moves above its text when the column gets narrow. */
+@media (max-width: 560px) {
+  .calendar-row {
+    flex-wrap: wrap;
+  }
+
+  .calendar-when {
+    flex-basis: 100%;
+  }
+}
+
+/* The line after the first connect, over the day. */
+.calendar-login {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+}
+
+.calendar-login-text {
+  flex: 1 1 240px;
+  min-width: 0;
+}
+
+/* Status banner (above every page) */
+
+.calendar-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+}
+
+.calendar-banner-text {
+  flex: 1 1 240px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* Settings */
+
+.calendar-settings {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+
+.calendar-settings-title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 650;
+}
+
+.calendar-settings-intro {
+  margin: 0;
+  color: var(--muted);
+}
+
+.calendar-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.calendar-label {
+  font-weight: 600;
+}
+
+.calendar-account {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+}
+
+.calendar-account-text {
+  flex: 1 1 200px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.calendar-select,
+.calendar-textarea {
+  max-width: 100%;
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--ink);
+  font: inherit;
+}
+
+.calendar-select {
+  align-self: flex-start;
+}
+
+.calendar-textarea {
+  width: 100%;
+  resize: vertical;
+}
+
+.calendar-select:focus-visible,
+.calendar-textarea:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+.calendar-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.calendar-check input {
+  flex: none;
+  margin: 3px 0 0;
+  accent-color: var(--accent);
+}
+
+.calendar-check-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.calendar-hint {
+  margin: 0;
+  font-size: 13px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+/* Waiting on the user in System Settings: ink on a warm rule, never the warn fill as text. */
+.calendar-hint-warn {
+  padding-left: 8px;
+  border-left: 3px solid var(--warn);
+  color: var(--ink);
+}
+
+.calendar-notice-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.calendar-notice-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+/* Meeting page banner */
+
+.calendar-notice {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+}
+
+.calendar-notice-body {
+  flex: 1 1 280px;
+  min-width: 0;
+}
+
+.calendar-notice-title {
+  margin: 0;
+  font-weight: 600;
+}
+
+.calendar-notice-text {
+  margin: 2px 0 0;
+  font-size: 13px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.calendar-notice-error {
+  margin: 4px 0 0;
+  color: var(--danger-ink);
+  overflow-wrap: anywhere;
+}

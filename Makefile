@@ -11,9 +11,23 @@ DESKTOP_PKG := @roger/desktop
 # or silently downgrades. Never drop `--frozen` here; change dependencies with `uv lock` on purpose.
 UV_RUN := uv run --frozen
 
-.PHONY: help setup setup-api setup-desktop check lint lint-api lint-desktop typecheck typecheck-api \
-        typecheck-desktop test test-api test-desktop format dev-db migrate dev-api dev-desktop \
-        install-desktop clean
+# `make check TEST_DB=roger_test_<task>` points the API tests at that database on the `make dev-db`
+# Postgres, so parallel worktrees never truncate each other's tables. Left empty, TEST_DATABASE_URL
+# comes from the environment or the repo-root `.env` as before. Make does not check the name. The
+# test session migrates that database down to base and truncates it, so the one guard belongs next
+# to the TRUNCATE: apps/api/tests/conftest.py refuses any name not starting with roger_test (added
+# by P2-F2, not by this file). Without that check, TEST_DB=roger wipes the dev database.
+TEST_DB ?=
+TEST_DB_SERVER := postgresql+asyncpg://postgres:postgres@localhost:5432
+TEST_DB_ENV := $(if $(TEST_DB),TEST_DATABASE_URL=$(TEST_DB_SERVER)/$(TEST_DB))
+
+# Extra arguments for the tool targets: make bench ARGS="run --parallel 3".
+ARGS ?=
+
+.PHONY: help setup setup-api setup-desktop check check-mac lint lint-api lint-desktop typecheck \
+        typecheck-api typecheck-desktop test test-api test-desktop format dev-db migrate dev-api \
+        dev-desktop install-desktop native test-native-route e2e-desktop bench stt-canary \
+        eval-notes eval-notes-fixes clean
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}'
@@ -32,7 +46,18 @@ setup-desktop: ## Install desktop dependencies (pnpm)
 # ---------------------------------------------------------------------------
 # Quality gate (M0 exit check: one command runs tests and lint for both apps)
 # ---------------------------------------------------------------------------
-check: lint typecheck test ## Lint, typecheck and test both apps
+# On a Mac, `make check` also builds the Swift audio helper and runs its selftest (no audio
+# permission needed, no privacy prompt) and the `*.mac.test.ts` suite. Elsewhere (Linux CI) both are
+# skipped: Swift, Core Audio and afconvert need macOS. The audible route test stays opt-in:
+# `make test-native-route`. Defined above `check` on purpose: make expands a prerequisite list when
+# it reads the rule, so a later definition would leave `check` without it on every machine.
+CHECK_MAC := $(if $(filter Darwin,$(shell uname -s)),check-mac)
+
+check: lint typecheck test $(CHECK_MAC) ## Lint, typecheck and test both apps (and, on a Mac, the helper)
+
+check-mac: native ## macOS only: the helper's selftest and the *.mac.test.ts suite
+	apps/desktop/native/bin/roger-audio selftest
+	pnpm --filter $(DESKTOP_PKG) test:mac
 
 lint: lint-api lint-desktop ## Lint both apps
 
@@ -54,7 +79,7 @@ typecheck-desktop:
 test: test-api test-desktop ## Test both apps (API tests need Postgres, see TEST_DATABASE_URL)
 
 test-api:
-	cd $(API_DIR) && $(UV_RUN) pytest
+	cd $(API_DIR) && $(TEST_DB_ENV) $(UV_RUN) pytest
 
 test-desktop:
 	pnpm --filter $(DESKTOP_PKG) test
@@ -83,5 +108,31 @@ dev-desktop: ## Run the desktop app in dev mode
 install-desktop: ## Build Roger.app for this Mac's CPU, sign it with a local identity, install to /Applications
 	pnpm --filter $(DESKTOP_PKG) install:mac
 
+# ---------------------------------------------------------------------------
+# Tools: the Swift audio helper, the Electron smoke test, the STT benchmark and the notes eval
+# ---------------------------------------------------------------------------
+native: ## Build the Swift audio helper into apps/desktop/native/bin (macOS)
+	bash apps/desktop/scripts/build-native.sh
+
+# Not part of `make check`: it plays a tone and switches this Mac's default output device.
+test-native-route: native ## Opt-in, audible: the helper's tap follows an output switch (macOS)
+	apps/desktop/native/bin/roger-audio selftest --route-switch
+
+e2e-desktop: ## Electron smoke test: build, then run with fake audio, helper and STT
+	pnpm --filter $(DESKTOP_PKG) test:e2e
+
+bench: ## STT benchmark CLI: make bench ARGS="run" (data in ROGER_BENCH_DIR)
+	pnpm --filter $(DESKTOP_PKG) bench $(ARGS)
+
+stt-canary: ## Synthetic jargon clip through the vendor the local API serves
+	pnpm --filter $(DESKTOP_PKG) bench canary $(ARGS)
+
+eval-notes: ## Notes eval over apps/api/evals/notes/cases (ARGS="--judge-model ...")
+	cd $(API_DIR) && $(UV_RUN) python -m roger_api.evals.notes_eval run $(ARGS)
+
+eval-notes-fixes: ## Edit size between each meeting's generated notes and the current ones
+	cd $(API_DIR) && $(UV_RUN) python -m roger_api.evals.notes_eval fixes $(ARGS)
+
 clean: ## Remove build output and caches
-	rm -rf apps/desktop/out apps/desktop/dist $(API_DIR)/.mypy_cache $(API_DIR)/.ruff_cache $(API_DIR)/.pytest_cache
+	rm -rf apps/desktop/out apps/desktop/dist apps/desktop/native/bin apps/desktop/bench/dist
+	rm -rf $(API_DIR)/.mypy_cache $(API_DIR)/.ruff_cache $(API_DIR)/.pytest_cache

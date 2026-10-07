@@ -2,6 +2,10 @@
 services:
   db:
     image: postgres:16-alpine
+    # Back after a reboot or a crash whenever Docker runs (M5 D1): the calendar's refresh token
+    # lives here, and the desktop's calendar goes stale an hour after the API loses it. The API
+    # itself does not come back: run `make dev-api` after a reboot.
+    restart: unless-stopped
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres

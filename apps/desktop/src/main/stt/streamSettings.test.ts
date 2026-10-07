@@ -31,6 +31,15 @@ describe('streamSettingsMismatch', () => {
     ).toBeNull();
   });
 
+  it("refuses a vendor's own name for the audio: the API names it the app's way, linear16", () => {
+    // AssemblyAI calls Roger's audio pcm_s16le; its protocol translates linear16 into that.
+    const message = streamSettingsMismatch(
+      settings({ model: 'universal-3-6-pro', encoding: 'pcm_s16le' }),
+    );
+    expect(message).toContain('pcm_s16le');
+    expect(message).toContain('STT_ENCODING=linear16');
+  });
+
   it('names both values when the API asks for another sample rate', () => {
     const message = streamSettingsMismatch(settings({ sampleRate: 48_000 }));
     expect(message).toContain('48000 Hz');

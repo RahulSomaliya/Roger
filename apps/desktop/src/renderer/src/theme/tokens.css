@@ -1,0 +1,110 @@
+/*
+ * Every colour the renderer uses, as a token, in both themes. No other file holds a literal colour
+ * (noLiteralColours.test.ts fails on one); read a token with var(--name).
+ *
+ * A new token goes at the end of all three blocks below, with the same dark value in both dark
+ * ones; never rename one (tokens.test.ts checks the blocks agree). The theme follows macOS unless
+ * the `theme` preference forces one: useTheme.ts then sets `data-theme` on <html>, and these
+ * selectors pick the block. Dark is written twice because a media query and an attribute cannot
+ * share one rule.
+ */
+
+/* Light: macOS in light mode, or `theme: light`. */
+:root {
+  color-scheme: light;
+  --bg: #f6f6f4;
+  --panel: #ffffff;
+  --ink: #1d1d1b;
+  --muted: #6b6b66;
+  --line: #e4e4df;
+  /*
+   * Fills, such as the Start and Stop buttons, under --on-accent text. Text in these hues reads
+   * --accent-ink and --danger-ink: in dark, a fill dark enough for a white label is too dark to
+   * read as text on --panel, so one token cannot do both (tokens.test.ts checks both contrasts).
+   * In light, --danger as text is 4.46:1 on --bg and 3.7:1 inside the error box's --danger-bg.
+   */
+  --accent: #2563eb;
+  --danger: #dc2626;
+  --warn: #d97706;
+  --ok: #16a34a;
+  /* Tinted backgrounds behind an error, a warning or a good state, drawn over --bg or --panel. */
+  --danger-bg: rgb(220 38 38 / 0.12);
+  --warn-bg: rgb(217 119 6 / 0.14);
+  --ok-bg: rgb(22 163 74 / 0.12);
+  /* Live transcript words not yet final, and lines hidden from the transcript (echo). */
+  --interim-ink: #8a8a84;
+  --hidden-ink: #a3a39c;
+  /* A transcript line a citation chip just revealed (transcriptNavigator.css). */
+  --cited-bg: rgb(250 204 21 / 0.3);
+  /* The recording state: the dot and the label. */
+  --recording: #dc2626;
+  --focus-ring: rgb(37 99 235 / 0.55);
+  --sidebar-bg: #efefec;
+  /* Citation chips and other small labels. */
+  --chip-bg: rgb(37 99 235 / 0.1);
+  /* A note kept as a conflict copy (the notes conflict banner). */
+  --conflict-bg: rgb(234 88 12 / 0.12);
+  /* Text and icons on an --accent or --danger fill, such as the Start and Stop buttons. */
+  --on-accent: #ffffff;
+  /* Text in the accent and danger hues: a speaker name, an error, a failing status row. */
+  --accent-ink: #2563eb;
+  --danger-ink: #b91c1c;
+}
+
+/* Dark: macOS in dark mode, unless `theme: light` forces light. Same values as forced dark. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    color-scheme: dark;
+    --bg: #161615;
+    --panel: #1f1f1d;
+    --ink: #ececea;
+    --muted: #9a9a94;
+    --line: #2f2f2c;
+    --accent: #2563eb;
+    --danger: #dc2626;
+    --warn: #f59e0b;
+    --ok: #22c55e;
+    --danger-bg: rgb(239 68 68 / 0.16);
+    --warn-bg: rgb(245 158 11 / 0.16);
+    --ok-bg: rgb(34 197 94 / 0.14);
+    --interim-ink: #8c8c86;
+    --hidden-ink: #6b6b66;
+    --cited-bg: rgb(250 204 21 / 0.18);
+    --recording: #ef4444;
+    --focus-ring: rgb(96 165 250 / 0.7);
+    --sidebar-bg: #1a1a19;
+    --chip-bg: rgb(59 130 246 / 0.18);
+    --conflict-bg: rgb(251 146 60 / 0.16);
+    --on-accent: #ffffff;
+    --accent-ink: #60a5fa;
+    --danger-ink: #f87171;
+  }
+}
+
+/* Dark forced by `theme: dark`, whatever macOS says. Same values as the block above. */
+:root[data-theme='dark'] {
+  color-scheme: dark;
+  --bg: #161615;
+  --panel: #1f1f1d;
+  --ink: #ececea;
+  --muted: #9a9a94;
+  --line: #2f2f2c;
+  --accent: #2563eb;
+  --danger: #dc2626;
+  --warn: #f59e0b;
+  --ok: #22c55e;
+  --danger-bg: rgb(239 68 68 / 0.16);
+  --warn-bg: rgb(245 158 11 / 0.16);
+  --ok-bg: rgb(34 197 94 / 0.14);
+  --interim-ink: #8c8c86;
+  --hidden-ink: #6b6b66;
+  --cited-bg: rgb(250 204 21 / 0.18);
+  --recording: #ef4444;
+  --focus-ring: rgb(96 165 250 / 0.7);
+  --sidebar-bg: #1a1a19;
+  --chip-bg: rgb(59 130 246 / 0.18);
+  --conflict-bg: rgb(251 146 60 / 0.16);
+  --on-accent: #ffffff;
+  --accent-ink: #60a5fa;
+  --danger-ink: #f87171;
+}

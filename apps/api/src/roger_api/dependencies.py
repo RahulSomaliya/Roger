@@ -1,4 +1,10 @@
-"""FastAPI dependencies for the objects `create_app` stores on `app.state`."""
+"""FastAPI dependencies for the objects `create_app` stores on `app.state`.
+
+Phase 2 features keep their getters and `Dep` aliases in their own service module
+(`services/llm_runs.py` for `app.state.llm_runtime`, `services/calendar/runtime.py` for
+`app.state.calendar_runtime`), never here, so parallel tasks never edit this file
+(phase-2-build-order.md, section 1).
+"""
 
 from collections.abc import AsyncIterator
 from typing import Annotated

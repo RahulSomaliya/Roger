@@ -1,0 +1,342 @@
+import { mkdtemp, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { ECHO_FILTER_VERSION } from '../../src/main/capture/echo/EchoFilter';
+import { SttConnectError } from '../../src/main/stt/SpeechToText';
+import { readEvents, readRun, runPaths } from '../core/events';
+import { NORMALISER_VERSION } from '../core/normalise';
+import { MAX_ATTEMPTS, type RunDeps, type RunOptions, runBench } from './run';
+import { tone, writeTestItem } from './testing/benchFolder';
+import {
+  FakeVendor,
+  type FakeVendorScript,
+  ScriptedTokenApi,
+  freshTokens,
+  tokenResponse,
+} from './testing/fakes';
+import { ManualTimers } from './testing/manualTimers';
+
+const T0 = Date.UTC(2026, 9, 6, 10, 0, 0);
+
+/** The desktop's default silence gate (costGuards.ts), as cli.ts hands it over. */
+const GATE: RunDeps['silenceGate'] = {
+  closeAfterMs: 30_000,
+  preRollMs: 1_000,
+  reopensPerMeeting: 120,
+  reopenBufferMs: 3_000,
+};
+
+describe('runBench', () => {
+  let bench = '';
+
+  beforeEach(async () => {
+    bench = await mkdtemp(join(tmpdir(), 'roger-bench-run-'));
+  });
+
+  afterEach(async () => {
+    await rm(bench, { recursive: true, force: true });
+  });
+
+  async function items(count: number, ms = 300): Promise<void> {
+    for (let index = 1; index <= count; index += 1) {
+      await writeTestItem(bench, `item-${index}`, { audio: { mic: tone(ms), system: tone(ms) } });
+    }
+  }
+
+  function start(
+    options: Partial<RunOptions> = {},
+    setup: {
+      api?: ScriptedTokenApi;
+      vendor?: FakeVendorScript;
+      opensPerMinute?: number;
+      silenceGate?: RunDeps['silenceGate'];
+    } = {},
+  ): {
+    timers: ManualTimers;
+    vendor: FakeVendor;
+    api: ScriptedTokenApi;
+    lines: string[];
+    done: ReturnType<typeof runBench>;
+  } {
+    const timers = new ManualTimers(T0);
+    const vendor = new FakeVendor(timers, setup.vendor);
+    const api = setup.api ?? new ScriptedTokenApi(freshTokens({ pricePerHourUsd: 0.19 }));
+    const lines: string[] = [];
+    const deps: RunDeps = {
+      benchDir: bench,
+      api,
+      adapters: vendor.adapters,
+      opensPerMinute: setup.opensPerMinute ?? 4,
+      retryBackoffMs: { first: 2_000, max: 60_000 },
+      silenceGate: setup.silenceGate === undefined ? GATE : setup.silenceGate,
+      timers,
+      out: (line) => lines.push(line),
+    };
+    const done = timers.settle(
+      runBench({ itemIds: null, keyterms: true, gate: false, parallel: 3, ...options }, deps),
+    );
+    return { timers, vendor, api, lines, done };
+  }
+
+  it("writes run.json with the first token's label and every item's events", async () => {
+    await items(2);
+    const { done } = start({}, { vendor: { connectQuery: () => 'speech_model=universal' } });
+
+    const outcome = await done;
+
+    expect(outcome).toMatchObject({ ok: 2, failed: 0, stopped: null });
+    const paths = runPaths(bench, outcome.runId);
+    expect(outcome.runId).toBe('20261006-100000');
+    const run = await readRun(paths.runJson);
+    expect(run).toMatchObject({
+      runId: '20261006-100000',
+      startedAt: '2026-10-06T10:00:00.000Z',
+      provider: 'assemblyai',
+      model: 'universal-streaming-english',
+      adapterQuery: 'speech_model=universal',
+      keyterms: { enabled: true, terms: ['Linkt', 'Roger'] },
+      normaliserVersion: NORMALISER_VERSION,
+      echoFilterVersion: ECHO_FILTER_VERSION,
+      gate: false,
+    });
+    expect(run.finishedAt).not.toBeNull();
+    expect(run.items.map((item) => [item.itemId, item.status, item.attempts.length])).toEqual([
+      ['item-1', 'ok', 1],
+      ['item-2', 'ok', 1],
+    ]);
+    const closed = await readEvents(paths.events('item-1', 'mic'));
+    expect(closed.at(-1)?.event.type).toBe('closed');
+    expect((await stat(paths.events('item-1', 'system'))).mode & 0o777).toBe(0o600);
+  });
+
+  it('gives each item its own token, so the 4th round of --parallel 3 uses a new one', async () => {
+    await items(4);
+    const { vendor, api, done } = start();
+
+    await done;
+
+    expect(api.calls).toBe(4);
+    const tokens = vendor.streams.map((stream) => stream.options.accessToken);
+    expect(new Set(tokens)).toEqual(new Set(['tok-1', 'tok-2', 'tok-3', 'tok-4']));
+    // Both streams of an item share its token.
+    expect(tokens.filter((token) => token === 'tok-4')).toHaveLength(2);
+  });
+
+  it("waits for the bench's open budget: 5 a minute is never exceeded", async () => {
+    await items(4);
+    const openedAt: number[] = [];
+    const { timers, done } = start(
+      {},
+      {
+        opensPerMinute: 5,
+        vendor: {
+          onOpen: () => {
+            openedAt.push(timers.now());
+          },
+        },
+      },
+    );
+
+    await done;
+
+    expect(openedAt).toHaveLength(8);
+    for (const from of openedAt) {
+      expect(openedAt.filter((at) => at >= from && at < from + 60_000).length).toBeLessThanOrEqual(
+        5,
+      );
+    }
+  });
+
+  it('retries an injected 3009 with a fresh token and records both attempts', async () => {
+    await items(1);
+    const { lines, done } = start(
+      {},
+      {
+        vendor: {
+          onOpen: (options) => {
+            if (options.accessToken === 'tok-1' && options.label === 'system') {
+              throw new SttConnectError('AssemblyAI: Too many concurrent sessions (3009)', null);
+            }
+          },
+        },
+      },
+    );
+
+    const outcome = await done;
+
+    const run = await readRun(runPaths(bench, outcome.runId).runJson);
+    const [item] = run.items;
+    expect(item?.status).toBe('ok');
+    expect(item?.attempts.map((attempt) => attempt.error)).toEqual([
+      'system: AssemblyAI: Too many concurrent sessions (3009)',
+      null,
+    ]);
+    // The retry waited the backoff and asked for a new token.
+    const [first, second] = item?.attempts ?? [];
+    expect(
+      (second?.tokenRequestedAtMs ?? 0) - (first?.tokenRequestedAtMs ?? 0),
+    ).toBeGreaterThanOrEqual(2_000);
+    expect(lines.some((line) => line.includes('attempt 1 of 3 failed'))).toBe(true);
+  });
+
+  it(`fails an item after ${MAX_ATTEMPTS} attempts and keeps the other items`, async () => {
+    await items(2);
+    const { done } = start(
+      { parallel: 1 },
+      {
+        vendor: {
+          onOpen: (options) => {
+            if (options.label === 'mic' && options.accessToken !== 'tok-4') {
+              throw new SttConnectError('Deepgram: rejected with HTTP 503', 503);
+            }
+          },
+        },
+      },
+    );
+
+    const outcome = await done;
+
+    expect(outcome).toMatchObject({ ok: 1, failed: 1, stopped: null });
+    const run = await readRun(runPaths(bench, outcome.runId).runJson);
+    expect(run.items.map((item) => [item.itemId, item.status, item.attempts.length])).toEqual([
+      ['item-1', 'failed', 3],
+      ['item-2', 'ok', 1],
+    ]);
+    expect(run.finishedAt).not.toBeNull();
+  });
+
+  it('stops the run, naming both, when the API changes provider mid-run', async () => {
+    await items(3);
+    const { lines, done } = start(
+      { parallel: 1 },
+      {
+        api: new ScriptedTokenApi(
+          tokenResponse({ token: 'tok-1' }),
+          tokenResponse({ token: 'tok-2', provider: 'deepgram', model: 'nova-3' }),
+        ),
+      },
+    );
+
+    const outcome = await done;
+
+    expect(outcome.stopped).toMatch(
+      /now serves deepgram nova-3, but this run began on assemblyai universal-streaming-english/,
+    );
+    const run = await readRun(runPaths(bench, outcome.runId).runJson);
+    expect(run.finishedAt).toBeNull();
+    expect(run.items.map((item) => item.itemId)).toEqual(['item-1']);
+    expect(lines.at(-1)).toMatch(/stopped: the API now serves deepgram nova-3/);
+  });
+
+  it('stops an item waiting for open slots when another item stops the run: no token, no open', async () => {
+    await items(3);
+    // The second token's item stops the run (its connect query leaks the token) while the third
+    // waits a minute for slots: 4 a minute, and the first two items took them all. The leak is
+    // acted on once both connects are done: the 1 s connect lets the third item (its WAV files are
+    // real reads) reach the open budget first, as it would in a real run.
+    const { timers, vendor, api, done } = start(
+      {},
+      {
+        vendor: {
+          connectMs: 1_000,
+          connectQuery: (options) =>
+            options.accessToken === 'tok-2' ? `token=${options.accessToken}` : null,
+        },
+      },
+    );
+
+    const outcome = await done;
+
+    expect(outcome.stopped).toMatch(/holds the access token/);
+    expect(api.calls).toBe(2);
+    expect(vendor.opens).toBe(4);
+    // The stop did not wait out the minute the third item was waiting for.
+    expect(timers.now()).toBeLessThan(T0 + 60_000);
+    const run = await readRun(runPaths(bench, outcome.runId).runJson);
+    // Only the first token's item is listed (stopped mid-replay, or done if its reads beat the
+    // other items'): the leaking one throws, and the one that never opened is left out.
+    expect(run.items).toHaveLength(1);
+  });
+
+  it('keeps the list in run.json and sends none with --no-keyterms', async () => {
+    await items(1);
+    const { vendor, done } = start({ keyterms: false });
+
+    const outcome = await done;
+
+    const run = await readRun(runPaths(bench, outcome.runId).runJson);
+    expect(run.keyterms).toEqual({ enabled: false, terms: ['Linkt', 'Roger'] });
+    expect(vendor.streams.every((stream) => stream.options.settings.keyterms?.length === 0)).toBe(
+      true,
+    );
+  });
+
+  it('runs only the items asked for, and never reuses a run folder', async () => {
+    await items(3);
+
+    const first = await start({ itemIds: ['item-2'] }).done;
+    const second = await start({ itemIds: ['item-2'] }).done;
+
+    expect(first.runId).toBe('20261006-100000');
+    expect(second.runId).toBe('20261006-100000-2');
+    const run = await readRun(runPaths(bench, first.runId).runJson);
+    expect(run.items.map((item) => item.itemId)).toEqual(['item-2']);
+    expect(await readdir(join(bench, 'runs'))).toEqual(['20261006-100000', '20261006-100000-2']);
+  });
+
+  it('refuses a clip in the wrong format before any session opens', async () => {
+    await items(1);
+    await writeFile(join(bench, 'items', 'item-1', 'system.wav'), 'not a wav');
+    const { vendor, api, done } = start();
+
+    await expect(done).rejects.toThrow(/system\.wav: not a WAV file/);
+    expect(api.calls).toBe(0);
+    expect(vendor.opens).toBe(0);
+  });
+
+  it('refuses --gate before any token or run folder when the desktop has the gate off', async () => {
+    await items(2);
+    const { vendor, api, done } = start({ gate: true }, { silenceGate: null });
+
+    await expect(done).rejects.toThrow(/--gate needs the silence gate on: sttSilenceCloseSeconds/);
+    expect(api.calls).toBe(0);
+    expect(vendor.opens).toBe(0);
+    await expect(readdir(join(bench, 'runs'))).rejects.toThrow(/ENOENT/);
+  });
+
+  it("replays --gate through the desktop's gate, its prefetched token fresh by each token's lifetime", async () => {
+    // Talk, 100 s of silence (closed once the session is a minute old), talk again.
+    const audio = new Int16Array(102_000 * 16);
+    audio.set(tone(1_000), 0);
+    audio.set(tone(1_000), 101_000 * 16);
+    await writeTestItem(bench, 'item-1', { audio: { mic: audio } });
+    // freshTokens: each lives 30 s (expires_in), so the run fetches anew 10 s before that.
+    const { vendor, api, lines, done } = start({ gate: true });
+
+    const outcome = await done;
+
+    expect(outcome).toMatchObject({ ok: 1, failed: 0, stopped: null });
+    expect(lines[0]).toMatch(/keyterms on, through the silence gate$/);
+    const run = await readRun(runPaths(bench, outcome.runId).runJson);
+    expect(run.gate).toBe(true);
+    const sessions = run.items[0]?.attempts[0]?.streams[0]?.sessions ?? [];
+    expect(sessions.map((session) => [session.cause, session.itemOffsetMs])).toEqual([
+      ['start', 0],
+      ['gate', 100_000],
+    ]);
+    // Start's token, the one prefetched at the close (60 s), refreshed at 80 s and 100 s.
+    expect(api.calls).toBe(4);
+    expect(vendor.streams[1]?.options.accessToken).toBe('tok-4');
+  });
+
+  it('writes nothing when no item ever got a token', async () => {
+    await items(1);
+    const { done } = start({}, { api: new ScriptedTokenApi(new Error('connection refused')) });
+
+    const outcome = await done;
+
+    expect(outcome).toMatchObject({ ok: 0, failed: 1, runJson: null });
+    await expect(readdir(join(bench, 'runs', outcome.runId))).rejects.toThrow(/ENOENT/);
+  });
+});

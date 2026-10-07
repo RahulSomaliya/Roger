@@ -16,6 +16,13 @@ export interface FakeVendorConnection {
   readonly texts: string[];
   /** Byte length of each binary frame, in order. */
   readonly binaryFrames: number[];
+  /** WebSocket pings the adapter sent: control frames, never in `texts` or `binaryFrames`. */
+  pings: number;
+  /**
+   * Whether this socket answers a ping with a pong. Starts as the server's `answersPings`; a test
+   * turns it off to play a vendor whose connection went dead (or one that ignores pings).
+   */
+  answersPings: boolean;
   closed: boolean;
 }
 
@@ -27,8 +34,16 @@ export interface FakeVendorScript {
 
 export class FakeVendorServer {
   readonly connections: FakeVendorConnection[] = [];
+  /**
+   * Every websocket handshake the adapter attempted, refused ones too (`connections` holds only the
+   * accepted ones). One per open: a core that retried a refused connect itself would open a billed
+   * session the open budget never saw (house rule 9).
+   */
+  handshakes = 0;
   /** Refuse the handshake with this HTTP status instead of upgrading. */
   rejectWith: number | null = null;
+  /** Whether a new connection answers pings (FakeVendorConnection.answersPings). */
+  answersPings = true;
   script: FakeVendorScript = {};
 
   private constructor(
@@ -42,11 +57,19 @@ export class FakeVendorServer {
         headers: request.headers,
         texts: [],
         binaryFrames: [],
+        pings: 0,
+        answersPings: this.answersPings,
         closed: false,
       };
       this.connections.push(connection);
       socket.on('close', () => {
         connection.closed = true;
+      });
+      // By hand, not ws's autoPong: a vendor whose network died answers no ping, and the liveness
+      // check (SttConnection) must see that.
+      socket.on('ping', (data) => {
+        connection.pings += 1;
+        if (connection.answersPings) socket.pong(data);
       });
       socket.on('message', (data, isBinary) => {
         if (isBinary) {
@@ -67,7 +90,10 @@ export class FakeVendorServer {
     const server = new WebSocketServer({
       port: 0,
       host: '127.0.0.1',
+      // Pongs are the fake's to give or withhold (FakeVendorConnection.answersPings).
+      autoPong: false,
       verifyClient: (_info, done) => {
+        if (fake !== null) fake.handshakes += 1;
         const status = fake?.rejectWith ?? null;
         if (status !== null) done(false, status, 'refused by the fake vendor');
         else done(true);

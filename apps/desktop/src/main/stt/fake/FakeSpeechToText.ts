@@ -20,6 +20,8 @@ export interface FakeSttOptions {
  * A vendor-free adapter for development and tests. It "transcribes" audio energy: every window of
  * audio that is not silent becomes one final line saying how loud it was. This exercises the whole
  * pipeline (worklet → IPC → session → SQLite → uploader → API → MCP) without a vendor key.
+ * It takes the jargon list like any vendor and ignores it: it hears no words to spell, and it never
+ * refuses one, so it never fails a connect with SttConnectError.keytermsRejected.
  */
 export class FakeSpeechToText implements SpeechToText {
   readonly provider = 'fake';

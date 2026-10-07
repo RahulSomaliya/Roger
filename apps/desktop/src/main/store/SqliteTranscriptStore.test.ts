@@ -3,10 +3,21 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it } from 'vitest';
+import type { MeetingCalendarEvent } from '../../shared/calendar';
+import { START_SOURCES, type StartSource } from '../../shared/capture';
 import type { TranscriptSegment } from '../../shared/transcript';
 import { InMemoryTranscriptStore } from './InMemoryTranscriptStore';
-import { SqliteTranscriptStore } from './SqliteTranscriptStore';
-import type { MeetingSttUsage, TranscriptStore } from './TranscriptStore';
+import {
+  MEETING_IDS_BY_EVENT_IDS,
+  SqliteTranscriptStore,
+  STT_USAGE_TO_UPLOAD,
+} from './SqliteTranscriptStore';
+import type {
+  MeetingSttUsage,
+  NewAudioFile,
+  NewTranscriptGap,
+  TranscriptStore,
+} from './TranscriptStore';
 
 function segment(n: number, overrides: Partial<TranscriptSegment> = {}): TranscriptSegment {
   return {
@@ -22,6 +33,60 @@ function segment(n: number, overrides: Partial<TranscriptSegment> = {}): Transcr
     createdAt: '2026-10-05T10:00:00.000Z',
     ...overrides,
   };
+}
+
+/**
+ * Undo migration 6 on a file, leaving it as M5-T5's build (schema 5) wrote it. Every older
+ * wind-back calls this first: `migrate()` re-runs each migration above `user_version`, and one left
+ * in place fails with "duplicate column name". When migration 7 lands, write `windBackToSchema6`
+ * and call it at the top of this one (see MIGRATIONS).
+ */
+function windBackToSchema5(path: string): void {
+  const raw = new DatabaseSync(path);
+  // The index first: SQLite refuses to drop a column an index reads.
+  raw.exec(`
+    DROP INDEX stt_usage_unsynced;
+    ALTER TABLE stt_usage DROP COLUMN gated_ms;
+    ALTER TABLE stt_usage DROP COLUMN synced_at;
+    PRAGMA user_version = 5;
+  `);
+  raw.close();
+}
+
+/** Undo migrations 6 and 5, leaving the file as M2's build (schema 4) wrote it. */
+function windBackToSchema4(path: string): void {
+  windBackToSchema5(path);
+  const raw = new DatabaseSync(path);
+  // The index first: SQLite refuses to drop a column an index reads.
+  raw.exec(`
+    DROP INDEX meetings_by_calendar_event;
+    ALTER TABLE meetings DROP COLUMN calendar_event_json;
+    ALTER TABLE meetings DROP COLUMN start_source;
+    PRAGMA user_version = 4;
+  `);
+  raw.close();
+}
+
+/** Undo migrations 6, 5 and 4, leaving the file as the cost-guard build (schema 3) wrote it. */
+function windBackToSchema3(path: string): void {
+  windBackToSchema4(path);
+  const raw = new DatabaseSync(path);
+  raw.exec(`
+    DROP TABLE app_state;
+    DROP TABLE capture_events;
+    DROP TABLE audio_files;
+    DROP TABLE transcript_gaps;
+    DROP INDEX segments_held;
+    ALTER TABLE segments DROP COLUMN suppressed_reason;
+    ALTER TABLE segments DROP COLUMN echo_of;
+    ALTER TABLE segments DROP COLUMN original_text;
+    ALTER TABLE segments DROP COLUMN original_words_json;
+    ALTER TABLE segments DROP COLUMN upload_after;
+    ALTER TABLE segments DROP COLUMN origin;
+    ALTER TABLE meetings DROP COLUMN stop_reason;
+    PRAGMA user_version = 3;
+  `);
+  raw.close();
 }
 
 describe('SqliteTranscriptStore', () => {
@@ -57,6 +122,8 @@ describe('SqliteTranscriptStore', () => {
       startedAt: '2026-10-05T10:00:00Z',
       endedAt: null,
       remoteState: 'pending',
+      startSource: 'manual',
+      calendarEvent: null,
     });
 
     store.markMeetingEnded('m1', '2026-10-05T10:30:00Z');
@@ -140,7 +207,9 @@ describe('SqliteTranscriptStore', () => {
     const first = new SqliteTranscriptStore(path);
     first.createMeeting({ id: 'm1', title: 'T', startedAt: '2026-10-05T10:00:00Z' });
     first.close();
-    // Wind the file back to schema 2, as a Mac that ran the app before this change has it.
+    // Wind the file back to schema 2, as a Mac that ran the app before this change has it: every
+    // later migration first, or migrate() would add their columns twice.
+    windBackToSchema3(path);
     const raw = new DatabaseSync(path);
     raw.exec('DROP TABLE stt_usage; PRAGMA user_version = 2');
     raw.close();
@@ -174,6 +243,8 @@ function usage(meetingId: string, overrides: Partial<MeetingSttUsage> = {}): Mee
       estimatedCostUsd: 0.005,
     },
     bySource: { mic: source(60_000), system: source(60_000) },
+    // As every read sets it (MeetingSttUsage.gatedMs), so a row read back equals this.
+    gatedMs: 0,
     stopReason: null,
     updatedAt: '2026-10-06T10:02:00.000Z',
     ...overrides,
@@ -203,6 +274,1195 @@ describe.each([
     store.saveSttUsage(usage('m1'));
     expect(store.deleteMeetingIfEmpty('m1')).toBe(true);
     expect(store.getSttUsage('m1')).toEqual(usage('m1'));
+    store.close();
+  });
+
+  // Migration 6 (M3-T19b): the usage uploader's mark and the silence gate's time.
+
+  it('reads a usage saved without gated time as 0, and keeps the gated time of one that has it', () => {
+    const store = open();
+    const { gatedMs: _left, ...withoutGated } = usage('m1');
+    store.saveSttUsage(withoutGated);
+    expect(store.getSttUsage('m1')).toEqual(usage('m1'));
+    expect(store.listSttUsageToUpload(10)).toEqual([usage('m1')]);
+
+    const gated = usage('m2', {
+      gatedMs: 45_000.5,
+      bySource: {
+        mic: { ...usage('m2').bySource.mic, gatedMs: 30_000.5 },
+        system: { ...usage('m2').bySource.system, gatedMs: 15_000 },
+      },
+    });
+    store.saveSttUsage(gated);
+    expect(store.getSttUsage('m2')).toEqual(gated);
+    store.close();
+  });
+
+  it('lists the rows not uploaded since their last save, oldest save first, and a save clears the mark', () => {
+    const store = open();
+    store.saveSttUsage(usage('m2', { updatedAt: '2026-10-06T10:02:00.000Z' }));
+    store.saveSttUsage(usage('m3', { updatedAt: '2026-10-06T10:03:00.000Z' }));
+    store.saveSttUsage(usage('m1', { updatedAt: '2026-10-06T10:02:00.000Z' }));
+    const ids = (limit = 10): string[] => store.listSttUsageToUpload(limit).map((u) => u.meetingId);
+    // Same save time: by meeting id.
+    expect(ids()).toEqual(['m1', 'm2', 'm3']);
+    expect(ids(2)).toEqual(['m1', 'm2']);
+
+    const [first] = store.listSttUsageToUpload(1);
+    expect(first).toEqual(usage('m1', { updatedAt: '2026-10-06T10:02:00.000Z' }));
+    expect(store.markSttUsageSynced(first!, '2026-10-06T10:02:30.000Z')).toBe(true);
+    expect(ids()).toEqual(['m2', 'm3']);
+    // Marked once: a second mark of the same row changes nothing.
+    expect(store.markSttUsageSynced(first!, '2026-10-06T10:02:31.000Z')).toBe(false);
+    expect(store.getSttUsage('m1')).toEqual(first);
+
+    // The meeting's next save (a stream closed, or Stop) is sent again, after the older ones.
+    const stopped = usage('m1', { stopReason: 'user', updatedAt: '2026-10-06T10:04:00.000Z' });
+    store.saveSttUsage(stopped);
+    expect(ids()).toEqual(['m2', 'm3', 'm1']);
+    expect(store.listSttUsageToUpload(10)[2]).toEqual(stopped);
+    store.close();
+  });
+
+  it('marks a row only while it still holds what was sent: a save during the upload is sent next', () => {
+    const store = open();
+    store.saveSttUsage(usage('m1'));
+    const [sent] = store.listSttUsageToUpload(10);
+    // Saved again while the request was out, in the same millisecond: Stop's own save right after
+    // a stream's close. Only the stop reason tells the two apart.
+    const stopped = usage('m1', { stopReason: 'user' });
+    store.saveSttUsage(stopped);
+
+    expect(store.markSttUsageSynced(sent!, '2026-10-06T10:02:01.000Z')).toBe(false);
+    expect(store.listSttUsageToUpload(10)).toEqual([stopped]);
+    expect(store.markSttUsageSynced(stopped, '2026-10-06T10:02:02.000Z')).toBe(true);
+    expect(store.listSttUsageToUpload(10)).toEqual([]);
+    expect(store.markSttUsageSynced(usage('unknown'), '2026-10-06T10:02:03.000Z')).toBe(false);
+    store.close();
+  });
+
+  it('refuses a list limit that is not a whole number from 1', () => {
+    const store = open();
+    store.saveSttUsage(usage('m1'));
+    expect(() => store.listSttUsageToUpload(0)).toThrow('the limit must be a whole number from 1');
+    expect(() => store.listSttUsageToUpload(1.5)).toThrow('the limit must be a whole number');
+    store.close();
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// Migration 4 (M2-T3): echo state, holds and origin on lines, the meeting's stop reason, gaps,
+// audio files, capture events and device state.
+
+const T0 = '2026-10-06T10:00:00.000Z';
+
+function manualClock(iso: string): { now: () => Date; set: (next: string) => void } {
+  let current = new Date(iso);
+  return {
+    now: () => current,
+    set: (next) => {
+      current = new Date(next);
+    },
+  };
+}
+
+function gap(id: string, overrides: Partial<NewTranscriptGap> = {}): NewTranscriptGap {
+  return {
+    id,
+    meetingId: 'm1',
+    source: 'system',
+    startMs: 10_000,
+    endMs: 14_000,
+    reason: 'stt_failed',
+    createdAt: T0,
+    ...overrides,
+  };
+}
+
+function audioFile(id: string, overrides: Partial<NewAudioFile> = {}): NewAudioFile {
+  return {
+    id,
+    meetingId: 'm1',
+    source: 'mic',
+    startMs: 0,
+    path: `audio/m1/${id}.wav`,
+    format: 'wav',
+    createdAt: T0,
+    ...overrides,
+  };
+}
+
+describe.each([
+  [
+    'SqliteTranscriptStore',
+    (clock: () => Date): TranscriptStore => new SqliteTranscriptStore(':memory:', clock),
+  ],
+  [
+    'InMemoryTranscriptStore',
+    (clock: () => Date): TranscriptStore => new InMemoryTranscriptStore(clock),
+  ],
+])('%s capture state (migration 4)', (_name, open: (clock: () => Date) => TranscriptStore) => {
+  function openWithMeeting(at = T0): {
+    store: TranscriptStore;
+    clock: ReturnType<typeof manualClock>;
+  } {
+    const clock = manualClock(at);
+    const store = open(clock.now);
+    store.createMeeting({ id: 'm1', title: 'T', startedAt: '2026-10-06T09:00:00.000Z' });
+    return { store, clock };
+  }
+
+  it('does not count hidden or held lines as waiting; a held line waits for its release or its cap', () => {
+    const { store, clock } = openWithMeeting('2026-10-06T10:01:59.999Z');
+    store.appendSegment(segment(1));
+    store.appendSegment(segment(2));
+    store.appendSegment(segment(3));
+    store.appendSegment(segment(4, { id: 'seg-4-system', source: 'system', speaker: 'them' }));
+    expect(store.suppressSegment('seg-1', 'echo', 'seg-4-system')).toBe(true);
+    // Written without milliseconds on purpose: the cap must compare as an instant, not as text
+    // ("...02:00Z" sorts after "...02:00.000Z").
+    expect(store.holdSegment('seg-2', '2026-10-06T10:02:00Z')).toBe(true);
+    expect(store.holdSegment('seg-3', '2026-10-06T10:00:00.000Z')).toBe(true); // cap already past
+
+    expect(store.listUnsyncedSegments('m1', 10).map((s) => s.id)).toEqual([
+      'seg-3',
+      'seg-4-system',
+    ]);
+    expect(store.countUnsyncedSegments()).toBe(2);
+
+    clock.set('2026-10-06T10:02:00.000Z');
+    expect(store.listUnsyncedSegments('m1', 10).map((s) => s.id)).toEqual([
+      'seg-2',
+      'seg-3',
+      'seg-4-system',
+    ]);
+    expect(store.countUnsyncedSegments()).toBe(3);
+    store.close();
+  });
+
+  it('refuses a hold cap that is not an ISO 8601 instant with Z or an offset', () => {
+    const { store } = openWithMeeting();
+    store.appendSegment(segment(1));
+    // Date.parse reads the first as local time and guesses at the rest: on a Mac in IST the first
+    // would become 04:32Z, a cap already past, and the line would upload unchecked.
+    for (const cap of ['2026-10-06T10:02:00', 'Oct 6 2026', '1', '2026-10-06', '']) {
+      expect(() => store.holdSegment('seg-1', cap)).toThrow(
+        /hold of segment seg-1 is not an ISO 8601 instant/,
+      );
+    }
+    expect(store.getSegment('seg-1')?.uploadAfter).toBeNull();
+    expect(store.holdSegment('seg-1', '2026-10-06T15:32:00+05:30')).toBe(true);
+    expect(store.getSegment('seg-1')?.uploadAfter).toBe('2026-10-06T10:02:00.000Z');
+    store.close();
+  });
+
+  it('lists held lines for the settle and releases them on a decision', () => {
+    const { store } = openWithMeeting();
+    store.createMeeting({ id: 'm2', title: 'T', startedAt: '2026-10-06T09:30:00.000Z' });
+    store.appendSegment(segment(2));
+    store.appendSegment(segment(1));
+    store.appendSegment(segment(3, { meetingId: 'm2' }));
+    store.appendSegment(segment(4)); // never held
+    for (const id of ['seg-1', 'seg-2', 'seg-3']) {
+      expect(store.holdSegment(id, '2026-10-06T10:02:00.000Z')).toBe(true);
+    }
+
+    expect(store.listHeldSegments('m1').map((s) => s.id)).toEqual(['seg-1', 'seg-2']);
+    expect(store.listHeldSegments().map((s) => s.id)).toEqual(['seg-1', 'seg-2', 'seg-3']);
+    expect(store.listHeldSegments('m1')[0]).toEqual({
+      ...segment(1),
+      origin: 'live',
+      suppressedReason: null,
+      echoOf: null,
+      originalText: null,
+      originalWords: null,
+      uploadAfter: '2026-10-06T10:02:00.000Z',
+      syncedAt: null,
+    });
+
+    store.releaseSegments(['seg-1', 'seg-3']);
+    expect(store.listHeldSegments().map((s) => s.id)).toEqual(['seg-2']);
+    expect(store.getSegment('seg-1')?.uploadAfter).toBeNull();
+    expect(store.listUnsyncedSegments('m1', 10).map((s) => s.id)).toEqual(['seg-1', 'seg-4']);
+    store.close();
+  });
+
+  it('lists a meeting ended remotely again while it has a line that can upload, and only then', () => {
+    const { store, clock } = openWithMeeting();
+    const needingSync = (): string[] => store.listMeetingsNeedingSync().map((m) => m.id);
+    // Ended remotely with every line uploaded: its lines must not bring m1 back.
+    store.createMeeting({ id: 'm0', title: 'T', startedAt: '2026-10-06T08:00:00.000Z' });
+    store.appendSegment(segment(9, { meetingId: 'm0' }));
+    store.markSegmentsSynced(['seg-9'], T0);
+    store.markMeetingEnded('m0', T0);
+    store.setMeetingRemoteState('m0', 'ended');
+    // Not ended remotely: listed whatever its lines, as in M1.
+    store.createMeeting({ id: 'm2', title: 'T', startedAt: '2026-10-06T09:30:00.000Z' });
+    store.appendSegment(segment(1));
+    store.markSegmentsSynced(['seg-1'], T0);
+    store.markMeetingEnded('m1', T0);
+    store.setMeetingRemoteState('m1', 'ended');
+    expect(needingSync()).toEqual(['m2']);
+
+    // Lines that cannot upload leave it alone: hidden, rejected, held until a later cap.
+    store.appendSegment(segment(2));
+    store.suppressSegment('seg-2', 'echo', 'sys-2');
+    store.appendSegment(segment(3));
+    store.markSegmentRejected('seg-3', 'bad', T0);
+    store.appendSegment(segment(4));
+    store.holdSegment('seg-4', '2026-10-06T10:02:00.000Z');
+    store.appendSegment(segment(5));
+    store.holdSegment('seg-5', '2026-10-06T10:02:00.000Z');
+    expect(needingSync()).toEqual(['m2']);
+
+    // M1 dropped a meeting ended remotely for good, which stranded each of these lines.
+    store.releaseSegments(['seg-4']);
+    expect(needingSync()).toEqual(['m1', 'm2']);
+    store.markSegmentsSynced(['seg-4'], T0);
+    expect(needingSync()).toEqual(['m2']);
+    clock.set('2026-10-06T10:02:00.000Z'); // seg-5's cap passes
+    expect(needingSync()).toEqual(['m1', 'm2']);
+    store.markSegmentsSynced(['seg-5'], T0);
+    store.unhideSegment('seg-2');
+    expect(needingSync()).toEqual(['m1', 'm2']);
+    store.markSegmentsSynced(['seg-2'], T0);
+    store.appendSegment(segment(6), 'rerun');
+    expect(needingSync()).toEqual(['m1', 'm2']);
+    store.markSegmentsSynced(['seg-6'], T0);
+    expect(needingSync()).toEqual(['m2']);
+    store.close();
+  });
+
+  it('counts the lines a meeting still holds, past their cap or not, as the settle lists them', () => {
+    const { store, clock } = openWithMeeting();
+    store.createMeeting({ id: 'm2', title: 'T', startedAt: '2026-10-06T09:30:00.000Z' });
+    for (const n of [1, 2, 3, 4, 5]) store.appendSegment(segment(n));
+    store.appendSegment(segment(6, { meetingId: 'm2' }));
+    store.appendSegment(segment(7)); // never held
+    for (const id of ['seg-1', 'seg-2', 'seg-3', 'seg-4', 'seg-5', 'seg-6']) {
+      expect(store.holdSegment(id, '2026-10-06T10:02:00.000Z')).toBe(true);
+    }
+    store.suppressSegment('seg-3', 'echo', 'sys-3'); // a hide ends the hold
+    store.markSegmentRejected('seg-4', 'bad', T0);
+    store.markSegmentsSynced(['seg-5'], T0);
+    expect(store.countHeldSegments('m1')).toBe(2);
+
+    // Past its cap a line can upload, and it still counts until it is uploaded or released.
+    clock.set('2026-10-06T10:05:00.000Z');
+    expect(store.countHeldSegments('m1')).toBe(2);
+    expect(store.listHeldSegments('m1').map((s) => s.id)).toEqual(['seg-1', 'seg-2']);
+    store.releaseSegments(['seg-1']);
+    expect(store.countHeldSegments('m1')).toBe(1);
+    expect(store.countHeldSegments('m2')).toBe(1);
+    expect(store.countHeldSegments('missing')).toBe(0);
+    store.close();
+  });
+
+  it('never holds, hides or trims a line already uploaded: Postgres keeps it as it was sent', () => {
+    const { store } = openWithMeeting();
+    store.appendSegment(segment(1));
+    store.markSegmentsSynced(['seg-1'], T0);
+
+    expect(store.holdSegment('seg-1', '2026-10-06T10:02:00.000Z')).toBe(false);
+    expect(store.suppressSegment('seg-1', 'echo', 'sys-1')).toBe(false);
+    expect(store.trimSegment('seg-1', { text: 'line', words: null, echoOf: 'sys-1' })).toBe(false);
+    expect(store.getSegment('seg-1')).toMatchObject({
+      text: 'line 1',
+      suppressedReason: null,
+      echoOf: null,
+      originalText: null,
+      uploadAfter: null,
+      syncedAt: T0,
+    });
+    expect(store.holdSegment('missing', '2026-10-06T10:02:00.000Z')).toBe(false);
+    expect(store.getSegment('missing')).toBeNull();
+    store.close();
+  });
+
+  it('refuses to hide, trim or hold a line the uploader has sent, until it is uploaded or rejected', () => {
+    const { store } = openWithMeeting();
+    for (const n of [1, 2, 3]) store.appendSegment(segment(n));
+    const sending = store.listUnsyncedSegments('m1', 10).map((s) => s.id); // the uploader's batch
+    store.markSegmentsSent(sending); // the request goes out
+    // The call-audio twins land while it is out: Postgres may already hold the text as sent, so a
+    // hide or trim here would make the local copy disagree with it.
+    expect(store.suppressSegment('seg-1', 'echo', 'sys-1')).toBe(false);
+    expect(store.trimSegment('seg-2', { text: 'line', words: null, echoOf: 'sys-2' })).toBe(false);
+    expect(store.holdSegment('seg-3', '2026-10-06T10:02:00.000Z')).toBe(false);
+    expect(store.getSegment('seg-1')).toMatchObject({ suppressedReason: null, echoOf: null });
+    expect(store.getSegment('seg-2')).toMatchObject({ text: 'line 2', originalText: null });
+    expect(store.getSegment('seg-3')?.uploadAfter).toBeNull();
+    // A failed request is retried: sent lines still wait and still upload.
+    expect(store.listUnsyncedSegments('m1', 10).map((s) => s.id)).toEqual(sending);
+    expect(store.countUnsyncedSegments()).toBe(3);
+
+    store.markSegmentsSynced(['seg-1', 'seg-2'], T0);
+    store.markSegmentRejected('seg-3', 'text too short', T0);
+    expect(store.suppressSegment('seg-1', 'echo', 'sys-1')).toBe(false); // uploaded, as before
+    // A rejected line never reaches Postgres, so the mark ends with the rejection.
+    expect(store.suppressSegment('seg-3', 'echo', 'sys-3')).toBe(true);
+    // Postgres lost the meeting: its lines may change again until the uploader re-sends them.
+    store.resetSyncForMeeting('m1');
+    expect(store.trimSegment('seg-2', { text: 'line', words: null, echoOf: 'sys-2' })).toBe(true);
+    store.close();
+  });
+
+  it('hides a line with its reason and twin, ends its hold, and unhides it for upload', () => {
+    const { store } = openWithMeeting();
+    store.appendSegment(segment(1));
+    store.holdSegment('seg-1', '2026-10-06T10:02:00.000Z');
+
+    expect(store.suppressSegment('seg-1', 'echo', 'sys-9')).toBe(true);
+    expect(store.getSegment('seg-1')).toMatchObject({
+      suppressedReason: 'echo',
+      echoOf: 'sys-9',
+      uploadAfter: null,
+    });
+    expect(store.listHeldSegments()).toEqual([]);
+    expect(store.listUnsyncedSegments('m1', 10)).toEqual([]);
+
+    expect(store.unhideSegment('seg-1')).toBe(true);
+    expect(store.getSegment('seg-1')).toMatchObject({ suppressedReason: null, echoOf: null });
+    expect(store.listUnsyncedSegments('m1', 10)).toEqual([segment(1)]);
+    expect(store.unhideSegment('seg-1')).toBe(false); // not hidden any more
+    expect(store.unhideSegment('missing')).toBe(false);
+    store.close();
+  });
+
+  it('trims echo words, keeping the line as the vendor wrote it; a second trim keeps that original', () => {
+    const { store } = openWithMeeting();
+    const words = ['so', 'the', 'plan', 'is', 'ship', 'it'].map((text, index) => ({
+      text,
+      startMs: 1000 + index * 100,
+      endMs: 1080 + index * 100,
+      confidence: 0.9,
+    }));
+    store.appendSegment(segment(1, { text: 'so the plan is ship it', words }));
+    store.holdSegment('seg-1', '2026-10-06T10:02:00.000Z');
+    const kept = [words[0]!, words[4]!, words[5]!];
+
+    expect(store.trimSegment('seg-1', { text: 'so ship it', words: kept, echoOf: 'sys-1' })).toBe(
+      true,
+    );
+    expect(store.getSegment('seg-1')).toMatchObject({
+      text: 'so ship it',
+      words: kept,
+      echoOf: 'sys-1',
+      originalText: 'so the plan is ship it',
+      originalWords: words,
+      suppressedReason: null,
+      // A trim decides the words, not when the line may go: the echo sink releases it.
+      uploadAfter: '2026-10-06T10:02:00.000Z',
+    });
+
+    store.releaseSegments(['seg-1']);
+    expect(store.listUnsyncedSegments('m1', 10)).toEqual([
+      { ...segment(1), text: 'so ship it', words: kept },
+    ]);
+
+    expect(
+      store.trimSegment('seg-1', { text: 'ship it', words: kept.slice(1), echoOf: 'sys-2' }),
+    ).toBe(true);
+    expect(store.getSegment('seg-1')).toMatchObject({
+      text: 'ship it',
+      echoOf: 'sys-2',
+      originalText: 'so the plan is ship it',
+      originalWords: words,
+    });
+    expect(() => store.trimSegment('seg-1', { text: '  ', words: [], echoOf: 'sys-2' })).toThrow(
+      /trimmed to nothing/,
+    );
+    store.close();
+  });
+
+  it('stores re-run lines with their origin; a live line is the default', () => {
+    const { store } = openWithMeeting();
+    store.appendSegment(segment(1));
+    store.appendSegment(segment(2), 'rerun');
+    expect(store.getSegment('seg-1')?.origin).toBe('live');
+    expect(store.getSegment('seg-2')?.origin).toBe('rerun');
+    // A re-run line uploads like any other.
+    expect(store.listUnsyncedSegments('m1', 10).map((s) => s.id)).toEqual(['seg-1', 'seg-2']);
+    store.close();
+  });
+
+  it('lists the stored lines of one source that touch a window, hidden ones included', () => {
+    const { store } = openWithMeeting();
+    store.appendSegment(segment(1)); // 1000 to 1800
+    store.appendSegment(segment(2)); // 2000 to 2800
+    store.appendSegment(segment(5)); // 5000 to 5800
+    store.appendSegment(segment(2, { id: 'seg-2-system', source: 'system', speaker: 'them' }));
+    store.suppressSegment('seg-2', 'echo', 'seg-2-system');
+
+    expect(store.listSegmentsOverlapping('m1', 'mic', 1900, 2100).map((s) => s.id)).toEqual([
+      'seg-2',
+    ]);
+    expect(store.listSegmentsOverlapping('m1', 'mic', 1800, 5000).map((s) => s.id)).toEqual([
+      'seg-1',
+      'seg-2',
+      'seg-5',
+    ]);
+    expect(store.listSegmentsOverlapping('m1', 'system', 0, 10_000).map((s) => s.id)).toEqual([
+      'seg-2-system',
+    ]);
+    expect(store.listSegmentsOverlapping('m2', 'mic', 0, 10_000)).toEqual([]);
+    store.close();
+  });
+
+  it('records each gap once and marks it recovered, or why it was not', () => {
+    const { store } = openWithMeeting();
+    store.addGap(gap('g2', { startMs: 30_000, endMs: 31_000, reason: 'offline' }));
+    store.addGap(gap('g1'));
+    store.addGap(gap('g1', { endMs: 99_000 })); // a re-sent gap is ignored
+    store.addGap(gap('g3', { source: 'mic', startMs: 5_000, endMs: 6_000, reason: 'budget' }));
+
+    expect(store.listGaps('m1').map((g) => [g.id, g.startMs, g.endMs])).toEqual([
+      ['g3', 5_000, 6_000],
+      ['g1', 10_000, 14_000],
+      ['g2', 30_000, 31_000],
+    ]);
+    expect(store.listGaps('m1')[1]).toEqual({
+      ...gap('g1'),
+      recoveredAt: null,
+      recoverError: null,
+    });
+
+    store.setGapRecoverError('g1', 'no audio kept for this window');
+    expect(store.listUnrecoveredGaps('m1').find((g) => g.id === 'g1')?.recoverError).toBe(
+      'no audio kept for this window',
+    );
+    store.markGapRecovered('g1', '2026-10-06T10:05:00.000Z');
+    expect(store.listGaps('m1')[1]).toMatchObject({
+      recoveredAt: '2026-10-06T10:05:00.000Z',
+      recoverError: null,
+    });
+    expect(store.listUnrecoveredGaps().map((g) => g.id)).toEqual(['g3', 'g2']);
+    expect(store.listUnrecoveredGaps('m2')).toEqual([]);
+
+    expect(() => {
+      store.addGap(gap('g4', { startMs: 5_000, endMs: 5_000 }));
+    }).toThrow(/must end after it starts/);
+    expect(() => {
+      store.addGap(gap('g5', { meetingId: 'no-such-meeting' }));
+    }).toThrow(/gap g5 of meeting no-such-meeting/);
+    store.close();
+  });
+
+  it('reads back every gap reason, asleep included (M2-T18)', () => {
+    const { store } = openWithMeeting();
+    const reasons = ['stt_failed', 'offline', 'asleep', 'budget', 'crash'] as const;
+    reasons.forEach((reason, index) => {
+      store.addGap(
+        gap(`g${index}`, { startMs: index * 1_000, endMs: index * 1_000 + 500, reason }),
+      );
+    });
+    // A reason the reader does not list makes every read of the meeting's gaps throw "corrupt
+    // transcript_gaps row": its capture report and M2-T16's re-run list both.
+    expect(store.listGaps('m1').map((g) => g.reason)).toEqual(reasons);
+    store.close();
+  });
+
+  it('tracks an audio file from open to closed, encoded and deleted', () => {
+    const { store } = openWithMeeting();
+    store.addAudioFile(audioFile('mic-1', { startMs: 60_000 }));
+    store.addAudioFile(audioFile('mic-0'));
+    store.addAudioFile(audioFile('mic-0', { startMs: 5 })); // a re-sent file is ignored
+    store.addAudioFile(audioFile('sys-0', { source: 'system' }));
+
+    expect(store.listOpenAudioFiles().map((f) => f.id)).toEqual(['mic-0', 'sys-0', 'mic-1']);
+    store.closeAudioFile('mic-0', { endMs: 60_000, bytes: 1_920_044, closedAt: T0 });
+    store.closeAudioFile('sys-0', { endMs: 60_000, bytes: 1_920_044, closedAt: T0 });
+    store.markAudioFileEncoded('mic-0', {
+      path: 'audio/m1/mic-0.m4a',
+      format: 'm4a',
+      bytes: 360_000,
+    });
+
+    expect(store.listOpenAudioFiles().map((f) => f.id)).toEqual(['mic-1']);
+    expect(store.listAudioFiles('m1')).toEqual([
+      {
+        ...audioFile('mic-0'),
+        path: 'audio/m1/mic-0.m4a',
+        format: 'm4a',
+        endMs: 60_000,
+        bytes: 360_000,
+        closedAt: T0,
+        deletedAt: null,
+      },
+      expect.objectContaining({ id: 'sys-0', source: 'system', endMs: 60_000 }),
+      expect.objectContaining({ id: 'mic-1', endMs: null, bytes: 0, closedAt: null }),
+    ]);
+    expect(store.listMeetingIdsWithAudio()).toEqual(['m1']);
+
+    expect(store.markMeetingAudioDeleted('m1', '2026-10-13T10:00:00.000Z')).toBe(3);
+    expect(store.listAudioFiles('m1')).toEqual([]);
+    expect(store.listOpenAudioFiles()).toEqual([]);
+    expect(store.listMeetingIdsWithAudio()).toEqual([]);
+    expect(store.markMeetingAudioDeleted('m1', '2026-10-14T10:00:00.000Z')).toBe(0);
+    store.close();
+  });
+
+  it('refuses an audio file id another meeting holds: the id is global, so a silent skip loses the file', () => {
+    const { store } = openWithMeeting();
+    store.createMeeting({ id: 'm2', title: 'T', startedAt: '2026-10-06T09:30:00.000Z' });
+    // A per-meeting name used as the id, as the backup fixture once did.
+    store.addAudioFile(audioFile('mic-000000000'));
+    expect(() => {
+      store.addAudioFile(
+        audioFile('mic-000000000', { meetingId: 'm2', path: 'audio/m2/mic-000000000.wav' }),
+      );
+    }).toThrow(/audio file mic-000000000 of meeting m2: .*meeting m1/);
+    expect(store.listAudioFiles('m2')).toEqual([]);
+    expect(store.listAudioFiles('m1').map((f) => f.path)).toEqual(['audio/m1/mic-000000000.wav']);
+    // A file deleted from disk still holds its id.
+    store.markMeetingAudioDeleted('m1', T0);
+    expect(() => {
+      store.addAudioFile(
+        audioFile('mic-000000000', { meetingId: 'm2', path: 'audio/m2/mic-000000000.wav' }),
+      );
+    }).toThrow(/meeting m1/);
+    store.close();
+  });
+
+  it('refuses an audio path that is absolute or climbs out of the user data folder', () => {
+    const { store } = openWithMeeting();
+    expect(() => {
+      store.addAudioFile(audioFile('a', { path: '/Users/x/audio/m1/a.wav' }));
+    }).toThrow(/relative/);
+    expect(() => {
+      store.addAudioFile(audioFile('b', { path: 'audio/../../b.wav' }));
+    }).toThrow(/relative/);
+    store.addAudioFile(audioFile('c'));
+    expect(() => {
+      store.markAudioFileEncoded('c', { path: '../c.m4a', format: 'm4a', bytes: 1 });
+    }).toThrow(/relative/);
+    expect(store.listAudioFiles('m1').map((f) => f.path)).toEqual(['audio/m1/c.wav']);
+    store.close();
+  });
+
+  it('appends capture events in order with their details', () => {
+    const { store } = openWithMeeting();
+    const first = store.addCaptureEvent({
+      meetingId: 'm1',
+      at: T0,
+      offsetMs: 61_000,
+      source: 'system',
+      kind: 'stt_failed',
+      detail: { code: 3005, retryInMs: 2000, fatal: true, cause: null },
+    });
+    const second = store.addCaptureEvent({
+      meetingId: 'm1',
+      at: '2026-10-06T10:00:05.000Z',
+      offsetMs: 66_000,
+      source: null,
+      kind: 'offline',
+    });
+    expect(second).toBeGreaterThan(first);
+    expect(store.listCaptureEvents('m1')).toEqual([
+      {
+        id: first,
+        meetingId: 'm1',
+        at: T0,
+        offsetMs: 61_000,
+        source: 'system',
+        kind: 'stt_failed',
+        detail: { code: 3005, retryInMs: 2000, fatal: true, cause: null },
+      },
+      {
+        id: second,
+        meetingId: 'm1',
+        at: '2026-10-06T10:00:05.000Z',
+        offsetMs: 66_000,
+        source: null,
+        kind: 'offline',
+        detail: {},
+      },
+    ]);
+    expect(store.listCaptureEvents('m2')).toEqual([]);
+    store.close();
+  });
+
+  it('keeps device state by key', () => {
+    const { store } = openWithMeeting();
+    expect(store.getAppState('systemAudio.verified')).toBeNull();
+    store.setAppState('systemAudio.verified', 'hash-a', T0);
+    store.setAppState('systemAudio.verified', 'hash-b', '2026-10-06T10:01:00.000Z');
+    expect(store.getAppState('systemAudio.verified')).toEqual({
+      value: 'hash-b',
+      updatedAt: '2026-10-06T10:01:00.000Z',
+    });
+    store.deleteAppState('systemAudio.verified');
+    expect(store.getAppState('systemAudio.verified')).toBeNull();
+    store.close();
+  });
+
+  it('records why a meeting stopped; a meeting a crash left open is ended with crash', () => {
+    const { store } = openWithMeeting();
+    expect(store.getMeetingStopReason('m1')).toBeNull();
+    store.setMeetingStopReason('m1', 'user');
+    store.markMeetingEnded('m1', T0);
+    expect(store.getMeetingStopReason('m1')).toBe('user');
+    expect(store.getMeetingStopReason('missing')).toBeNull();
+
+    store.createMeeting({ id: 'crashed', title: 'T', startedAt: '2026-10-06T08:00:00.000Z' });
+    // A quit whose stop outran its bound: the stop wrote its reason, then the app exited.
+    store.createMeeting({ id: 'quit', title: 'T', startedAt: '2026-10-06T08:30:00.000Z' });
+    store.setMeetingStopReason('quit', 'quit');
+    store.createMeeting({ id: 'resumed', title: 'T', startedAt: '2026-10-06T09:30:00.000Z' });
+
+    expect(store.listOpenMeetings().map((m) => m.id)).toEqual(['crashed', 'quit', 'resumed']);
+    expect(store.endMeetingsLeftOpen(T0, 'resumed')).toBe(2);
+    expect(store.getMeetingStopReason('crashed')).toBe('crash');
+    expect(store.getMeetingStopReason('quit')).toBe('quit');
+    expect(store.getMeetingStopReason('m1')).toBe('user');
+    expect(store.listOpenMeetings().map((m) => m.id)).toEqual(['resumed']);
+    expect(store.getMeetingStopReason('resumed')).toBeNull();
+    store.close();
+  });
+
+  it('keeps a meeting with no lines only while it has audio kept, which a re-run or the sweeper needs', () => {
+    const { store } = openWithMeeting();
+    store.addAudioFile(audioFile('mic-0'));
+    // Deleting it would cascade the row away and leave the file on disk for no sweeper to find.
+    expect(store.deleteMeetingIfEmpty('m1')).toBe(false);
+    store.addGap(gap('g1'));
+    expect(store.deleteMeetingIfEmpty('m1')).toBe(false);
+    // The user deleted the audio, or the 30-day cap did: the gap can never be re-run now, so it
+    // holds nothing back.
+    store.markMeetingAudioDeleted('m1', T0);
+    store.addCaptureEvent({ meetingId: 'm1', at: T0, offsetMs: 0, source: null, kind: 'stall' });
+    expect(store.deleteMeetingIfEmpty('m1')).toBe(true);
+    expect(store.listUnrecoveredGaps()).toEqual([]);
+    expect(store.listCaptureEvents('m1')).toEqual([]);
+    expect(store.listMeetingIdsWithAudio()).toEqual([]);
+
+    // Backup off (`audioRetentionDays` 0): a gap with no audio at all would otherwise keep the
+    // meeting pending, and in every uploader tick, for good.
+    store.createMeeting({ id: 'm2', title: 'T', startedAt: '2026-10-06T09:30:00.000Z' });
+    store.addGap(gap('g2', { meetingId: 'm2', reason: 'offline' }));
+    expect(store.deleteMeetingIfEmpty('m2')).toBe(true);
+    expect(store.listUnrecoveredGaps()).toEqual([]);
+    expect(store.getMeeting('m2')).toBeNull();
+    store.close();
+  });
+});
+
+describe('SqliteTranscriptStore migration 4 and crash reopen', () => {
+  it('upgrades a store at schema 3 (M1 plus stt_usage), keeping every row', () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'roger-store-')), 'roger.sqlite');
+    const first = new SqliteTranscriptStore(path);
+    first.createMeeting({ id: 'm1', title: 'T', startedAt: '2026-10-05T10:00:00Z' });
+    first.appendSegment(segment(1, { id: 'synced' }));
+    first.appendSegment(segment(2, { id: 'waiting', source: 'system', speaker: 'them' }));
+    first.appendSegment(segment(3, { id: 'rejected' }));
+    first.markSegmentsSynced(['synced'], '2026-10-05T10:01:00.000Z');
+    first.markSegmentRejected('rejected', 'bad', '2026-10-05T10:01:00.000Z');
+    first.markMeetingEnded('m1', '2026-10-05T10:30:00Z');
+    first.setMeetingRemoteState('m1', 'ended');
+    first.saveSttUsage(usage('m1', { stopReason: 'no-speech' }));
+    first.close();
+    windBackToSchema3(path);
+
+    const store = new SqliteTranscriptStore(path, () => new Date(T0));
+    const raw = new DatabaseSync(path);
+    expect(raw.prepare('PRAGMA user_version').get()?.user_version).toBe(6);
+    raw.close();
+    expect(store.getMeeting('m1')).toMatchObject({
+      endedAt: '2026-10-05T10:30:00Z',
+      remoteState: 'ended',
+    });
+    expect(store.getMeetingStopReason('m1')).toBeNull();
+    expect(store.countSegments('m1')).toBe(3);
+    expect(store.countRejectedSegments()).toBe(1);
+    expect(store.listUnsyncedSegments('m1', 10)).toEqual([
+      segment(2, { id: 'waiting', source: 'system', speaker: 'them' }),
+    ]);
+    expect(store.getSegment('synced')).toEqual({
+      ...segment(1, { id: 'synced' }),
+      origin: 'live',
+      suppressedReason: null,
+      echoOf: null,
+      originalText: null,
+      originalWords: null,
+      uploadAfter: null,
+      syncedAt: '2026-10-05T10:01:00.000Z',
+    });
+    expect(store.getSttUsage('m1')).toEqual(usage('m1', { stopReason: 'no-speech' }));
+    store.addGap(gap('g1'));
+    store.close();
+
+    const again = new SqliteTranscriptStore(path); // migration 4 does not run twice
+    expect(again.listGaps('m1').map((g) => g.id)).toEqual(['g1']);
+    again.close();
+  });
+
+  it('crash reopen: a store that was never closed leaves every hold, gap and open file to the next launch', () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'roger-store-')), 'roger.sqlite');
+    const crashed = new SqliteTranscriptStore(path, () => new Date(T0));
+    crashed.createMeeting({ id: 'm1', title: 'T', startedAt: '2026-10-06T09:59:00.000Z' });
+    crashed.appendSegment(segment(1));
+    crashed.appendSegment(segment(2));
+    crashed.appendSegment(segment(2, { id: 'seg-2-system', source: 'system', speaker: 'them' }));
+    crashed.holdSegment('seg-1', '2026-10-06T10:02:00.000Z');
+    crashed.suppressSegment('seg-2', 'echo', 'seg-2-system');
+    crashed.addAudioFile(audioFile('mic-0'));
+    crashed.addGap(gap('g1'));
+    crashed.setAppState('recording.heartbeat', '{"meetingId":"m1"}', T0);
+    // No close(): kill -9 never runs it. Committed writes are in the WAL file.
+
+    const next = new SqliteTranscriptStore(path, () => new Date('2026-10-06T10:00:06.000Z'));
+    expect(next.listOpenMeetings().map((m) => m.id)).toEqual(['m1']);
+    expect(next.listHeldSegments().map((s) => s.id)).toEqual(['seg-1']);
+    expect(next.listUnsyncedSegments('m1', 10).map((s) => s.id)).toEqual(['seg-2-system']);
+    expect(next.getSegment('seg-2')).toMatchObject({ suppressedReason: 'echo' });
+    expect(next.listOpenAudioFiles().map((f) => f.id)).toEqual(['mic-0']);
+    expect(next.listUnrecoveredGaps().map((g) => g.id)).toEqual(['g1']);
+    expect(next.getAppState('recording.heartbeat')?.value).toBe('{"meetingId":"m1"}');
+    // A resume keeps the meeting open; everything else ends as in M1.
+    expect(next.endMeetingsLeftOpen('2026-10-06T10:00:06.000Z', 'm1')).toBe(0);
+    expect(next.getMeeting('m1')?.endedAt).toBeNull();
+    next.close();
+    crashed.close();
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// Meeting reads (M4-S4b): the sidebar's recent meetings and the meeting page's stored lines.
+
+describe.each([
+  ['SqliteTranscriptStore', (): TranscriptStore => new SqliteTranscriptStore(':memory:')],
+  ['InMemoryTranscriptStore', (): TranscriptStore => new InMemoryTranscriptStore()],
+])('%s meeting reads', (_name, open: () => TranscriptStore) => {
+  it('listMeetings and listSegments read in order', () => {
+    const store = open();
+    store.createMeeting({ id: 'standup', title: 'Standup', startedAt: '2026-10-05T09:00:00.000Z' });
+    store.createMeeting({ id: 'review', title: 'Review', startedAt: '2026-10-06T14:00:00.000Z' });
+    // Two meetings that started in the same millisecond: the larger id first, as a tie-break.
+    store.createMeeting({ id: 'retro-a', title: 'Retro', startedAt: '2026-10-06T09:00:00.000Z' });
+    store.createMeeting({ id: 'retro-b', title: 'Retro', startedAt: '2026-10-06T09:00:00.000Z' });
+    store.markMeetingEnded('standup', '2026-10-05T09:15:00.000Z');
+    store.setMeetingRemoteState('standup', 'ended');
+
+    expect(store.listMeetings(10).map((m) => m.id)).toEqual([
+      'review',
+      'retro-b',
+      'retro-a',
+      'standup',
+    ]);
+    // A meeting still recording is listed too: the sidebar shows it while it records.
+    expect(store.listMeetings(2)).toEqual([
+      {
+        id: 'review',
+        title: 'Review',
+        startedAt: '2026-10-06T14:00:00.000Z',
+        endedAt: null,
+        remoteState: 'pending',
+        startSource: 'manual',
+        calendarEvent: null,
+      },
+      {
+        id: 'retro-b',
+        title: 'Retro',
+        startedAt: '2026-10-06T09:00:00.000Z',
+        endedAt: null,
+        remoteState: 'pending',
+        startSource: 'manual',
+        calendarEvent: null,
+      },
+    ]);
+    expect(store.listMeetings(100).at(-1)).toEqual({
+      id: 'standup',
+      title: 'Standup',
+      startedAt: '2026-10-05T09:00:00.000Z',
+      endedAt: '2026-10-05T09:15:00.000Z',
+      remoteState: 'ended',
+      startSource: 'manual',
+      calendarEvent: null,
+    });
+
+    store.createMeeting({ id: 'm1', title: 'T', startedAt: '2026-10-06T15:00:00.000Z' });
+    // Appended out of order. Transcript order is by start, the mic before call audio at the same
+    // start, then by id; and by start as a number (10 s after 2 s), never as text.
+    store.appendSegment(segment(10));
+    store.appendSegment(segment(1, { id: 'seg-1-system', source: 'system', speaker: 'them' }));
+    store.appendSegment(segment(2));
+    store.appendSegment(segment(1, { id: 'seg-1b' }));
+    store.appendSegment(segment(1));
+    store.appendSegment(segment(3, { meetingId: 'review' })); // another meeting's line
+
+    expect(store.listSegments('m1')).toEqual([
+      segment(1),
+      segment(1, { id: 'seg-1b' }),
+      segment(1, { id: 'seg-1-system', source: 'system', speaker: 'them' }),
+      segment(2),
+      segment(10),
+    ]);
+    expect(store.listSegments('review')).toEqual([segment(3, { meetingId: 'review' })]);
+    store.close();
+  });
+
+  it('leaves out the lines the echo filter hid, and keeps trimmed, held, re-run and rejected ones', () => {
+    const store = open();
+    store.createMeeting({ id: 'm1', title: 'T', startedAt: '2026-10-06T09:00:00.000Z' });
+    store.appendSegment(segment(1, { id: 'sys-1', source: 'system', speaker: 'them' }));
+    for (const n of [2, 3, 4, 5]) store.appendSegment(segment(n));
+    store.appendSegment(segment(6), 'rerun');
+    expect(store.suppressSegment('seg-2', 'echo', 'sys-1')).toBe(true);
+    expect(store.suppressSegment('seg-3', 'echo', 'sys-1')).toBe(true);
+    expect(store.unhideSegment('seg-3')).toBe(true); // shown again, so read again
+    const trimmed = { text: 'kept words', words: null, echoOf: 'sys-1' };
+    expect(store.trimSegment('seg-4', trimmed)).toBe(true);
+    expect(store.holdSegment('seg-5', '2026-10-06T10:02:00.000Z')).toBe(true);
+    store.markSegmentRejected('seg-6', 'text too short', T0);
+
+    expect(store.listSegments('m1')).toEqual([
+      segment(1, { id: 'sys-1', source: 'system', speaker: 'them' }),
+      segment(3),
+      segment(4, { text: 'kept words', words: null }),
+      segment(5),
+      segment(6),
+    ]);
+    store.close();
+  });
+
+  it('reads nothing from a store or a meeting with no rows', () => {
+    const store = open();
+    expect(store.listMeetings(30)).toEqual([]);
+    store.createMeeting({ id: 'm1', title: 'T', startedAt: '2026-10-06T09:00:00.000Z' });
+    expect(store.listSegments('m1')).toEqual([]);
+    expect(store.listSegments('missing')).toEqual([]);
+    store.close();
+  });
+
+  it('refuses a list limit that is not a whole number from 1: SQLite reads -1 as no limit', () => {
+    const store = open();
+    store.createMeeting({ id: 'm1', title: 'T', startedAt: '2026-10-06T09:00:00.000Z' });
+    for (const limit of [-1, 0, 1.5, Number.NaN]) {
+      expect(() => store.listMeetings(limit)).toThrow(
+        `could not list meetings: the limit must be a whole number from 1 (got ${limit})`,
+      );
+    }
+    store.close();
+  });
+});
+
+describe('SqliteTranscriptStore reading a corrupt row', () => {
+  it('names the bad words column without quoting what it holds: the words are what people said', () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'roger-store-')), 'roger.sqlite');
+    const store = new SqliteTranscriptStore(path);
+    store.createMeeting({ id: 'm1', title: 'T', startedAt: '2026-10-06T09:00:00.000Z' });
+    store.appendSegment(segment(1));
+    const raw = new DatabaseSync(path);
+    // V8's JSON.parse error quotes the text near the fault ("Acme renew"... is not valid JSON).
+    raw
+      .prepare(`UPDATE segments SET words_json = 'Acme renewal is at risk' WHERE id = ?`)
+      .run('seg-1');
+    raw.close();
+
+    const read = (): unknown => store.listSegments('m1');
+    expect(read).toThrow('corrupt segment row seg-1: words_json is not JSON');
+    expect(read).not.toThrow(/Acme/);
+    store.close();
+  });
+
+  it('names a bad speaker without quoting it: the column has no CHECK, so it can hold any text', () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'roger-store-')), 'roger.sqlite');
+    const store = new SqliteTranscriptStore(path);
+    store.createMeeting({ id: 'm1', title: 'T', startedAt: '2026-10-06T09:00:00.000Z' });
+    store.appendSegment(segment(1));
+    const raw = new DatabaseSync(path);
+    raw
+      .prepare(`UPDATE segments SET speaker = 'Acme renewal is at risk' WHERE id = ?`)
+      .run('seg-1');
+    raw.close();
+
+    const read = (): unknown => store.listSegments('m1');
+    expect(read).toThrow('corrupt segment row seg-1: speaker is not me or them');
+    expect(read).not.toThrow(/Acme/);
+    store.close();
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// How a meeting was started and the calendar event it is for (M5-T5, migration 5).
+
+const STANDUP: MeetingCalendarEvent = {
+  provider: 'google',
+  eventId: 'standup_20261007T093000Z',
+  icalUid: 'standup@google.com',
+  recurringEventId: 'standup',
+  scheduledStart: '2026-10-07T09:30:00.000Z',
+  scheduledEnd: '2026-10-07T09:45:00.000Z',
+  attendees: [
+    {
+      email: 'rahul@linkt.ai',
+      displayName: null,
+      responseStatus: 'accepted',
+      isSelf: true,
+      isOrganizer: false,
+    },
+    {
+      email: 'jane@linkt.ai',
+      displayName: 'Jane',
+      responseStatus: 'needs_action',
+      isSelf: false,
+      isOrganizer: true,
+    },
+  ],
+};
+
+describe('SqliteTranscriptStore migration 5', () => {
+  it('upgrades a store at schema 4 in place: its meetings read as manual, with no event', () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'roger-store-')), 'roger.sqlite');
+    const first = new SqliteTranscriptStore(path);
+    first.createMeeting({ id: 'm1', title: 'T', startedAt: '2026-10-05T10:00:00.000Z' });
+    first.appendSegment(segment(1));
+    first.close();
+    windBackToSchema4(path);
+
+    const store = new SqliteTranscriptStore(path);
+    const raw = new DatabaseSync(path);
+    expect(raw.prepare('PRAGMA user_version').get()?.user_version).toBe(6);
+    raw.close();
+    expect(store.getMeeting('m1')).toEqual({
+      id: 'm1',
+      title: 'T',
+      startedAt: '2026-10-05T10:00:00.000Z',
+      endedAt: null,
+      remoteState: 'pending',
+      startSource: 'manual',
+      calendarEvent: null,
+    });
+    expect(store.countSegments('m1')).toBe(1);
+    store.createMeeting({
+      id: 'm2',
+      title: 'Standup',
+      startedAt: '2026-10-07T09:31:00.000Z',
+      startSource: 'notification',
+      calendarEvent: STANDUP,
+    });
+    store.close();
+
+    const again = new SqliteTranscriptStore(path); // migration 5 does not run twice
+    expect(again.getMeeting('m2')).toMatchObject({
+      startSource: 'notification',
+      calendarEvent: STANDUP,
+    });
+    again.close();
+  });
+
+  it('refuses an unknown start source in the file itself, the five known ones pass', () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'roger-store-')), 'roger.sqlite');
+    const store = new SqliteTranscriptStore(path);
+    store.createMeeting({ id: 'm1', title: 'T', startedAt: '2026-10-05T10:00:00.000Z' });
+    store.close();
+    const raw = new DatabaseSync(path);
+    const setSource = raw.prepare(`UPDATE meetings SET start_source = ? WHERE id = 'm1'`);
+    for (const source of START_SOURCES) expect(() => setSource.run(source)).not.toThrow();
+    expect(() => setSource.run('calendar')).toThrow(/CHECK constraint failed/);
+    raw.close();
+  });
+
+  it('names the meeting whose event link is not JSON, without quoting what it holds', () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'roger-store-')), 'roger.sqlite');
+    const store = new SqliteTranscriptStore(path);
+    store.createMeeting({ id: 'm1', title: 'T', startedAt: '2026-10-05T10:00:00.000Z' });
+    const raw = new DatabaseSync(path);
+    const setLink = raw.prepare(`UPDATE meetings SET calendar_event_json = ? WHERE id = 'm1'`);
+    // The event index reads the column, so SQLite itself refuses broken JSON on a write...
+    expect(() => setLink.run(`{"eventId": "Jane's 1:1`)).toThrow('malformed JSON');
+    // ...but takes JSON5, which JSON.parse does not.
+    setLink.run(`{eventId: 'Jane 1:1',}`);
+    raw.close();
+    expect(() => store.getMeeting('m1')).toThrow(
+      'corrupt meeting row m1: calendar_event_json is not JSON',
+    );
+    expect(() => store.getMeeting('m1')).not.toThrow(/Jane/);
+    store.close();
+  });
+});
+
+describe.each([
+  ['SqliteTranscriptStore', (): TranscriptStore => new SqliteTranscriptStore(':memory:')],
+  ['InMemoryTranscriptStore', (): TranscriptStore => new InMemoryTranscriptStore()],
+])('%s start source and event link', (_name, open: () => TranscriptStore) => {
+  it('keeps how a meeting started and its event, and every read returns them', () => {
+    const store = open();
+    store.createMeeting({
+      id: 'm1',
+      title: 'Standup',
+      startedAt: '2026-10-07T09:31:00.000Z',
+      startSource: 'notification',
+      calendarEvent: STANDUP,
+    });
+    store.createMeeting({
+      id: 'm2',
+      title: 'Zoom call',
+      startedAt: '2026-10-07T11:00:00.000Z',
+      startSource: 'call_detected',
+    });
+    const linked = { startSource: 'notification', calendarEvent: STANDUP };
+    const unlinked = { startSource: 'call_detected', calendarEvent: null };
+    expect(store.getMeeting('m1')).toMatchObject(linked);
+    expect(store.getMeeting('m2')).toMatchObject(unlinked);
+    expect(store.listMeetings(10)).toEqual([
+      expect.objectContaining(unlinked),
+      expect.objectContaining(linked),
+    ]);
+    expect(store.listOpenMeetings().map((m) => m.calendarEvent)).toEqual([STANDUP, null]);
+    expect(store.listMeetingsNeedingSync().map((m) => m.startSource)).toEqual([
+      'notification',
+      'call_detected',
+    ]);
+    store.close();
+  });
+
+  it('reads a meeting created without either as a manual start with no event', () => {
+    const store = open();
+    store.createMeeting({ id: 'm1', title: 'T', startedAt: '2026-10-07T09:31:00.000Z' });
+    expect(store.getMeeting('m1')).toMatchObject({ startSource: 'manual', calendarEvent: null });
+    store.close();
+  });
+
+  it('refuses a start source it does not know, naming the meeting', () => {
+    const store = open();
+    // Typed code cannot pass one: this stands for a value read from somewhere untyped.
+    const untyped: unknown = 'calendar';
+    expect(() => {
+      store.createMeeting({
+        id: 'm1',
+        title: 'T',
+        startedAt: '2026-10-07T09:31:00.000Z',
+        startSource: untyped as StartSource,
+      });
+    }).toThrow('could not write meeting m1: start source "calendar" is not one of');
+    expect(store.getMeeting('m1')).toBeNull();
+    store.close();
+  });
+
+  it('finds the newest local meeting of each event asked for, and nothing for the rest', () => {
+    const store = open();
+    const instance = (eventId: string): MeetingCalendarEvent => ({ ...STANDUP, eventId });
+    // Stopped and started again for the same call: Home opens the newer note. Written newest
+    // first, under ids that sort the other way, so only the start time puts them in order: neither
+    // the insert order (SQLite's rowid, the Map's order) nor the id does.
+    store.createMeeting({
+      id: 'a-retry',
+      title: 'Standup',
+      startedAt: '2026-10-07T09:33:00.000Z',
+      startSource: 'notification',
+      calendarEvent: instance('standup_1'),
+    });
+    store.createMeeting({
+      id: 'z-first',
+      title: 'Standup',
+      startedAt: '2026-10-07T09:31:00.000Z',
+      startSource: 'notification',
+      calendarEvent: instance('standup_1'),
+    });
+    store.createMeeting({
+      id: 'review',
+      title: 'Review',
+      startedAt: '2026-10-07T14:00:00.000Z',
+      startSource: 'home',
+      calendarEvent: instance('review_1'),
+    });
+    store.createMeeting({ id: 'manual', title: 'T', startedAt: '2026-10-07T15:00:00.000Z' });
+
+    expect(store.findMeetingIdsByEventIds(['standup_1', 'review_1', 'tomorrow_1'])).toEqual(
+      new Map([
+        ['standup_1', 'a-retry'],
+        ['review_1', 'review'],
+      ]),
+    );
+    expect(store.findMeetingIdsByEventIds(['tomorrow_1'])).toEqual(new Map());
+    expect(store.findMeetingIdsByEventIds([])).toEqual(new Map());
+    store.close();
+  });
+});
+
+describe('SqliteTranscriptStore finding meetings by event', () => {
+  // Home asks for today's events on every refresh: an index, not a JSON parse of every meeting.
+  it('reads the event index, never every meeting', () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'roger-store-')), 'roger.sqlite');
+    new SqliteTranscriptStore(path).close();
+    const raw = new DatabaseSync(path);
+    const plan = raw
+      .prepare(`EXPLAIN QUERY PLAN ${MEETING_IDS_BY_EVENT_IDS}`)
+      .all('["standup_1"]')
+      .map((row) => String(row.detail))
+      .join('\n');
+    raw.close();
+    expect(plan).toContain('USING INDEX meetings_by_calendar_event');
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// The usage uploader's mark and the silence gate's time (M3-T19b, migration 6).
+
+describe('SqliteTranscriptStore migration 6', () => {
+  it('upgrades a store at schema 5 in place: every usage row is kept, not uploaded, nothing gated', () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'roger-store-')), 'roger.sqlite');
+    const first = new SqliteTranscriptStore(path);
+    first.createMeeting({ id: 'm1', title: 'T', startedAt: '2026-10-05T10:00:00.000Z' });
+    first.saveSttUsage(usage('m1', { stopReason: 'user' }));
+    // A meeting deleted for having no lines keeps its row (no foreign key).
+    first.saveSttUsage(usage('m2', { stopReason: 'start-failed' }));
+    first.close();
+    windBackToSchema5(path);
+
+    const store = new SqliteTranscriptStore(path);
+    const raw = new DatabaseSync(path);
+    expect(raw.prepare('PRAGMA user_version').get()?.user_version).toBe(6);
+    expect(
+      raw
+        .prepare('SELECT meeting_id, synced_at, gated_ms FROM stt_usage ORDER BY meeting_id')
+        .all()
+        .map((row) => ({ ...row })),
+    ).toEqual([
+      { meeting_id: 'm1', synced_at: null, gated_ms: 0 },
+      { meeting_id: 'm2', synced_at: null, gated_ms: 0 },
+    ]);
+    raw.close();
+    expect(store.getSttUsage('m1')).toEqual(usage('m1', { stopReason: 'user' }));
+    expect(store.getMeeting('m1')?.title).toBe('T');
+    // Each row from before goes up once.
+    const waiting = store.listSttUsageToUpload(10);
+    expect(waiting.map((u) => u.meetingId)).toEqual(['m1', 'm2']);
+    store.markSttUsageSynced(waiting[0]!, '2026-10-06T10:03:00.000Z');
+    store.close();
+
+    const again = new SqliteTranscriptStore(path); // migration 6 does not run twice
+    expect(again.listSttUsageToUpload(10).map((u) => u.meetingId)).toEqual(['m2']);
+    again.close();
+  });
+
+  // The uploader asks every 30 s: an index, not a scan of every meeting's row.
+  it('lists the rows to upload through their index', () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'roger-store-')), 'roger.sqlite');
+    new SqliteTranscriptStore(path).close();
+    const raw = new DatabaseSync(path);
+    const plan = raw
+      .prepare(`EXPLAIN QUERY PLAN ${STT_USAGE_TO_UPLOAD}`)
+      .all(10)
+      .map((row) => String(row.detail))
+      .join('\n');
+    raw.close();
+    expect(plan).toContain('USING INDEX stt_usage_unsynced');
+    expect(plan).not.toContain('TEMP B-TREE');
+  });
+
+  it('names the meeting whose by-source usage is not JSON', () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'roger-store-')), 'roger.sqlite');
+    const store = new SqliteTranscriptStore(path);
+    store.saveSttUsage(usage('m1'));
+    const raw = new DatabaseSync(path);
+    raw.prepare(`UPDATE stt_usage SET by_source_json = '{mic' WHERE meeting_id = 'm1'`).run();
+    raw.close();
+
+    expect(() => store.listSttUsageToUpload(10)).toThrow(
+      'corrupt stt_usage row m1: by_source_json is not JSON',
+    );
     store.close();
   });
 });

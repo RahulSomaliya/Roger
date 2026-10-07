@@ -1,5 +1,6 @@
 import type { Logger } from '../../logger';
 import type { OpenStreamOptions, SttEvent, SttStreamSettings } from '../SpeechToText';
+import type { AudioPacing } from './AudioPacer';
 
 /**
  * What a websocket speech-to-text vendor adapter describes, and all it describes. The adapter never
@@ -50,7 +51,10 @@ export interface SttProtocolContext {
 export interface SttProtocolSession {
   /** One chunk of Int16 mono PCM → the binary frames to send now (may be none, or several). */
   encodeAudio(pcm: Uint8Array): Uint8Array[];
-  /** What Stop sends, in order: any held audio first, then the vendor's control messages. */
+  /**
+   * What Stop sends, in order: any held audio first, then the vendor's control messages. The core
+   * sends it after the audio still waiting for its pace, and paces the audio in it too.
+   */
   finishSequence(): (string | Uint8Array)[];
   read(raw: string): SttProtocolMessage;
   /** The socket closed: clear timers, return lines still held. They are emitted before "closed". */
@@ -62,8 +66,24 @@ export interface SttProtocol {
   readonly provider: string;
   /** For people: error text and logs, e.g. "AssemblyAI". */
   readonly vendorName: string;
-  /** Throws SttConnectError when the settings cannot work; no socket is opened then. */
+  /**
+   * Throws SttConnectError when the settings cannot work; no socket is opened then. Map
+   * `settings.keyterms` (already cut to the shared limits by the core, keyterms.ts) to the vendor's
+   * jargon parameter here, and never send one when the list is empty.
+   */
   target(options: OpenStreamOptions): SttConnectTarget;
+  /**
+   * Text messages the vendor must hear first (Soniox's start request: model, audio format, jargon
+   * list, before any audio). The core sends them the moment the handshake completes, ahead of the
+   * ready signal, so no audio, keep-alive or ping can go before them; never send one from
+   * `encodeAudio` or a keep-alive instead. Built once per stream from the same settings `target`
+   * gets (keyterms already cut), before any socket exists: throw SttConnectError there for settings
+   * the vendor cannot take, and nothing is opened or tapped. Never put the access token in one: the
+   * wire tap records every text message (SttWireRecord), and only `target`'s URL and headers are
+   * kept from it. Missing: nothing goes first. The conformance suite checks them against the
+   * vendor's fake (conformanceVendors.ts `openingMessages`).
+   */
+  openingMessages?(settings: SttStreamSettings): string[];
   /** `socket-open`: the handshake is the ready signal (Deepgram). Otherwise wait for `ready`. */
   readonly readyOn: 'socket-open' | 'ready-message';
   /**
@@ -76,12 +96,46 @@ export interface SttProtocol {
   readonly finishedOn: 'finished-message' | 'vendor-close';
   /** A message that keeps a quiet session from timing out, or null. Sent only while open. */
   readonly keepAlive: { message: string; intervalMs: number } | null;
+  /**
+   * `realtime` when the vendor closes a session sent audio faster than real time (AssemblyAI,
+   * 3007): the core then never sends audio ahead of the real time since the ready signal by more
+   * than one frame, whoever hands it a burst (AudioPacer.ts). `none`: frames go as they come. The
+   * conformance suite checks it against the vendor's fake
+   * (conformanceVendors.ts `rejectsAudioFasterThanRealTime`).
+   */
+  readonly audioPacing: AudioPacing;
   session(context: SttProtocolContext): SttProtocolSession;
   /** Close code and reason → words for an error, e.g. "code 3008: Session Expired: ...". */
   describeClose(code: number, reason: string | null): string;
   /** Extra advice for a failed connect, given its explanation (AssemblyAI: wait a minute). */
   connectAdvice(explanation: string): string | null;
+  /**
+   * Whether this refusal is the vendor rejecting the jargon list (Deepgram: HTTP 400 at the
+   * handshake). The core asks only when the stream sent a non-empty list, and then rejects with
+   * SttConnectError.keytermsRejected, the socket closed. Answer for the list only: a true here makes
+   * CaptureSession reopen without it, which cannot fix a bad token or a busy account. Missing: no
+   * refusal is put down to the list, because the protocol maps no keyterms or its vendor refuses
+   * nothing while it connects (Soniox reads its start request only once the stream is open), so its
+   * refusals are plain connect errors. The conformance suite checks the declaration against the
+   * vendor's fake (conformanceVendors.ts `keyterms`).
+   */
+  keytermsRejected?(refusal: SttConnectRefusal): boolean;
 }
+
+/**
+ * A connect the vendor refused, as `keytermsRejected` sees it. A timeout or a network error is
+ * never one: nothing the vendor said blames the list.
+ */
+export type SttConnectRefusal =
+  /** The vendor answered the websocket handshake with this HTTP status instead of upgrading. */
+  | { kind: 'http-status'; status: number }
+  /**
+   * The vendor closed the socket before its ready signal (`readyOn: 'ready-message'`). `code` is
+   * always from the vendor's close frame: a connection that dropped with no frame (1006) is a
+   * network error, and the core never asks about it (SttConnection.earlyCloseError), so a
+   * predicate of "any code except ..." never blames a network drop on the list.
+   */
+  | { kind: 'closed-before-ready'; code: number; reason: string | null };
 
 /**
  * The standard close codes every vendor shares (RFC 6455), for `describeClose` when the vendor gave

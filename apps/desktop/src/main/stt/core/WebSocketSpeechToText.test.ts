@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createLogger } from '../../logger';
 import { SttConnectError, type SttStreamSettings } from '../SpeechToText';
 import { FakeVendorServer, manualClock } from '../testing/fakeVendorServer';
@@ -22,6 +22,7 @@ function protocol(baseUrl: string): SttProtocol {
     readyOn: 'socket-open',
     finishedOn: 'vendor-close',
     keepAlive: null,
+    audioPacing: 'none',
     target: () => ({ url: `${baseUrl}/listen`, headers: {} }),
     session: () => ({
       encodeAudio: (pcm) => [pcm],
@@ -114,6 +115,26 @@ describe('WebSocketSpeechToText', () => {
       droppedChunks: 0,
       estimatedCostUsd: 0,
     });
+  });
+
+  it('paces on a monotonic clock by default, so a wall-clock step forward sends no burst', async () => {
+    const stt = new WebSocketSpeechToText(
+      { ...protocol(vendor.baseUrl), audioPacing: 'realtime' },
+      { logger, closeTimeoutMs: 100 },
+    );
+    const stream = await stt.openStream({ accessToken: 't', settings, label: 'mic' });
+
+    // An NTP step or a manual time change: the wall clock jumps a minute ahead, real time does not.
+    vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 60_000);
+    try {
+      for (let chunk = 0; chunk < 30; chunk += 1) stream.send(new Uint8Array(3200));
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      // At 1x about 50 ms of it may have gone, plus the frame in flight: not the 3 s burst.
+      expect(stt.usage().audioSentMs).toBeLessThan(1_000);
+    } finally {
+      vi.restoreAllMocks();
+    }
+    await stream.close();
   });
 
   it('counts a refused handshake as no session', async () => {

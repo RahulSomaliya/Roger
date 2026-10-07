@@ -1,3 +1,6 @@
+import json
+import subprocess
+import sys
 from typing import Any
 from uuid import uuid4
 
@@ -32,6 +35,14 @@ async def create_meeting(client: httpx.AsyncClient, **body: object) -> Json:
     return meeting
 
 
+async def post_ascii_json(client: httpx.AsyncClient, path: str, body: Json) -> httpx.Response:
+    """POSTs `body` as ASCII JSON, every other character a `\\u` escape, as JSON.stringify sends
+    an unpaired surrogate. httpx's `json=` cannot send one: it encodes the body as UTF-8."""
+    return await client.post(
+        path, content=json.dumps(body), headers={"Content-Type": "application/json"}
+    )
+
+
 async def append_segments(client: httpx.AsyncClient, meeting_id: str, *segments: Json) -> Json:
     response = await client.post(
         f"/v1/meetings/{meeting_id}/segments", json={"segments": list(segments)}
@@ -50,3 +61,26 @@ def assert_error(response: httpx.Response, status_code: int, code: str) -> str:
     assert body["error"]["code"] == code
     message: str = body["error"]["message"]
     return message
+
+
+_LOADED_MODULES_SCRIPT = """
+import importlib, sys
+for name in sys.argv[1:]:
+    importlib.import_module(name)
+print("\\n".join(m for m in sys.modules if m == "roger_api" or m.startswith("roger_api.")))
+"""
+
+
+def modules_loaded_by(*modules: str) -> set[str]:
+    """Every `roger_api` module a fresh interpreter holds after importing `modules`.
+
+    A fresh process, because this test session has long since imported every module.
+    """
+    result = subprocess.run(  # noqa: S603 - fixed argv: this interpreter and module names.
+        [sys.executable, "-c", _LOADED_MODULES_SCRIPT, *modules],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    return set(result.stdout.split())

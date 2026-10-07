@@ -2,6 +2,7 @@ import { AssemblyAiSpeechToText } from './assemblyai/AssemblyAiSpeechToText';
 import type { WebSocketSttOptions } from './core/WebSocketSpeechToText';
 import { DeepgramSpeechToText } from './deepgram/DeepgramSpeechToText';
 import { FakeSpeechToText } from './fake/FakeSpeechToText';
+import { SonioxSpeechToText } from './soniox/SonioxSpeechToText';
 import type { SpeechToText } from './SpeechToText';
 
 export interface SttVendorOptions extends WebSocketSttOptions {
@@ -28,6 +29,7 @@ export const STT_VENDORS: ReadonlyMap<string, SttVendorFactory> = new Map<string
   [
     ['assemblyai', (options) => new AssemblyAiSpeechToText(options)],
     ['deepgram', (options) => new DeepgramSpeechToText(options)],
+    ['soniox', (options) => new SonioxSpeechToText(options)],
     ['fake', () => new FakeSpeechToText()],
   ],
 );

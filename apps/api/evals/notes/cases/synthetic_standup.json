@@ -1,0 +1,92 @@
+{
+  "schema_version": 1,
+  "title": "Synthetic standup",
+  "template_id": "standup",
+  "lines": [
+    { "speaker": "me", "start_ms": 0, "text": "Morning all, quick standup today. Priya, you first." },
+    {
+      "speaker": "them",
+      "start_ms": 4000,
+      "text": "Yesterday I finished migrating the billing tables, about fifty thousand rows."
+    },
+    { "speaker": "them", "start_ms": 11000, "text": "The dry run on staging took twelve minutes end to end." },
+    { "speaker": "me", "start_ms": 17000, "text": "Nice. Any surprises in the data?" },
+    {
+      "speaker": "them",
+      "start_ms": 21000,
+      "text": "Two hundred rows had no currency code, so I patched those by hand."
+    },
+    { "speaker": "them", "start_ms": 29000, "text": "Today I'll write the runbook for the production migration." },
+    { "speaker": "me", "start_ms": 34000, "text": "Priya, please share the production runbook by Thursday." },
+    { "speaker": "them", "start_ms": 38000, "text": "Will do, Thursday works." },
+    { "speaker": "me", "start_ms": 42000, "text": "Dev, you're next." },
+    { "speaker": "them", "start_ms": 45000, "text": "I shipped the retry fix for the webhook worker yesterday." },
+    {
+      "speaker": "them",
+      "start_ms": 51000,
+      "text": "p95 latency on the webhook queue dropped from 2.5 seconds to 800 milliseconds."
+    },
+    { "speaker": "them", "start_ms": 58000, "text": "Today I'm writing the Q3 load test plan." },
+    { "speaker": "them", "start_ms": 63000, "text": "I'm blocked on staging credentials for the payments sandbox." },
+    { "speaker": "me", "start_ms": 68000, "text": "I'll get you those credentials by noon today." },
+    { "speaker": "me", "start_ms": 72000, "text": "Sam, over to you." },
+    { "speaker": "them", "start_ms": 74000, "text": "Yesterday I reviewed the onboarding designs with Lena." },
+    { "speaker": "them", "start_ms": 80000, "text": "Today I'm fixing the empty states on the dashboard." },
+    { "speaker": "them", "start_ms": 86000, "text": "No blockers on my side." },
+    { "speaker": "me", "start_ms": 89000, "text": "Thanks all. The offsite poll closes Friday, please vote." },
+    { "speaker": "them", "start_ms": 93000, "text": "I'll vote today." }
+  ],
+  "user_notes": {
+    "type": "doc",
+    "content": [
+      { "type": "heading", "attrs": { "level": 2 }, "content": [{ "type": "text", "text": "Standup" }] },
+      {
+        "type": "bulletList",
+        "content": [
+          {
+            "type": "listItem",
+            "content": [
+              {
+                "type": "paragraph",
+                "content": [{ "type": "text", "text": "Priya: billing migration done, 50k rows" }]
+              }
+            ]
+          },
+          {
+            "type": "listItem",
+            "content": [
+              {
+                "type": "paragraph",
+                "content": [{ "type": "text", "text": "Dev blocked on payments sandbox creds" }]
+              }
+            ]
+          },
+          {
+            "type": "listItem",
+            "content": [
+              { "type": "paragraph", "content": [{ "type": "text", "text": "ask Dev about Q3 load test" }] }
+            ]
+          },
+          {
+            "type": "listItem",
+            "content": [
+              { "type": "paragraph", "content": [{ "type": "text", "text": "book the offsite venue" }] }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "labels": {
+    "action_items": [
+      { "owner": "Priya", "text": "share the production migration runbook by Thursday" },
+      { "owner": "Me", "text": "get Dev the staging credentials by noon today" },
+      { "owner": "Sam", "text": "vote in the offsite poll by Friday" }
+    ],
+    "facts": [
+      "Priya finished the billing migration, 50,000 rows",
+      "webhook queue p95 latency down from 2.5 seconds to 800 milliseconds",
+      "Dev is blocked on payments sandbox credentials"
+    ]
+  }
+}

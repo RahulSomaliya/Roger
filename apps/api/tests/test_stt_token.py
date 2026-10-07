@@ -1,14 +1,23 @@
+import dataclasses
 import json
 from collections.abc import AsyncIterator, Callable
+from types import MappingProxyType
+from uuid import UUID, uuid4
 
 import httpx
 import pytest
 from asgi_lifespan import LifespanManager
 from fastapi import FastAPI
 from pydantic import ValidationError
+from sqlalchemy import event
+from sqlalchemy.engine import Connection
 
+from roger_api import config
 from roger_api.app import create_app
 from roger_api.config import Settings
+from roger_api.db.engine import Database
+from roger_api.db.models import Workspace
+from roger_api.db.models_vocabulary import VocabularyTerm
 from roger_api.dependencies import get_stt_token_issuer
 from roger_api.errors import SttProviderError
 from roger_api.schemas.stt import SttStreamSettings
@@ -20,19 +29,26 @@ from roger_api.services.stt_tokens import (
     FakeSttTokenIssuer,
     SttCredential,
 )
-from roger_api.stt_vendors import open_stt_token_issuer
+from roger_api.stt_vendors import (
+    STT_PRESETS,
+    STT_VENDORS,
+    SttPreset,
+    open_stt_token_issuer,
+)
 from tests.conftest import make_settings
-from tests.helpers import AUTH_HEADERS, BASE_URL, assert_error
+from tests.helpers import AUTH_HEADERS, BASE_URL, Json, assert_error
 
 DEEPGRAM_KEY = "dg-secret-key"
 ASSEMBLYAI_KEY = "aai-secret-key"
-# The stream settings the test app (STT_PROVIDER=fake, STT_MODEL unset) returns.
+# The stream settings the test app (STT_PROVIDER=fake) returns to a workspace with no jargon list.
 STREAM = {
     "model": "fake",
     "language": "en",
     "sample_rate": 16000,
     "encoding": "linear16",
+    "keyterms": [],
     "price_per_hour_usd": 0.0,
+    "price_per_hour_usd_without_keyterms": 0.0,
 }
 
 type Handler = Callable[[httpx.Request], httpx.Response]
@@ -142,12 +158,20 @@ async def test_vendor_failure_is_a_502_envelope(
 
 
 def test_stream_settings_come_from_config(database_url: str) -> None:
-    settings = make_settings(database_url, stt_model="nova-2", stt_sample_rate=48000)
+    # The model and its price come from the preset; the rest from the stream settings.
+    settings = make_settings(
+        database_url,
+        stt_provider="assemblyai-pro",
+        assemblyai_api_key=ASSEMBLYAI_KEY,
+        stt_sample_rate=48000,
+    )
 
     assert SttStreamSettings.from_settings(settings).model_dump() == {
         **STREAM,
-        "model": "nova-2",
+        "model": "universal-3-6-pro",
         "sample_rate": 48000,
+        "price_per_hour_usd": 0.45,
+        "price_per_hour_usd_without_keyterms": 0.45,
     }
 
 
@@ -156,19 +180,27 @@ def test_stream_price_is_the_override_when_set(database_url: str) -> None:
         database_url,
         stt_provider="deepgram",
         deepgram_api_key=DEEPGRAM_KEY,
-        stt_model="nova-2",
         stt_price_per_hour_usd=0.348,
     )
 
     assert SttStreamSettings.from_settings(settings).price_per_hour_usd == 0.348
 
 
-def test_unknown_stream_price_is_null(database_url: str) -> None:
-    settings = make_settings(
-        database_url, stt_provider="deepgram", deepgram_api_key=DEEPGRAM_KEY, stt_model="nova-2"
+def test_unknown_stream_price_is_null(database_url: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Every real preset has a list price (tests/test_stt_providers.py), so this one is patched in:
+    # a model the registry has no price for is null, never a guess.
+    unpriced = SttPreset(vendor="deepgram", model="nova-2")
+    monkeypatch.setattr(
+        config, "STT_PRESETS", MappingProxyType({**STT_PRESETS, "deepgram": unpriced})
     )
+    settings = make_settings(database_url, stt_provider="deepgram", deepgram_api_key=DEEPGRAM_KEY)
 
-    assert SttStreamSettings.from_settings(settings).model_dump()["price_per_hour_usd"] is None
+    assert SttStreamSettings.from_settings(settings).model_dump() == {
+        **STREAM,
+        "model": "nova-2",
+        "price_per_hour_usd": None,
+        "price_per_hour_usd_without_keyterms": None,
+    }
 
 
 async def test_factory_builds_the_configured_issuer(settings: Settings) -> None:
@@ -330,7 +362,12 @@ async def test_assemblyai_token_through_the_api(
         "expires_in": 30,
         # Our encoding name: the desktop adapter maps linear16 to AssemblyAI's pcm_s16le.
         # The price is per hour of one open stream, silent or not; a meeting opens two.
-        "stream": {**STREAM, "model": "universal-streaming-english", "price_per_hour_usd": 0.15},
+        "stream": {
+            **STREAM,
+            "model": "universal-streaming-english",
+            "price_per_hour_usd": 0.15,
+            "price_per_hour_usd_without_keyterms": 0.15,
+        },
     }
     assert ASSEMBLYAI_KEY not in response.text
 
@@ -343,3 +380,225 @@ async def test_assemblyai_failure_is_a_502_envelope(
 
     assert_error(response, 502, "stt_provider_error")
     assert ASSEMBLYAI_KEY not in response.text
+
+
+# ---------------------------------------------------------------------------- keyterms (M3-T3)
+
+VOCABULARY_PATH = "/v1/vocabulary"
+VENDOR_KEYS = {"assemblyai_api_key": ASSEMBLYAI_KEY, "deepgram_api_key": DEEPGRAM_KEY}
+
+
+def database_of(app: FastAPI) -> Database:
+    database = app.state.database
+    assert isinstance(database, Database)
+    return database
+
+
+async def put_vocabulary(client: httpx.AsyncClient, terms: list[str]) -> None:
+    response = await client.put(VOCABULARY_PATH, json={"terms": terms})
+    assert response.status_code == 200, response.text
+
+
+async def token_stream(client: httpx.AsyncClient) -> Json:
+    response = await client.post("/v1/stt/token")
+    assert response.status_code == 200, response.text
+    stream: Json = response.json()["stream"]
+    return stream
+
+
+async def store_terms(app: FastAPI, workspace_id: UUID, terms: list[str]) -> None:
+    """Rows written straight to the table, past the PUT's limits."""
+    async with database_of(app).session() as session:
+        session.add_all(
+            VocabularyTerm(id=uuid4(), workspace_id=workspace_id, term=term) for term in terms
+        )
+        await session.commit()
+
+
+async def test_token_carries_the_workspace_keyterms(client: httpx.AsyncClient) -> None:
+    await put_vocabulary(client, ["Roger", "linkt", "AssemblyAI"])
+
+    stream = await token_stream(client)
+
+    # As `GET /v1/vocabulary` lists them: spelled as the user spelled them, sorted ignoring case.
+    assert stream == {**STREAM, "keyterms": ["AssemblyAI", "linkt", "Roger"]}
+
+
+async def test_token_keyterms_empty_when_no_list(client: httpx.AsyncClient) -> None:
+    assert (await token_stream(client))["keyterms"] == []
+
+    await put_vocabulary(client, ["Linkt"])
+    await put_vocabulary(client, [])
+
+    # A cleared list is an empty one, never the list as it was.
+    assert (await token_stream(client))["keyterms"] == []
+
+
+async def test_token_never_carries_another_workspace_terms(
+    app: FastAPI, client: httpx.AsyncClient
+) -> None:
+    other_workspace = uuid4()
+    async with database_of(app).session() as session:
+        session.add(Workspace(id=other_workspace, name="Someone else"))
+        await session.commit()
+    await store_terms(app, other_workspace, ["Acme", "Globex"])
+
+    assert (await token_stream(client))["keyterms"] == []
+
+    await put_vocabulary(client, ["Linkt"])
+
+    assert (await token_stream(client))["keyterms"] == ["Linkt"]
+
+
+async def test_token_reads_the_list_in_one_query_of_at_most_100_terms(
+    app: FastAPI, client: httpx.AsyncClient, settings: Settings
+) -> None:
+    # A PUT stores at most 100 terms, AssemblyAI's limit. Rows that got past it another way are
+    # still cut at 100 here, never sent to a vendor that refuses the whole stream over them.
+    terms = [f"term{index:03d}" for index in range(101)]
+    await store_terms(app, settings.default_workspace_id, terms)
+    engine = database_of(app).engine.sync_engine
+    statements: list[str] = []
+
+    def record(
+        conn: Connection,
+        cursor: object,
+        statement: str,
+        parameters: object,
+        context: object,
+        executemany: bool,
+    ) -> None:
+        statements.append(statement)
+
+    event.listen(engine, "before_cursor_execute", record)
+    try:
+        stream = await token_stream(client)
+    finally:
+        event.remove(engine, "before_cursor_execute", record)
+
+    assert stream["keyterms"] == terms[:100]
+    [read] = [statement for statement in statements if "vocabulary_terms" in statement]
+    assert "LIMIT" in read
+
+
+# Per hour of one stream, without and with a jargon list. Sources and dates: stt_vendors.py.
+SURCHARGES = [
+    # Universal-Streaming English: +$0.04 an hour for keyterms prompting.
+    ("assemblyai", 0.15, 0.19),
+    # Universal-3.6 Pro: keyterms are included in its price.
+    ("assemblyai-pro", 0.45, 0.45),
+    # Nova-3: +$0.0013 a minute for keyterm prompting.
+    ("deepgram", 0.462, 0.54),
+    ("fake", 0.0, 0.0),
+]
+
+
+@pytest.mark.parametrize(("preset", "without_list", "with_list"), SURCHARGES)
+def test_keyterm_surcharge_only_with_a_list(
+    database_url: str, preset: str, without_list: float, with_list: float
+) -> None:
+    settings = make_settings(database_url, stt_provider=preset, **VENDOR_KEYS)
+
+    def price(keyterms: list[str]) -> float | None:
+        return SttStreamSettings.from_settings(settings, keyterms=keyterms).price_per_hour_usd
+
+    assert SttStreamSettings.from_settings(settings).price_per_hour_usd == without_list
+    assert price([]) == without_list
+    assert price(["Linkt"]) == with_list
+    # The surcharge is per stream hour, whatever the list's length.
+    assert price([f"term{index}" for index in range(100)]) == with_list
+
+
+@pytest.mark.parametrize(
+    ("preset", "without_list"), [(preset, without_list) for preset, without_list, _ in SURCHARGES]
+)
+def test_price_without_keyterms_never_carries_the_surcharge(
+    database_url: str, preset: str, without_list: float
+) -> None:
+    # The vendor bills a stream by what it was opened with. A stream opened with `keyterms: []`
+    # from a token that carried a list (a reopen after the vendor rejected the list, the bench's
+    # --no-keyterms run) pays no surcharge: metered at `price_per_hour_usd` it would over-count,
+    # and the bench would price a run without the list the same as one with it.
+    settings = make_settings(database_url, stt_provider=preset, **VENDOR_KEYS)
+
+    for keyterms in ([], ["Linkt"], [f"term{index}" for index in range(100)]):
+        stream = SttStreamSettings.from_settings(settings, keyterms=keyterms)
+        assert stream.price_per_hour_usd_without_keyterms == without_list, keyterms
+
+
+async def test_token_price_includes_the_surcharge_with_a_list(
+    assemblyai_client: Callable[[Handler], httpx.AsyncClient],
+) -> None:
+    client = assemblyai_client(temporary_token)
+    universal_streaming = {
+        **STREAM,
+        "model": "universal-streaming-english",
+        "price_per_hour_usd_without_keyterms": 0.15,
+    }
+
+    assert await token_stream(client) == {**universal_streaming, "price_per_hour_usd": 0.15}
+
+    await put_vocabulary(client, ["Linkt"])
+
+    assert await token_stream(client) == {
+        **universal_streaming,
+        "keyterms": ["Linkt"],
+        "price_per_hour_usd": 0.19,
+    }
+
+
+def test_keyterm_surcharge_is_added_to_the_price_override(database_url: str) -> None:
+    # STT_PRICE_PER_HOUR_USD replaces the model's base price (a negotiated rate, or Deepgram's
+    # price with training opted out); the vendor still bills keyterms on top of it.
+    settings = make_settings(
+        database_url,
+        stt_provider="deepgram",
+        deepgram_api_key=DEEPGRAM_KEY,
+        stt_price_per_hour_usd=0.348,
+    )
+
+    stream = SttStreamSettings.from_settings(settings, keyterms=["Linkt"])
+
+    assert stream.price_per_hour_usd == 0.426
+    assert stream.price_per_hour_usd_without_keyterms == 0.348
+
+
+def test_unknown_price_stays_null_with_a_list(
+    database_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # No base price, so no total: the surcharge alone would read as the whole price.
+    unpriced = SttPreset(vendor="deepgram", model="nova-2")
+    monkeypatch.setattr(
+        config, "STT_PRESETS", MappingProxyType({**STT_PRESETS, "deepgram": unpriced})
+    )
+    settings = make_settings(database_url, stt_provider="deepgram", deepgram_api_key=DEEPGRAM_KEY)
+
+    stream = SttStreamSettings.from_settings(settings, keyterms=["Linkt"])
+
+    assert stream.price_per_hour_usd is None
+    assert stream.price_per_hour_usd_without_keyterms is None
+
+
+def test_unknown_keyterm_surcharge_makes_the_price_null(
+    database_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The base price alone would under-count every meeting with a list; null says "unknown".
+    # A stream opened without the list pays no surcharge, so its price is still known.
+    no_surcharge = dataclasses.replace(STT_VENDORS["deepgram"], keyterm_surcharge_per_hour_usd={})
+    monkeypatch.setattr(
+        config, "STT_VENDORS", MappingProxyType({**STT_VENDORS, "deepgram": no_surcharge})
+    )
+    settings = make_settings(database_url, stt_provider="deepgram", deepgram_api_key=DEEPGRAM_KEY)
+
+    stream = SttStreamSettings.from_settings(settings, keyterms=["Linkt"])
+
+    assert SttStreamSettings.from_settings(settings).price_per_hour_usd == 0.462
+    assert stream.price_per_hour_usd is None
+    assert stream.price_per_hour_usd_without_keyterms == 0.462
+
+
+def test_every_preset_model_has_a_keyterm_surcharge() -> None:
+    # 0.0 where the model's price includes keyterms. Without one, every stream with a jargon list
+    # reports an unknown price and the desktop's meter stops counting its cost.
+    for preset, row in STT_PRESETS.items():
+        assert STT_VENDORS[row.vendor].keyterm_surcharge_for(row.model) is not None, preset
