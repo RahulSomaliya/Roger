@@ -34,6 +34,13 @@ mac:
   extraResources:
     - from: native/bin/roger-audio
       to: bin/roger-audio
+    # The menu bar icons (src/main/app/tray.ts trayIconPath reads Resources/tray/): `build/` is
+    # electron-builder's own resource folder and is not inside the app, so a packaged Roger would
+    # have no menu bar item without this. The filter keeps entitlements.mac.plist out.
+    - from: build
+      to: tray
+      filter:
+        - tray*Template*.png
   extendInfo:
     NSMicrophoneUsageDescription: Roger uses the microphone to transcribe what you say in meetings.
     NSAudioCaptureUsageDescription: Roger captures system audio to transcribe what other people say on your calls.
