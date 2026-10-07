@@ -161,16 +161,19 @@ function Exchange({
   const coming = isAnswering(answer);
   const blocks = answerBlocks(answer.text, answer.citations);
   const stopped = answer.error?.code === 'cancelled';
+  // Who says each part, for screen readers only: the bubbles show it by place. The shell's
+  // .visually-hidden (app/app.css) is absolute, so it needs the log's `position: relative`
+  // (chat.css), or every label lands outside the log and the window scrolls.
   return (
     <div className="meeting-chat-exchange" data-phase={answer.phase}>
       {question === null ? null : (
         <p className="meeting-chat-question">
-          <span className="meeting-chat-who">You asked: </span>
+          <span className="visually-hidden">You asked: </span>
           {question.text}
         </p>
       )}
       <div className="meeting-chat-answer" aria-busy={coming ? true : undefined}>
-        <span className="meeting-chat-who">Roger: </span>
+        <span className="visually-hidden">Roger: </span>
         {blocks.length === 0 ? null : <AnswerText blocks={blocks} />}
         {answer.phase === 'waiting' ? (
           <p className="meeting-chat-state">Reading the meeting...</p>

@@ -26,7 +26,14 @@
   font-weight: 650;
 }
 
+/*
+ * Positioned for the screen-reader labels (.visually-hidden, absolute, MeetingChat.tsx): with no
+ * positioned ancestor each one is placed against the window at its unscrolled place, outside this
+ * scroller, and a long thread makes the whole window scroll into blank space
+ * (e2e/m4-t19.qa.e2e.ts, expectNoPageScroll).
+ */
 .meeting-chat-log {
+  position: relative;
   display: flex;
   flex: 1;
   flex-direction: column;
@@ -51,16 +58,6 @@
 
 .meeting-chat-read-error {
   margin: 0;
-}
-
-/* For screen readers only: who says each part, which the bubbles show by place. */
-.meeting-chat-who {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  overflow: hidden;
-  clip-path: inset(50%);
-  white-space: nowrap;
 }
 
 .meeting-chat-exchange {

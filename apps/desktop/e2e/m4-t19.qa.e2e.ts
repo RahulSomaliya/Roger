@@ -19,7 +19,8 @@ import type { TranscriptSegment } from '../src/shared/transcript';
  * Browser QA for M4-T19, the meeting chat panel (qa/README.md): both themes, 1440 and 390 wide,
  * on the preview's past standup. A thread of four exchanges (a list answer with a long link, a
  * two-line question, a chip whose line is gone); a chip opens its transcript line, and on a phone
- * brings the transcript pane forward; a question asked with Enter (Shift+Enter breaks its line)
+ * brings the transcript pane forward; a thread of thirty scrolls inside its log while the window
+ * stays still (every shot checks the window does not scroll down); a question asked with Enter (Shift+Enter breaks its line)
  * streams in with chips for the refs main has mapped and the rest as text, then `done` replaces
  * it; failure paths: an answer that fails mid-stream keeps its text and asks again with the same
  * id, a stopped answer, a thread the offline API cannot read, a question over 4,000 characters.
@@ -249,8 +250,11 @@ async function mountHarness(page: Page): Promise<void> {
     if (app !== null) app.style.display = 'none';
     const host = document.createElement('div');
     host.id = 'm4-t19-harness';
-    // The shell page's box: as tall as the window, with its gutters. No colour: the page's own.
-    host.style.cssText = 'height: 100vh; padding: 24px 16px; box-sizing: border-box;';
+    // The shell page's box (app.css .shell-page): as tall as the window, with its gutters, and
+    // scrolling inside itself, so only a box that escapes it can make the window scroll
+    // (expectNoPageScroll). No colour: the page's own.
+    host.style.cssText =
+      'height: 100vh; padding: 24px 16px; box-sizing: border-box; overflow-y: auto;';
     document.body.append(host);
     const root = clientModule.default.createRoot(host);
     loaded.render = (state) => {
@@ -416,6 +420,37 @@ const chatDistanceFromEnd = (page: Page): Promise<number> =>
     return element.scrollHeight - element.clientHeight - element.scrollTop;
   }, CHAT_LOG);
 
+/**
+ * Fails if the window itself scrolls down. The app is one window tall and scrolls inside its page
+ * column, so a taller document means a box escaped every scroller: an absolutely placed one with
+ * no positioned ancestor is placed against the window, however deep in a scrolled log it sits.
+ * qa.expectNoPageOverflow checks only the sideways scroll.
+ */
+async function expectNoPageScroll(page: Page): Promise<void> {
+  const { overflow, width, escaped } = await page.evaluate(() => {
+    const root = document.documentElement;
+    // Placed against the window: absolute, with no positioned ancestor (offsetParent is <body>).
+    const loose = [...document.body.querySelectorAll('*')].filter(
+      (element) =>
+        element instanceof HTMLElement &&
+        getComputedStyle(element).position === 'absolute' &&
+        element.offsetParent === document.body,
+    );
+    const lowest = loose.at(-1);
+    return {
+      overflow: root.scrollHeight - root.clientHeight,
+      width: window.innerWidth,
+      escaped:
+        lowest === undefined
+          ? 'no absolute box is placed against the window'
+          : `${loose.length} absolute box(es) are placed against the window, the last <${lowest.tagName.toLowerCase()}.${[...lowest.classList].join('.')}> at ${Math.round(lowest.getBoundingClientRect().bottom)} px`,
+    };
+  });
+  if (overflow > 0) {
+    throw new Error(`The window scrolls down by ${overflow} px at ${width} px: ${escaped}`);
+  }
+}
+
 /** Fails unless `selector`'s computed `property` is the theme token `token` as the page resolves it. */
 async function expectToken(
   page: Page,
@@ -509,6 +544,24 @@ const STANDUP_THREAD: readonly ChatMessage[] = [
   ),
 ];
 
+const LONG_THREAD_EXCHANGES = 30;
+
+/**
+ * The standup walked through line by line: thirty exchanges, a thread many windows tall. Ids vary
+ * before their last four characters, which storedReply swaps for the answer's id.
+ */
+const LONG_THREAD: readonly ChatMessage[] = PAST_MEETING.lines
+  .slice(0, LONG_THREAD_EXCHANGES)
+  .flatMap((line, index) => {
+    const n = index + 1;
+    const id = `9a4c2e61-3d5b-4f70-8c19-${String(n).padStart(4, '0')}6e2f0b01`;
+    const who = line.source === 'mic' ? 'You said' : 'Someone on the call said';
+    return [
+      question(id, n === 1 ? 'Walk me through the call: how did it open?' : 'And after that?'),
+      storedReply(id, `${who}: "${line.text}" [L${n}]`, [cite(n)]),
+    ];
+  });
+
 // The run ----------------------------------------------------------------------------------------
 
 let run: qa.QaRun;
@@ -530,6 +583,7 @@ async function shootChecked(
   try {
     await checks();
     await qa.expectNoPageOverflow(preview.page);
+    await expectNoPageScroll(preview.page);
     qa.expectNoConsoleErrors(preview);
   } catch (error) {
     failure =
@@ -630,6 +684,37 @@ describe.each(qa.QA_THEMES.flatMap((theme) => qa.QA_WIDTHS.map((width) => ({ the
         await qa.settle(page);
         expect(await textOf(page, removed)).toBe('01:47Line removed');
         expect(await shownPane(page)).toBe(narrow ? 'chat' : null);
+      } finally {
+        await preview.close();
+      }
+    });
+
+    it('keeps a long thread inside its log, and the window still', async () => {
+      const preview = await run.open({ scenario: 'past-meeting', theme, width });
+      const { page } = preview;
+      try {
+        await openChat(page, LONG_THREAD);
+        await shootChecked(
+          preview,
+          'Thread',
+          `long-thread-${tag}`,
+          'Thirty exchanges: the log scrolls inside the chat pane with the newest in view, and the window itself does not scroll (each exchange carries two screen-reader labels)',
+          async () => {
+            expect(await page.locator(`${CHAT_LOG} > .meeting-chat-exchange`).count()).toBe(
+              LONG_THREAD_EXCHANGES,
+            );
+            const log = await page.evaluate((selector) => {
+              const element = document.querySelector(selector);
+              if (element === null) throw new Error('No chat log on the page');
+              return { scrollHeight: element.scrollHeight, clientHeight: element.clientHeight };
+            }, CHAT_LOG);
+            // Taller than its pane by more than a window: escaping labels would show.
+            expect(log.scrollHeight).toBeGreaterThan(log.clientHeight + 900);
+            expect(await chatDistanceFromEnd(page)).toBeLessThanOrEqual(1);
+            await qa.expectVisible(page, `${lastExchange} .citation-chip`, { within: CHAT_LOG });
+            await qa.expectVisible(page, ASK);
+          },
+        );
       } finally {
         await preview.close();
       }
