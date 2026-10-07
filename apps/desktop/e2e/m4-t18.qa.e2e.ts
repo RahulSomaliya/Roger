@@ -29,8 +29,10 @@ import {
  * lines), the saved notes, a regeneration streaming over the hidden, read-only editor, Restore
  * previous notes, and the question before regenerating edited notes. Then the waiting state and
  * "Which kind of call was this?", and the failure path: a run that fails mid-stream keeps its
- * partial lines under the error banner, and Retry starts again; a generate main refuses shows why.
- * Then Settings.
+ * partial lines under the error banner, and Retry starts again; a generate main refuses shows why;
+ * main's own failure says it retries, with Cancel. Then Settings. Two traps are shot too: a lost
+ * stream left waiting offline gives the notes back, and a picker opened before a generate started
+ * stays closed after it ends.
  *
  * Nothing mounts the panel in the app until M4-T20, so this script mounts it alone on the
  * preview's `empty-mac` page, inside the CitationNavigatorProvider and meeting view the meeting
@@ -228,14 +230,22 @@ async function fitDocument(page: Page): Promise<void> {
 const send = (page: Page, runId: string, event: NotesStreamEvent): Promise<void> =>
   qa.emitEvent(page, notesChannels.NotesEvent, { meetingId: MEETING, runId, event });
 
-async function setPending(page: Page, status: PendingGenerateStatus | null): Promise<void> {
+/** The run id of a generate main wrote at Stop, in the waiting and failure steps. */
+const STOP_RUN = '7d1e2f3a-4b5c-4d6e-8f70-81a2b3c4d5e6';
+
+/** Sends main's change of the meeting's pending generate: Stop's, unless `of` names another run. */
+async function setPending(
+  page: Page,
+  status: PendingGenerateStatus | null,
+  of: { runId: string; templateId: string } = { runId: STOP_RUN, templateId: 'client_call' },
+): Promise<void> {
   const pending: PendingGenerateState | null =
     status === null
       ? null
       : {
           meetingId: MEETING,
-          runId: '7d1e2f3a-4b5c-4d6e-8f70-81a2b3c4d5e6',
-          templateId: status.phase === 'needs_template' ? null : 'client_call',
+          runId: of.runId,
+          templateId: status.phase === 'needs_template' ? null : of.templateId,
           reason: 'after_stop',
           createdAt: '2026-10-06T11:10:00.000Z',
           status,
@@ -608,7 +618,7 @@ afterAll(async () => {
         'AiNotesPanel and NotesSettings mounted alone on the preview page until M4-T20 mounts them',
       Data: 'An hour-long client call: 6 AI lines with chips (one "check this"), 2 from your notes, 2 removed lines; a General regeneration',
     },
-    'Generate, the picker, a streaming run, saved notes, a regeneration, Restore previous notes, the edited-notes question, waiting and asking, a failed run and a refused generate, and Settings',
+    'Generate, the picker, a streaming run, saved notes, a regeneration and a lost stream waiting offline, Restore previous notes, the edited-notes question, waiting and asking (the picker opened during the call stays closed), a failed run, a refused generate and a failure main retries, and Settings',
   );
   process.stdout.write(
     `\nM4-T18 QA: ${results.map(({ shot, check }) => `${shot} ${check}`).join(', ')}\n${manifest}\n`,
@@ -742,6 +752,39 @@ describe.each(qa.QA_THEMES.flatMap((theme) => qa.QA_WIDTHS.map((width) => ({ the
           },
         );
 
+        // The stream drops with no event, and main's poll cannot reach the API: the same
+        // generate now waits offline. Its half-written lines must not hold the notes hidden.
+        await setPending(
+          page,
+          { phase: 'waiting_for_notes', cause: 'offline' },
+          { runId: second, templateId: 'general' },
+        );
+        await shootChecked(
+          preview,
+          'Regenerate',
+          `offline-${tag}`,
+          'The stream was lost and main could not reach the API: the generate waits offline, with Cancel, and the saved Client call notes are back, shown and editable',
+          async () => {
+            expect(await page.locator(`${PANEL} .ai-notes-stream`).count()).toBe(0);
+            await qa.expectVisible(page, EDITOR);
+            expect(await page.getAttribute(EDITOR, 'contenteditable')).toBe('true');
+            expect(await textOf(page, `${PANEL} .ai-notes-progress`)).toBe(
+              'Roger is offline; notes will generate when it is back.',
+            );
+            expect(await textOf(page, `${PANEL} .ai-notes-bar .note-button`)).toBe('Cancel');
+            expect(await textOf(page, `${PANEL} .ai-notes-meta`)).toBe(
+              'Client call template, 1 line to check',
+            );
+          },
+        );
+
+        // Back online: the next attempt re-sends the run id, and its `run` event starts the
+        // lines again. Only that event is sent again: the fake counts a line's "check this" each
+        // time it hears the line, and the saved notes below would claim 3 lines to check, not 2.
+        await setPending(page, { phase: 'running' }, { runId: second, templateId: 'general' });
+        await play(page, second, early.slice(0, 1));
+        await qa.expectVisible(page, `${PANEL} .ai-notes-stream-live`);
+        expect(await page.locator(`${PANEL} .ai-notes-editor[hidden]`).count()).toBe(1);
         await play(page, second, rest);
         await finish(page, second, GENERAL, 2);
         await page.waitForSelector(
@@ -819,13 +862,17 @@ describe.each(qa.QA_THEMES.flatMap((theme) => qa.QA_WIDTHS.map((width) => ({ the
       const { page } = preview;
       try {
         await openPanel(page);
+        // During the call the user opens the picker, then Stop writes a generate (auto-generate).
+        await press(page, PANEL, 'Generate notes');
+        await qa.expectVisible(page, `${PANEL} .template-picker`);
         await setPending(page, { phase: 'waiting_for_lines', waitingLines: 12 });
         await shootChecked(
           preview,
           'Waiting and asking',
           `waiting-${tag}`,
-          'Generate after Stop, waiting for the call to upload: 12 lines to go, with Cancel',
+          'Generate after Stop, waiting for the call to upload: 12 lines to go, with Cancel; the picker opened during the call is closed',
           async () => {
+            expect(await page.locator(`${PANEL} .template-picker`).count()).toBe(0);
             await qa.expectVisible(page, `${PANEL} .ai-notes-progress`);
             expect(await textOf(page, `${PANEL} .ai-notes-progress`)).toBe(
               'Notes will generate when 12 lines finish uploading.',
@@ -856,9 +903,26 @@ describe.each(qa.QA_THEMES.flatMap((theme) => qa.QA_WIDTHS.map((width) => ({ the
         await press(page, PANEL, 'Standup');
         await page.waitForSelector(`${PANEL} .ai-notes-progress-running`);
         const pending = await page.evaluate((id) => window.roger.getPendingGenerate(id), MEETING);
-        expect(pending?.runId).toBe('7d1e2f3a-4b5c-4d6e-8f70-81a2b3c4d5e6');
+        expect(pending?.runId).toBe(STOP_RUN);
         expect(pending?.templateId).toBe('standup');
-        qa.expectNoConsoleErrors(preview);
+
+        // The generate ends: the picker opened before it started stays closed for good, or a
+        // stray Enter on its focused template would start a second run.
+        await press(page, `${PANEL} .ai-notes-bar`, 'Stop');
+        await page.waitForSelector(`${PANEL} .ai-notes-empty`);
+        await shootChecked(
+          preview,
+          'Waiting and asking',
+          `stopped-${tag}`,
+          'Stopped: the cancel notice and the empty state with Generate notes; the picker opened during the call does not come back',
+          async () => {
+            await qa.expectVisible(page, `${PANEL} .ai-notes-empty .note-button-primary`);
+            expect(await page.locator(`${PANEL} .template-picker`).count()).toBe(0);
+            expect(await textOf(page, `${PANEL} .ai-notes-failure-title`)).toBe(
+              'Notes generation was cancelled.',
+            );
+          },
+        );
       } finally {
         await preview.close();
       }
@@ -932,6 +996,40 @@ describe.each(qa.QA_THEMES.flatMap((theme) => qa.QA_WIDTHS.map((width) => ({ the
             await expectTokenColour(page, `${PANEL} .ai-notes-error`, '--danger-ink');
           },
         );
+
+        // A local error in main: not stored, and main tries the generate again every 30 s.
+        await press(page, `${PANEL} .ai-notes-error`, 'Dismiss');
+        await setPending(page, {
+          phase: 'failed',
+          code: 'internal_error',
+          message: 'Roger could not generate the notes. It will try again.',
+        });
+        await shootChecked(
+          preview,
+          'Failure path',
+          `retrying-${tag}`,
+          "main's own failure, which it tries again by itself: the banner says so, with Retry and Cancel (not Dismiss, which would quietly drop the generate)",
+          async () => {
+            await qa.expectVisible(page, `${PANEL} .ai-notes-failure .note-button-primary`);
+            expect(await textOf(page, `${PANEL} .ai-notes-failure-title`)).toBe(
+              'Roger could not generate the notes.',
+            );
+            expect(await textOf(page, `${PANEL} .ai-notes-failure-detail`)).toBe(
+              'It will try again.',
+            );
+            expect(
+              await page.locator(`${PANEL} .ai-notes-failure button`).allTextContents(),
+            ).toEqual(['Retry', 'Cancel']);
+            expect(await page.locator(`${PANEL} .ai-notes-failure`).count()).toBe(1);
+            await expectTokenColour(page, `${PANEL} .ai-notes-failure-detail`, '--ink');
+          },
+        );
+        await press(page, `${PANEL} .ai-notes-failure`, 'Cancel');
+        await page.waitForSelector(`${PANEL} .ai-notes-empty`);
+        expect(await page.locator(`${PANEL} .ai-notes-failure`).count()).toBe(0);
+        expect(
+          await page.evaluate((id) => window.roger.getPendingGenerate(id), MEETING),
+        ).toBeNull();
       } finally {
         await preview.close();
       }
