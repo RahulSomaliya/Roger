@@ -1,9 +1,19 @@
-import { memo, type UIEvent, useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import {
+  memo,
+  type RefObject,
+  type UIEvent,
+  useCallback,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import { formatOffset } from '../format';
 import {
   type FollowMode,
   followScroll,
   scrolledAway,
+  type ScrollMetrics,
   startFollow,
   type TranscriptItem,
 } from './liveTranscriptModel';
@@ -74,17 +84,21 @@ function TranscriptPanel({ meetingId, storedLines, showHidden, live }: LiveTrans
   );
   useRegisterTranscript(handle);
 
-  // While following, the newest line is in view before the browser paints the new lines. Not when
-  // the reader scrolled up since the view was last seen: its scroll event has not come yet, and
-  // scrolling to the bottom first would undo the scroll and make that event read the bottom.
-  // Leaving the view, that event pauses following instead.
+  // While following, the newest line is in view before the browser paints the new lines.
   useLayoutEffect(() => {
     const element = scroller.current;
-    if (!following || element === null || scrolledAway(lastTop.current, element)) return;
-    element.scrollTop = element.scrollHeight;
-    // The next scroll event compares with this: a scroll up in the same frame then reads as up.
-    lastTop.current = element.scrollTop;
+    if (!following || element === null) return;
+    showNewest(element, lastTop);
   }, [following, container, items]);
+
+  // And when the region changes size with no new line: the browser keeps scrollTop when the box
+  // gets shorter, so the stop notice appearing above the page after the last line, or the capture
+  // status growing, would hide that line under the box's bottom edge, with nothing left to bring
+  // it back. Only while following: a reader who scrolled up keeps their place.
+  useLayoutEffect(() => {
+    if (!following || container === null) return;
+    return followSizeChanges(container, lastTop, observeSize);
+  }, [following, container]);
 
   const onScroll = useCallback((event: UIEvent<HTMLDivElement>) => {
     const { scrollTop, scrollHeight, clientHeight } = event.currentTarget;
@@ -129,6 +143,46 @@ function TranscriptPanel({ meetingId, storedLines, showHidden, live }: LiveTrans
       ) : null}
     </div>
   );
+}
+
+/**
+ * Puts the newest line in view, at the bottom of `box`. Not when the reader scrolled up since the
+ * view was last seen at `lastTop`: their scroll event has not come yet, and scrolling to the
+ * bottom first would undo the scroll and make that event read the bottom. Leaving the view, that
+ * event pauses following instead. Records where it put the view in `lastTop`: the next scroll
+ * event compares with it, so a scroll up in the same frame still reads as up.
+ */
+export function showNewest(box: ScrollMetrics, lastTop: RefObject<number>): void {
+  if (scrolledAway(lastTop.current, box)) return;
+  box.scrollTop = box.scrollHeight;
+  lastTop.current = box.scrollTop;
+}
+
+/** Calls `onResize` whenever `box` changes size, until the returned function is called. */
+export type WatchSize<Box> = (box: Box, onResize: () => void) => () => void;
+
+/** WatchSize in the browser. A ResizeObserver also reports the size it first sees. */
+const observeSize: WatchSize<Element> = (box, onResize) => {
+  const observer = new ResizeObserver(onResize);
+  observer.observe(box);
+  return () => {
+    observer.disconnect();
+  };
+};
+
+/**
+ * Keeps the newest line in view each time `box` changes size (showNewest), until the returned
+ * function is called. Scrolling never changes the box's size, so this never feeds itself a
+ * ResizeObserver loop (which the browser reports as an error).
+ */
+export function followSizeChanges<Box extends ScrollMetrics>(
+  box: Box,
+  lastTop: RefObject<number>,
+  watch: WatchSize<Box>,
+): () => void {
+  return watch(box, () => {
+    showNewest(box, lastTop);
+  });
 }
 
 /**
