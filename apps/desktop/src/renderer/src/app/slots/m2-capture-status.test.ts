@@ -39,8 +39,7 @@ function shell(status: CaptureStatus | null, captureMeeting: CaptureMeeting | nu
     navigate: vi.fn(),
     capture: {
       status,
-      segments: [],
-      interim: { mic: null, system: null },
+      lastMeetingId: null,
       localError: null,
       busy: false,
       start: vi.fn(),
