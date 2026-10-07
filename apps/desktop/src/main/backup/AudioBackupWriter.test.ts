@@ -23,6 +23,7 @@ import { WAV_HEADER_BYTES, wavHeader } from './wav';
 
 const MEETING = '1b9d6bcd-bbfd-4b2d-9b5d-ab8dfbbd4bed';
 const T0 = Date.parse('2026-10-06T09:00:00.000Z');
+const HOUR_MS = 3_600_000;
 const SAMPLES_PER_MS = PCM_SAMPLE_RATE / 1_000;
 const logger = createLogger({ level: 'error', format: 'json', sink: () => undefined });
 
@@ -193,6 +194,44 @@ describe('AudioBackupWriter', () => {
     expect(backup.live()).toBeNull();
   });
 
+  it('counts a file the compressor encoded at its m4a size, as the disk holds it', () => {
+    const backup = writer();
+    backup.begin({ meetingId: MEETING, meetingStartedAtMs: T0 });
+    feed(backup, 'mic', T0, 61_000);
+    const [firstMinute] = closed;
+
+    backup.fileEncoded(firstMinute!, 5_000);
+
+    // The first minute is an m4a now; the second is a WAV still being written.
+    expect(backup.live()?.status.bytes).toBe(5_000 + WAV_HEADER_BYTES + 1_000 * SAMPLES_PER_MS * 2);
+    backup.end(MEETING);
+  });
+
+  it("counts a resumed meeting's earlier audio in the bytes it shows", () => {
+    // Kept by the recording before the crash (M2 D7), and encoded since.
+    store.addAudioFile({
+      id: '0c1d2e3f-4a5b-4c6d-8e7f-9a0b1c2d3e4f',
+      meetingId: MEETING,
+      source: 'mic',
+      startMs: 0,
+      path: storedAudioPath(MEETING, 'mic-000000000-0c1d2e3f.m4a'),
+      format: 'm4a',
+      createdAt: new Date(T0).toISOString(),
+    });
+    store.closeAudioFile('0c1d2e3f-4a5b-4c6d-8e7f-9a0b1c2d3e4f', {
+      endMs: 60_000,
+      bytes: 7_000,
+      closedAt: new Date(T0).toISOString(),
+    });
+    const backup = writer();
+    backup.begin({ meetingId: MEETING, meetingStartedAtMs: T0 - 600_000 });
+    expect(backup.live()?.status.bytes).toBe(7_000);
+
+    feed(backup, 'mic', T0, 1_000);
+    expect(backup.live()?.status.bytes).toBe(7_000 + WAV_HEADER_BYTES + 32_000);
+    backup.end(MEETING);
+  });
+
   it('pauses below 2 GiB free, says so loudly, and starts again when there is room', () => {
     freeBytes = BACKUP_MIN_FREE_BYTES - 1;
     const backup = writer();
@@ -243,6 +282,23 @@ describe('AudioBackupWriter', () => {
     backup.end(MEETING);
   });
 
+  it('reads the free space again at once when the clock steps back', () => {
+    const backup = writer();
+    backup.begin({ meetingId: MEETING, meetingStartedAtMs: T0 });
+    feed(backup, 'mic', T0, 5_000);
+    // The clock steps back an hour (a manual time change, an NTP step) as the disk fills: the
+    // next chunk reads the free space, never the hour that waiting on the old clock would take.
+    freeBytes = BACKUP_MIN_FREE_BYTES / 2;
+    feed(backup, 'mic', T0 + 5_000 - HOUR_MS, 100);
+    expect(backup.live()?.status.state).toBe('paused');
+
+    // And it goes on every DISK_CHECK_INTERVAL_MS of the stepped clock, so it starts again too.
+    freeBytes = 100 * BACKUP_MIN_FREE_BYTES;
+    feed(backup, 'mic', T0 + 5_100 - HOUR_MS, DISK_CHECK_INTERVAL_MS);
+    expect(backup.live()?.status.state).toBe('writing');
+    backup.end(MEETING);
+  });
+
   it('stops keeping audio when a write fails, and the recording goes on', () => {
     const backup = writer();
     backup.begin({ meetingId: MEETING, meetingStartedAtMs: T0 });
@@ -288,6 +344,53 @@ describe('AudioBackupWriter', () => {
     expect(backup.live()?.status.state).toBe('error');
     expect(files()).toEqual([]);
     backup.end(MEETING);
+  });
+
+  it.each([
+    [
+      'paused for the whole call',
+      (backup: AudioBackupWriter) => {
+        freeBytes = BACKUP_MIN_FREE_BYTES - 1;
+        backup.begin({ meetingId: MEETING, meetingStartedAtMs: T0 });
+        feed(backup, 'mic', T0, 2_000);
+        backup.end(MEETING);
+      },
+    ],
+    [
+      'stopped before its first chunk',
+      (backup: AudioBackupWriter) => {
+        backup.begin({ meetingId: MEETING, meetingStartedAtMs: T0 });
+        backup.end(MEETING);
+      },
+    ],
+    [
+      'still starting at quit',
+      (backup: AudioBackupWriter) => {
+        backup.begin({ meetingId: MEETING, meetingStartedAtMs: T0 });
+        backup.stop();
+      },
+    ],
+  ])('leaves no folder behind for a recording %s', (_how, record) => {
+    record(writer());
+
+    // No row names it, so no retention sweep or delete would ever find it.
+    expect(files()).toEqual([]);
+    expect(existsSync(meetingAudioDir(userData, MEETING))).toBe(false);
+  });
+
+  it("keeps the folder of a resumed meeting that holds the earlier recording's audio", () => {
+    const backup = writer();
+    backup.begin({ meetingId: MEETING, meetingStartedAtMs: T0 });
+    feed(backup, 'mic', T0, 1_000);
+    backup.end(MEETING);
+    // Resumed (M2 D7) on a nearly full disk: this recording keeps nothing.
+    freeBytes = BACKUP_MIN_FREE_BYTES - 1;
+    backup.begin({ meetingId: MEETING, meetingStartedAtMs: T0 });
+    feed(backup, 'mic', T0 + 60_000, 1_000);
+    backup.end(MEETING);
+
+    expect(spans('mic')).toEqual([[0, 1_000]]);
+    expect(existsSync(join(userData, files('mic')[0]!.path))).toBe(true);
   });
 
   it('closes the files of a recording still running at quit, and takes no more', () => {

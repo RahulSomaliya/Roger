@@ -146,7 +146,8 @@ describe('AudioCompressor', () => {
     expect(statSync(join(userData, m4a)).mode & 0o777).toBe(0o600);
     expect(existsSync(wav)).toBe(false);
     expect(readdirSync(join(userData, 'audio', MEETING))).toEqual([m4a.split('/').at(-1)]);
-    expect(onEncoded).toHaveBeenCalledWith(job);
+    // With the m4a's size: the live status counts the meeting's audio as the disk holds it.
+    expect(onEncoded).toHaveBeenCalledWith(job, file!.bytes);
   });
 
   it('keeps the WAV when afconvert fails, and leaves no half-made m4a', async () => {

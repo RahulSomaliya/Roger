@@ -16,6 +16,7 @@ import type { CaptureEvent, JsonObject, TranscriptStore } from '../store/Transcr
 import {
   ensureMeetingAudioDir,
   PRIVATE_FILE_MODE,
+  removeEmptyMeetingAudioDir,
   resolveStoredAudioPath,
   storedAudioPath,
 } from './audioPaths';
@@ -23,7 +24,10 @@ import type { CompressJob } from './AudioCompressor';
 import { type FreeDiskBytes, freeDiskBytes, hasBackupRoom } from './diskGuard';
 import { repairWavFile, WAV_HEADER_BYTES, wavDataBytesToMs, wavHeader } from './wav';
 
-/** Free disk space is read when a recording starts and then at most this often while it runs. */
+/**
+ * Free disk space is read when a recording starts, then once this much of the clock has passed
+ * while it runs, and at once after the clock steps back (checkDisk).
+ */
 export const DISK_CHECK_INTERVAL_MS = 10_000;
 
 /** A backup file holds at most this much of one stream (M2 D5, after anarlog's 60 s chunks). */
@@ -61,7 +65,7 @@ export interface LiveBackup {
 export interface AudioBackupWriterOptions {
   store: Pick<
     TranscriptStore,
-    'addAudioFile' | 'closeAudioFile' | 'addCaptureEvent' | 'listOpenAudioFiles'
+    'addAudioFile' | 'closeAudioFile' | 'addCaptureEvent' | 'listAudioFiles' | 'listOpenAudioFiles'
   >;
   userData: string;
   /** config.json's `audioBackup` (false too when `audioRetentionDays` is 0): nothing is written. */
@@ -102,9 +106,17 @@ interface Recording extends BackupRecording {
   /** The meeting's folder; null when backup is off or it could not be made. */
   dir: string | null;
   sources: Record<AudioSource, SourceBackup>;
-  /** On disk for this recording: headers and samples of every file it wrote. */
+  /**
+   * The meeting's audio on disk, as BackupStatus.bytes means it: every file's size as its row
+   * says, an open file's as written so far. Never a running total of what was written: the
+   * compressor swaps each closed WAV for an m4a about 5 times smaller while the call goes on
+   * (fileEncoded), and a resumed meeting (M2 D7) already has audio on disk at begin.
+   */
   bytes: number;
-  nextDiskCheckAtMs: number;
+  /** Each of the meeting's files on disk but the open ones, by id: its size, to swap at encode. */
+  fileBytes: Map<string, number>;
+  /** When free space was last read (the writer's clock); null until the first read. */
+  lastDiskCheckAtMs: number | null;
   /** Free space could not be read: said once per recording, then writing goes on. */
   diskUnreadable: boolean;
 }
@@ -162,12 +174,17 @@ export class AudioBackupWriter implements AudioSink {
       dir: null,
       sources: { mic: newSourceBackup(), system: newSourceBackup() },
       bytes: 0,
-      nextDiskCheckAtMs: 0,
+      fileBytes: new Map(),
+      lastDiskCheckAtMs: null,
       diskUnreadable: false,
     };
     this.recording = rec;
     if (rec.state === 'writing') {
       try {
+        for (const file of this.options.store.listAudioFiles(rec.meetingId)) {
+          rec.fileBytes.set(file.id, file.bytes);
+          rec.bytes += file.bytes;
+        }
         rec.dir = ensureMeetingAudioDir(this.options.userData, rec.meetingId);
         this.checkDisk(rec, this.clock());
       } catch (error) {
@@ -196,12 +213,25 @@ export class AudioBackupWriter implements AudioSink {
     }
   }
 
+  /**
+   * The compressor swapped a closed WAV for an m4a of `bytes`: the recording's figure follows the
+   * disk. A file of another meeting (the launch encoding what an earlier run left) changes nothing.
+   */
+  fileEncoded(job: CompressJob, bytes: number): void {
+    const rec = this.recording;
+    if (rec?.meetingId !== job.meetingId) return;
+    const was = rec.fileBytes.get(job.id);
+    if (was === undefined) return;
+    rec.fileBytes.set(job.id, bytes);
+    rec.bytes += bytes - was;
+  }
+
   /** The recording ended (Stop, or a Stop that failed): its files are closed. Never throws. */
   end(meetingId: string): void {
     const rec = this.recording;
     if (rec?.meetingId !== meetingId) return;
     this.recording = null;
-    this.closeAll(rec);
+    this.finish(rec);
   }
 
   /** At quit, for a recording whose Stop outran its bound: its files are closed now. */
@@ -209,7 +239,7 @@ export class AudioBackupWriter implements AudioSink {
     this.stopped = true;
     const rec = this.recording;
     this.recording = null;
-    if (rec !== null) this.closeAll(rec);
+    if (rec !== null) this.finish(rec);
   }
 
   /** The recording's backup; null while none runs. */
@@ -309,8 +339,9 @@ export class AudioBackupWriter implements AudioSink {
     const name = `${source}-${String(startMs).padStart(9, '0')}-${id.slice(0, 8)}.wav`;
     const path = join(rec.dir, name);
     const storedPath = storedAudioPath(rec.meetingId, name);
-    // The file before its row: a crash between leaves a stray file the meeting's delete removes,
-    // never a row that names nothing.
+    // The file before its row: a crash between leaves a header-only file no row names, never a
+    // row that names nothing. The meeting's delete removes it with the folder; if it was the
+    // meeting's first file nothing does, as no sweep or delete walks a folder without rows.
     const fd = openSync(path, 'wx', PRIVATE_FILE_MODE);
     try {
       writeAll(fd, wavHeader(0), 0, WAV_HEADER_BYTES, null);
@@ -351,6 +382,7 @@ export class AudioBackupWriter implements AudioSink {
     const file = backup.file;
     if (file === null) return;
     backup.file = null;
+    rec.fileBytes.set(file.id, WAV_HEADER_BYTES + file.dataBytes);
     try {
       writeAll(file.fd, wavHeader(file.dataBytes), 0, WAV_HEADER_BYTES, 0);
     } finally {
@@ -365,6 +397,25 @@ export class AudioBackupWriter implements AudioSink {
       closedAt: new Date(this.clock()).toISOString(),
     });
     this.options.onFileClosed({ id: file.id, meetingId: rec.meetingId, path: file.storedPath });
+  }
+
+  /**
+   * The recording is over: its files are closed, and its folder is removed if it holds none (the
+   * backup paused or failed before its first file, or Stop came before the first chunk). No row
+   * names such a folder, so no sweep or delete would ever find it. Never throws.
+   */
+  private finish(rec: Recording): void {
+    this.closeAll(rec);
+    if (rec.dir === null) return;
+    try {
+      removeEmptyMeetingAudioDir(this.options.userData, rec.meetingId);
+    } catch (error) {
+      // Harmless: an empty folder, and the next recording of the meeting uses it again.
+      this.options.logger.warn('audio backup: could not remove an empty audio folder', {
+        meetingId: rec.meetingId,
+        error: errorMessage(error),
+      });
+    }
   }
 
   /** Closes both sources' files; one that cannot be closed is left for the launch repair. */
@@ -382,8 +433,14 @@ export class AudioBackupWriter implements AudioSink {
   }
 
   private checkDisk(rec: Recording, now: number): void {
-    if (rec.dir === null || now < rec.nextDiskCheckAtMs) return;
-    rec.nextDiskCheckAtMs = now + DISK_CHECK_INTERVAL_MS;
+    if (rec.dir === null) return;
+    const last = rec.lastDiskCheckAtMs;
+    // A clock that stepped back (a manual time change, an NTP step) reads at once. Waiting for the
+    // old clock's next read would stop the pause and the resume for as long as the step, writing
+    // into the reserve below BACKUP_MIN_FREE_BYTES unwarned (lifecycle.ts keeps its crash window
+    // off the wall clock for the same reason).
+    if (last !== null && now >= last && now - last < DISK_CHECK_INTERVAL_MS) return;
+    rec.lastDiskCheckAtMs = now;
     let free: number;
     try {
       free = this.freeDiskBytes(rec.dir);
@@ -471,7 +528,8 @@ export class AudioBackupWriter implements AudioSink {
     try {
       rmSync(path, { force: true });
     } catch (error) {
-      // Harmless: the meeting's folder goes with its audio.
+      // Harmless: a header-only file with no audio, which the meeting's delete removes with its
+      // folder (see openFile).
       this.options.logger.warn('audio backup: could not remove a file it did not keep', {
         meetingId,
         error: errorMessage(error),

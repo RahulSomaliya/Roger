@@ -162,6 +162,25 @@ describe('AudioBackup', () => {
     expect(fake.refreshes()).toBeGreaterThan(0);
   });
 
+  it("shows the meeting's audio on disk while recording, an encoded file at its m4a size", async () => {
+    const fake = fakeCapture();
+    const backup = backupFor(fake.capture);
+    backup.start();
+    store.createMeeting({ id: MEETING, title: 'T', startedAt: new Date(T0).toISOString() });
+    fake.start(MEETING, T0);
+    for (let at = 0; at < 61_000; at += 100) {
+      now = T0 + at + 100;
+      fake.chunk('mic', 100, T0 + at);
+    }
+    // The first minute is encoded while the call goes on.
+    await backup.idle();
+
+    expect(store.listAudioFiles(MEETING).map((file) => file.format)).toEqual(['m4a', 'wav']);
+    // encodeAtOnce's m4a holds 3 bytes; the second minute is a WAV of 1 s so far.
+    expect(fake.status().backup?.bytes).toBe(3 + WAV_HEADER_BYTES + 32_000);
+    fake.end(MEETING);
+  });
+
   it('warns while the disk is nearly full, and the warning ends with the recording', () => {
     freeBytes = BACKUP_MIN_FREE_BYTES - 1;
     const fake = fakeCapture();

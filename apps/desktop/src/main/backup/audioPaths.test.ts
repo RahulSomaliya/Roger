@@ -14,6 +14,7 @@ import {
   audioRoot,
   ensureMeetingAudioDir,
   meetingAudioDir,
+  removeEmptyMeetingAudioDir,
   removeMeetingAudioDir,
   resolveStoredAudioPath,
   storedAudioPath,
@@ -81,6 +82,19 @@ describe('audio paths', () => {
     expect(removeMeetingAudioDir(userData, MEETING)).toBe(false);
   });
 
+  it('removes a meeting folder that holds nothing, and never one that holds a file', () => {
+    const dir = ensureMeetingAudioDir(userData, MEETING);
+
+    expect(removeEmptyMeetingAudioDir(userData, MEETING)).toBe(true);
+    expect(existsSync(dir)).toBe(false);
+    expect(removeEmptyMeetingAudioDir(userData, MEETING)).toBe(false);
+
+    ensureMeetingAudioDir(userData, MEETING);
+    writeFileSync(join(dir, 'mic.wav'), 'x');
+    expect(removeEmptyMeetingAudioDir(userData, MEETING)).toBe(false);
+    expect(existsSync(join(dir, 'mic.wav'))).toBe(true);
+  });
+
   it('refuses to delete through a meeting folder that links outside the audio root', () => {
     const outside = join(userData, 'Documents');
     mkdirSync(outside);
@@ -91,6 +105,10 @@ describe('audio paths', () => {
     expect(() => removeMeetingAudioDir(userData, MEETING)).toThrow(/not a folder/);
     expect(existsSync(join(outside, 'keep.txt'))).toBe(true);
     expect(() => ensureMeetingAudioDir(userData, MEETING)).toThrow(/not a folder/);
+    rmSync(join(outside, 'keep.txt'));
+    // Empty behind the link now: still refused, so the link and its folder both stay.
+    expect(() => removeEmptyMeetingAudioDir(userData, MEETING)).toThrow(/not a folder/);
+    expect(existsSync(outside)).toBe(true);
   });
 
   it('refuses to delete through an audio root that links outside userData', () => {

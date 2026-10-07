@@ -54,8 +54,8 @@ export interface AudioCompressorOptions {
   userData: string;
   logger: Logger;
   run?: RunTool;
-  /** A file is now m4a: its row, size and path changed. */
-  onEncoded?: (job: CompressJob) => void;
+  /** A file is now an m4a of `bytes`: its row, size and path changed. */
+  onEncoded?: (job: CompressJob, bytes: number) => void;
 }
 
 interface Running {
@@ -199,9 +199,10 @@ export class AudioCompressor {
     }
     // If this throws, the row still names the WAV, which is still there: nothing is lost, and the
     // next launch encodes it again over this m4a.
-    store.markAudioFileEncoded(job.id, { path: m4aPath, format: 'm4a', bytes: statSync(m4a).size });
+    const bytes = statSync(m4a).size;
+    store.markAudioFileEncoded(job.id, { path: m4aPath, format: 'm4a', bytes });
     this.remove(wav, fields);
-    this.options.onEncoded?.(job);
+    this.options.onEncoded?.(job, bytes);
   }
 
   /** The file is still a closed WAV of the backup: not deleted, not encoded already. */

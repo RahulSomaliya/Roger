@@ -1,4 +1,4 @@
-import { chmodSync, lstatSync, mkdirSync, rmSync } from 'node:fs';
+import { chmodSync, lstatSync, mkdirSync, rmdirSync, rmSync } from 'node:fs';
 import { isAbsolute, join, posix, relative, resolve } from 'node:path';
 import { isUuidV4 } from '../ipc-validation';
 
@@ -12,10 +12,10 @@ import { isUuidV4 } from '../ipc-validation';
  * lowercase UUIDv4 (a renderer-supplied `../x` would otherwise make delete-audio a path-traversal
  * delete), and a stored path must stay inside the audio root, judged by its text. A folder that is
  * a link is refused only where folders are made (ensureMeetingAudioDir, once per recording) and
- * where one is deleted (removeMeetingAudioDir), since a recursive delete through a link empties
- * whatever it points at. A recording's later files, the compressor and the launch repair go by the
- * text alone, so they would write through a link swapped in later. That takes the same user's
- * hand, and they only touch files an `audio_files` row names.
+ * where one is deleted (removeMeetingAudioDir, removeEmptyMeetingAudioDir), since a recursive
+ * delete through a link empties whatever it points at. A recording's later files, the compressor
+ * and the launch repair go by the text alone, so they would write through a link swapped in
+ * later. That takes the same user's hand, and they only touch files an `audio_files` row names.
  */
 
 const AUDIO_DIR_NAME = 'audio';
@@ -91,6 +91,29 @@ export function removeMeetingAudioDir(userData: string, meetingId: string): bool
   return true;
 }
 
+/**
+ * Deletes one meeting's folder only if it holds nothing: the folder of a recording that kept no
+ * audio, which no `audio_files` row names, so neither the retention sweep nor delete-audio would
+ * ever find it. Returns false when it holds a file (an earlier recording's audio) or there is none.
+ * Throws, deleting nothing, on a folder or audio root that is a link or not a folder.
+ */
+export function removeEmptyMeetingAudioDir(userData: string, meetingId: string): boolean {
+  const dir = meetingAudioDir(userData, meetingId);
+  const root = audioRoot(userData);
+  if (!exists(root)) return false;
+  assertRealFolder(root);
+  if (!exists(dir)) return false;
+  assertRealFolder(dir);
+  try {
+    // Never recursive: a folder with a file in it stays as it is.
+    rmdirSync(dir);
+    return true;
+  } catch (error) {
+    if (isNotEmpty(error)) return false;
+    throw error;
+  }
+}
+
 /** Throws unless `path` is a folder itself, not a link to one. */
 function assertRealFolder(path: string): void {
   const info = lstatSync(path);
@@ -113,4 +136,13 @@ function exists(path: string): boolean {
 
 function isMissing(error: unknown): boolean {
   return error instanceof Error && 'code' in error && error.code === 'ENOENT';
+}
+
+/** rmdir of a folder that holds a file: POSIX allows either code. */
+function isNotEmpty(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    'code' in error &&
+    (error.code === 'ENOTEMPTY' || error.code === 'EEXIST')
+  );
 }
