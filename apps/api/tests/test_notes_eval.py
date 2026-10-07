@@ -274,6 +274,71 @@ async def test_an_action_item_counts_only_under_the_owner_the_line_gives_it_to()
     assert counted(scores.action_items) == (2, 6)
 
 
+async def test_a_late_colon_does_not_make_the_clause_before_it_an_owner() -> None:
+    # Only a short list of names before the colon is an owner list. A trailing "why" clause would
+    # otherwise make the whole first clause the owner, and a name anywhere in it would count.
+    labels = CaseLabels(
+        action_items=(
+            ActionItemLabel(owner="Them", text="send the signed contract by Friday"),
+            ActionItemLabel(owner="Me", text="send the deck for Lena"),
+            ActionItemLabel(owner="Priya", text="send the deck by Friday"),
+            # Two words before the colon, but the owner does not open them: Me pings Them.
+            ActionItemLabel(owner="Them", text="send the pricing sheet"),
+            # Found: the line opens with its owner, and an owner named in a list of names.
+            ActionItemLabel(owner="Them", text="send the slides by Monday"),
+            ActionItemLabel(owner="Lena", text="book the venue"),
+            ActionItemLabel(owner="Priya", text="share the migration runbook"),
+        )
+    )
+    case = inline_case(*(f"Line {number}." for number in range(1, 8)), labels=labels)
+    answer = (
+        "- Send Them the signed contract by Friday: legal needs it [L1]\n"
+        "- Them to send me the deck for Lena by Friday: Lena presents Monday [L2]\n"
+        "- Send Priya the deck by Friday: she presents Monday [L3]\n"
+        "- Ping Them: send the pricing sheet [L4]\n"
+        "- Them to send the slides by Monday: the board meets Tuesday [L5]\n"
+        "- Priya, Sam & Lena: book the venue [L6]\n"
+        "- Priya Shah (PM): share the migration runbook [L7]\n"
+    )
+
+    report = await run_eval([case], scripted(answer), provider="fake", reasoning="off")
+
+    scores = report.cases[0].scores
+    assert scores is not None
+    assert [(item.owner, item.text) for item in scores.missed_action_items] == [
+        ("Them", "send the signed contract by Friday"),
+        ("Me", "send the deck for Lena"),
+        ("Priya", "send the deck by Friday"),
+        ("Them", "send the pricing sheet"),
+    ]
+    assert counted(scores.action_items) == (3, 7)
+
+
+async def test_an_owner_matches_across_apostrophe_styles_and_unicode_forms() -> None:
+    # Models often write curly apostrophes, and a labeller types straight ones (or the reverse).
+    labels = CaseLabels(
+        action_items=(
+            ActionItemLabel(owner="O'Brien", text="send the deck by Friday"),
+            ActionItemLabel(owner="D\u2019Souza", text="review the contract"),
+            # "José" typed composed; the model's line spells it with a combining accent.
+            ActionItemLabel(owner="Jos\u00e9", text="book the venue"),
+        )
+    )
+    case = inline_case("Line 1.", "Line 2.", "Line 3.", labels=labels)
+    answer = (
+        "- O\u2019Brien: send the deck by Friday [L1]\n"
+        "- D'Souza will review the contract [L2]\n"
+        "- Jose\u0301: book the venue [L3]\n"
+    )
+
+    report = await run_eval([case], scripted(answer), provider="fake", reasoning="off")
+
+    scores = report.cases[0].scores
+    assert scores is not None
+    assert scores.missed_action_items == []
+    assert counted(scores.action_items) == (3, 3)
+
+
 async def test_flagged_lines_and_numbers_are_counted_against_their_cited_lines() -> None:
     case = inline_case(
         "Beta ships on Friday.",
@@ -716,6 +781,36 @@ async def test_fix_report_measures_edits_between_run_output_and_current_notes(
     assert f"+0 / -{len(chr(10) + '- Pricing stays at 50k')}" in markdown
 
 
+async def test_fixes_for_one_meeting_refuses_one_it_cannot_measure(
+    database: Database, principal: Principal
+) -> None:
+    # An empty report would say "no meeting has AI notes" about a mistyped id, and exit 0.
+    generated = bullets_doc("Beta ships Friday", heading="Decisions")
+    failed = await add_meeting(database, principal.workspace_id)
+    await add_generated_notes(
+        database, principal.workspace_id, failed, generated=None, current=generated, edited=False
+    )
+    without_notes = await add_meeting(database, principal.workspace_id)
+    other = Workspace(id=uuid4(), name="Someone else")
+    async with database.session() as session:
+        session.add(other)
+        await session.commit()
+    foreign = await add_meeting(database, other.id)
+    await add_generated_notes(
+        database, other.id, foreign, generated=generated, current=generated, edited=False
+    )
+    unknown = uuid4()
+
+    for meeting_id, problem in [
+        (unknown, "not found"),
+        (foreign, "not found"),
+        (failed, "has no AI notes written by a run"),
+        (without_notes, "has no AI notes written by a run"),
+    ]:
+        with pytest.raises(NotFoundError, match=f"Meeting {meeting_id} {problem}"):
+            await measure_fixes(database, principal, meeting_id=meeting_id, limit=10)
+
+
 async def test_export_writes_a_case_from_a_meeting_and_its_notes(
     database: Database, principal: Principal, tmp_path: Path
 ) -> None:
@@ -916,6 +1011,25 @@ async def test_export_and_fixes_commands_read_the_default_workspace(
     fixes = json.loads((tmp_path / "fixes" / "fixes.json").read_text(encoding="utf-8"))
     assert [fix["meeting_id"] for fix in fixes["fixes"]] == [str(meeting_id)]
     assert "Acme renewal" in (tmp_path / "fixes" / "fixes.md").read_text(encoding="utf-8")
+
+
+async def test_fixes_command_names_a_meeting_it_cannot_measure_and_writes_nothing(
+    database: Database, database_url: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    settings = make_settings(database_url)
+    async with database.session() as session:
+        session.add(Workspace(id=settings.default_workspace_id, name="Linkt"))
+        await session.commit()
+    mistyped = uuid4()
+    out = tmp_path / "fixes"
+
+    code = await asyncio.to_thread(
+        main, ["fixes", "--meeting", str(mistyped), "--out", str(out)], settings=settings
+    )
+
+    assert code == 1
+    assert f"Meeting {mistyped} not found" in capsys.readouterr().err
+    assert not out.exists()
 
 
 def test_fixes_refuses_a_limit_below_one(capsys: pytest.CaptureFixture[str]) -> None:

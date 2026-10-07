@@ -10,6 +10,7 @@ averaging rates (a 3-line case would weigh as much as a 60-line one).
 """
 
 import re
+import unicodedata
 from collections.abc import Sequence
 
 from pydantic import BaseModel, ConfigDict, SerializerFunctionWrapHandler, model_serializer
@@ -29,11 +30,19 @@ LABEL_WORD_SHARE = 0.6
 _STEM_CHARS = 5
 _WHOLE_WORD_BELOW = 4
 
+# Letters and digits, joined by inner apostrophes ("o'brien"): straight ones, as `_plain` leaves
+# every apostrophe.
 _TOKEN = re.compile(r"[^\W_]+(?:'[^\W_]+)*")
 _DIGIT = re.compile(r"[0-9]")
 _HEADING_MARKS = re.compile(r"#{1,6} ")
 # The colon that ends an action item's owner ("Priya: share ..."), never one inside a time ("3:00").
 _OWNER_END = re.compile(r":(?![0-9])")
+# What joins the owners before that colon: "Priya, Sam & Lena: ...", "Priya and Sam: ...".
+_OWNER_LIST = re.compile(r",|&|/|\band\b", re.IGNORECASE)
+# The most tokens one name before the colon has ("Mary Ann Lee", "Priya Shah (PM)"). A longer piece
+# is a clause, not a name: "Send Them the contract by Friday: legal needs it" names no owner, and
+# reading its first clause as one would give the item to anyone it mentions.
+_NAME_TOKENS = 3
 # Words that say nothing about what was agreed. Numbers are compared apart, by `check_support`.
 _WORDS_WITHOUT_CONTENT = """
     a an and or but the to of for by on in at with from as into about is are was were be been
@@ -199,21 +208,39 @@ def _holds(line: str, label: str, owner: str | None) -> bool:
 
 def _gives_to(line: str, owner: str) -> bool:
     """Does `line` give its item to `owner`? The prompt writes one as "Owner: what, by when", so
-    the owner is named before the first colon ("Priya and Sam: ..."); a line with no such colon
-    must open with the owner ("Priya will share ...").
+    the owner opens one of the names before the first colon ("Priya and Sam: ..."); a line with
+    no such list of names must open with the owner ("Priya will share ...").
 
-    Never a name anywhere in the line: "Me" and "Them" are owners and everyday objects too, and
-    "Them: send me the contract" is Them's item, not mine.
+    Never a name anywhere in the line, nor anywhere before a colon: "Me" and "Them" are owners and
+    everyday objects too. "Them: send me the contract" is Them's item, not mine, and so is "Them to
+    send me the deck by Friday: Lena presents Monday".
     """
     wanted = _tokens(owner)
-    owner_part, *rest = _OWNER_END.split(line, maxsplit=1)
+    return any(name[: len(wanted)] == wanted for name in _owner_names(line))
+
+
+def _owner_names(line: str) -> list[list[str]]:
+    """The tokens of each name before the line's first colon, when they are a short list of names
+    (`_NAME_TOKENS`); else the whole line as one, which only an owner that opens it matches."""
+    owner_part, *rest = _OWNER_END.split(_plain(line), maxsplit=1)
     if rest:
-        return set(wanted) <= set(_tokens(owner_part))
-    return _tokens(line)[: len(wanted)] == wanted
+        names = [name for name in map(_tokens, _OWNER_LIST.split(owner_part)) if name]
+        if names and all(len(name) <= _NAME_TOKENS for name in names):
+            return names
+    return [_tokens(line)]
 
 
 def _tokens(text: str) -> list[str]:
-    return _TOKEN.findall(text.casefold())
+    return _TOKEN.findall(_plain(text).casefold())
+
+
+def _plain(text: str) -> str:
+    """`text` as `citations._tokens` reads it: NFKC makes one name of a composed accent and a
+    combining one, and the curly apostrophes NFKC leaves alone are straightened by hand. Without
+    both, a model's "O'Brien" with a curly apostrophe is the tokens "o" and "brien", and never
+    matches the label owner typed with a straight one.
+    """
+    return unicodedata.normalize("NFKC", text).replace("\u2019", "'").replace("\u2018", "'")
 
 
 def _words(tokens: Sequence[str]) -> list[str]:
