@@ -158,8 +158,12 @@ async function main(): Promise<void> {
   const crashRecovery = new CrashRecovery({
     store,
     relaunched: process.argv.includes('--relaunched'),
-    // A launch nobody relaunched would also resume while a call app holds the mic, but the call
-    // app monitor stays inside createCaptureRuntime, so it cannot be asked here yet.
+    // Not wired yet, a hand-off: D7 also resumes a launch nobody relaunched while a call app holds
+    // the mic, but the call app monitor is a local of createCaptureRuntime (`[slot M2-T17a]`), out
+    // of this slot's reach. Until then, Roger opened by hand after a kill -9 with Zoom still on the
+    // mic ends that meeting as a crash, and the call splits in two. To wire it, return the monitor
+    // in CaptureRuntime and pass `callApps: () => meetingAppMonitor` here. It is read only in
+    // `start` (the setImmediate below), so it may name a const the runtime slot declares later.
     callApps: null,
     logger: logger.child({ component: 'crash-recovery' }),
   });
