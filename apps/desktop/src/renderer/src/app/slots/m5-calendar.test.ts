@@ -26,8 +26,8 @@ describe("M5-T13's mounts", () => {
     expect(only(contributions.meetingBanner, 'meetingBanner').component).toBe(NoticeBanner);
   });
 
-  // Settings runs by order: M3's jargon list is 10, M4's notes 20; the calendar follows them.
-  it('keeps its ids unique to M5 and Settings after the notes preferences', () => {
+  // Settings runs by order: M3's jargon list is 10; the calendar follows it.
+  it('keeps its ids unique to M5 and Settings after the jargon list', () => {
     const ids = [
       only(contributions.home, 'home').id,
       only(contributions.settings, 'settings').id,
@@ -35,16 +35,12 @@ describe("M5-T13's mounts", () => {
       only(contributions.meetingBanner, 'meetingBanner').id,
     ];
     for (const id of ids) expect(id.startsWith('m5-')).toBe(true);
-    expect(only(contributions.settings, 'settings').order).toBeGreaterThan(20);
+    expect(only(contributions.settings, 'settings').order).toBeGreaterThan(10);
   });
 
-  it("shows in the merged shell, after M3 and M4's Settings sections", () => {
+  it("shows in the merged shell, after M3's Settings section", () => {
     expect(slots.home.map((entry) => entry.id)).toContain('m5-today');
-    expect(slots.settings.map((entry) => entry.id)).toEqual([
-      'm3-vocabulary',
-      'm4-notes',
-      'm5-calendar',
-    ]);
+    expect(slots.settings.map((entry) => entry.id)).toEqual(['m3-vocabulary', 'm5-calendar']);
     expect(slots.meetingBanner.map((entry) => entry.id)).toEqual(['m5-calendar-notice']);
     expect(slots.banner.map((entry) => entry.id)).toContain('m5-calendar-status');
   });

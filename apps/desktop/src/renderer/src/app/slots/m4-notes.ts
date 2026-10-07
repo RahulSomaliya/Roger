@@ -3,7 +3,6 @@ import { MeetingChat } from '../../chat/MeetingChat';
 import { AiNotesPanel } from '../../notes/AiNotesPanel';
 import { notesFlushResponder } from '../../notes/debouncedSaver';
 import { NoteEditor } from '../../notes/NoteEditor';
-import { NotesSettings } from '../../notes/NotesSettings';
 import type { MeetingSlotProps, SlotContributions } from '../slotRegistry';
 
 /** The "My notes" tab. The label is the tab's name: it is the editor's accessible name too. */
@@ -34,14 +33,12 @@ function StartNotesFlushResponder() {
 
 /**
  * What M4-T20 mounts: My notes, AI notes and the meeting chat (all inside the meeting page's
- * CitationNavigatorProvider, which their chips reveal lines through), the notes preferences, and
- * the flush responder's start. Slot names and their props: ../slotRegistry.ts.
- *
- * Settings order: M3's jargon list is 10, the notes preferences follow it.
+ * CitationNavigatorProvider, which their chips reveal lines through) and the flush responder's
+ * start. Slot names and their props: ../slotRegistry.ts. No Settings section: the redesign
+ * deleted the notes preferences (R6; notes/NotesSettings.tsx goes with R4).
  */
 export const contributions: SlotContributions = {
   banner: [{ id: 'm4-notes-flush', order: 0, component: StartNotesFlushResponder }],
-  settings: [{ id: 'm4-notes', order: 20, component: NotesSettings }],
   meetingMyNotes: [{ id: 'm4-my-notes', order: 0, component: MyNotes }],
   meetingAiNotes: [{ id: 'm4-ai-notes', order: 0, component: AiNotesPanel }],
   meetingChat: [{ id: 'm4-chat', order: 0, component: MeetingChat }],
