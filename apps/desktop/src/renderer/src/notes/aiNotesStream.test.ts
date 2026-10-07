@@ -349,21 +349,47 @@ describe('afterPendingChanged', () => {
         pending({ status: { phase: 'waiting_for_lines', waitingLines: 3 } }),
       ),
     ).toBeNull();
-    // main's own local failure sends no `error` event: its banner comes from the pending generate.
-    expect(
-      afterPendingChanged(
-        streaming,
-        pending({
-          status: {
-            phase: 'failed',
-            code: 'internal_error',
-            message: 'Roger could not generate the notes. It will try again.',
-          },
-        }),
-      ),
-    ).toBeNull();
     // The next attempt re-sends the run id, and its `run` event starts the view again.
     expect(play([RUN_EVENT])?.phase).toBe('streaming');
+  });
+
+  it("ends a streaming view as failed when its generate fails, keeping the run's lines", () => {
+    const streaming = play([
+      RUN_EVENT,
+      { type: 'section', index: 0, heading: 'Summary' },
+      { type: 'item', section: 0, text: 'Pilot went well', citations: [], support: 'ok' },
+    ]);
+    // main's own local failure sends no `error` event at all.
+    const internal = afterPendingChanged(
+      streaming,
+      pending({
+        status: {
+          phase: 'failed',
+          code: 'internal_error',
+          message: 'Roger could not generate the notes. It will try again.',
+        },
+      }),
+    );
+    expect(internal?.phase).toBe('failed');
+    expect(internal?.error).toEqual({
+      code: 'internal_error',
+      message: 'Roger could not generate the notes. It will try again.',
+    });
+    expect(shownStream(internal ?? null)).toBe('partial');
+
+    // A stored failure told before the stream's `error` reaches the page: that event changes
+    // nothing, as the first end stays.
+    const failed = afterPendingChanged(
+      streaming,
+      pending({ status: { phase: 'failed', code: 'llm_provider_error', message: 'Down.' } }),
+    );
+    expect(failed?.sections[0]?.items).toHaveLength(1);
+    expect(
+      applyNotesEvent(
+        failed ?? null,
+        message({ type: 'error', code: 'llm_provider_error', message: 'Down.' }),
+      ),
+    ).toBe(failed);
   });
 });
 

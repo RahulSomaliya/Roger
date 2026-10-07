@@ -159,8 +159,10 @@ export function afterNoteChanged(
  * and when the poll cannot reach the API, or an attempt fails in main (`internal_error`, which
  * sends no `error` event), the same generate waits or fails with no event to the page. A view kept
  * `streaming` then hides the AI notes and holds them read-only (layoutAiNotes) for as long as the
- * Mac is offline. So a streaming view ends once its generate leaves `running`; the next attempt
- * re-sends the run id, and its `run` event starts the view again.
+ * Mac is offline. So a streaming view ends once its generate leaves `running`: as failed, with the
+ * lines it wrote, when the generate failed (whether or not the run's `error` came first; the first
+ * end stays), and otherwise altogether. The next attempt re-sends the run id, and its `run` event
+ * starts the view again.
  */
 export function afterPendingChanged(
   view: AiNotesStreamView | null,
@@ -169,7 +171,9 @@ export function afterPendingChanged(
   if (view === null) return null;
   if (pending === null) return view.phase === 'failed' || view.phase === 'cancelled' ? view : null;
   if (pending.runId !== view.runId) return null;
-  return view.phase === 'streaming' && pending.status.phase !== 'running' ? null : view;
+  const { status } = pending;
+  if (view.phase !== 'streaming' || status.phase === 'running') return view;
+  return status.phase === 'failed' ? ended(view, status) : null;
 }
 
 /**
