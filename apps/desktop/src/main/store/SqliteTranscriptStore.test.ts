@@ -3,9 +3,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it } from 'vitest';
+import type { MeetingCalendarEvent } from '../../shared/calendar';
+import { START_SOURCES, type StartSource } from '../../shared/capture';
 import type { TranscriptSegment } from '../../shared/transcript';
 import { InMemoryTranscriptStore } from './InMemoryTranscriptStore';
-import { SqliteTranscriptStore } from './SqliteTranscriptStore';
+import { MEETING_IDS_BY_EVENT_IDS, SqliteTranscriptStore } from './SqliteTranscriptStore';
 import type {
   MeetingSttUsage,
   NewAudioFile,
@@ -30,12 +32,26 @@ function segment(n: number, overrides: Partial<TranscriptSegment> = {}): Transcr
 }
 
 /**
- * Undo migration 4 on a file, leaving it as the cost-guard build (schema 3) wrote it. Every older
- * wind-back calls this first: `migrate()` re-runs each migration above `user_version`, and one
- * left in place fails with "duplicate column name". When migration 5 lands, write
- * `windBackToSchema4` and call it at the top of this one (see MIGRATIONS).
+ * Undo migration 5 on a file, leaving it as M2's build (schema 4) wrote it. Every older wind-back
+ * calls this first: `migrate()` re-runs each migration above `user_version`, and one left in place
+ * fails with "duplicate column name". When migration 6 lands, write `windBackToSchema5` and call
+ * it at the top of this one (see MIGRATIONS).
  */
+function windBackToSchema4(path: string): void {
+  const raw = new DatabaseSync(path);
+  // The index first: SQLite refuses to drop a column an index reads.
+  raw.exec(`
+    DROP INDEX meetings_by_calendar_event;
+    ALTER TABLE meetings DROP COLUMN calendar_event_json;
+    ALTER TABLE meetings DROP COLUMN start_source;
+    PRAGMA user_version = 4;
+  `);
+  raw.close();
+}
+
+/** Undo migrations 5 and 4, leaving the file as the cost-guard build (schema 3) wrote it. */
 function windBackToSchema3(path: string): void {
+  windBackToSchema4(path);
   const raw = new DatabaseSync(path);
   raw.exec(`
     DROP TABLE app_state;
@@ -88,6 +104,8 @@ describe('SqliteTranscriptStore', () => {
       startedAt: '2026-10-05T10:00:00Z',
       endedAt: null,
       remoteState: 'pending',
+      startSource: 'manual',
+      calendarEvent: null,
     });
 
     store.markMeetingEnded('m1', '2026-10-05T10:30:00Z');
@@ -824,7 +842,7 @@ describe.each([
 });
 
 describe('SqliteTranscriptStore migration 4 and crash reopen', () => {
-  it('upgrades a store at schema 3 (M1 plus stt_usage) to 4, keeping every row', () => {
+  it('upgrades a store at schema 3 (M1 plus stt_usage), keeping every row', () => {
     const path = join(mkdtempSync(join(tmpdir(), 'roger-store-')), 'roger.sqlite');
     const first = new SqliteTranscriptStore(path);
     first.createMeeting({ id: 'm1', title: 'T', startedAt: '2026-10-05T10:00:00Z' });
@@ -841,7 +859,7 @@ describe('SqliteTranscriptStore migration 4 and crash reopen', () => {
 
     const store = new SqliteTranscriptStore(path, () => new Date(T0));
     const raw = new DatabaseSync(path);
-    expect(raw.prepare('PRAGMA user_version').get()?.user_version).toBe(4);
+    expect(raw.prepare('PRAGMA user_version').get()?.user_version).toBe(5);
     raw.close();
     expect(store.getMeeting('m1')).toMatchObject({
       endedAt: '2026-10-05T10:30:00Z',
@@ -933,6 +951,8 @@ describe.each([
         startedAt: '2026-10-06T14:00:00.000Z',
         endedAt: null,
         remoteState: 'pending',
+        startSource: 'manual',
+        calendarEvent: null,
       },
       {
         id: 'retro-b',
@@ -940,6 +960,8 @@ describe.each([
         startedAt: '2026-10-06T09:00:00.000Z',
         endedAt: null,
         remoteState: 'pending',
+        startSource: 'manual',
+        calendarEvent: null,
       },
     ]);
     expect(store.listMeetings(100).at(-1)).toEqual({
@@ -948,6 +970,8 @@ describe.each([
       startedAt: '2026-10-05T09:00:00.000Z',
       endedAt: '2026-10-05T09:15:00.000Z',
       remoteState: 'ended',
+      startSource: 'manual',
+      calendarEvent: null,
     });
 
     store.createMeeting({ id: 'm1', title: 'T', startedAt: '2026-10-06T15:00:00.000Z' });
@@ -1050,5 +1074,219 @@ describe('SqliteTranscriptStore reading a corrupt row', () => {
     expect(read).toThrow('corrupt segment row seg-1: speaker is not me or them');
     expect(read).not.toThrow(/Acme/);
     store.close();
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// How a meeting was started and the calendar event it is for (M5-T5, migration 5).
+
+const STANDUP: MeetingCalendarEvent = {
+  provider: 'google',
+  eventId: 'standup_20261007T093000Z',
+  icalUid: 'standup@google.com',
+  recurringEventId: 'standup',
+  scheduledStart: '2026-10-07T09:30:00.000Z',
+  scheduledEnd: '2026-10-07T09:45:00.000Z',
+  attendees: [
+    {
+      email: 'rahul@linkt.ai',
+      displayName: null,
+      responseStatus: 'accepted',
+      isSelf: true,
+      isOrganizer: false,
+    },
+    {
+      email: 'jane@linkt.ai',
+      displayName: 'Jane',
+      responseStatus: 'needs_action',
+      isSelf: false,
+      isOrganizer: true,
+    },
+  ],
+};
+
+describe('SqliteTranscriptStore migration 5', () => {
+  it('upgrades a store at schema 4 in place: its meetings read as manual, with no event', () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'roger-store-')), 'roger.sqlite');
+    const first = new SqliteTranscriptStore(path);
+    first.createMeeting({ id: 'm1', title: 'T', startedAt: '2026-10-05T10:00:00.000Z' });
+    first.appendSegment(segment(1));
+    first.close();
+    windBackToSchema4(path);
+
+    const store = new SqliteTranscriptStore(path);
+    const raw = new DatabaseSync(path);
+    expect(raw.prepare('PRAGMA user_version').get()?.user_version).toBe(5);
+    raw.close();
+    expect(store.getMeeting('m1')).toEqual({
+      id: 'm1',
+      title: 'T',
+      startedAt: '2026-10-05T10:00:00.000Z',
+      endedAt: null,
+      remoteState: 'pending',
+      startSource: 'manual',
+      calendarEvent: null,
+    });
+    expect(store.countSegments('m1')).toBe(1);
+    store.createMeeting({
+      id: 'm2',
+      title: 'Standup',
+      startedAt: '2026-10-07T09:31:00.000Z',
+      startSource: 'notification',
+      calendarEvent: STANDUP,
+    });
+    store.close();
+
+    const again = new SqliteTranscriptStore(path); // migration 5 does not run twice
+    expect(again.getMeeting('m2')).toMatchObject({
+      startSource: 'notification',
+      calendarEvent: STANDUP,
+    });
+    again.close();
+  });
+
+  it('refuses an unknown start source in the file itself, the five known ones pass', () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'roger-store-')), 'roger.sqlite');
+    const store = new SqliteTranscriptStore(path);
+    store.createMeeting({ id: 'm1', title: 'T', startedAt: '2026-10-05T10:00:00.000Z' });
+    store.close();
+    const raw = new DatabaseSync(path);
+    const setSource = raw.prepare(`UPDATE meetings SET start_source = ? WHERE id = 'm1'`);
+    for (const source of START_SOURCES) expect(() => setSource.run(source)).not.toThrow();
+    expect(() => setSource.run('calendar')).toThrow(/CHECK constraint failed/);
+    raw.close();
+  });
+
+  it('names the meeting whose event link is not JSON, without quoting what it holds', () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'roger-store-')), 'roger.sqlite');
+    const store = new SqliteTranscriptStore(path);
+    store.createMeeting({ id: 'm1', title: 'T', startedAt: '2026-10-05T10:00:00.000Z' });
+    const raw = new DatabaseSync(path);
+    const setLink = raw.prepare(`UPDATE meetings SET calendar_event_json = ? WHERE id = 'm1'`);
+    // The event index reads the column, so SQLite itself refuses broken JSON on a write...
+    expect(() => setLink.run(`{"eventId": "Jane's 1:1`)).toThrow('malformed JSON');
+    // ...but takes JSON5, which JSON.parse does not.
+    setLink.run(`{eventId: 'Jane 1:1',}`);
+    raw.close();
+    expect(() => store.getMeeting('m1')).toThrow(
+      'corrupt meeting row m1: calendar_event_json is not JSON',
+    );
+    expect(() => store.getMeeting('m1')).not.toThrow(/Jane/);
+    store.close();
+  });
+});
+
+describe.each([
+  ['SqliteTranscriptStore', (): TranscriptStore => new SqliteTranscriptStore(':memory:')],
+  ['InMemoryTranscriptStore', (): TranscriptStore => new InMemoryTranscriptStore()],
+])('%s start source and event link', (_name, open: () => TranscriptStore) => {
+  it('keeps how a meeting started and its event, and every read returns them', () => {
+    const store = open();
+    store.createMeeting({
+      id: 'm1',
+      title: 'Standup',
+      startedAt: '2026-10-07T09:31:00.000Z',
+      startSource: 'notification',
+      calendarEvent: STANDUP,
+    });
+    store.createMeeting({
+      id: 'm2',
+      title: 'Zoom call',
+      startedAt: '2026-10-07T11:00:00.000Z',
+      startSource: 'call_detected',
+    });
+    const linked = { startSource: 'notification', calendarEvent: STANDUP };
+    const unlinked = { startSource: 'call_detected', calendarEvent: null };
+    expect(store.getMeeting('m1')).toMatchObject(linked);
+    expect(store.getMeeting('m2')).toMatchObject(unlinked);
+    expect(store.listMeetings(10)).toEqual([
+      expect.objectContaining(unlinked),
+      expect.objectContaining(linked),
+    ]);
+    expect(store.listOpenMeetings().map((m) => m.calendarEvent)).toEqual([STANDUP, null]);
+    expect(store.listMeetingsNeedingSync().map((m) => m.startSource)).toEqual([
+      'notification',
+      'call_detected',
+    ]);
+    store.close();
+  });
+
+  it('reads a meeting created without either as a manual start with no event', () => {
+    const store = open();
+    store.createMeeting({ id: 'm1', title: 'T', startedAt: '2026-10-07T09:31:00.000Z' });
+    expect(store.getMeeting('m1')).toMatchObject({ startSource: 'manual', calendarEvent: null });
+    store.close();
+  });
+
+  it('refuses a start source it does not know, naming the meeting', () => {
+    const store = open();
+    // Typed code cannot pass one: this stands for a value read from somewhere untyped.
+    const untyped: unknown = 'calendar';
+    expect(() => {
+      store.createMeeting({
+        id: 'm1',
+        title: 'T',
+        startedAt: '2026-10-07T09:31:00.000Z',
+        startSource: untyped as StartSource,
+      });
+    }).toThrow('could not write meeting m1: start source "calendar" is not one of');
+    expect(store.getMeeting('m1')).toBeNull();
+    store.close();
+  });
+
+  it('finds the newest local meeting of each event asked for, and nothing for the rest', () => {
+    const store = open();
+    const instance = (eventId: string): MeetingCalendarEvent => ({ ...STANDUP, eventId });
+    // Stopped and started again for the same call: Home opens the newer note. Written newest
+    // first, under ids that sort the other way, so only the start time puts them in order: neither
+    // the insert order (SQLite's rowid, the Map's order) nor the id does.
+    store.createMeeting({
+      id: 'a-retry',
+      title: 'Standup',
+      startedAt: '2026-10-07T09:33:00.000Z',
+      startSource: 'notification',
+      calendarEvent: instance('standup_1'),
+    });
+    store.createMeeting({
+      id: 'z-first',
+      title: 'Standup',
+      startedAt: '2026-10-07T09:31:00.000Z',
+      startSource: 'notification',
+      calendarEvent: instance('standup_1'),
+    });
+    store.createMeeting({
+      id: 'review',
+      title: 'Review',
+      startedAt: '2026-10-07T14:00:00.000Z',
+      startSource: 'home',
+      calendarEvent: instance('review_1'),
+    });
+    store.createMeeting({ id: 'manual', title: 'T', startedAt: '2026-10-07T15:00:00.000Z' });
+
+    expect(store.findMeetingIdsByEventIds(['standup_1', 'review_1', 'tomorrow_1'])).toEqual(
+      new Map([
+        ['standup_1', 'a-retry'],
+        ['review_1', 'review'],
+      ]),
+    );
+    expect(store.findMeetingIdsByEventIds(['tomorrow_1'])).toEqual(new Map());
+    expect(store.findMeetingIdsByEventIds([])).toEqual(new Map());
+    store.close();
+  });
+});
+
+describe('SqliteTranscriptStore finding meetings by event', () => {
+  // Home asks for today's events on every refresh: an index, not a JSON parse of every meeting.
+  it('reads the event index, never every meeting', () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'roger-store-')), 'roger.sqlite');
+    new SqliteTranscriptStore(path).close();
+    const raw = new DatabaseSync(path);
+    const plan = raw
+      .prepare(`EXPLAIN QUERY PLAN ${MEETING_IDS_BY_EVENT_IDS}`)
+      .all('["standup_1"]')
+      .map((row) => String(row.detail))
+      .join('\n');
+    raw.close();
+    expect(plan).toContain('USING INDEX meetings_by_calendar_event');
   });
 });

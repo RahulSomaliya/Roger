@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { TranscriptSegmentChange } from '../../shared/capture';
+import type { StartCaptureRequest, TranscriptSegmentChange } from '../../shared/capture';
 import { captureBridge } from './capture';
 
 // Electron's ipcRenderer, as far as the bridge helpers (../bridge.ts) use it. Hoisted, because
@@ -78,5 +78,31 @@ describe('the capture bridge', () => {
     stop();
     ipc.emit('transcript:segment-changed', { ...change, change: 'unhidden' });
     expect(seen).toEqual([change]);
+  });
+});
+
+describe('the capture bridge and start requests (M5)', () => {
+  it('asks main to start with the request, or with none, and takes a pending start', async () => {
+    ipc.invoked.length = 0;
+    const request: StartCaptureRequest = { source: 'notification', title: 'Standup' };
+    await captureBridge.startCapture(request);
+    await captureBridge.startCapture();
+    await captureBridge.takePendingStart();
+    expect(ipc.invoked).toEqual([
+      ['capture:start', request],
+      ['capture:start', undefined],
+      ['capture:take-pending-start', undefined],
+    ]);
+  });
+
+  it('tells the listener a start request waits, until it unsubscribes', () => {
+    let told = 0;
+    const stop = captureBridge.onStartRequested(() => {
+      told += 1;
+    });
+    ipc.emit('capture:start-requested', undefined);
+    stop();
+    ipc.emit('capture:start-requested', undefined);
+    expect(told).toBe(1);
   });
 });

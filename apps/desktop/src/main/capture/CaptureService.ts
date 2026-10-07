@@ -2,12 +2,15 @@ import { randomUUID } from 'node:crypto';
 import {
   AUDIO_SOURCE_LABEL,
   emptySourceStatus,
+  fitMeetingTitle,
   idleCaptureStatus,
   NO_AUDIO_WARNING_MS,
+  storedMeetingText,
   type AudioSourceState,
   type CapturePhase,
   type CaptureStatus,
   type SourceStatus,
+  type StartCaptureRequest,
   type SttMeter,
   type SttMeterStatus,
   type SttStreamState,
@@ -23,6 +26,7 @@ import {
 } from '../../shared/transcript';
 import type { SttTokenApi } from '../api/ApiClient';
 import { type CostGuards, DEFAULT_COST_GUARDS } from '../costGuards';
+import { parseStartCaptureRequest } from '../ipc-validation';
 import { errorMessage, type Logger } from '../logger';
 import type { MicrophoneAccess } from '../permissions';
 import type { MeetingSttUsage, TranscriptStore } from '../store/TranscriptStore';
@@ -76,9 +80,40 @@ export interface ResumeMeeting {
   meetingId: string;
 }
 
-export interface StartOptions {
-  /** Continue this open meeting instead of creating one. */
+/**
+ * A Start: the request's fields (how it was started, the title, the calendar event), checked as
+ * the window's are (parseStartCaptureRequest), or a resume.
+ */
+export interface StartOptions extends StartCaptureRequest {
+  /**
+   * Continue this open meeting instead of creating one. It keeps the title, source and event it
+   * was stored with: the request's fields and the enricher are not used.
+   */
   resume?: ResumeMeeting;
+}
+
+/**
+ * Completes what a start request leaves out, before its meeting is made: M5-T9c's links a start
+ * made near exactly one calendar event to it (M5 design, "Manual start near a meeting"). It sees
+ * every start that makes a meeting, whatever its source, a prompt's included (which carries its
+ * event already), and answers the request to start with. Main cuts its answer's title to fit
+ * (fitMeetingTitle), so it may pass an event's title as it is, then checks the answer as the
+ * window's request is; an enricher that throws or answers a request main would refuse is logged,
+ * and the start goes on with the request as it came: a note without its event beats no note. Its
+ * error's message goes to the log, so it never quotes an event's title or attendees.
+ */
+export type StartRequestEnricher = (request: StartCaptureRequest) => StartCaptureRequest;
+
+/**
+ * How long a start request from main waits for the window to take it (M5 design, "One click
+ * starts the note"): a window still loading gets that long; after it, the click is stale.
+ */
+export const PENDING_START_TTL_MS = 60_000;
+
+interface PendingStart {
+  request: StartCaptureRequest;
+  /** Clock time it was made. */
+  atMs: number;
 }
 
 export interface StopOptions {
@@ -94,6 +129,8 @@ interface CaptureEvents extends Record<string, unknown> {
   status: CaptureStatus;
   segment: TranscriptSegment;
   interim: InterimTranscript;
+  /** requestStart left a request for the window to take (ipc.ts tells the window). */
+  'start-requested': StartCaptureRequest;
 }
 
 /** A recording that has begun: what `RecordingListener.started` gets. */
@@ -276,6 +313,11 @@ export class CaptureService {
   private lastMeter: SttMeterStatus | null = null;
   private sttProvider: string | null = null;
   private startedAt: string | null = null;
+  /** The recording meeting's title, from the moment its meeting is made or resumed. */
+  private title: string | null = null;
+  private enricher: StartRequestEnricher | null = null;
+  /** A start main asked for, until the window takes it or it is too old (requestStart). */
+  private pendingStart: PendingStart | null = null;
   private sources: Record<AudioSource, SourceStatus> = {
     mic: emptySourceStatus(),
     system: emptySourceStatus(),
@@ -380,6 +422,8 @@ export class CaptureService {
     return {
       phase: this.currentPhase,
       meetingId: this.session?.meetingId ?? null,
+      // Named with the meeting: null while starting, as the meeting id is.
+      title: this.session === null ? null : this.title,
       startedAt: this.startedAt,
       sttProvider: this.sttProvider,
       sources: { mic: { ...this.sources.mic }, system: { ...this.sources.system } },
@@ -432,6 +476,11 @@ export class CaptureService {
     return status;
   }
 
+  /**
+   * Starts a recording, or resumes one. Never rejects: a refusal (no microphone access, a request
+   * that does not check, the open budget, the vendor) comes back as the status's `error`, which is
+   * how a requested start's outcome reaches whoever asked (M5-T9b reads the status).
+   */
   start(options: StartOptions = {}): Promise<CaptureStatus> {
     if (this.transition) return this.transition;
     if (this.currentPhase !== 'idle') return Promise.resolve(this.getStatus());
@@ -451,9 +500,57 @@ export class CaptureService {
   }
 
   /**
+   * The enricher every start that makes a meeting runs (StartRequestEnricher). M5-T9c sets it
+   * from its slot in index.ts, after createCaptureRuntime has built this service, hence a setter.
+   * Throws when one is set already: a second would silently replace the first.
+   */
+  setStartRequestEnricher(enricher: StartRequestEnricher): void {
+    if (this.enricher !== null) throw new Error('a start request enricher is already set');
+    this.enricher = enricher;
+  }
+
+  /**
+   * Asks the window to start a recording (a prompt's Take notes, M5-T9b): audio capture runs in
+   * the renderer, so main cannot start one alone. The request waits here until the window takes
+   * it (takePendingStart, on the `start-requested` event or as its page loads) and starts with it,
+   * through start() and the open budget like any Start. A later request replaces a waiting one.
+   * Its title is cut to fit (fitMeetingTitle), so a caller may pass an event's title as it is;
+   * throws, naming the field, on anything else the window's start would refuse.
+   */
+  requestStart(request: StartCaptureRequest): void {
+    const checked = parseStartCaptureRequest(withTitleCutToFit(request));
+    this.pendingStart = { request: checked, atMs: this.clock() };
+    this.options.logger.info('start requested', {
+      source: checked.source ?? 'manual',
+      linked: checked.calendarEvent !== undefined,
+    });
+    this.events.emit('start-requested', checked);
+  }
+
+  /**
+   * The start request waiting for the window, once: a second call answers null, so a request
+   * runs once however many pages ask. Null as well when none waits, or once it is older than
+   * PENDING_START_TTL_MS (on the wall clock, so a Mac that slept through the wait drops it).
+   */
+  takePendingStart(): StartCaptureRequest | null {
+    const pending = this.pendingStart;
+    this.pendingStart = null;
+    if (pending === null) return null;
+    const ageMs = this.clock() - pending.atMs;
+    if (ageMs > PENDING_START_TTL_MS) {
+      this.options.logger.warn('start request dropped: no window took it in time', {
+        source: pending.request.source ?? 'manual',
+        ageMs,
+      });
+      return null;
+    }
+    return pending.request;
+  }
+
+  /**
    * One chunk from a source: the renderer's (ipc.ts), or from M2-T10 the helper's call audio.
-   * `capturedAtMs` is the wall clock of its first sample where it was captured; null (M1's
-   * renderer, until M2-T12 sends it) dates it from its arrival instead.
+   * `capturedAtMs` is the wall clock of its first sample where it was captured; null (a sender
+   * with none: the renderer has sent one with every chunk since M2-T12) dates it from its arrival.
    */
   pushAudio(source: AudioSource, pcm: Uint8Array, capturedAtMs: number | null = null): void {
     if (this.currentPhase !== 'recording' || !this.session) return;
@@ -504,7 +601,7 @@ export class CaptureService {
     this.emitStatus();
   }
 
-  private async doStart({ resume }: StartOptions): Promise<CaptureStatus> {
+  private async doStart({ resume, ...asked }: StartOptions): Promise<CaptureStatus> {
     if (this.options.startupError) {
       this.error = this.options.startupError;
       return this.getStatus();
@@ -523,6 +620,9 @@ export class CaptureService {
     let session: CaptureSession | null = null;
     let meetingCreated = false;
     try {
+      // Checked here as well as at the IPC: main's own callers pass typed requests whose lengths
+      // no type bounds, and a meeting the API refuses to create never reaches the server.
+      const request = resume === undefined ? this.enrich(parseStartCaptureRequest(asked)) : {};
       if (resume !== undefined) {
         const meeting = store.getMeeting(meetingId);
         if (meeting === null) {
@@ -538,6 +638,7 @@ export class CaptureService {
           );
         }
         this.savedUsage = store.getSttUsage(meetingId);
+        this.title = meeting.title;
       }
       if ((await this.options.ensureMicrophoneAccess()) === 'denied') {
         throw new Error(
@@ -553,10 +654,17 @@ export class CaptureService {
       this.sttProvider = provider;
       this.startedAt = new Date(startedAtMs).toISOString();
       if (resume === undefined) {
+        // Kept as the API stores it, and blank as the start check reads it: U+0000 dropped before
+        // the trim. With JavaScript's trim() a title of U+0000 and spaces stayed an invisible
+        // title here while the server named the meeting "Untitled meeting".
+        const title = storedMeetingText(request.title ?? '');
+        this.title = title === '' ? defaultMeetingTitle(new Date(startedAtMs)) : title;
         store.createMeeting({
           id: meetingId,
-          title: defaultMeetingTitle(new Date(startedAtMs)),
+          title: this.title,
           startedAt: this.startedAt,
+          startSource: request.source ?? 'manual',
+          calendarEvent: request.calendarEvent ?? null,
         });
         meetingCreated = true;
       }
@@ -629,8 +737,8 @@ export class CaptureService {
       this.recordingSinceMs = this.clock();
       // The cap bounds one meeting: a resumed one has been recording since its first start.
       this.capFromMs = resume === undefined ? this.recordingSinceMs : startedAtMs;
-      // Bound, not wrapped: when CaptureSession.pushAudio takes the capture time too (M2-T5), the
-      // fan-out's third argument reaches it with no edit here.
+      // Bound, not wrapped: CaptureSession.pushAudio takes AudioSink.onChunk's three arguments in
+      // order, so each chunk's capture time reaches it; a wrapper that passed two would drop it.
       this.removeSessionSink = this.audio.add('speech-to-text', {
         onChunk: session.pushAudio.bind(session),
       });
@@ -646,7 +754,12 @@ export class CaptureService {
       for (const listener of [...this.recordingListeners]) {
         this.tell('started', meetingId, () => listener.started?.(live));
       }
-      logger.info('capture started', { meetingId, provider, resumed: resume !== undefined });
+      logger.info('capture started', {
+        meetingId,
+        provider,
+        resumed: resume !== undefined,
+        source: resume === undefined ? (request.source ?? 'manual') : null,
+      });
     } catch (error) {
       this.error = errorMessage(error);
       logger.error('capture start failed', { meetingId, error: this.error });
@@ -810,6 +923,25 @@ export class CaptureService {
     }
   }
 
+  /**
+   * The request as the enricher completes it, its title cut to fit and then checked as the
+   * window's is (StartRequestEnricher). A failure is logged with the request's source, never its
+   * title or event (calendar content), and the request goes on as it came.
+   */
+  private enrich(request: StartCaptureRequest): StartCaptureRequest {
+    const enricher = this.enricher;
+    if (enricher === null) return request;
+    try {
+      return parseStartCaptureRequest(withTitleCutToFit(enricher(request)));
+    } catch (error) {
+      this.options.logger.error('start request enricher failed', {
+        source: request.source ?? 'manual',
+        error: errorMessage(error),
+      });
+      return request;
+    }
+  }
+
   /** Tells the listeners the recording is over, once per recording. */
   private endRecording(outcome: Omit<RecordingEnded, 'meetingId'>): void {
     const live = this.live;
@@ -890,6 +1022,7 @@ export class CaptureService {
     this.savedUsage = null;
     this.sttProvider = null;
     this.startedAt = null;
+    this.title = null;
     this.recordingSinceMs = null;
     this.capFromMs = null;
     this.lastFinalAtMs = null;
@@ -1102,6 +1235,22 @@ function toMeter({
   return { sessionsOpened, connectedMs, audioSentMs, estimatedCostUsd };
 }
 
+/**
+ * `request` with its title cut to what the API stores (fitMeetingTitle). Main's own requests carry
+ * calendar titles, which have no length limit: refused for the title alone, a prompt's Take notes
+ * would fail every time for that event, and the enricher's answer would lose its event link too.
+ * The window's requests are not cut: an over-long one is refused at the IPC, naming the field.
+ */
+function withTitleCutToFit(request: StartCaptureRequest): StartCaptureRequest {
+  return request.title === undefined
+    ? request
+    : { ...request, title: fitMeetingTitle(request.title) };
+}
+
+/**
+ * What a meeting is called when its start names nothing. shared/suggestTemplate.ts matches this
+ * format (DEFAULT_MEETING_TITLE) to leave it out of template picks: change the two together.
+ */
 export function defaultMeetingTitle(startedAt: Date): string {
   const date = startedAt.toLocaleDateString('en-GB', {
     day: 'numeric',

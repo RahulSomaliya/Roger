@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import type { MeetingCalendarEvent } from '../../shared/calendar';
 import type { TranscriptSegment } from '../../shared/transcript';
 import { ApiClient, ApiError } from './ApiClient';
 
@@ -64,6 +65,8 @@ describe('ApiClient', () => {
       id: 'm-1',
       title: 'T',
       startedAt: '2026-10-05T10:00:00Z',
+      startSource: 'manual',
+      calendarEvent: null,
     });
     await client(fetchImpl).endMeeting('m-1', '2026-10-05T10:30:00Z');
 
@@ -71,10 +74,64 @@ describe('ApiClient', () => {
       id: 'm-1',
       title: 'T',
       started_at: '2026-10-05T10:00:00Z',
+      start_source: 'manual',
+      calendar_event: null,
     });
     expect(fetchImpl.mock.calls[1]![0]).toBe('http://api.test/v1/meetings/m-1/end');
     expect(bodyJson(fetchImpl.mock.calls[1]![1])).toEqual({
       ended_at: '2026-10-05T10:30:00Z',
+    });
+  });
+
+  it('sends how a meeting started and its calendar event in snake_case', async () => {
+    const event: MeetingCalendarEvent = {
+      provider: 'google',
+      eventId: 'standup_20261007T093000Z',
+      icalUid: 'standup@google.com',
+      recurringEventId: null,
+      scheduledStart: '2026-10-07T09:30:00.000Z',
+      scheduledEnd: '2026-10-07T09:45:00.000Z',
+      attendees: [
+        {
+          email: 'jane@linkt.ai',
+          displayName: 'Jane',
+          responseStatus: 'needs_action',
+          isSelf: false,
+          isOrganizer: true,
+        },
+      ],
+    };
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(jsonResponse(201, { id: 'm-1' }));
+    await client(fetchImpl).createMeeting({
+      id: 'm-1',
+      title: 'Standup',
+      startedAt: '2026-10-07T09:31:00.000Z',
+      startSource: 'notification',
+      calendarEvent: event,
+    });
+
+    expect(bodyJson(fetchImpl.mock.calls[0]![1])).toEqual({
+      id: 'm-1',
+      title: 'Standup',
+      started_at: '2026-10-07T09:31:00.000Z',
+      start_source: 'notification',
+      calendar_event: {
+        provider: 'google',
+        event_id: 'standup_20261007T093000Z',
+        ical_uid: 'standup@google.com',
+        recurring_event_id: null,
+        scheduled_start: '2026-10-07T09:30:00.000Z',
+        scheduled_end: '2026-10-07T09:45:00.000Z',
+        attendees: [
+          {
+            email: 'jane@linkt.ai',
+            display_name: 'Jane',
+            response_status: 'needs_action',
+            is_self: false,
+            is_organizer: true,
+          },
+        ],
+      },
     });
   });
 
@@ -130,6 +187,22 @@ describe('ApiClient', () => {
 
       expect(result.stream.keyterms).toEqual([]);
       expect(result).toEqual(token({ ...stream, keyterms: [] }));
+    });
+
+    // M3-T4b meters a stream opened with no keyterms at this price, and at price_per_hour_usd
+    // (which errs high) when an API older than the field leaves it out.
+    it('passes on the price without keyterms, and leaves it missing from an older API', async () => {
+      const priced = { ...stream, keyterms: ['Linkt'], price_per_hour_usd_without_keyterms: 0.15 };
+      const fetchImpl = vi
+        .fn<typeof fetch>()
+        .mockResolvedValueOnce(jsonResponse(200, token(priced)))
+        .mockResolvedValueOnce(jsonResponse(200, token(stream)));
+
+      const current = await client(fetchImpl).getSttToken();
+      expect(current.stream.price_per_hour_usd_without_keyterms).toBe(0.15);
+      expect(current.stream.price_per_hour_usd).toBe(0.19);
+      const older = await client(fetchImpl).getSttToken();
+      expect(older.stream.price_per_hour_usd_without_keyterms).toBeUndefined();
     });
   });
 

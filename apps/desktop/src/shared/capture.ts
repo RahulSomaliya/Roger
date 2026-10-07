@@ -1,5 +1,6 @@
-import type { CallApp } from './calendar';
+import type { CallApp, MeetingCalendarEvent } from './calendar';
 import type { AudioSource } from './transcript';
+import { trimTerm } from './vocabulary';
 
 /** The capture state machine owned by the main process. */
 export type CapturePhase = 'idle' | 'starting' | 'recording' | 'stopping';
@@ -354,9 +355,97 @@ export interface CaptureReport {
   backup: BackupStatus;
 }
 
+/**
+ * How a recording was started, stored with its meeting (`meetings.start_source` in roger.sqlite and
+ * Postgres; the API contract's `StartSource`, whose line ipc-validation.test.ts compares with this
+ * list). The CHECK of roger.sqlite's migration 5 and the API's `0004_calendar` list the same five,
+ * and a migration is never edited: a sixth value needs a new migration on both sides.
+ * - manual: a Start that names nothing else, the default
+ * - notification: a click on the calendar prompt (M5); the exit check's streak counts only these
+ * - home: a start from Home (M5-T12)
+ * - tray: a start from the menu bar (M5-T11)
+ * - call_detected: Take notes on the call-detected card (M2's detection, on M5's panel)
+ */
+export const START_SOURCES = ['manual', 'notification', 'home', 'tray', 'call_detected'] as const;
+
+export type StartSource = (typeof START_SOURCES)[number];
+
+export function isStartSource(value: unknown): value is StartSource {
+  return START_SOURCES.some((source) => source === value);
+}
+
+/**
+ * The longest meeting title the API stores, in characters (code points, as Python counts) of its
+ * storedMeetingText: `MeetingTitle` in apps/api/src/roger_api/schemas/meetings.py. Change the two
+ * together; ipc-validation.test.ts reads the API's source and fails when they differ.
+ */
+export const MAX_MEETING_TITLE_LENGTH = 500;
+
+/**
+ * Meeting text (the title, each text field of a calendar link) as the API stores it: U+0000
+ * dropped (Postgres refuses it; `storable_input` in apps/api/src/roger_api/schemas/common.py), then
+ * trimmed as pydantic's `strip_whitespace` trims (trimTerm, the API's whitespace list). The API's
+ * `max_length` counts the result's code points (`Array.from`, never `.length`).
+ *
+ * Trap: never JavaScript's trim() for this. It also trims U+FEFF, which the API keeps and counts,
+ * and keeps U+0085, which the API trims: 500 characters and a byte order mark would pass a trim()
+ * measure and draw the API's 422, which keeps the meeting and its transcript off the server.
+ */
+export function storedMeetingText(value: string): string {
+  return trimTerm(value.replaceAll('\u0000', ''));
+}
+
+/**
+ * `title` as the API stores it (storedMeetingText), cut to MAX_MEETING_TITLE_LENGTH characters. A
+ * calendar event's title has no length limit (a pasted agenda), while a start request with a
+ * longer title is refused, so a request built from one is cut with this first: main cuts its own
+ * (CaptureService.requestStart, the enricher's answer), and a page that starts a note from an
+ * event (Home, M5-T12) cuts its title before it sends the request.
+ */
+export function fitMeetingTitle(title: string): string {
+  const stored = storedMeetingText(title);
+  const characters = Array.from(stored);
+  if (characters.length <= MAX_MEETING_TITLE_LENGTH) return stored;
+  // Cut by code points, so no emoji is cut in half; trimmed again, so a cut just after a space
+  // leaves none at the end.
+  return trimTerm(characters.slice(0, MAX_MEETING_TITLE_LENGTH).join(''));
+}
+
+/**
+ * What a Start asks for beyond "record" (M5): how it was started, the title and the calendar event
+ * the note is for. Every field is optional; an empty request is a plain manual Start. Main checks a
+ * request field by field before it runs (main/ipc-validation.ts, parseStartCaptureRequest), the
+ * window's and its own (CaptureService.requestStart) alike, against what `POST /v1/meetings`
+ * accepts: the uploader sends these fields with the meeting's create, and a create the API refuses
+ * keeps the whole meeting, its transcript included, off the server.
+ */
+export interface StartCaptureRequest {
+  /** Default `manual`. */
+  source?: StartSource;
+  /**
+   * At most MAX_MEETING_TITLE_LENGTH characters of its storedMeetingText, or the window's start is
+   * refused. A calendar event's title has no such limit: main cuts the title of its own requests to
+   * fit (fitMeetingTitle), and a page that builds a request from an event cuts it first. Blank or
+   * left out, main names the meeting after its start, "Meeting 6 Oct 2026 09:30"
+   * (defaultMeetingTitle in main/capture/CaptureService.ts).
+   */
+  title?: string;
+  /**
+   * The calendar event the note is for (`toMeetingCalendarEvent`, which keeps the API's 200
+   * attendees). Left out or null: none, unless main's enricher links one (M5-T9c, "Manual start
+   * near a meeting").
+   */
+  calendarEvent?: MeetingCalendarEvent | null;
+}
+
 export interface CaptureStatus {
   phase: CapturePhase;
   meetingId: string | null;
+  /**
+   * The recording meeting's title: the start request's, or main's "Meeting 6 Oct 2026 09:30".
+   * Null whenever `meetingId` is.
+   */
+  title: string | null;
   /** ISO 8601 instant, UTC. */
   startedAt: string | null;
   sttProvider: string | null;
@@ -374,8 +463,8 @@ export interface CaptureStatus {
   /** This meeting's speech-to-text use while recording; the last meeting's after Stop. */
   meter: SttMeterStatus | null;
   /**
-   * Why Roger stopped the last recording on its own (no speech, the length cap, quit, sleep, the
-   * window closing or crashing), or null. Cleared by the next Start.
+   * Why Roger stopped the last recording on its own (no speech, the length cap, sleep, a window
+   * that could not reload), or null: capture/stopReasons.ts, stopNotice. Cleared by the next Start.
    */
   notice: string | null;
 
@@ -419,6 +508,7 @@ export function idleCaptureStatus(upload: UploadStatus): CaptureStatus {
   return {
     phase: 'idle',
     meetingId: null,
+    title: null,
     startedAt: null,
     sttProvider: null,
     sources: { mic: emptySourceStatus(), system: emptySourceStatus() },

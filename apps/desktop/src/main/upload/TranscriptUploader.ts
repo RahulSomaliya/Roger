@@ -333,10 +333,14 @@ export class TranscriptUploader {
         // Ended with notes and no line that can upload: created and ended in this one pass (the
         // end below waits only for held lines), so a notes-only meeting is never left "recording".
       }
+      // How it was started and its event go up with this create or never: the API keeps a link
+      // only from the create that makes the meeting, and ignores one on a re-send.
       await api.createMeeting({
         id: meeting.id,
         title: meeting.title,
         startedAt: meeting.startedAt,
+        startSource: meeting.startSource,
+        calendarEvent: meeting.calendarEvent,
       });
       store.setMeetingRemoteState(meeting.id, 'created');
     }

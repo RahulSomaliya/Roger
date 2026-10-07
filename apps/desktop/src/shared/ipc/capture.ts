@@ -2,6 +2,7 @@ import type {
   AudioSourceState,
   CaptureReport,
   CaptureStatus,
+  StartCaptureRequest,
   TranscriptSegmentChange,
 } from '../capture';
 import type { AudioSource, InterimTranscript, TranscriptSegment } from '../transcript';
@@ -21,6 +22,7 @@ export const captureChannels = {
   CaptureRerunGaps: 'capture:rerun-gaps',
   AudioDeleteMeeting: 'audio:delete-meeting',
   TranscriptUnhideSegment: 'transcript:unhide-segment',
+  CaptureTakePendingStart: 'capture:take-pending-start',
   /** renderer → main, fire and forget */
   AudioChunk: 'audio:chunk',
   AudioSourceState: 'audio:source-state',
@@ -29,6 +31,8 @@ export const captureChannels = {
   TranscriptSegment: 'transcript:segment',
   TranscriptInterim: 'transcript:interim',
   TranscriptSegmentChanged: 'transcript:segment-changed',
+  /** No payload: a start request waits in main; take it with CaptureTakePendingStart. */
+  CaptureStartRequested: 'capture:start-requested',
 } as const;
 
 /**
@@ -49,7 +53,8 @@ export interface AudioChunkMessage {
    * Wall clock (epoch ms) of the chunk's first sample, taken where it was captured (M2-T12).
    * Arrival times in main jitter, which would split the audio timeline falsely (M2 design,
    * "Timeline"). Main refuses a chunk whose value is not finite or is more than a day from now.
-   * Optional until M2-T12 sends it: main uses the arrival time when it is missing.
+   * The renderer sends it with every chunk (M2-T12); main dates a chunk without one by its
+   * arrival, which jitters as above.
    *
    * Build it per chunk as `Date.now()` minus the first frame's age on the monotonic clock
    * (`performance.now()` less the frame's `performanceTime`, mapped through
@@ -87,7 +92,25 @@ export interface SegmentRequest {
 
 /** Capture's part of `window.roger`. */
 export interface CaptureApi {
-  startCapture(): Promise<CaptureStatus>;
+  /**
+   * Starts a recording. `request` says how it was started, its title and its calendar event (M5);
+   * left out, a plain manual Start. Main refuses a request that does not check
+   * (parseStartCaptureRequest) by rejecting, naming the field; every other refusal comes back as
+   * the status's `error`.
+   */
+  startCapture(request?: StartCaptureRequest): Promise<CaptureStatus>;
+  /**
+   * Main has a start request for this window (a click on the prompt panel, M5): take it with
+   * takePendingStart and start with it. The event carries nothing, so a request runs once
+   * however many pages hear it. Main does not wait for a listener: a page also takes one as it
+   * loads (useCapture), which is how a window still loading gets a click made meanwhile.
+   */
+  onStartRequested(listener: () => void): Unsubscribe;
+  /**
+   * The start request waiting in main, once: null when none waits, another page took it, or it
+   * waited more than 60 s (CaptureService.takePendingStart).
+   */
+  takePendingStart(): Promise<StartCaptureRequest | null>;
   stopCapture(): Promise<CaptureStatus>;
   getCaptureStatus(): Promise<CaptureStatus>;
   /** A desktopCapturer source id for system audio, or null when none is available. */

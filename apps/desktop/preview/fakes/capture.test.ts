@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import type { CaptureReport, TranscriptSegmentChange } from '../../src/shared/capture';
+import type {
+  CaptureReport,
+  CaptureStatus,
+  StartCaptureRequest,
+  TranscriptSegmentChange,
+} from '../../src/shared/capture';
 import { IpcChannel } from '../../src/shared/ipc';
 import { createCaptureFake } from './capture';
 import { FakeHub } from './hub';
@@ -132,5 +137,37 @@ describe('the preview capture fake', () => {
     await expect(capture.unhideSegment({ meetingId: MEETING, segmentId: SEGMENT })).rejects.toThrow(
       `no hidden line ${SEGMENT}`,
     );
+  });
+});
+
+describe('the preview capture fake and start requests (M5)', () => {
+  it('records under the title a start request names', async () => {
+    const capture = createCaptureFake(new FakeHub());
+    await expect(
+      capture.startCapture({ source: 'notification', title: 'Standup' }),
+    ).resolves.toMatchObject({ phase: 'recording', title: 'Standup' });
+    await expect(capture.stopCapture()).resolves.toMatchObject({ phase: 'idle', title: null });
+    const plain: CaptureStatus = await capture.startCapture();
+    expect(plain.title).toEqual(expect.any(String));
+    await capture.stopCapture();
+    // Blank as main reads it (storedMeetingText): U+0000 and spaces name nothing.
+    const blank = await capture.startCapture({ title: '\u0000  ' });
+    expect(blank.title).toBe('New meeting');
+  });
+
+  // As main's requestStart: the page hears the nudge and takes the request, once.
+  it("hands a scenario's start request to the page once", async () => {
+    const hub = new FakeHub();
+    const capture = createCaptureFake(hub);
+    const request: StartCaptureRequest = { source: 'notification', title: 'Standup' };
+    let told = 0;
+    capture.onStartRequested(() => {
+      told += 1;
+    });
+    await expect(capture.takePendingStart()).resolves.toBeNull();
+    hub.emit(IpcChannel.CaptureStartRequested, request);
+    expect(told).toBe(1);
+    await expect(capture.takePendingStart()).resolves.toEqual(request);
+    await expect(capture.takePendingStart()).resolves.toBeNull();
   });
 });

@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { CaptureStatus } from '../../shared/capture';
+import type { MeetingCalendarEvent } from '../../shared/calendar';
+import type { CaptureStatus, StartCaptureRequest } from '../../shared/capture';
 import type { AudioSource, TranscriptSegment } from '../../shared/transcript';
 import type { MeetingDto, SttTokenApi, UploadApi } from '../api/ApiClient';
 import { type CostGuards, DEFAULT_COST_GUARDS } from '../costGuards';
@@ -19,8 +20,10 @@ import type { AudioSink } from './AudioFanout';
 import {
   CaptureService,
   defaultMeetingTitle,
+  PENDING_START_TTL_MS,
   type RecordingEnded,
   type RecordingStarted,
+  type StartRequestEnricher,
 } from './CaptureService';
 import { CaptureSession } from './CaptureSession';
 import { SttOpenBudget } from './SttOpenBudget';
@@ -36,6 +39,8 @@ function meetingDto(id: string): MeetingDto {
     started_at: '2026-10-05T10:00:00Z',
     ended_at: null,
     segment_count: 0,
+    start_source: 'manual',
+    calendar_event: null,
     created_at: '2026-10-05T10:00:00Z',
     updated_at: '2026-10-05T10:00:00Z',
   };
@@ -1824,5 +1829,282 @@ describe('CaptureService saves the open notes before it decides (M4)', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe('CaptureService start requests (M5)', () => {
+  const STANDUP: MeetingCalendarEvent = {
+    provider: 'google',
+    eventId: 'standup_20261007T093000Z',
+    icalUid: 'standup@google.com',
+    recurringEventId: 'standup',
+    scheduledStart: '2026-10-07T09:30:00.000Z',
+    scheduledEnd: '2026-10-07T09:45:00.000Z',
+    attendees: [
+      {
+        email: 'jane@linkt.ai',
+        displayName: 'Jane',
+        responseStatus: 'accepted',
+        isSelf: false,
+        isOrganizer: true,
+      },
+    ],
+  };
+  const REVIEW: MeetingCalendarEvent = { ...STANDUP, eventId: 'review_20261007T140000Z' };
+
+  /** The meeting the last Start made, as the store keeps it. */
+  const lastMeeting = (h: Harness) => [...h.store.meetings.values()].at(-1);
+
+  it("stores the request's title, source and event with the meeting, and shows the title while it records", async () => {
+    const h = harness();
+    const started = await h.service.start({
+      source: 'notification',
+      title: 'Weekly sync',
+      calendarEvent: STANDUP,
+    });
+    expect(started).toMatchObject({ phase: 'recording', title: 'Weekly sync' });
+    expect(lastMeeting(h)).toMatchObject({
+      id: started.meetingId,
+      title: 'Weekly sync',
+      startSource: 'notification',
+      calendarEvent: STANDUP,
+    });
+    // No title before the recording names its meeting, and none once it is over.
+    expect(h.statuses.find((s) => s.phase === 'starting')?.title).toBeNull();
+    sayFinal(h, 'mic', 'hello');
+    const stopped = await h.service.stop();
+    expect(stopped).toMatchObject({ phase: 'idle', meetingId: null, title: null });
+  });
+
+  it('names the meeting after its start without a title, a blank one included', async () => {
+    const h = harness();
+    const plain = await h.service.start();
+    expect(plain.title).toBe(defaultMeetingTitle(new Date(h.now())));
+    expect(lastMeeting(h)).toMatchObject({
+      title: defaultMeetingTitle(new Date(h.now())),
+      startSource: 'manual',
+      calendarEvent: null,
+    });
+    await h.service.stop();
+
+    h.advance(60_000);
+    const blank = await h.service.start({ source: 'home', title: '  ' });
+    expect(blank.title).toBe(defaultMeetingTitle(new Date(h.now())));
+    expect(lastMeeting(h)).toMatchObject({ startSource: 'home', calendarEvent: null });
+    await h.service.stop();
+
+    // Blank as the API and the start check read it: U+0000 is dropped before the trim.
+    h.advance(60_000);
+    const nul = await h.service.start({ title: '\u0000  ' });
+    expect(nul.title).toBe(defaultMeetingTitle(new Date(h.now())));
+    expect(lastMeeting(h)?.title).toBe(defaultMeetingTitle(new Date(h.now())));
+  });
+
+  // The uploader sends the stored title, so the local title is the one the server keeps.
+  it('stores the title as the API stores it: U+0000 dropped, then trimmed as the API trims', async () => {
+    const h = harness();
+    const nextLine = String.fromCharCode(0x85);
+    const started = await h.service.start({ title: `${nextLine} Weekly\u0000 sync ` });
+    expect(started.title).toBe('Weekly sync');
+    expect(lastMeeting(h)?.title).toBe('Weekly sync');
+  });
+
+  it("refuses a request from main's own code that the API would refuse, in the status, before any token", async () => {
+    const h = harness();
+    const refused = await h.service.start({ source: 'tray', title: 'x'.repeat(501) });
+    expect(refused).toMatchObject({
+      phase: 'idle',
+      error: 'invalid start request: title is over 500 characters',
+    });
+    expect(h.api.getSttToken).not.toHaveBeenCalled();
+    expect(h.store.meetings.size).toBe(0);
+  });
+
+  it('runs the enricher on every start that makes a meeting, whatever its source, and stores its answer', async () => {
+    const h = harness();
+    const enricher = vi.fn<StartRequestEnricher>((request) =>
+      request.calendarEvent === undefined
+        ? { ...request, title: 'Standup', calendarEvent: STANDUP }
+        : request,
+    );
+    h.service.setStartRequestEnricher(enricher);
+
+    await h.service.start({ source: 'tray' });
+    expect(lastMeeting(h)).toMatchObject({
+      title: 'Standup',
+      startSource: 'tray',
+      calendarEvent: STANDUP,
+    });
+    await h.service.stop();
+    h.advance(60_000);
+    await h.service.start({ source: 'notification', title: 'Review', calendarEvent: REVIEW });
+    expect(lastMeeting(h)).toMatchObject({ title: 'Review', calendarEvent: REVIEW });
+    expect(enricher.mock.calls).toEqual([
+      [{ source: 'tray' }],
+      [{ source: 'notification', title: 'Review', calendarEvent: REVIEW }],
+    ]);
+  });
+
+  it('starts with the request as it came when the enricher fails or answers one main refuses, and logs why', async () => {
+    const log = jsonLog('error');
+    const h = harness({ logger: log.logger });
+    let answer: () => StartCaptureRequest = () => {
+      throw new Error('calendar.sqlite is locked');
+    };
+    h.service.setStartRequestEnricher(() => answer());
+
+    await h.service.start({ source: 'tray', title: 'Mine' });
+    expect(lastMeeting(h)).toMatchObject({
+      title: 'Mine',
+      startSource: 'tray',
+      calendarEvent: null,
+    });
+    await h.service.stop();
+    h.advance(60_000);
+    // An event link the API would refuse would keep the meeting off the server.
+    answer = () => ({ source: 'tray', calendarEvent: { ...STANDUP, eventId: ' ' } });
+    await h.service.start({ source: 'tray', title: 'Mine' });
+    expect(lastMeeting(h)).toMatchObject({ title: 'Mine', calendarEvent: null });
+
+    expect(log.lines.filter((line) => line.message === 'start request enricher failed')).toEqual([
+      expect.objectContaining({ source: 'tray', error: 'calendar.sqlite is locked' }),
+      expect.objectContaining({
+        source: 'tray',
+        error: 'invalid start request: calendarEvent.eventId is blank',
+      }),
+    ]);
+  });
+
+  // A calendar title has no length limit (a pasted agenda): refused for its title alone, the
+  // enricher's answer would lose its event link too, on every manual start near that meeting.
+  it("cuts the enricher's calendar title to what the API stores, and keeps its event link", async () => {
+    const log = jsonLog('error');
+    const h = harness({ logger: log.logger });
+    h.service.setStartRequestEnricher((request) => ({
+      ...request,
+      title: 'x'.repeat(600),
+      calendarEvent: STANDUP,
+    }));
+
+    const started = await h.service.start({ source: 'tray' });
+    expect(started).toMatchObject({ phase: 'recording', title: 'x'.repeat(500) });
+    expect(lastMeeting(h)).toMatchObject({
+      title: 'x'.repeat(500),
+      startSource: 'tray',
+      calendarEvent: STANDUP,
+    });
+    expect(log.lines).toEqual([]);
+  });
+
+  it('resumes a meeting with its stored title and event, and asks no enricher', async () => {
+    const h = harness();
+    const meetingId = '6f1d2b7e-8a4c-4f0e-9b1a-2c3d4e5f6a7b';
+    h.store.createMeeting({
+      id: meetingId,
+      title: 'Standup',
+      startedAt: new Date(h.now() - 60_000).toISOString(),
+      startSource: 'notification',
+      calendarEvent: STANDUP,
+    });
+    const enricher = vi.fn<StartRequestEnricher>((request) => request);
+    h.service.setStartRequestEnricher(enricher);
+
+    const resumed = await h.service.start({ resume: { meetingId } });
+    expect(resumed).toMatchObject({ phase: 'recording', meetingId, title: 'Standup' });
+    expect(h.store.getMeeting(meetingId)).toMatchObject({
+      startSource: 'notification',
+      calendarEvent: STANDUP,
+    });
+    expect(enricher).not.toHaveBeenCalled();
+  });
+
+  it('refuses a second enricher, which would silently replace the first', () => {
+    const h = harness();
+    h.service.setStartRequestEnricher((request) => request);
+    expect(() => {
+      h.service.setStartRequestEnricher((request) => request);
+    }).toThrow('a start request enricher is already set');
+  });
+
+  it('hands a requested start to the window once, and drops it after 60 s', () => {
+    const h = harness();
+    const told: StartCaptureRequest[] = [];
+    h.service.on('start-requested', (request) => told.push(request));
+    const request: StartCaptureRequest = {
+      source: 'notification',
+      title: 'Standup',
+      calendarEvent: STANDUP,
+    };
+
+    h.service.requestStart(request);
+    expect(told).toEqual([request]);
+    expect(h.service.takePendingStart()).toEqual(request);
+    expect(h.service.takePendingStart()).toBeNull(); // taken once
+
+    // The latest request wins; one still waits 60 s after it was made.
+    h.service.requestStart({ source: 'call_detected' });
+    h.service.requestStart(request);
+    h.advance(PENDING_START_TTL_MS);
+    expect(h.service.takePendingStart()).toEqual(request);
+
+    h.service.requestStart(request);
+    h.advance(PENDING_START_TTL_MS + 1);
+    expect(h.service.takePendingStart()).toBeNull();
+    expect(h.service.takePendingStart()).toBeNull();
+    expect(PENDING_START_TTL_MS).toBe(60_000);
+  });
+
+  it("refuses a requested start the window's start would refuse, naming the field", () => {
+    const h = harness();
+    const told = vi.fn();
+    h.service.on('start-requested', told);
+    expect(() => {
+      h.service.requestStart({
+        source: 'notification',
+        calendarEvent: { ...STANDUP, eventId: '' },
+      });
+    }).toThrow('invalid start request: calendarEvent.eventId is blank');
+    expect(told).not.toHaveBeenCalled();
+    expect(h.service.takePendingStart()).toBeNull();
+  });
+
+  // A prompt's Take notes carries the invite's title, which has no length limit: refused, it would
+  // fail every time for that event.
+  it("cuts a requested start's calendar title to what the API stores, and the window's start takes it", async () => {
+    const h = harness();
+    h.service.requestStart({
+      source: 'notification',
+      title: 'x'.repeat(600),
+      calendarEvent: STANDUP,
+    });
+    const request = h.service.takePendingStart();
+    expect(request).toEqual({
+      source: 'notification',
+      title: 'x'.repeat(500),
+      calendarEvent: STANDUP,
+    });
+    const started = await h.service.start(request ?? {});
+    expect(started).toMatchObject({ phase: 'recording', title: 'x'.repeat(500) });
+    expect(lastMeeting(h)).toMatchObject({ title: 'x'.repeat(500), calendarEvent: STANDUP });
+  });
+
+  // A start request is a Start like any other: it never opens past the budget (cost guard G3).
+  it('passes a requested start through the open budget: the third quick start is refused, saying why', async () => {
+    const h = harness();
+    await h.service.start();
+    await h.service.stop();
+    h.advance(5_000);
+    await h.service.start({ source: 'notification', title: 'Standup', calendarEvent: STANDUP });
+    await h.service.stop();
+    h.advance(5_000);
+
+    h.service.requestStart({ source: 'notification', title: 'Review', calendarEvent: REVIEW });
+    const request = h.service.takePendingStart();
+    expect(request).not.toBeNull();
+    const refused = await h.service.start(request ?? {});
+    expect(refused).toMatchObject({ phase: 'idle', meetingId: null, title: null });
+    expect(refused.error).toContain("Roger's limit is 4, sttOpensPerMinute");
+    expect(h.stt.opened).toHaveLength(4);
+    expect(h.store.meetings.size).toBe(0);
   });
 });

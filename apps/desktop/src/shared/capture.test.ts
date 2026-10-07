@@ -4,10 +4,15 @@ import {
   CALL_AUDIO_SILENT_LOUD_MS,
   CALL_AUDIO_SILENT_LOUD_WITH_SPEECH_MS,
   CALL_AUDIO_SILENT_WARNING_MS,
+  fitMeetingTitle,
   HELPER_HANG_KILL_MS,
   idleCaptureStatus,
+  isStartSource,
+  MAX_MEETING_TITLE_LENGTH,
   MIC_DEAD_WARNING_MS,
   NO_AUDIO_WARNING_MS,
+  START_SOURCES,
+  storedMeetingText,
 } from './capture';
 
 describe('the capture warning thresholds', () => {
@@ -42,6 +47,7 @@ describe('idleCaptureStatus', () => {
       [
         'phase',
         'meetingId',
+        'title',
         'startedAt',
         'sttProvider',
         'sources',
@@ -58,5 +64,52 @@ describe('idleCaptureStatus', () => {
     expect(Object.keys(status.sources.mic).sort()).toEqual(
       ['health', 'chunks', 'lastChunkAt', 'message'].sort(),
     );
+  });
+});
+
+describe('start sources', () => {
+  // The API contract's StartSource, its Postgres check and roger.sqlite's CHECK (migration 5) list
+  // the same five; ipc-validation.test.ts compares the contract's line with START_SOURCES.
+  it('are the five the API stores, and nothing else passes for one', () => {
+    expect([...START_SOURCES]).toEqual(['manual', 'notification', 'home', 'tray', 'call_detected']);
+    for (const source of START_SOURCES) expect(isStartSource(source)).toBe(true);
+    for (const value of ['calendar', 'Manual', ' manual', '', 'toString', null, undefined, 3]) {
+      expect(isStartSource(value)).toBe(false);
+    }
+  });
+});
+
+describe('storedMeetingText', () => {
+  // The API drops U+0000 (Postgres refuses it), then trims with pydantic's strip_whitespace, which
+  // unlike trim() keeps a byte order mark and trims U+0085 (trimTerm in shared/vocabulary.ts).
+  it('is the text the API stores: U+0000 dropped, then trimmed as the API trims', () => {
+    const nul = String.fromCharCode(0);
+    const nextLine = String.fromCharCode(0x85);
+    const byteOrderMark = String.fromCharCode(0xfeff);
+    expect(storedMeetingText(`  Weekly${nul} sync ${nul}`)).toBe('Weekly sync');
+    expect(storedMeetingText(`${nul} ${nul}`)).toBe('');
+    expect(storedMeetingText(`${nextLine}Standup${byteOrderMark}`)).toBe(`Standup${byteOrderMark}`);
+  });
+});
+
+describe('fitMeetingTitle', () => {
+  // A calendar event's title has no length limit, and a start request with a title over
+  // MAX_MEETING_TITLE_LENGTH is refused: main cuts its own requests' titles with this.
+  it('cuts a title to the characters the API stores, counted as the API counts them', () => {
+    const nul = String.fromCharCode(0);
+    const byteOrderMark = String.fromCharCode(0xfeff);
+    const grinning = String.fromCodePoint(0x1f600);
+    expect(fitMeetingTitle('  Weekly sync  ')).toBe('Weekly sync');
+    expect(fitMeetingTitle('a'.repeat(600))).toBe('a'.repeat(500));
+    expect(Array.from(fitMeetingTitle('x'.repeat(10_000)))).toHaveLength(MAX_MEETING_TITLE_LENGTH);
+    // By code points, as Python counts: no emoji is cut in half.
+    expect(fitMeetingTitle(grinning.repeat(501))).toBe(grinning.repeat(500));
+    // U+0000 is dropped before the count; a byte order mark is kept and counts.
+    expect(fitMeetingTitle(`${nul.repeat(9)}${'a'.repeat(500)}`)).toBe('a'.repeat(500));
+    expect(fitMeetingTitle(`${byteOrderMark}${'a'.repeat(500)}`)).toBe(
+      `${byteOrderMark}${'a'.repeat(499)}`,
+    );
+    // A cut just after a space leaves none at the end.
+    expect(fitMeetingTitle(`${'a'.repeat(499)} ${'b'.repeat(100)}`)).toBe('a'.repeat(499));
   });
 });

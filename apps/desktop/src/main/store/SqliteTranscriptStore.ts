@@ -1,4 +1,6 @@
 import { DatabaseSync, type SQLOutputValue, type StatementSync } from 'node:sqlite';
+import type { MeetingCalendarEvent } from '../../shared/calendar';
+import { isStartSource, type StartSource } from '../../shared/capture';
 import {
   isAudioSource,
   type AudioSource,
@@ -11,6 +13,7 @@ import {
   checkAudioPath,
   checkGapWindow,
   checkListLimit,
+  checkStartSource,
   checkTrim,
 } from './storeChecks';
 import type {
@@ -44,7 +47,7 @@ import type {
  * re-runs every entry above `user_version`. So a wind-back must also undo every later migration,
  * or an `ALTER TABLE ... ADD COLUMN` runs twice and fails with "duplicate column name". With a new
  * migration, add its wind-back to the test file, call it first in the one before (as
- * `windBackToSchema3` must then call `windBackToSchema4`), and raise the `user_version` the
+ * `windBackToSchema4` must then call `windBackToSchema5`), and raise the `user_version` the
  * upgrade tests expect.
  */
 const MIGRATIONS: readonly string[] = [
@@ -159,7 +162,32 @@ const MIGRATIONS: readonly string[] = [
     updated_at TEXT NOT NULL
   );
   `,
+  // M5 (calendar): how a meeting was started and the event it was started for, both sent with its
+  // create. The CHECK lists StartSource's five values (shared/capture.ts, the API's 0004_calendar
+  // the same): a sixth needs a migration of its own, never an edit here. The index serves
+  // findMeetingIdsByEventIds (MEETING_IDS_BY_EVENT_IDS reads it through the same expression), and
+  // since it reads the column, SQLite refuses a write of broken JSON ("malformed JSON").
+  `
+  ALTER TABLE meetings ADD COLUMN start_source TEXT NOT NULL DEFAULT 'manual'
+    CHECK (start_source IN ('manual', 'notification', 'home', 'tray', 'call_detected'));
+  ALTER TABLE meetings ADD COLUMN calendar_event_json TEXT;
+  CREATE INDEX meetings_by_calendar_event
+    ON meetings (json_extract(calendar_event_json, '$.eventId'))
+    WHERE calendar_event_json IS NOT NULL;
+  `,
 ];
+
+/**
+ * The meetings started for any of a JSON array of event ids, oldest first, so that each event's
+ * last row is its newest meeting. Its WHERE spells the index's expression and condition
+ * (migration 5) exactly, or SQLite parses the JSON of every meeting instead; the store test reads
+ * the query plan. Exported for that test.
+ */
+export const MEETING_IDS_BY_EVENT_IDS = `SELECT id, json_extract(calendar_event_json, '$.eventId') AS event_id
+  FROM meetings
+  WHERE calendar_event_json IS NOT NULL
+    AND json_extract(calendar_event_json, '$.eventId') IN (SELECT value FROM json_each(?))
+  ORDER BY started_at ASC, id ASC`;
 
 /**
  * A line can upload when it is not uploaded, not rejected, not hidden and not held: `upload_after`
@@ -239,6 +267,7 @@ export class SqliteTranscriptStore implements TranscriptStore {
     deleteAppState: StatementSync;
     recentMeetings: StatementSync;
     meetingLines: StatementSync;
+    meetingIdsByEventIds: StatementSync;
   };
 
   /** `path` may be `:memory:` for tests. */
@@ -255,8 +284,9 @@ export class SqliteTranscriptStore implements TranscriptStore {
     this.migrate();
     this.statements = {
       insertMeeting: this.db.prepare(
-        `INSERT OR IGNORE INTO meetings (id, title, started_at, ended_at, remote_state, created_at, updated_at)
-         VALUES (?, ?, ?, NULL, 'pending', ?, ?)`,
+        `INSERT OR IGNORE INTO meetings
+           (id, title, started_at, ended_at, remote_state, start_source, calendar_event_json, created_at, updated_at)
+         VALUES (?, ?, ?, NULL, 'pending', ?, ?, ?, ?)`,
       ),
       getMeeting: this.db.prepare(`SELECT * FROM meetings WHERE id = ?`),
       endMeeting: this.db.prepare(
@@ -449,12 +479,24 @@ export class SqliteTranscriptStore implements TranscriptStore {
         `SELECT * FROM segments WHERE meeting_id = ? AND suppressed_reason IS NULL
          ORDER BY start_ms ASC, source ASC, id ASC`,
       ),
+      meetingIdsByEventIds: this.db.prepare(MEETING_IDS_BY_EVENT_IDS),
     };
   }
 
   createMeeting(meeting: NewLocalMeeting): void {
+    const startSource = meeting.startSource ?? 'manual';
+    checkStartSource(meeting.id, startSource);
+    const event = meeting.calendarEvent ?? null;
     const now = this.now();
-    this.statements.insertMeeting.run(meeting.id, meeting.title, meeting.startedAt, now, now);
+    this.statements.insertMeeting.run(
+      meeting.id,
+      meeting.title,
+      meeting.startedAt,
+      startSource,
+      event === null ? null : JSON.stringify(event),
+      now,
+      now,
+    );
   }
 
   getMeeting(id: string): LocalMeeting | null {
@@ -754,6 +796,16 @@ export class SqliteTranscriptStore implements TranscriptStore {
     return this.statements.meetingLines.all(meetingId).map(rowToSegment);
   }
 
+  findMeetingIdsByEventIds(eventIds: readonly string[]): Map<string, string> {
+    const found = new Map<string, string>();
+    if (eventIds.length === 0) return found;
+    // Oldest first: a later row of the same event replaces the one before, so the newest stays.
+    for (const row of this.statements.meetingIdsByEventIds.all(JSON.stringify(eventIds))) {
+      found.set(text(row, 'event_id'), text(row, 'id'));
+    }
+    return found;
+  }
+
   close(): void {
     this.db.close();
   }
@@ -791,6 +843,8 @@ function rowToMeeting(row: Row): LocalMeeting {
     startedAt: text(row, 'started_at'),
     endedAt: row.ended_at === null || row.ended_at === undefined ? null : text(row, 'ended_at'),
     remoteState: remoteState(row.remote_state),
+    startSource: startSource(row.start_source),
+    calendarEvent: parseCalendarEvent(row),
   };
 }
 
@@ -913,6 +967,26 @@ function parseWords(row: Row, key: 'words_json' | 'original_words_json'): Transc
   return words as TranscriptWord[];
 }
 
+function parseCalendarEvent(row: Row): MeetingCalendarEvent | null {
+  const value = row.calendar_event_json;
+  if (value === null || value === undefined) return null;
+  if (typeof value !== 'string') {
+    throw new Error(
+      `corrupt meeting row ${String(row.id)}: calendar_event_json is ${typeof value}`,
+    );
+  }
+  let event: unknown;
+  try {
+    event = JSON.parse(value);
+  } catch {
+    // Not the SyntaxError's message: V8 quotes the text near the fault, an invite's ids and the
+    // names of the people on it, and every reader logs a failed read's message.
+    throw new Error(`corrupt meeting row ${String(row.id)}: calendar_event_json is not JSON`);
+  }
+  // Written by createMeeting from a typed MeetingCalendarEvent; the cast restores it.
+  return event as MeetingCalendarEvent;
+}
+
 function parseDetail(json: string): JsonObject {
   const value: unknown = JSON.parse(json);
   if (typeof value !== 'object' || value === null || Array.isArray(value))
@@ -965,6 +1039,11 @@ function gapReason(value: SQLOutputValue | undefined): GapReason {
   if (value === 'stt_failed' || value === 'offline' || value === 'budget' || value === 'crash')
     return value;
   throw new Error(`corrupt transcript_gaps row: reason=${String(value)}`);
+}
+
+function startSource(value: SQLOutputValue | undefined): StartSource {
+  if (isStartSource(value)) return value;
+  throw new Error(`corrupt meeting row: start_source=${String(value)}`);
 }
 
 function remoteState(value: SQLOutputValue | undefined): RemoteState {
