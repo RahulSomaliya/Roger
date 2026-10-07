@@ -231,10 +231,12 @@ describe('the waiting and ask states', () => {
       title: 'The AI service could not write the notes.',
       detail: 'Provider returned 503.',
       retryTemplateId: 'standup',
+      retriesItself: false,
     });
     expect(layout.prompt).toBeNull();
 
-    // main's own local failure is not stored, and Retry keeps its run id.
+    // main's own local failure is not stored, main tries it again by itself every 30 s, and
+    // Retry keeps its run id. The banner says so: dismissing it would cancel that generate.
     main.pendingChanged(
       pendingGenerate({
         phase: 'failed',
@@ -242,9 +244,13 @@ describe('the waiting and ask states', () => {
         message: 'Roger could not generate the notes. It will try again.',
       }),
     );
-    expect(layoutAiNotes(session.getState()).failure?.title).toBe(
-      'Roger could not generate the notes.',
-    );
+    expect(layoutAiNotes(session.getState()).failure).toEqual({
+      source: 'pending',
+      title: 'Roger could not generate the notes.',
+      detail: 'It will try again.',
+      retryTemplateId: 'client_call',
+      retriesItself: true,
+    });
 
     expect(await session.generate('standup')).toBe(true);
     expect(main.api.generateNotes).toHaveBeenCalledWith({
@@ -598,6 +604,7 @@ describe('the session', () => {
       title: 'The notes ran too long and were cut off, so Roger kept the earlier AI notes.',
       detail: 'The notes were cut off.',
       retryTemplateId: null,
+      retriesItself: false,
     });
     // Nothing waits any more: the notes can be generated again.
     expect(layout.empty).toBe(true);
@@ -724,6 +731,17 @@ describe('describeRunError', () => {
       title: 'Roger could not reach its server.',
       detail: 'connect ECONNREFUSED',
     });
+    // What main says after restating the title is what it adds.
+    expect(
+      describeRunError({
+        code: 'internal_error',
+        message: 'Roger could not generate the notes. It will try again.',
+      }),
+    ).toEqual({ title: 'Roger could not generate the notes.', detail: 'It will try again.' });
+    expect(
+      describeRunError({ code: 'internal_error', message: 'Roger could not generate the notes.' })
+        .detail,
+    ).toBeNull();
     expect(describeRunError({ code: 'teapot', message: 'I am a teapot' })).toEqual({
       title: 'Roger could not generate the notes.',
       detail: 'I am a teapot',

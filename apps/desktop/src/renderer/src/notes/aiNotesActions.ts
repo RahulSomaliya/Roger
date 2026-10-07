@@ -107,7 +107,7 @@ export type PendingPrompt =
 export interface FailureBanner {
   /**
    * `pending`: a failed generate main keeps for Retry (`llm_provider_error`, or main's own
-   * `internal_error`); dismissing it cancels the generate. `stream`: a run that ended with an
+   * `internal_error`); closing the banner cancels the generate. `stream`: a run that ended with an
    * error and left nothing pending; dismissing only hides the banner.
    */
   source: 'pending' | 'stream';
@@ -115,6 +115,13 @@ export interface FailureBanner {
   detail: string | null;
   /** The template Retry generates with; null when there is nothing to retry. */
   retryTemplateId: string | null;
+  /**
+   * main tries this generate again by itself: its own `internal_error`, which it never stores and
+   * re-checks every 30 s (NotesGenerator `runAttempt`). The banner then closes with Cancel, not
+   * Dismiss: dismissing reads as hiding a failure, and would quietly drop the notes main was about
+   * to write.
+   */
+  retriesItself: boolean;
 }
 
 /** What the panel shows, worked out from the state alone (`layoutAiNotes`). */
@@ -198,15 +205,17 @@ function waitingForNotes(cause: NotesWaitCause): string {
 
 /**
  * A run's error for people: what happened, by code (NotesStreamEvent's `error` codes, and the
- * API's refusals before a stream), and what main or the API said when it adds to that.
+ * API's refusals before a stream), and what main or the API said when it adds to that. A message
+ * that restates the title adds only what follows it: main's `internal_error` says "Roger could not
+ * generate the notes. It will try again.", and the second sentence is the one the user needs.
  */
 export function describeRunError(error: RunError): { title: string; detail: string | null } {
   const title = RUN_ERROR_TITLES[error.code] ?? 'Roger could not generate the notes.';
-  const said = error.message.trim();
   // A cancel is the user's own doing: whatever main says of it adds nothing.
-  const adds = error.code !== 'cancelled' && said !== '' && !said.startsWith(title);
-  const detail = adds ? said : null;
-  return { title, detail };
+  if (error.code === 'cancelled') return { title, detail: null };
+  const said = error.message.trim();
+  const adds = (said.startsWith(title) ? said.slice(title.length) : said).trim();
+  return { title, detail: adds === '' ? null : adds };
 }
 
 const RUN_ERROR_TITLES: Readonly<Record<string, string>> = {
@@ -280,10 +289,16 @@ function failureOf(
       source: 'pending',
       ...describeRunError(pending.status),
       retryTemplateId: pending.templateId,
+      retriesItself: pending.status.code === 'internal_error',
     };
   }
   if (stream !== null && stream.phase !== 'streaming' && stream.error !== null) {
-    return { source: 'stream', ...describeRunError(stream.error), retryTemplateId: null };
+    return {
+      source: 'stream',
+      ...describeRunError(stream.error),
+      retryTemplateId: null,
+      retriesItself: false,
+    };
   }
   return null;
 }

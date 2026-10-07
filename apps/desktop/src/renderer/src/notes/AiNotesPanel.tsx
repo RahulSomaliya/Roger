@@ -396,13 +396,14 @@ function RunFailure({ failure, cancelled, busy, actions }: RunFailureProps) {
           type="button"
           className="note-button"
           onClick={() => {
-            // A failed generate main keeps waits for Retry until it is cancelled; an ended run's
-            // banner is only the page's.
+            // A failed generate main keeps is cancelled: a stored failure would wait for Retry
+            // until then, and main's own `internal_error` retries by itself, so that button says
+            // Cancel (`retriesItself`). An ended run's banner is only the page's.
             if (failure.source === 'pending') actions.cancel();
             else actions.dismissFailure();
           }}
         >
-          Dismiss
+          {failure.retriesItself ? 'Cancel' : 'Dismiss'}
         </button>
       </div>
     </div>

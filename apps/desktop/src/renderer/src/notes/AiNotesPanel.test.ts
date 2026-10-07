@@ -275,6 +275,24 @@ describe('AiNotesView', () => {
     expect(html).toContain('Finance needs BI exports before rollout');
   });
 
+  it('offers Cancel, not Dismiss, for a failed generate main tries again by itself', () => {
+    const html = render(
+      state({
+        pending: pending({
+          phase: 'failed',
+          code: 'internal_error',
+          message: 'Roger could not generate the notes. It will try again.',
+        }),
+      }),
+    );
+    expect(html).toContain(
+      '<p class="ai-notes-failure-title">Roger could not generate the notes.</p><p class="ai-notes-failure-detail">It will try again.</p>',
+    );
+    expect(html).toContain('>Retry</button>');
+    expect(html).toContain('>Cancel</button>');
+    expect(html).not.toContain('>Dismiss</button>');
+  });
+
   it('shows a cancelled run as a notice, not an error', () => {
     const cancelled: AiNotesStreamView = {
       ...LIVE,
