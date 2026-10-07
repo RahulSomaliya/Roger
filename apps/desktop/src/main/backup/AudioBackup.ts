@@ -77,7 +77,8 @@ export class AudioBackup {
       userData,
       logger,
       ...(options.run === undefined ? {} : { run: options.run }),
-      onEncoded: (job) => {
+      onEncoded: (job, bytes) => {
+        this.writer.fileEncoded(job, bytes);
         this.refresh(job.meetingId);
       },
     });

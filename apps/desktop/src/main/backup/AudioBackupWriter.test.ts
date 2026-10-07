@@ -194,6 +194,44 @@ describe('AudioBackupWriter', () => {
     expect(backup.live()).toBeNull();
   });
 
+  it('counts a file the compressor encoded at its m4a size, as the disk holds it', () => {
+    const backup = writer();
+    backup.begin({ meetingId: MEETING, meetingStartedAtMs: T0 });
+    feed(backup, 'mic', T0, 61_000);
+    const [firstMinute] = closed;
+
+    backup.fileEncoded(firstMinute!, 5_000);
+
+    // The first minute is an m4a now; the second is a WAV still being written.
+    expect(backup.live()?.status.bytes).toBe(5_000 + WAV_HEADER_BYTES + 1_000 * SAMPLES_PER_MS * 2);
+    backup.end(MEETING);
+  });
+
+  it("counts a resumed meeting's earlier audio in the bytes it shows", () => {
+    // Kept by the recording before the crash (M2 D7), and encoded since.
+    store.addAudioFile({
+      id: '0c1d2e3f-4a5b-4c6d-8e7f-9a0b1c2d3e4f',
+      meetingId: MEETING,
+      source: 'mic',
+      startMs: 0,
+      path: storedAudioPath(MEETING, 'mic-000000000-0c1d2e3f.m4a'),
+      format: 'm4a',
+      createdAt: new Date(T0).toISOString(),
+    });
+    store.closeAudioFile('0c1d2e3f-4a5b-4c6d-8e7f-9a0b1c2d3e4f', {
+      endMs: 60_000,
+      bytes: 7_000,
+      closedAt: new Date(T0).toISOString(),
+    });
+    const backup = writer();
+    backup.begin({ meetingId: MEETING, meetingStartedAtMs: T0 - 600_000 });
+    expect(backup.live()?.status.bytes).toBe(7_000);
+
+    feed(backup, 'mic', T0, 1_000);
+    expect(backup.live()?.status.bytes).toBe(7_000 + WAV_HEADER_BYTES + 32_000);
+    backup.end(MEETING);
+  });
+
   it('pauses below 2 GiB free, says so loudly, and starts again when there is room', () => {
     freeBytes = BACKUP_MIN_FREE_BYTES - 1;
     const backup = writer();

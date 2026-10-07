@@ -64,7 +64,7 @@ export interface LiveBackup {
 export interface AudioBackupWriterOptions {
   store: Pick<
     TranscriptStore,
-    'addAudioFile' | 'closeAudioFile' | 'addCaptureEvent' | 'listOpenAudioFiles'
+    'addAudioFile' | 'closeAudioFile' | 'addCaptureEvent' | 'listAudioFiles' | 'listOpenAudioFiles'
   >;
   userData: string;
   /** config.json's `audioBackup` (false too when `audioRetentionDays` is 0): nothing is written. */
@@ -105,8 +105,15 @@ interface Recording extends BackupRecording {
   /** The meeting's folder; null when backup is off or it could not be made. */
   dir: string | null;
   sources: Record<AudioSource, SourceBackup>;
-  /** On disk for this recording: headers and samples of every file it wrote. */
+  /**
+   * The meeting's audio on disk, as BackupStatus.bytes means it: every file's size as its row
+   * says, an open file's as written so far. Never a running total of what was written: the
+   * compressor swaps each closed WAV for an m4a about 5 times smaller while the call goes on
+   * (fileEncoded), and a resumed meeting (M2 D7) already has audio on disk at begin.
+   */
   bytes: number;
+  /** Each of the meeting's files on disk but the open ones, by id: its size, to swap at encode. */
+  fileBytes: Map<string, number>;
   /** When free space was last read (the writer's clock); null until the first read. */
   lastDiskCheckAtMs: number | null;
   /** Free space could not be read: said once per recording, then writing goes on. */
@@ -166,12 +173,17 @@ export class AudioBackupWriter implements AudioSink {
       dir: null,
       sources: { mic: newSourceBackup(), system: newSourceBackup() },
       bytes: 0,
+      fileBytes: new Map(),
       lastDiskCheckAtMs: null,
       diskUnreadable: false,
     };
     this.recording = rec;
     if (rec.state === 'writing') {
       try {
+        for (const file of this.options.store.listAudioFiles(rec.meetingId)) {
+          rec.fileBytes.set(file.id, file.bytes);
+          rec.bytes += file.bytes;
+        }
         rec.dir = ensureMeetingAudioDir(this.options.userData, rec.meetingId);
         this.checkDisk(rec, this.clock());
       } catch (error) {
@@ -198,6 +210,19 @@ export class AudioBackupWriter implements AudioSink {
     } catch (error) {
       this.fail(rec, error);
     }
+  }
+
+  /**
+   * The compressor swapped a closed WAV for an m4a of `bytes`: the recording's figure follows the
+   * disk. A file of another meeting (the launch encoding what an earlier run left) changes nothing.
+   */
+  fileEncoded(job: CompressJob, bytes: number): void {
+    const rec = this.recording;
+    if (rec?.meetingId !== job.meetingId) return;
+    const was = rec.fileBytes.get(job.id);
+    if (was === undefined) return;
+    rec.fileBytes.set(job.id, bytes);
+    rec.bytes += bytes - was;
   }
 
   /** The recording ended (Stop, or a Stop that failed): its files are closed. Never throws. */
@@ -355,6 +380,7 @@ export class AudioBackupWriter implements AudioSink {
     const file = backup.file;
     if (file === null) return;
     backup.file = null;
+    rec.fileBytes.set(file.id, WAV_HEADER_BYTES + file.dataBytes);
     try {
       writeAll(file.fd, wavHeader(file.dataBytes), 0, WAV_HEADER_BYTES, 0);
     } finally {
