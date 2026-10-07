@@ -26,7 +26,9 @@ export function HomePage() {
           </div>
           <button
             type="button"
-            className="shell-button"
+            className="btn"
+            data-variant="secondary"
+            data-size="sm"
             onClick={() => {
               navigate({ name: 'meeting', meetingId: captureMeeting.id });
             }}

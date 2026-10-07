@@ -73,6 +73,8 @@ describe('TemplatePicker', () => {
     expect(
       html.match(/<button type="button" class="template-option"[^>]* disabled=""/g),
     ).toHaveLength(4);
-    expect(html).toContain('<button type="button" class="note-button">Not now</button>');
+    expect(html).toContain(
+      '<button type="button" class="btn" data-variant="secondary" data-size="sm">Not now</button>',
+    );
   });
 });

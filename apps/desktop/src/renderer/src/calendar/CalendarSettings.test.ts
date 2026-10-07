@@ -134,7 +134,9 @@ describe('the Calendar section of Settings', () => {
     it('limits the text to what the preference accepts, and can go back to the default', () => {
       const custom = render(calendarState(), settingsState({ noticeText: 'Mine' }));
       expect(custom).toContain('maxLength="1000"');
-      expect(custom).toMatch(/<button type="button" class="shell-button">Use the default text</);
+      expect(custom).toMatch(
+        /<button type="button" class="btn" data-variant="secondary" data-size="sm">Use the default text</,
+      );
       // The default text already in the box leaves nothing to reset.
       const stock = render(calendarState(), settingsState({ noticeText: DEFAULT_NOTICE_TEXT }));
       expect(stock).toMatch(/<button[^>]*disabled=""[^>]*>Use the default text</);

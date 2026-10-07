@@ -120,7 +120,9 @@ function LogContent({ state, actions }: { state: MeetingChatState; actions: Chat
         Could not open this chat: {state.error}{' '}
         <button
           type="button"
-          className="meeting-chat-button"
+          className="btn"
+          data-variant="secondary"
+          data-size="sm"
           onClick={() => {
             actions.reload();
           }}
@@ -162,7 +164,7 @@ function Exchange({
   const blocks = answerBlocks(answer.text, answer.citations);
   const stopped = answer.error?.code === 'cancelled';
   // Who says each part, for screen readers only: the bubbles show it by place. The shell's
-  // .visually-hidden (app/app.css) is absolute, so it needs the log's `position: relative`
+  // .visually-hidden (styles.css) is absolute, so it needs the log's `position: relative`
   // (chat.css), or every label lands outside the log and the window scrolls.
   return (
     <div className="meeting-chat-exchange" data-phase={answer.phase}>
@@ -194,7 +196,9 @@ function Exchange({
           <div className="meeting-chat-actions">
             <button
               type="button"
-              className="meeting-chat-button"
+              className="btn"
+              data-variant="secondary"
+              data-size="sm"
               onClick={() => {
                 actions.cancel(key);
               }}
@@ -206,7 +210,9 @@ function Exchange({
           <div className="meeting-chat-actions">
             <button
               type="button"
-              className="meeting-chat-button"
+              className="btn"
+              data-variant="secondary"
+              data-size="sm"
               disabled={answering}
               title={answering ? 'Wait for the answer that is coming, or stop it' : undefined}
               onClick={() => {
@@ -349,7 +355,9 @@ function ChatComposer({
       />
       <button
         type="submit"
-        className="meeting-chat-ask"
+        className="btn"
+        data-variant="ghost"
+        data-size="sm"
         disabled={!canAsk}
         title={answering ? 'Wait for the answer that is coming, or stop it' : undefined}
       >

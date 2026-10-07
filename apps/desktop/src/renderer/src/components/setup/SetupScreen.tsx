@@ -83,7 +83,9 @@ function SetupBody({ state, onAction, onRetry }: SetupViewProps) {
   const retry = (
     <button
       type="button"
-      className="shell-button"
+      className="btn"
+      data-variant="secondary"
+      data-size="sm"
       disabled={state.running !== null}
       onClick={onRetry}
     >
@@ -179,7 +181,9 @@ function SetupRow({ view, state, onAction }: SetupRowProps) {
             <button
               key={action.kind === 'open-pane' ? `${action.kind}-${action.pane}` : action.kind}
               type="button"
-              className={leads && index === 0 ? 'setup-primary' : 'shell-button'}
+              className="btn"
+              data-variant={leads && index === 0 ? 'primary' : 'secondary'}
+              data-size="sm"
               data-action={action.kind}
               disabled={state.running !== null}
               onClick={() => {

@@ -15,7 +15,9 @@ export function SetupRoute() {
         <h1 className="page-title">Set up Roger</h1>
         <button
           type="button"
-          className="shell-button"
+          className="btn"
+          data-variant="secondary"
+          data-size="sm"
           onClick={() => {
             navigate(HOME);
           }}

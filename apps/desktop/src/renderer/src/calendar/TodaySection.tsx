@@ -141,7 +141,13 @@ export function TodaySectionView(props: TodaySectionViewProps) {
             Roger could not reach your Google Calendar connection: {state.connectionError}
           </div>
           <div className="calendar-connect-actions">
-            <button type="button" className="shell-button" onClick={props.onReload}>
+            <button
+              type="button"
+              className="btn"
+              data-variant="secondary"
+              data-size="sm"
+              onClick={props.onReload}
+            >
               Try again
             </button>
           </div>
@@ -199,7 +205,13 @@ function TodayDay({
             Roger could not check your Google Calendar connection: {state.connectionError}. The
             meetings below are the last it saved.
           </span>
-          <button type="button" className="shell-button" onClick={onReload}>
+          <button
+            type="button"
+            className="btn"
+            data-variant="secondary"
+            data-size="sm"
+            onClick={onReload}
+          >
             Try again
           </button>
         </div>
@@ -207,7 +219,13 @@ function TodayDay({
       {state.copyError === null ? null : (
         <div className="error calendar-problem" role="alert">
           <span>Roger could not read your calendar: {state.copyError}</span>
-          <button type="button" className="shell-button" onClick={onReload}>
+          <button
+            type="button"
+            className="btn"
+            data-variant="secondary"
+            data-size="sm"
+            onClick={onReload}
+          >
             Try again
           </button>
         </div>
@@ -310,11 +328,23 @@ export function OpenAtLoginLine({ phase, error, onUndo, onDismiss }: OpenAtLogin
         {error === null ? null : ` Roger could not undo it: ${error}`}
       </span>
       {phase === 'on' ? (
-        <button type="button" className="shell-button" onClick={onUndo}>
+        <button
+          type="button"
+          className="btn"
+          data-variant="secondary"
+          data-size="sm"
+          onClick={onUndo}
+        >
           Undo
         </button>
       ) : null}
-      <button type="button" className="shell-button" onClick={onDismiss}>
+      <button
+        type="button"
+        className="btn"
+        data-variant="secondary"
+        data-size="sm"
+        onClick={onDismiss}
+      >
         Dismiss
       </button>
     </div>

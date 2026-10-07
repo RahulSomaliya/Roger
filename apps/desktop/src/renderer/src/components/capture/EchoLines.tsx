@@ -67,7 +67,9 @@ export function EchoLines({
         <p className="echo-lines-summary">{summary}</p>
         <button
           type="button"
-          className="shell-button"
+          className="btn"
+          data-variant="secondary"
+          data-size="sm"
           aria-pressed={showHidden}
           onClick={() => {
             onShowHidden(!showHidden);
@@ -94,7 +96,9 @@ export function EchoLines({
                 {line.kind === 'hidden' ? (
                   <button
                     type="button"
-                    className="shell-button echo-line-unhide"
+                    className="btn"
+                    data-variant="secondary"
+                    data-size="sm"
                     aria-label={`Unhide: ${line.text}`}
                     disabled={pending.has(line.segmentId)}
                     onClick={() => {

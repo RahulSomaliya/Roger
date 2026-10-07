@@ -348,7 +348,7 @@ function ruleIn(css: string, selector: string, file: string): Map<string, string
   return new Map(cssDeclarations(body).map(({ property, value }) => [property, value]));
 }
 
-/** A length in px: the first one of a shorthand such as `padding: 6px 14px`. */
+/** A length in px: the first one of a value such as `height: 32px`. */
 function px(rule: Map<string, string>, property: string): number {
   const value = /^(\d+(?:\.\d+)?)px\b/.exec(rule.get(property) ?? '')?.[1];
   if (value === undefined) throw new Error(`${property} is not a length in px`);
@@ -362,18 +362,19 @@ describe('transcriptNavigator.css', () => {
       '.jump-to-live',
       'transcript.css',
     );
-    const root = ruleIn(rendererSource('src/styles.css'), ':root', 'styles.css');
+    // The pill is a small button (styles.css), whose height is its size.
+    const smallButton = ruleIn(
+      rendererSource('src/styles.css'),
+      ".btn[data-size='sm']",
+      'styles.css',
+    );
     const room = ruleIn(
       rendererSource('src/transcript/transcriptNavigator.css'),
       '.live-transcript:has(> .jump-to-live) > .live-transcript-lines',
       'transcriptNavigator.css',
     );
-    // The pill's top, up from the log's bottom: its offset, its block padding twice, and its line
-    // (`font: inherit`, so the root's unitless line height times its own font size).
-    const lineHeight = Number(root.get('line-height'));
-    expect(lineHeight).toBeGreaterThan(0);
-    const pillTop =
-      px(pill, 'bottom') + 2 * px(pill, 'padding') + px(pill, 'font-size') * lineHeight;
+    // The pill's top, up from the log's bottom: its offset plus its height.
+    const pillTop = px(pill, 'bottom') + px(smallButton, 'height');
     // Scrolled to its end, the log's last line sits the room above its bottom: clear of the pill.
     expect(px(room, 'padding-bottom') - pillTop).toBeGreaterThanOrEqual(6);
   });

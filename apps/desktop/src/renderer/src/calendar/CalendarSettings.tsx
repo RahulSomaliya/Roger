@@ -73,7 +73,9 @@ export function CalendarSettingsSection({
           <span>Roger could not read the calendar settings: {settings.error}</span>
           <button
             type="button"
-            className="shell-button"
+            className="btn"
+            data-variant="secondary"
+            data-size="sm"
             onClick={() => {
               actions.settings.reload();
             }}
@@ -126,7 +128,9 @@ function AccountRow({
             {calendar.connectionStatus === 'failed' ? (
               <button
                 type="button"
-                className="shell-button"
+                className="btn"
+                data-variant="secondary"
+                data-size="sm"
                 onClick={() => {
                   actions.reload();
                 }}
@@ -134,7 +138,13 @@ function AccountRow({
                 Try again
               </button>
             ) : (
-              <button type="button" className="shell-button calendar-start" onClick={connect}>
+              <button
+                type="button"
+                className="btn"
+                data-variant="primary"
+                data-size="sm"
+                onClick={connect}
+              >
                 {calendar.connecting ? 'Open Google again' : 'Connect Google Calendar'}
               </button>
             )}
@@ -145,13 +155,21 @@ function AccountRow({
               Connected as <strong>{connection.accountEmail}</strong>
             </span>
             {reconnect === null ? null : (
-              <button type="button" className="shell-button calendar-start" onClick={connect}>
+              <button
+                type="button"
+                className="btn"
+                data-variant="primary"
+                data-size="sm"
+                onClick={connect}
+              >
                 {calendar.connecting ? 'Open Google again' : reconnect}
               </button>
             )}
             <button
               type="button"
-              className="shell-button"
+              className="btn"
+              data-variant="secondary"
+              data-size="sm"
               disabled={calendar.disconnecting}
               onClick={() => {
                 void actions.disconnect();
@@ -292,7 +310,9 @@ function NoticeTextEditor({
       <div className="calendar-notice-actions">
         <button
           type="button"
-          className="shell-button calendar-start"
+          className="btn"
+          data-variant="primary"
+          data-size="sm"
           disabled={saving || blank || draft === stored}
           onClick={() => {
             onSave(draft);
@@ -302,7 +322,9 @@ function NoticeTextEditor({
         </button>
         <button
           type="button"
-          className="shell-button"
+          className="btn"
+          data-variant="secondary"
+          data-size="sm"
           disabled={draft === DEFAULT_NOTICE_TEXT}
           onClick={() => {
             setDraft(DEFAULT_NOTICE_TEXT);

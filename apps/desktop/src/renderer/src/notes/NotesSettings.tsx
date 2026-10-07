@@ -167,7 +167,9 @@ export function NotesSettingsSection({ state, preferences }: NotesSettingsSectio
           <div className="ai-notes-actions">
             <button
               type="button"
-              className="note-button"
+              className="btn"
+              data-variant="secondary"
+              data-size="sm"
               onClick={() => {
                 preferences.reload();
               }}

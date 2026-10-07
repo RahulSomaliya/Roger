@@ -201,7 +201,7 @@ describe('the meeting page', () => {
     fakes.read = read(stored(A, []));
     const html = page();
     expect(text(html)).toContain('Recording');
-    expect(html).toMatch(/<button[^>]*class="button stop"[^>]*>Stop<\/button>/);
+    expect(html).toMatch(/<button[^>]*class="btn"[^>]*data-variant="primary"[^>]*>Stop<\/button>/);
     expect(html).toContain('aria-label="Capture status"');
     expect(text(html)).toContain('Speech-to-text');
 

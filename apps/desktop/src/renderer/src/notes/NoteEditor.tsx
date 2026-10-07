@@ -70,7 +70,9 @@ export function NoteEditor({
           Could not open these notes: {state.error}{' '}
           <button
             type="button"
-            className="note-button"
+            className="btn"
+            data-variant="secondary"
+            data-size="sm"
             onClick={() => {
               document.reload();
             }}

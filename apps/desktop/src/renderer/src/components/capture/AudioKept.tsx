@@ -53,7 +53,9 @@ function AudioActions({
       {canRerun ? (
         <button
           type="button"
-          className="shell-button"
+          className="btn"
+          data-variant="secondary"
+          data-size="sm"
           aria-label={`Re-run gaps of ${about}`}
           disabled={rerunBlockedBy !== null || busy !== null}
           onClick={onRerun}
@@ -64,7 +66,9 @@ function AudioActions({
       {canDelete && !confirming ? (
         <button
           type="button"
-          className="shell-button"
+          className="btn"
+          data-variant="secondary"
+          data-size="sm"
           aria-label={`Delete the audio of ${about}`}
           disabled={busy !== null}
           onClick={onAskDelete}
@@ -77,7 +81,9 @@ function AudioActions({
           <span className="audio-confirm-text">Delete this meeting’s audio? Its lines stay.</span>
           <button
             type="button"
-            className="capture-danger-button"
+            className="btn"
+            data-variant="primary"
+            data-size="sm"
             aria-label={`Delete the audio of ${about} for good`}
             disabled={busy !== null}
             onClick={onConfirmDelete}
@@ -86,7 +92,9 @@ function AudioActions({
           </button>
           <button
             type="button"
-            className="shell-button"
+            className="btn"
+            data-variant="secondary"
+            data-size="sm"
             disabled={busy !== null}
             onClick={onCancelDelete}
           >
@@ -212,7 +220,9 @@ export function KeptForRerun({
               </div>
               <button
                 type="button"
-                className="shell-button"
+                className="btn"
+                data-variant="secondary"
+                data-size="sm"
                 aria-label={`Open ${meeting.title}`}
                 onClick={() => {
                   onOpen(meeting.meetingId);

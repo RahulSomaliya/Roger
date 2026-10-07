@@ -137,7 +137,13 @@ function TranscriptPanel({ meetingId, storedLines, showHidden, live }: LiveTrans
         )}
       </div>
       {live && !following ? (
-        <button type="button" className="jump-to-live" onClick={jump}>
+        <button
+          type="button"
+          className="btn jump-to-live"
+          data-variant="secondary"
+          data-size="sm"
+          onClick={jump}
+        >
           Jump to live
         </button>
       ) : null}

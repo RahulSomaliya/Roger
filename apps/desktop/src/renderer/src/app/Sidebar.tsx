@@ -46,7 +46,9 @@ function RecordingAction() {
     return (
       <button
         type="button"
-        className="sidebar-action sidebar-live"
+        className="btn sidebar-action"
+        data-variant="secondary"
+        data-size="md"
         onClick={() => {
           navigate({ name: 'meeting', meetingId: captureMeeting.id });
         }}
@@ -59,7 +61,9 @@ function RecordingAction() {
   return (
     <button
       type="button"
-      className="button start sidebar-action"
+      className="btn sidebar-action"
+      data-variant="primary"
+      data-size="md"
       disabled={phase !== 'idle' || capture.busy}
       onClick={startNewNote}
     >

@@ -12,8 +12,12 @@ describe('ConflictBanner', () => {
     expect(html).toContain('These notes also changed somewhere else.');
     expect(html).toContain('yours is kept as a copy');
     // "Use mine" puts the copy back; "Keep this version" keeps what the editor shows.
-    expect(html).toMatch(/<button type="button" class="note-button note-button-primary">Use mine</);
-    expect(html).toMatch(/<button type="button" class="note-button">Keep this version</);
+    expect(html).toMatch(
+      /<button type="button" class="btn" data-variant="primary" data-size="sm">Use mine</,
+    );
+    expect(html).toMatch(
+      /<button type="button" class="btn" data-variant="secondary" data-size="sm">Keep this version</,
+    );
   });
 
   it('says so when the other version is one Roger cannot show', () => {
@@ -27,7 +31,11 @@ describe('ConflictBanner', () => {
     expect(html).toContain('Roger cannot show that version');
     expect(html).not.toContain('Roger shows that version here');
     expect(html).toContain('yours is kept as a copy');
-    expect(html).toMatch(/<button type="button" class="note-button note-button-primary">Use mine</);
-    expect(html).toMatch(/<button type="button" class="note-button">Keep the other version</);
+    expect(html).toMatch(
+      /<button type="button" class="btn" data-variant="primary" data-size="sm">Use mine</,
+    );
+    expect(html).toMatch(
+      /<button type="button" class="btn" data-variant="secondary" data-size="sm">Keep the other version</,
+    );
   });
 });

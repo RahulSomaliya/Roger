@@ -124,10 +124,22 @@ export function NoticeBannerView({
         {error === null ? null : <p className="calendar-notice-error">{error}</p>}
       </div>
       <div className="calendar-notice-actions">
-        <button type="button" className="shell-button calendar-start" onClick={onCopy}>
+        <button
+          type="button"
+          className="btn"
+          data-variant="secondary"
+          data-size="sm"
+          onClick={onCopy}
+        >
           Copy notice
         </button>
-        <button type="button" className="shell-button" onClick={onDismiss}>
+        <button
+          type="button"
+          className="btn"
+          data-variant="ghost"
+          data-size="sm"
+          onClick={onDismiss}
+        >
           Dismiss
         </button>
       </div>

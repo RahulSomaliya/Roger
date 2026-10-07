@@ -122,24 +122,6 @@
   gap: 8px;
 }
 
-/* "Stop", "Try again", "Ask again": the notes' secondary button. */
-.meeting-chat-button {
-  padding: 3px 10px;
-  border: 1px solid var(--line);
-  border-radius: 7px;
-  background: var(--surface);
-  color: var(--ink);
-  font: inherit;
-  font-size: 12px;
-  font-weight: 600;
-  cursor: pointer;
-}
-
-.meeting-chat-button:disabled {
-  opacity: 0.55;
-  cursor: default;
-}
-
 .meeting-chat-notice {
   margin: 0 12px 8px;
   padding: 6px 10px;
@@ -179,26 +161,7 @@
   color: var(--ink-muted);
 }
 
-.meeting-chat-ask {
-  min-height: 34px;
-  padding: 0 14px;
-  border: none;
-  border-radius: 8px;
-  background: var(--accent);
-  color: var(--on-accent);
-  font: inherit;
-  font-weight: 650;
-  cursor: pointer;
-}
-
-.meeting-chat-ask:disabled {
-  opacity: 0.55;
-  cursor: default;
-}
-
-.meeting-chat-input:focus-visible,
-.meeting-chat-ask:focus-visible,
-.meeting-chat-button:focus-visible {
+.meeting-chat-input:focus-visible {
   outline: 2px solid var(--ring);
   outline-offset: 1px;
 }

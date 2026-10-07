@@ -38,7 +38,14 @@ export function MeetingHeader({ title, pending, time, phase, busy, onStop }: Mee
         </span>
       ) : null}
       {phase === 'recording' ? (
-        <button type="button" className="button stop" disabled={busy} onClick={onStop}>
+        <button
+          type="button"
+          className="btn"
+          data-variant="primary"
+          data-size="md"
+          disabled={busy}
+          onClick={onStop}
+        >
           Stop
         </button>
       ) : null}

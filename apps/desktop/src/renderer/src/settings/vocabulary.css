@@ -1,8 +1,8 @@
 /*
  * The jargon list section in Settings (VocabularySettings.tsx). It sits in the shell's .card and
- * reuses styles.css's .button.start (Save), .error and app.css's .shell-button and
- * .visually-hidden. Colours come only from the theme tokens (theme/tokens.css): text reads the ink
- * tokens, never a fill (tokens.test.ts and noLiteralColours.test.ts fail otherwise).
+ * reuses styles.css's .btn, .error and .visually-hidden. Colours come only from the theme tokens
+ * (theme/tokens.css): text reads the ink tokens, never a fill (tokens.test.ts and
+ * noLiteralColours.test.ts fail otherwise).
  */
 
 .vocabulary {
@@ -85,12 +85,6 @@
 
 .vocabulary-input:disabled {
   opacity: 0.6;
-}
-
-.vocabulary-add .shell-button:disabled,
-.vocabulary-actions .shell-button:disabled {
-  opacity: 0.55;
-  cursor: default;
 }
 
 .vocabulary-hint,
@@ -191,12 +185,4 @@
 
 .vocabulary-save-status:empty {
   display: none;
-}
-
-/* styles.css's .button is sized for a lone Start; here Save sits in a row of buttons. */
-.vocabulary .vocabulary-save {
-  min-width: 0;
-  padding: 7px 18px;
-  font-size: 14px;
-  border-radius: 8px;
 }

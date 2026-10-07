@@ -47,7 +47,9 @@ export function ConflictBanner({ onResolve, otherVersion = 'shown' }: ConflictBa
       <div className="note-conflict-actions">
         <button
           type="button"
-          className="note-button note-button-primary"
+          className="btn"
+          data-variant="primary"
+          data-size="sm"
           disabled={busy}
           onClick={() => {
             resolve('mine');
@@ -57,7 +59,9 @@ export function ConflictBanner({ onResolve, otherVersion = 'shown' }: ConflictBa
         </button>
         <button
           type="button"
-          className="note-button"
+          className="btn"
+          data-variant="secondary"
+          data-size="sm"
           disabled={busy}
           onClick={() => {
             resolve('theirs');

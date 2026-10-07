@@ -68,7 +68,9 @@ describe('the setup screen', () => {
       'Turn on Roger under System Settings &gt; Privacy &amp; Security &gt; Microphone, then relaunch Roger.',
     );
     expect(buttons(microphone)).toEqual(['Open Microphone settings', 'Relaunch Roger']);
-    expect(microphone).toMatch(/<button[^>]*class="setup-primary"[^>]*>Open Microphone settings/);
+    expect(microphone).toMatch(
+      /<button[^>]*class="btn"[^>]*data-variant="primary"[^>]*>Open Microphone settings/,
+    );
     expect(rowOf(html, 'server')).toContain(
       'Roger can&#x27;t reach its server at http://127.0.0.1:8000.',
     );

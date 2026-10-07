@@ -64,7 +64,13 @@ export function CalendarStatusBannerView({
         >
           <span className="calendar-banner-text">{notice.text}</span>
           {notice.action === null ? null : (
-            <button type="button" className="shell-button" onClick={onReconnect}>
+            <button
+              type="button"
+              className="btn"
+              data-variant="secondary"
+              data-size="sm"
+              onClick={onReconnect}
+            >
               {connecting ? 'Open Google again' : notice.action}
             </button>
           )}

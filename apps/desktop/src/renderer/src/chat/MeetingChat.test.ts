@@ -113,7 +113,7 @@ describe('ChatPanel', () => {
     const html = render(state({ exchanges: [exchange(WAITING_ANSWER)], answering: true }));
     expect(textOf(html)).toContain('Reading the meeting...');
     expect(button(html, 'Stop')).not.toBeNull();
-    expect(html).toMatch(/<button type="submit" class="meeting-chat-ask"[^>]* disabled=""/);
+    expect(html).toMatch(/<button type="submit" class="btn" data-variant="ghost"[^>]* disabled=""/);
 
     const streaming = render(
       state({
@@ -182,7 +182,7 @@ describe('ChatPanel', () => {
     );
     expect(html).toContain('placeholder="Ask about this meeting"');
     // Nothing typed yet.
-    expect(html).toMatch(/<button type="submit" class="meeting-chat-ask"[^>]* disabled=""/);
+    expect(html).toMatch(/<button type="submit" class="btn" data-variant="ghost"[^>]* disabled=""/);
   });
 
   it('says it is opening, then why the thread could not be read, with Try again', () => {

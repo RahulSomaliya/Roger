@@ -26,7 +26,13 @@ export function ConnectCalendarCard({ connecting, error, onConnect }: ConnectCal
         starts your notes in one click. Roger only reads your calendar.
       </p>
       <div className="calendar-connect-actions">
-        <button type="button" className="shell-button calendar-start" onClick={onConnect}>
+        <button
+          type="button"
+          className="btn"
+          data-variant="secondary"
+          data-size="sm"
+          onClick={onConnect}
+        >
           {connecting ? 'Open Google again' : 'Connect Google Calendar'}
         </button>
       </div>

@@ -65,7 +65,13 @@ export function TemplatePicker({
       />
       {dismiss === undefined ? null : (
         <div className="template-picker-actions">
-          <button type="button" className="note-button" onClick={dismiss.onDismiss}>
+          <button
+            type="button"
+            className="btn"
+            data-variant="secondary"
+            data-size="sm"
+            onClick={dismiss.onDismiss}
+          >
             {dismiss.label}
           </button>
         </div>
@@ -99,7 +105,13 @@ function TemplateOptions({
       return (
         <div className="error template-picker-error" role="alert">
           <span>Roger could not load the templates: {templates.error}</span>
-          <button type="button" className="note-button" onClick={onReload}>
+          <button
+            type="button"
+            className="btn"
+            data-variant="secondary"
+            data-size="sm"
+            onClick={onReload}
+          >
             Try again
           </button>
         </div>

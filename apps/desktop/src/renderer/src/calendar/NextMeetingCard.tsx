@@ -33,7 +33,9 @@ export function MeetingAction({
     return (
       <button
         type="button"
-        className="shell-button calendar-action"
+        className="btn calendar-action"
+        data-variant="secondary"
+        data-size="sm"
         aria-label={`Open note for ${eventTitle(event)}`}
         onClick={() => {
           onOpen(meetingId);
@@ -47,7 +49,9 @@ export function MeetingAction({
   return (
     <button
       type="button"
-      className="shell-button calendar-action calendar-start"
+      className="btn calendar-action"
+      data-variant="primary"
+      data-size="sm"
       aria-label={`Start notes for ${eventTitle(event)}`}
       disabled={startBlocked}
       title={startBlocked ? 'Stop the note you are taking first.' : undefined}

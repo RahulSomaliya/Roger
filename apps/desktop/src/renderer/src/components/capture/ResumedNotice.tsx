@@ -33,7 +33,14 @@ export function ResumedNotice({
         <span className="resumed-notice-message">{notice.message}</span>{' '}
         <span className="resumed-notice-meta">at {formatClockTime(notice.at)}</span>
       </p>
-      <button type="button" className="shell-button" disabled={busy} onClick={onStop}>
+      <button
+        type="button"
+        className="btn"
+        data-variant="secondary"
+        data-size="sm"
+        disabled={busy}
+        onClick={onStop}
+      >
         Stop recording
       </button>
     </div>

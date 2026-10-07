@@ -160,23 +160,3 @@
   flex-wrap: wrap;
   gap: 8px;
 }
-
-.setup-primary {
-  padding: 6px 14px;
-  border: 1px solid var(--accent);
-  border-radius: 8px;
-  background: var(--accent);
-  color: var(--on-accent);
-  font: inherit;
-  font-weight: 600;
-  cursor: pointer;
-}
-
-.setup-actions button:disabled {
-  opacity: 0.55;
-  cursor: default;
-}
-
-.setup-actions .shell-button:disabled:hover {
-  background: var(--surface);
-}

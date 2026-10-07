@@ -108,7 +108,9 @@ export function AiNotesView({ meetingId, state, actions, suggested }: AiNotesVie
           <div className="ai-notes-actions">
             <button
               type="button"
-              className="note-button"
+              className="btn"
+              data-variant="secondary"
+              data-size="sm"
               onClick={() => {
                 actions.reload();
               }}
@@ -144,7 +146,9 @@ export function AiNotesView({ meetingId, state, actions, suggested }: AiNotesVie
           <div className="ai-notes-actions">
             <button
               type="button"
-              className="note-button"
+              className="btn"
+              data-variant="secondary"
+              data-size="sm"
               onClick={() => {
                 actions.dismissError();
               }}
@@ -223,7 +227,9 @@ export function AiNotesView({ meetingId, state, actions, suggested }: AiNotesVie
           </div>
           <button
             type="button"
-            className="note-button note-button-primary"
+            className="btn"
+            data-variant="primary"
+            data-size="sm"
             disabled={busy}
             onClick={() => {
               actions.openPicker('generate');
@@ -240,7 +246,9 @@ export function AiNotesView({ meetingId, state, actions, suggested }: AiNotesVie
           list the lines it removed.
           <button
             type="button"
-            className="note-button"
+            className="btn"
+            data-variant="secondary"
+            data-size="sm"
             onClick={() => {
               actions.reloadRun();
             }}
@@ -293,14 +301,23 @@ function AiNotesBar({ state, layout, actions, onRegenerate }: AiNotesBarProps) {
       </div>
       <div className="ai-notes-actions">
         {layout.canRegenerate ? (
-          <button type="button" className="note-button" disabled={busy} onClick={onRegenerate}>
+          <button
+            type="button"
+            className="btn"
+            data-variant="secondary"
+            data-size="sm"
+            disabled={busy}
+            onClick={onRegenerate}
+          >
             Regenerate
           </button>
         ) : null}
         {layout.restorable === null ? null : (
           <button
             type="button"
-            className="note-button"
+            className="btn"
+            data-variant="secondary"
+            data-size="sm"
             disabled={busy}
             onClick={() => {
               void actions.restorePrevious();
@@ -313,7 +330,9 @@ function AiNotesBar({ state, layout, actions, onRegenerate }: AiNotesBarProps) {
           // Never waits for main: its cancel answers once the API holds the run (up to 130 s).
           <button
             type="button"
-            className="note-button"
+            className="btn"
+            data-variant="secondary"
+            data-size="sm"
             disabled={state.cancelling}
             onClick={() => {
               actions.cancel();
@@ -383,7 +402,9 @@ function RunFailure({ failure, cancelled, busy, actions }: RunFailureProps) {
         {retryTemplateId === null ? null : (
           <button
             type="button"
-            className="note-button note-button-primary"
+            className="btn"
+            data-variant="primary"
+            data-size="sm"
             disabled={busy}
             onClick={() => {
               void actions.generate(retryTemplateId);
@@ -394,7 +415,9 @@ function RunFailure({ failure, cancelled, busy, actions }: RunFailureProps) {
         )}
         <button
           type="button"
-          className="note-button"
+          className="btn"
+          data-variant="secondary"
+          data-size="sm"
           onClick={() => {
             // A failed generate main keeps is cancelled: a stored failure would wait for Retry
             // until then, and main's own `internal_error` retries by itself, so that button says
@@ -437,7 +460,9 @@ function ConfirmReplace({ confirm, templates, busy, actions }: ConfirmReplacePro
       <div className="ai-notes-actions">
         <button
           type="button"
-          className="note-button note-button-primary"
+          className="btn"
+          data-variant="primary"
+          data-size="sm"
           disabled={busy}
           onClick={() => {
             void actions.confirmAction();
@@ -451,7 +476,9 @@ function ConfirmReplace({ confirm, templates, busy, actions }: ConfirmReplacePro
         </button>
         <button
           type="button"
-          className="note-button"
+          className="btn"
+          data-variant="secondary"
+          data-size="sm"
           onClick={() => {
             actions.dismissConfirm();
           }}

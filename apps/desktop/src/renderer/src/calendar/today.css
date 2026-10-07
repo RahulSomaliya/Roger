@@ -1,33 +1,13 @@
 /*
- * Home's Today (TodaySection.tsx, NextMeetingCard.tsx, ConnectCalendarCard.tsx): the primary
- * button, the connect card, the day's list. Split from the old calendar.css with
+ * Home's Today (TodaySection.tsx, NextMeetingCard.tsx, ConnectCalendarCard.tsx): the connect
+ * card, the day's list. Split from the old calendar.css with
  * calendarSettings.css (the Settings section) and calendarNotice.css (the meeting page's notice
- * and the status banner); they reuse app.css (.card, .empty-state, .shell-button) and styles.css
- * (.error, .notice). The rules shared by more than one of the three (.calendar-start,
- * .calendar-status, .calendar-problem) stay here, so a file that uses them imports this one too.
+ * and the status banner); they reuse app.css (.card, .empty-state) and styles.css (.btn, .error,
+ * .notice). The rules shared by more than one of the three (.calendar-status,
+ * .calendar-problem) stay here, so a file that uses them imports this one too.
  * Colours only from theme/tokens.css (noLiteralColours.test.ts fails on a literal one); text reads
  * the ink tokens (--ink, --ink-muted, --accent-ink), never a fill (tokens.test.ts).
  */
-
-/* The primary button: a fill under --on-accent text, as M1's Start. Two classes, so it beats
-   .shell-button's panel fill whichever stylesheet loads last. */
-.shell-button.calendar-start {
-  border-color: transparent;
-  background: var(--accent);
-  color: var(--on-accent);
-}
-
-.shell-button.calendar-start:hover {
-  background: var(--accent);
-  filter: brightness(1.08);
-}
-
-/* app.css gives .shell-button no disabled look; the calendar's buttons wait on a recording or a save. */
-.calendar-today .shell-button:disabled,
-.calendar-settings .shell-button:disabled {
-  opacity: 0.55;
-  cursor: default;
-}
 
 .calendar-status {
   margin: 0;

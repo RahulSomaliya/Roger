@@ -195,7 +195,13 @@ export function MeetingCaptureDetails({ meetingId }: { meetingId: string }) {
       {read.error === null ? null : (
         <div role="alert" className="error capture-report-error">
           <span>{read.error}</span>
-          <button type="button" className="shell-button" onClick={read.refresh}>
+          <button
+            type="button"
+            className="btn"
+            data-variant="secondary"
+            data-size="sm"
+            onClick={read.refresh}
+          >
             Try again
           </button>
         </div>

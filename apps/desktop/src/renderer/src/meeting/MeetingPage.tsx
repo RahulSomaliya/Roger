@@ -111,7 +111,13 @@ export function MeetingPage({ meetingId }: { meetingId: string }) {
           {read.error !== null ? (
             <div role="alert" className="error meeting-read-error">
               <span>{read.error}</span>
-              <button type="button" className="shell-button" onClick={read.refresh}>
+              <button
+                type="button"
+                className="btn"
+                data-variant="secondary"
+                data-size="sm"
+                onClick={read.refresh}
+              >
                 Try again
               </button>
             </div>

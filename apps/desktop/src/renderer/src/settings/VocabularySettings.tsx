@@ -79,7 +79,9 @@ function VocabularyBody({ state, editor }: VocabularySectionProps) {
           <div className="vocabulary-actions">
             <button
               type="button"
-              className="shell-button"
+              className="btn"
+              data-variant="secondary"
+              data-size="sm"
               onClick={() => {
                 void editor.load();
               }}
@@ -155,7 +157,9 @@ function VocabularyForm({ state, editor }: VocabularyFormProps) {
         />
         <button
           type="submit"
-          className="shell-button"
+          className="btn"
+          data-variant="secondary"
+          data-size="sm"
           disabled={state.saving || text.trim() === ''}
         >
           Add
@@ -214,7 +218,9 @@ function VocabularyForm({ state, editor }: VocabularyFormProps) {
           {changed ? (
             <button
               type="button"
-              className="shell-button"
+              className="btn"
+              data-variant="secondary"
+              data-size="sm"
               disabled={state.saving}
               onClick={() => {
                 setProblem(null);
@@ -226,7 +232,9 @@ function VocabularyForm({ state, editor }: VocabularyFormProps) {
           ) : null}
           <button
             type="button"
-            className="button start vocabulary-save"
+            className="btn vocabulary-save"
+            data-variant="primary"
+            data-size="md"
             disabled={!canSave(state)}
             onClick={() => {
               void editor.save();

@@ -65,35 +65,6 @@
   overflow-wrap: anywhere;
 }
 
-/* Buttons in the notes: "Use mine", "Keep this version", "Try again". */
-.note-button {
-  padding: 5px 12px;
-  border: 1px solid var(--line);
-  border-radius: 7px;
-  background: var(--surface);
-  color: var(--ink);
-  font: inherit;
-  font-size: 13px;
-  font-weight: 600;
-  cursor: pointer;
-}
-
-.note-button-primary {
-  border-color: var(--accent);
-  background: var(--accent);
-  color: var(--on-accent);
-}
-
-.note-button:disabled {
-  opacity: 0.55;
-  cursor: default;
-}
-
-.note-button:focus-visible {
-  outline: 2px solid var(--ring);
-  outline-offset: 2px;
-}
-
 /* Two versions of the note: main kept the local one as a copy until the user picks. */
 .note-conflict {
   display: flex;
