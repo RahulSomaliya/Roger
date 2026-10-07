@@ -71,9 +71,10 @@ function useRoger(options: LaunchOptions): () => RogerRun {
 }
 
 /**
- * A speaker's final lines in the transcript. By role and words, not by class: M1's TranscriptView
- * and M3-T9's LiveTranscript both label the region "Transcript" and name the speaker "Me" or
- * "Them" in a span of its own.
+ * A speaker's final lines in the transcript (the fake STT sends no interims). By label and words,
+ * not by class: M3-T9's LiveTranscript labels the region "Transcript" and names the speaker "Me"
+ * or "Them" in a span of its own. e2e/m3-t9.qa.e2e.ts checks this locator against LiveTranscript
+ * in the browser (`smokeTestLines`): keep the two in step.
  */
 function linesOf(page: Page, speaker: Speaker): Locator {
   return page
@@ -98,11 +99,11 @@ function byId(a: SentLine, b: SentLine): number {
 }
 
 /**
- * Records, in the page, every final line main sends it from now on: the lines the transcript
- * draws, with the ids its rows do not carry (M1's TranscriptView). Text cannot stand in for the
- * id: the fake STT writes the same words for every 2 s of a steady tone, so a store that kept one
- * line per side still held a line equal to each one shown, and a check by text passed it. Each id
- * once, as useCapture keeps them.
+ * Records, in the page, every final line main sends it from now on, by id: the lines the
+ * transcript must draw. Text cannot stand in for the id: the fake STT writes the same words for
+ * every 2 s of a steady tone, so a store that kept one line per side still held a line equal to
+ * each one shown, and a check by text passed it. Each id once, as the transcript panel keeps them
+ * (it ignores a final sent again: src/renderer/src/transcript/liveTranscriptModel.ts).
  */
 async function watchSentLines(page: Page): Promise<void> {
   await page.evaluate(() => {

@@ -3,8 +3,14 @@ import { renderToString } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
 import type { AudioSource, TranscriptSegment } from '../../../shared/transcript';
 import { SPEAKER_FOR_SOURCE } from '../../../shared/transcript';
-import { LiveTranscript, type LiveTranscriptProps, TranscriptRow } from './LiveTranscript';
-import type { FinalLine, InterimLine } from './liveTranscriptModel';
+import {
+  followSizeChanges,
+  LiveTranscript,
+  type LiveTranscriptProps,
+  showNewest,
+  TranscriptRow,
+} from './LiveTranscript';
+import { BOTTOM_SLACK_PX, type FinalLine, type InterimLine } from './liveTranscriptModel';
 import { CitationNavigatorProvider, useRegisterTranscript } from './transcriptNavigator';
 import type * as Navigator from './transcriptNavigator';
 
@@ -137,5 +143,99 @@ describe('TranscriptRow', () => {
     expect(html).not.toContain('data-segment-id');
     expect(html).toContain('Them');
     expect(html).toContain('and procurement wants');
+  });
+});
+
+/**
+ * The lines' scroll box as a browser keeps it: scrollTop never goes past the bottom, so a write
+ * of scrollHeight lands at scrollHeight - clientHeight.
+ */
+function scrollBox(scrollHeight: number, clientHeight: number, scrollTop: number) {
+  let top = scrollTop;
+  return {
+    scrollHeight,
+    clientHeight,
+    get scrollTop(): number {
+      return top;
+    },
+    set scrollTop(value: number) {
+      top = Math.max(0, Math.min(value, this.scrollHeight - this.clientHeight));
+    },
+  };
+}
+
+/** A stand-in for ResizeObserver: `resize()` reports a size change, as the browser would. */
+function sizeWatch() {
+  const watch = {
+    watching: false,
+    onResize: (): void => {
+      throw new Error('nothing watches the box');
+    },
+    resize: (): void => {
+      watch.onResize();
+    },
+  };
+  return {
+    watch,
+    start: (_box: unknown, onResize: () => void): (() => void) => {
+      watch.watching = true;
+      watch.onResize = onResize;
+      return () => {
+        watch.watching = false;
+      };
+    },
+  };
+}
+
+describe('showNewest', () => {
+  it('puts the view at the bottom and remembers where it put it', () => {
+    const box = scrollBox(2000, 600, 900);
+    const lastTop = { current: 900 };
+    showNewest(box, lastTop);
+    expect(box.scrollTop).toBe(1400);
+    expect(lastTop.current).toBe(1400);
+  });
+
+  it('leaves the view where the reader scrolled it before their scroll event came', () => {
+    const box = scrollBox(2000, 600, 1400 - BOTTOM_SLACK_PX - 200);
+    const lastTop = { current: 1400 };
+    showNewest(box, lastTop);
+    expect(box.scrollTop).toBe(1400 - BOTTOM_SLACK_PX - 200);
+    expect(lastTop.current).toBe(1400);
+  });
+});
+
+describe('followSizeChanges', () => {
+  it("keeps the newest line in view when Stop's notice shrinks the region", () => {
+    // Following at the bottom; then the stop notice above the page takes 80 px of its height.
+    const box = scrollBox(2000, 600, 1400);
+    const lastTop = { current: 1400 };
+    const { watch, start } = sizeWatch();
+    followSizeChanges(box, lastTop, start);
+    box.clientHeight = 520;
+    // The browser keeps scrollTop: the last line now sits under the region's new bottom edge.
+    expect(box.scrollTop).toBe(1400);
+    watch.resize();
+    expect(box.scrollTop).toBe(1480);
+    expect(lastTop.current).toBe(1480);
+  });
+
+  it('never pulls back a reader who scrolled up in the frame the region changed size', () => {
+    const box = scrollBox(2000, 600, 1400);
+    const lastTop = { current: 1400 };
+    const { watch, start } = sizeWatch();
+    followSizeChanges(box, lastTop, start);
+    box.scrollTop = 700; // the reader's scroll; its event has not come yet
+    box.clientHeight = 520;
+    watch.resize();
+    expect(box.scrollTop).toBe(700);
+  });
+
+  it('stops watching when it is stopped: following ended, or the panel went away', () => {
+    const { watch, start } = sizeWatch();
+    const stop = followSizeChanges(scrollBox(2000, 600, 1400), { current: 1400 }, start);
+    expect(watch.watching).toBe(true);
+    stop();
+    expect(watch.watching).toBe(false);
   });
 });

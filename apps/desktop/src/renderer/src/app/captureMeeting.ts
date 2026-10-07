@@ -9,9 +9,9 @@ export interface CaptureMeeting {
 
 /**
  * The meeting the capture view describes after `status`: the one a status names, else the last
- * one. Main's status names no meeting after Stop, while useCapture keeps that meeting's lines on
- * screen (as M1's window did), so the shell keeps pointing at it until main names the next one,
- * which it does only once that one records. Whether this meeting is recording is meetingPhase's
+ * one. Main's status names no meeting after Stop, while that meeting's page still shows its last
+ * recording's meter (meeting/liveMeeting.ts), so the shell keeps pointing at it until main names
+ * the next one, which it does only once that one records. Whether this meeting is recording is meetingPhase's
  * answer, never main's phase alone. Returns `previous` itself when nothing changed: the shell
  * updates its state during render with this, and a new object every render would never settle.
  */

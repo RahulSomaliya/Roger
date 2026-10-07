@@ -3,8 +3,8 @@ import { isSlotEmpty, SlotOutlet } from '../app/SlotOutlet';
 import { type MeetingPane, PANE_LABEL } from './panes';
 
 /**
- * The meeting page's regions: the notes ("My notes" and "AI notes", M4-T20), the transcript (M3-T9;
- * M4-S4 seeds M1's TranscriptView) and chat (M4-T20), each the outlet of its slot. Side by side on
+ * The meeting page's regions: the notes ("My notes" and "AI notes", M4-T20), the transcript
+ * (M3-T9's live transcript panel) and chat (M4-T20), each the outlet of its slot. Side by side on
  * a wide page; one at a time on a narrow one, picked with the pane buttons (meeting.css). A pane
  * the narrow page does not show is hidden with CSS, never unmounted: an editor keeps its unsaved
  * text, and the citation navigator finds a chip's lines in a hidden transcript before
