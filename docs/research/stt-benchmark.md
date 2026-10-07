@@ -78,6 +78,9 @@ Open points, before Grok is used on a real call:
 4. **Retention.** Roger promises it never trains vendors on calls (decision D3). xAI does not train
    without permission, but it keeps requests 30 days; Rahul decides whether that is acceptable, or
    whether to ask for zero data retention on the team, before any real client call goes through it.
+5. **Finish on an empty buffer.** That `Finalize` with nothing buffered is harmless, and that
+   `transcript.done` still follows the last `speech_final`. The canary's finish came after speech,
+   so it never sent `Finalize` on an empty buffer (a Stop during silence does).
 
 To compare: restart the API with `STT_PROVIDER=xai`, then `make bench ARGS="run"` replays the same
 items through Grok exactly as it did for the other vendors (the bench builds the adapter from the
