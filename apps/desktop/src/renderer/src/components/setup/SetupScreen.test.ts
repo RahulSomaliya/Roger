@@ -9,13 +9,25 @@ function state(change: Partial<SetupScreenState> = {}): SetupScreenState {
   return { status: readyMac(), loadError: null, running: null, failure: null, ...change };
 }
 
+interface Shown {
+  showPassing?: boolean;
+  onDone?: () => void;
+}
+
 /**
  * The view's markup, without the empty comments React's server output puts between adjacent text
  * pieces (apps/desktop/CLAUDE.md), so text reads as the page shows it.
  */
-function render(screen: SetupScreenState): string {
+function render(screen: SetupScreenState, shown: Shown = {}): string {
   return renderToString(
-    createElement(SetupView, { state: screen, onAction: vi.fn(), onRetry: vi.fn() }),
+    createElement(SetupView, {
+      state: screen,
+      showPassing: shown.showPassing ?? false,
+      onTogglePassing: vi.fn(),
+      onAction: vi.fn(),
+      onRetry: vi.fn(),
+      onDone: shown.onDone ?? vi.fn(),
+    }),
   ).replaceAll('<!-- -->', '');
 }
 
@@ -26,8 +38,15 @@ function rowOf(html: string, id: string): string {
   return match[0];
 }
 
+const hasRow = (html: string, id: string): boolean => html.includes(`data-row="${id}"`);
+
 const buttons = (html: string): string[] =>
   [...html.matchAll(/<button[^>]*>([^<]*)<\/button>/g)].map((match) => match[1] ?? '');
+
+const primaries = (html: string): string[] =>
+  [...html.matchAll(/<button[^>]*data-variant="primary"[^>]*>([^<]*)<\/button>/g)].map(
+    (match) => match[1] ?? '',
+  );
 
 describe('the setup screen', () => {
   it('says it is checking before main answers, with nothing to press', () => {
@@ -36,20 +55,36 @@ describe('the setup screen', () => {
     expect(buttons(html)).toEqual([]);
   });
 
-  it('shows why the first read failed, with Try again', () => {
+  it('shows why the first read failed as a problem line, with Try again', () => {
     const html = render(state({ status: null, loadError: 'codesign gave no answer' }));
-    expect(html).toMatch(/role="alert"/);
+    expect(html).toMatch(/class="problem"[^>]*role="alert"|role="alert"[^>]*class="problem"/);
     expect(html).toContain('Roger could not check this Mac: codesign gave no answer');
     expect(buttons(html)).toEqual(['Try again']);
+    expect(primaries(html)).toEqual([]);
   });
 
-  it('shows every row with its state, under a summary', () => {
+  it('says what Roger records in one line', () => {
     const html = render(state());
-    expect(html).toContain('Roger has what it needs on this Mac.');
+    expect(html).toContain('Roger records your microphone and the call audio your Mac plays.');
+    expect(html).not.toContain('Each check below');
+  });
+
+  it('folds the passing checks into one line and shows only the one left to test', () => {
+    const html = render(state());
+    expect(html).toContain('5 checks pass');
+    expect(buttons(html)).toContain('Show');
+    for (const id of ['microphone', 'callAudio', 'signing', 'server', 'speechToText']) {
+      expect(hasRow(html, id)).toBe(false);
+    }
+    expect(rowOf(html, 'notifications')).toContain('Not tested');
+  });
+
+  it('shows every passing row with its state once Show is pressed', () => {
+    const html = render(state(), { showPassing: true });
+    expect(buttons(html)).toContain('Hide');
     for (const [id, label] of [
       ['microphone', 'Allowed'],
       ['callAudio', 'Heard'],
-      ['notifications', 'Not tested'],
       ['signing', 'Signed on this Mac'],
       ['server', 'Reachable'],
       ['speechToText', 'Ready'],
@@ -59,9 +94,14 @@ describe('the setup screen', () => {
     expect(rowOf(html, 'microphone')).toContain('data-tone="ok"');
   });
 
-  it("puts main's message and the row's fixes on a refused Mac, the first fix as the main button", () => {
+  it('has no passing line when nothing passes yet', () => {
     const html = render(state({ status: refusedMac() }));
-    expect(html).toContain('4 checks need you.');
+    expect(html).not.toContain('pass');
+    expect(buttons(html)).not.toContain('Show');
+  });
+
+  it("puts main's message and the row's fixes on a refused Mac, only the first fix as the main button", () => {
+    const html = render(state({ status: refusedMac() }));
     const microphone = rowOf(html, 'microphone');
     expect(microphone).toContain('data-tone="problem"');
     expect(microphone).toContain(
@@ -71,47 +111,93 @@ describe('the setup screen', () => {
     expect(microphone).toMatch(
       /<button[^>]*class="btn"[^>]*data-variant="primary"[^>]*>Open Microphone settings/,
     );
+    // Four checks fail and each has fixes, yet the screen has one primary.
+    expect(primaries(html)).toEqual(['Open Microphone settings']);
     expect(rowOf(html, 'server')).toContain(
       'Roger can&#x27;t reach its server at http://127.0.0.1:8000.',
     );
   });
 
-  it('offers Allow on a first run', () => {
-    expect(buttons(rowOf(render(state({ status: firstRunMac() })), 'microphone'))).toEqual([
-      'Allow microphone',
-    ]);
+  it('marks each state by words with an icon, never a tinted pill', () => {
+    const html = render(state({ status: refusedMac() }), { showPassing: true });
+    expect(rowOf(html, 'microphone')).toMatch(/class="setup-state"[^>]*><svg/);
+    expect(html).not.toContain('setup-row-description');
   });
 
-  it('says what the running action is doing, and holds every button until it ends', () => {
-    const html = render(state({ running: { row: 'callAudio', action: 'test-system-audio' } }));
+  it('offers Allow on a first run as the main button', () => {
+    const html = render(state({ status: firstRunMac() }));
+    expect(buttons(rowOf(html, 'microphone'))).toEqual(['Allow microphone']);
+    expect(primaries(html)).toEqual(['Allow microphone']);
+  });
+
+  it('shows Done only once nothing fails, and then as the one main button', () => {
+    const ready = render(state());
+    expect(buttons(ready)).toContain('Done');
+    expect(primaries(ready)).toEqual(['Done']);
+    for (const status of [firstRunMac(), refusedMac()]) {
+      expect(buttons(render(state({ status })))).not.toContain('Done');
+    }
+  });
+
+  it('keeps Done off a ready Mac whose check could not run, and while the status is unknown', () => {
+    expect(buttons(render(state({ status: null })))).not.toContain('Done');
+    const helperMissing = {
+      ...readyMac(),
+      systemAudio: {
+        state: 'unknown' as const,
+        message: "Roger's call audio helper is missing from this copy of Roger.",
+        relaunchNeeded: false,
+      },
+    };
+    expect(buttons(render(state({ status: helperMissing })))).not.toContain('Done');
+  });
+
+  it('says what the running action is doing, keeps its button at full colour and holds the rest', () => {
+    const html = render(
+      state({
+        status: refusedMac(),
+        running: { row: 'callAudio', action: 'test-system-audio' },
+      }),
+    );
     expect(rowOf(html, 'callAudio')).toMatch(
       /role="status"[^>]*>Playing a test sound and listening for it…</,
     );
     expect(rowOf(html, 'callAudio')).toContain('aria-busy="true"');
-    const tags = [...html.matchAll(/<button[^>]*>/g)].map((match) => match[0]);
-    expect(tags.length).toBeGreaterThan(0);
-    for (const tag of tags) expect(tag).toContain('disabled');
+    const running = /<button[^>]*data-action="test-system-audio"[^>]*>/.exec(
+      rowOf(html, 'callAudio'),
+    );
+    // Busy is not disabled (docs/design.md): the button keeps its colour and takes no clicks.
+    expect(running?.[0]).toContain('aria-disabled="true"');
+    expect(running?.[0]).not.toMatch(/\sdisabled/);
+    const others = [...html.matchAll(/<button[^>]*>/g)]
+      .map((match) => match[0])
+      .filter((tag) => !tag.includes('data-action="test-system-audio"'));
+    expect(others.length).toBeGreaterThan(0);
+    for (const tag of others) expect(tag).toMatch(/\sdisabled/);
   });
 
-  it("shows a failed action's reason on its own row only", () => {
+  it("shows a failed action's reason as a problem line on its own row only", () => {
     const html = render(
       state({
         failure: { row: 'notifications', message: 'Roger could not post the notification.' },
       }),
+      { showPassing: true },
     );
     expect(rowOf(html, 'notifications')).toMatch(
-      /role="alert"[^>]*>Roger could not post the notification\.</,
+      /class="problem"[^>]*role="alert"[\s\S]*Roger could not post the notification\./,
     );
     expect(rowOf(html, 'microphone')).not.toContain('role="alert"');
   });
 
   it('keeps the last status when a later read fails, and says so', () => {
-    const html = render(state({ loadError: 'the window lost main' }));
+    const html = render(state({ loadError: 'the window lost main' }), { showPassing: true });
     expect(html).toContain('Roger could not check again: the window lost main');
     expect(rowOf(html, 'microphone')).toContain('Allowed');
   });
 
-  it('says where the audio backup stays', () => {
-    expect(render(state())).toContain('It is never uploaded.');
+  it('says in one plain sentence where the audio stays', () => {
+    const html = render(state());
+    expect(html).toContain('never uploaded');
+    expect(html).not.toContain('audioRetentionDays');
   });
 });
