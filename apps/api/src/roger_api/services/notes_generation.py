@@ -46,7 +46,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import defer
 
 from roger_api.auth import Principal
-from roger_api.config_notes import NotesSettings
 from roger_api.db.engine import Database
 from roger_api.db.models import TranscriptSegment
 from roger_api.db.models_notes import LlmRun, MeetingNote
@@ -100,10 +99,6 @@ type Emit = Callable[[RunEvent], None]
 # Keeps, moves to "From your notes" or drops one parsed bullet: `check_line` against the run's ref
 # map, or, in a long call's passes, against the lines that pass was shown (`notes_long.py`).
 type LineCheck = Callable[[Bullet], CheckedLine]
-
-# NOTES_MAX_INPUT_TOKENS' default, for a caller with no settings at hand. The API passes the
-# configured one (routers/notes_runs.py); so should the eval (M4-T12), from its own settings.
-DEFAULT_MAX_INPUT_TOKENS = NotesSettings().notes_max_input_tokens
 
 # The AI doc's names. `citation` is `CITATION_NODE_TYPE` in the desktop's shared/notes.ts, and its
 # attrs are `CitationAttrs` there; `NOT_SAID_ON_THE_CALL` is the constant of the same name.
@@ -189,7 +184,7 @@ async def generate_notes(
     stream: ModelStream,
     emit: Emit,
     *,
-    max_input_tokens: int = DEFAULT_MAX_INPUT_TOKENS,
+    max_input_tokens: int,
 ) -> GeneratedNotes:
     """Writes the notes for `sources` through `stream`, emitting `section`, `item`, `from_notes`
     and `dropped` events as each finished line is checked.
@@ -199,6 +194,12 @@ async def generate_notes(
     (`notes_long.py`), where only the reduce's lines are emitted and returned. `_claim` asks
     `notes_long.plan_windows` the same question to store the run's prompt version, so the two
     always agree.
+
+    `max_input_tokens` has no default, as `start_notes_run`'s has none: every caller passes its
+    own settings' NOTES_MAX_INPUT_TOKENS (the route through `start_notes_run`, the eval from
+    `get_settings()`). A default is one a caller forgets, and the setting is then ignored without
+    a word: a 32,000-token model is sent one pass of up to 200,000 tokens, and the vendor's 400
+    names no budget.
 
     Raises what the stream raises (`notes_model.py`): `LlmProviderError` when the vendor refuses
     or fails, `ModelCutOffError` when the answer stopped at its limit. Then nothing is returned,
