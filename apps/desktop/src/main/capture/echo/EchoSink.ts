@@ -200,6 +200,15 @@ export class EchoSink {
    * lines first, and call this in the same turn as `appendSegment`, with no await between: the
    * uploader could otherwise send the line first, and the hide would come too late. A call-audio
    * line is kept. Throws for a line that is not stored.
+   *
+   * Known gap, open for the plan owner and M2-T16: a gap on the call-audio side only (`stt_failed`,
+   * `budget`) while the mic stays up. The mic lines said in it repeat Them on the speakers, but
+   * their twins exist only once the re-run stores them: the reopened stream's first line moves the
+   * watermark past the whole gap and releases them (onCallAudioMark), and Stop releases the rest,
+   * so they are uploaded before any re-run. Re-deciding only the re-run's own mic lines leaves the
+   * same words in Postgres under Me and Them. This entry takes any stored mic line, a live one
+   * too, but it can still hide one only if the line is kept unsent until the re-run (held past
+   * Stop and its cap), which the plan does not allow today.
    */
   filterStored(segmentId: string): EchoOutcome {
     const line = this.options.store.getSegment(segmentId);
@@ -316,7 +325,11 @@ export class EchoSink {
     }
   }
 
-  /** Releases the held lines call audio has gone past, or all of them once it can send no more. */
+  /**
+   * Releases the held lines call audio has gone past, or all of them once it can send no more.
+   * Trap: going past is not hearing. A watermark that jumps a call-audio gap releases mic lines
+   * whose twins only M2-T16's re-run brings, after Stop (the known gap in filterStored's doc).
+   */
   private onCallAudioMark(live: LiveMeeting, watermark: SourceWatermark): void {
     const due = [...live.held.values()].filter(
       (held) => watermark.closed || passes(watermark.finalEndMs, held),
@@ -401,7 +414,14 @@ export class EchoSink {
     );
   }
 
-  /** The meeting's hidden mic lines, and the trimmed ones that are not hidden. */
+  /**
+   * The meeting's hidden mic lines, and the trimmed ones that are not hidden. Trap: it reads every
+   * mic line of the meeting, words included, and filters them here, not in the database: the store
+   * has no query for these two flags (TranscriptStore is M2-T3's). A resumed meeting's Start and
+   * each capture report pay for it, and one stored line whose words do not parse fails the count.
+   * The fix is a store query of the ids with either flag set, filtered in SQL; `follow` needs the
+   * ids, not counts, because `changed` adds and removes lines by id.
+   */
   private storedEchoLines(meetingId: string): { hidden: Set<string>; trimmed: Set<string> } {
     const hidden = new Set<string>();
     const trimmed = new Set<string>();
