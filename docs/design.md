@@ -74,19 +74,19 @@ dark `ink-subtle` 0.64 → 0.66 (4.25:1 on `accent-soft`, a fail); dark `control
 There is no red, amber or green. Stop is the accent fill. A problem is `ink` text with an icon.
 A good state is words ("Saved on this Mac"), never a green dot.
 
-### Pinned pairings (measured, WCAG 2, floored to one decimal)
+### Pinned pairings (measured, WCAG 2, every ratio floored to one decimal)
 
 `tokens.test.ts` computes every one of these from the OKLCH values and fails under 4.5:1 for text
 or 3:1 for the non-text rows. Add a row before you paint a new pairing.
 
 | Text | On | Light | Dark |
 | --- | --- | --- | --- |
-| `ink` | canvas · surface · raised · fill · sunken · control · accent-soft | 16.5 · 17.0 · 17.0 · 15.2 · 15.2 · 17.0 · 14.7 | 15.5 · 14.4 · 13.0 · 12.6 · 14.7 · 9.5 · 11.6 |
-| `ink-muted` | the same seven | 7.1 · 7.3 · 7.3 · 6.5 · 6.5 · 7.3 · 6.3 | 7.7 · 7.1 · 6.4 · 6.2 · 7.3 · 4.7 · 5.7 |
-| `ink-subtle` | canvas · surface · raised · fill · sunken · accent-soft | 5.2 · 5.4 · 5.4 · 4.8 · 4.8 · 4.7 | 6.1 · 5.6 · 5.1 · 4.9 · 5.8 · 4.6 |
-| `accent-ink` | canvas · surface · raised · fill · accent-soft | 6.7 · 6.9 · 6.9 · 6.1 · 5.9 | 9.9 · 9.1 · 8.2 · 8.0 · 7.4 |
+| `ink` | canvas · surface · raised · fill · sunken · control · accent-soft | 16.5 · 17.0 · 17.0 · 15.1 · 15.1 · 17.0 · 14.7 | 15.5 · 14.4 · 13.0 · 12.6 · 14.7 · 9.5 · 11.6 |
+| `ink-muted` | the same seven | 7.1 · 7.3 · 7.3 · 6.5 · 6.5 · 7.3 · 6.3 | 7.7 · 7.1 · 6.4 · 6.2 · 7.2 · 4.7 · 5.7 |
+| `ink-subtle` | canvas · surface · raised · fill · sunken · accent-soft | 5.2 · 5.4 · 5.4 · 4.8 · 4.8 · 4.7 | 6.1 · 5.6 · 5.1 · 4.9 · 5.8 · 4.5 |
+| `accent-ink` | canvas · surface · raised · fill · accent-soft | 6.7 · 6.9 · 6.9 · 6.1 · 5.9 | 9.8 · 9.1 · 8.2 · 8.0 · 7.4 |
 | `on-accent` | accent · accent-hover | 4.8 · 5.7 | 7.2 · 8.4 |
-| `accent`, `ring` (3:1, non-text) | canvas · surface · raised · fill | 4.8 · 4.9 · 4.9 · 4.3 | 7.3 · 6.7 · 6.1 · 5.9 |
+| `accent`, `ring` (3:1, non-text) | canvas · surface · raised · fill | 4.7 · 4.9 · 4.9 · 4.3 | 7.3 · 6.7 · 6.1 · 5.9 |
 
 `line` is decorative (1.3:1) and never the only edge of a control: an input's border is `line`
 plus its own `surface` against `canvas`, and focus adds `ring`.
@@ -199,9 +199,11 @@ it is never a sub-second flash.
   "Recording" and the elapsed time ("12m", tabular, updated every 15 s: a seconds counter is
   motion that never stops). In the app header on every page but the live meeting's own; a click
   opens that meeting. Its accessible name says it all: "Recording, 12 minutes".
-- **Status line** (meeting header, while recording). "Recording · 12m · Details". A loud
-  problem takes the line's place, in words ("Roger can't hear the call · since 4:59 pm"), so the
-  editor below never moves. "Details" opens the Details dialog.
+- **Status line** (meeting header, while recording). "Recording · 12m". A loud problem takes the
+  line's place, in words ("Roger can't hear the call · since 4:59 pm"; with two streams in
+  trouble it names the first and adds "· +1 more"), so the editor below never moves. Details is
+  a ghost button among the header's actions (beside Stop, Write notes and the ⋯ menu), not part of
+  the line.
 - **Problem line.** A 16 px icon (`ink`) + one sentence in `ink` + at most one secondary action.
   Loud: `role="alert"`, weight 600, top of the page. Quiet: `role="status"`, `ink-muted`. No box,
   no tint. It says what happened and what to do.
@@ -234,14 +236,15 @@ it is never a sub-second flash.
 | Meeting | starting | **Starting…** (busy) | |
 | Meeting | recording | **Stop** | Copy notice (secondary), Details (ghost) |
 | Meeting | stopping | **Stopping…** (busy) | |
-| Meeting | stopped, no AI notes | **Write notes** | ⋯ menu |
+| Meeting | stopped, no AI notes | **Write notes** | Details (ghost); the ⋯ menu only once AI notes exist |
 | Meeting | writing | **Writing notes…** (busy) | Cancel (ghost) |
 | Meeting | AI notes written | none: the notes are the loud thing | ⋯ menu: Write again as, Restore previous notes |
 | Meeting | a past meeting while another records | none | |
 | Settings | calendar not connected | **Connect Google Calendar** | |
+| Settings | connected, Google refused or is about to expire the grant | **Reconnect** | Disconnect (ghost) |
 | Settings | otherwise | none | Disconnect (ghost) |
-| Set up Roger | a check fails | **the first failing check's fix** (Allow microphone, Test call audio, Relaunch Roger) | other fixes secondary |
-| Set up Roger | all pass | **Done** | |
+| Set up Roger | a check fails | **the first failing check's fix** (Allow microphone, Open Microphone settings, Open System Audio settings, Check again, Relaunch Roger) | other fixes secondary; **Later** (ghost) is the way out, there is no header |
+| Set up Roger | all pass | **Done** | Later is gone |
 | Prompt panel | a meeting with a video link | **Join and start notes** | Start notes (ghost), Dismiss (ghost) |
 | Prompt panel | no link, or a call detected | **Start notes** | Dismiss (ghost) |
 | Prompt panel | taking notes | none | Open Roger (ghost) |
@@ -258,7 +261,9 @@ it is never a sub-second flash.
 - A problem says what happened, then what to do: "Roger can't hear the call. Check the call plays
   on this Mac." Never "Error:", never blame.
 - Clock times are 12-hour, lowercase: "9:14 am", never "09:14" or "9:14 AM". Durations "1h 23m".
-  Transcript offsets "4:07", "1:02:05" over an hour. Dates "Wed 7 Oct".
+  Transcript offsets "4:07", "1:02:05" over an hour. Dates "Wed 7 Oct" in lists
+  (Home's Earlier). The meeting page's time line still reads the system locale ("Mon, Oct 5, 3:00 pm
+  to 3:03 pm" on an English-US Mac): one date format is open, see Traps.
 - Confirm what mattered, truthfully: "Notes written", "Notice copied". "Saved" is not news.
 
 ### Naming list (one word per concept; goes into `CLAUDE.md`)
@@ -343,3 +348,29 @@ it is never a sub-second flash.
 - A shared type change (a preference key, a prompt card kind) breaks `preview/fakeRoger.ts` and
   every test double typed as the whole type, in files the task does not own (M2-T2, M3-T4a).
 - `scrollIntoView({ block: 'start' })` puts a line under a sticky header: centre it.
+- QA (R10, `e2e/redesign.qa.e2e.ts`): a check that scrolls moves what the shot shows. A visibility
+  helper that called `scrollIntoView` put the transcript on its first line while the check before
+  it had proved it sat on the newest. The checks never scroll; the shell is grown to its content
+  (`qa.fitShellPage`) so everything a check reads is in the viewport already.
+- QA finds the primary two ways, by `data-variant="primary"` and by a computed background equal to
+  the accent fill, so a control that skipped `.btn` is still counted. A busy primary has
+  `pointer-events: none`, so `elementFromPoint` skips it: assert its `aria-disabled` and its label
+  instead. With a modal `<dialog>` open only its own controls count, the page behind is inert.
+- The prompt panel is not a scenario of the main preview: it is its own page
+  (`preview/prompt.html?card=meeting-link`, states in `preview/promptScenarios.ts`), has no fake
+  `window.roger`, and follows the system scheme only, so QA forces the theme with the browser's
+  colour scheme, not a preference. It sits on a `fill` stage as wide as the real window (360 px).
+- A menu anchored `right: 0` of its trigger leaves the window when the trigger sits at the left
+  edge: at 390 the header's actions wrap under the title, and the ⋯ menu opens 142 px off screen
+  with its labels cut (`Menu.tsx`, `.menu` in `styles.css`, `MeetingHeader.tsx`). Check a menu at
+  390, not only at 1440.
+- Raw API text reaches the page: a failed jargon save reads "Not saved: PUT /v1/vocabulary failed:
+  connect ECONNREFUSED 127.0.0.1:8000" and Write notes "could not start writing the notes: POST
+  /v1/meetings/.../notes/generate failed ...". The chat has `describeReadFailure`; these two do not.
+  Copy rule: no routes, verbs or errnos outside Details.
+- Lines the server refused for good show only on the meeting page (`meetingBanner`), never on
+  Home: `captureStatusFor` needs a meeting. A person who stops a call and stays on Home is not told.
+  Open: add the line to Home's banner, or accept it.
+- `meetingTimes.ts` formats dates with the system locale (`toLocaleDateString(locale)`), while
+  `labels.ts` and `calendarFormat.ts` pin English "Mon 5 Oct". The same day reads two ways. Pick
+  one in `meetingTimes.ts`.

@@ -145,7 +145,7 @@ const PINNED: readonly Pinned[] = [
   {
     text: '--ink',
     on: SEVEN,
-    light: [16.5, 17.0, 17.0, 15.2, 15.2, 17.0, 14.7],
+    light: [16.5, 17.0, 17.0, 15.1, 15.1, 17.0, 14.7],
     dark: [15.5, 14.4, 13.0, 12.6, 14.7, 9.5, 11.6],
     min: 4.5,
   },
@@ -153,21 +153,21 @@ const PINNED: readonly Pinned[] = [
     text: '--ink-muted',
     on: SEVEN,
     light: [7.1, 7.3, 7.3, 6.5, 6.5, 7.3, 6.3],
-    dark: [7.7, 7.1, 6.4, 6.2, 7.3, 4.7, 5.7],
+    dark: [7.7, 7.1, 6.4, 6.2, 7.2, 4.7, 5.7],
     min: 4.5,
   },
   {
     text: '--ink-subtle',
     on: ['--canvas', '--surface', '--raised', '--fill', '--sunken', '--accent-soft'],
     light: [5.2, 5.4, 5.4, 4.8, 4.8, 4.7],
-    dark: [6.1, 5.6, 5.1, 4.9, 5.8, 4.6],
+    dark: [6.1, 5.6, 5.1, 4.9, 5.8, 4.5],
     min: 4.5,
   },
   {
     text: '--accent-ink',
     on: ['--canvas', '--surface', '--raised', '--fill', '--accent-soft'],
     light: [6.7, 6.9, 6.9, 6.1, 5.9],
-    dark: [9.9, 9.1, 8.2, 8.0, 7.4],
+    dark: [9.8, 9.1, 8.2, 8.0, 7.4],
     min: 4.5,
   },
   {
@@ -180,14 +180,14 @@ const PINNED: readonly Pinned[] = [
   {
     text: '--accent',
     on: ['--canvas', '--surface', '--raised', '--fill'],
-    light: [4.8, 4.9, 4.9, 4.3],
+    light: [4.7, 4.9, 4.9, 4.3],
     dark: [7.3, 6.7, 6.1, 5.9],
     min: 3,
   },
   {
     text: '--ring',
     on: ['--canvas', '--surface', '--raised', '--fill'],
-    light: [4.8, 4.9, 4.9, 4.3],
+    light: [4.7, 4.9, 4.9, 4.3],
     dark: [7.3, 6.7, 6.1, 5.9],
     min: 3,
   },
@@ -223,7 +223,8 @@ describe('the theme tokens', () => {
   });
 
   // Every measured ratio must clear its bar, and must still be the number docs/design.md prints:
-  // the doc floors to one decimal (two rows round), so 0.1 is the tolerance that catches a re-tune.
+  // the doc floors every ratio to one decimal (a printed number never overstates the margin over
+  // the bar), so 0.1 is the tolerance that catches a re-tune.
   it.each([
     ['light', light, 'light'],
     ['system dark', systemDark, 'dark'],
