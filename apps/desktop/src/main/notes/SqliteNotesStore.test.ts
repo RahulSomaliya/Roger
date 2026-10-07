@@ -57,6 +57,40 @@ function tempPath(): string {
   return join(mkdtempSync(join(tmpdir(), 'roger-notes-')), 'notes.sqlite');
 }
 
+/**
+ * Winds a notes.sqlite back to schema 2, as an earlier build left it: the notes table as it was,
+ * its CHECK without the refused states. Rows are kept as they are.
+ */
+function windBackToSchema2(path: string): void {
+  const raw = new DatabaseSync(path);
+  raw.exec(`
+    CREATE TABLE notes_schema2 (
+      meeting_id TEXT NOT NULL,
+      kind TEXT NOT NULL CHECK (kind IN ('user', 'ai')),
+      doc_json TEXT NOT NULL,
+      revision_id TEXT,
+      dirty INTEGER NOT NULL CHECK (dirty IN (0, 1)),
+      base_version INTEGER NOT NULL CHECK (base_version >= 0),
+      template_id TEXT,
+      last_run_id TEXT,
+      generated_version INTEGER,
+      conflict_json TEXT,
+      sync_state TEXT NOT NULL CHECK (sync_state IN
+        ('saved_locally', 'waiting_for_meeting', 'syncing', 'synced', 'offline')),
+      has_text INTEGER NOT NULL CHECK (has_text IN (0, 1)),
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (meeting_id, kind),
+      CHECK (dirty = 0 OR revision_id IS NOT NULL)
+    );
+    INSERT INTO notes_schema2 SELECT * FROM notes;
+    DROP TABLE notes;
+    ALTER TABLE notes_schema2 RENAME TO notes;
+    CREATE INDEX notes_dirty ON notes (updated_at) WHERE dirty = 1;
+    PRAGMA user_version = 2;
+  `);
+  raw.close();
+}
+
 describe('SqliteNotesStore: saves', () => {
   it('a save is on disk before save() returns and survives reopening', () => {
     const path = tempPath();
@@ -695,35 +729,7 @@ describe('SqliteNotesStore: hasNotes', () => {
     const first = openStore(path);
     first.saveLocal(MEETING, 'user', paragraphs('Before'));
     first.close();
-    // Wound back to schema 2: the notes table as it was, its CHECK without the refused states.
-    const raw = new DatabaseSync(path);
-    raw.exec(`
-      DROP INDEX notes_dirty;
-      ALTER TABLE notes RENAME TO notes_new;
-      CREATE TABLE notes (
-        meeting_id TEXT NOT NULL,
-        kind TEXT NOT NULL CHECK (kind IN ('user', 'ai')),
-        doc_json TEXT NOT NULL,
-        revision_id TEXT,
-        dirty INTEGER NOT NULL CHECK (dirty IN (0, 1)),
-        base_version INTEGER NOT NULL CHECK (base_version >= 0),
-        template_id TEXT,
-        last_run_id TEXT,
-        generated_version INTEGER,
-        conflict_json TEXT,
-        sync_state TEXT NOT NULL CHECK (sync_state IN
-          ('saved_locally', 'waiting_for_meeting', 'syncing', 'synced', 'offline')),
-        has_text INTEGER NOT NULL CHECK (has_text IN (0, 1)),
-        updated_at TEXT NOT NULL,
-        PRIMARY KEY (meeting_id, kind),
-        CHECK (dirty = 0 OR revision_id IS NOT NULL)
-      );
-      INSERT INTO notes SELECT * FROM notes_new;
-      DROP TABLE notes_new;
-      CREATE INDEX notes_dirty ON notes (updated_at) WHERE dirty = 1;
-      PRAGMA user_version = 2;
-    `);
-    raw.close();
+    windBackToSchema2(path);
 
     const store = openStore(path);
     expect(store.getNote(MEETING, 'user')).toMatchObject({
@@ -739,6 +745,56 @@ describe('SqliteNotesStore: hasNotes', () => {
     const reopened = openStore(path);
     expect(reopened.getNote(MEETING, 'user')?.sync).toBe('refused_access');
     reopened.close();
+  });
+
+  // The rebuild runs in SQLite's recommended order (create the new table, copy, drop the old,
+  // rename), so every column of every row must come through, whatever its old sync state.
+  it('a schema 2 notes.sqlite keeps every row and column through the rebuild, at schema 3', () => {
+    const path = tempPath();
+    openStore(path).close();
+    windBackToSchema2(path);
+    const states = ['saved_locally', 'waiting_for_meeting', 'syncing', 'synced', 'offline'];
+    const raw = new DatabaseSync(path);
+    const insert = raw.prepare(
+      `INSERT INTO notes (meeting_id, kind, doc_json, revision_id, dirty, base_version, template_id,
+        last_run_id, generated_version, conflict_json, sync_state, has_text, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    );
+    states.forEach((state, index) => {
+      const kind = index % 2 === 0 ? 'user' : 'ai';
+      insert.run(
+        `meeting-${index}`,
+        kind,
+        JSON.stringify(paragraphs(`Row ${index}`)),
+        state === 'synced' ? null : `rev-${index}`,
+        state === 'synced' ? 0 : 1,
+        index + 3,
+        kind === 'ai' ? `template-${index}` : null,
+        kind === 'ai' ? `run-${index}` : null,
+        kind === 'ai' ? index + 1 : null,
+        index === 1 ? JSON.stringify(paragraphs('Copy')) : null,
+        state,
+        index % 2,
+        `2026-10-0${index + 1}T09:00:00.000Z`,
+      );
+    });
+    const rows = (): unknown[] =>
+      raw.prepare('SELECT * FROM notes ORDER BY meeting_id, kind').all();
+    const before = rows();
+    expect(before).toHaveLength(5);
+    raw.close();
+
+    openStore(path).close();
+
+    const check = new DatabaseSync(path);
+    expect(check.prepare('PRAGMA user_version').get()).toEqual({ user_version: 3 });
+    const after = check.prepare('SELECT * FROM notes ORDER BY meeting_id, kind').all();
+    expect(after).toEqual(before);
+    // The partial index came back with the new table; no stray table from the rebuild is left.
+    expect(
+      check.prepare("SELECT name FROM sqlite_master WHERE name LIKE 'notes%' ORDER BY name").all(),
+    ).toEqual([{ name: 'notes' }, { name: 'notes_dirty' }]);
+    check.close();
   });
 
   it('counts held typing, which also keeps its note from being deleted as empty', () => {
