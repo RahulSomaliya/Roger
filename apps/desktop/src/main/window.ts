@@ -1,5 +1,7 @@
 import { join } from 'node:path';
 import { BrowserWindow, type Session } from 'electron';
+import { hideOnClose, showWhenReady } from './app/windowLifecycle';
+import type { RecordingLifecycle } from './lifecycle';
 import { errorMessage, type Logger } from './logger';
 import { isAppPageUrl, isPermissionAllowed, type AppPage } from './page-policy';
 
@@ -37,11 +39,22 @@ export function installPermissionHandlers(session: Session, page: AppPage, logge
   );
 }
 
-/** The single app window. Renderer isolation is non-negotiable (house rule 5). */
+/**
+ * The single app window. Renderer isolation is non-negotiable (house rule 5).
+ *
+ * Closing it hides it (app/windowLifecycle.ts): the page keeps capturing the microphone and Roger
+ * keeps running in the menu bar. `lifecycle.quitting` lets the close of a quit through; without
+ * it Cmd+Q would be turned into a hide and Roger would never exit. `openedAtLogin` starts the
+ * window hidden when macOS launched Roger at login.
+ */
 export function createMainWindow(
   preloadPath: string,
   page: AppPage,
   logger: Logger,
+  {
+    lifecycle,
+    openedAtLogin,
+  }: { lifecycle: Pick<RecordingLifecycle, 'quitting'>; openedAtLogin: boolean },
 ): BrowserWindow {
   const window = new BrowserWindow({
     width: 520,
@@ -57,11 +70,14 @@ export function createMainWindow(
       sandbox: true,
       nodeIntegration: false,
       webSecurity: true,
+      // Chromium throttles timers and rendering in a hidden window. The page captures the
+      // microphone and runs call detection, so a recording or a prompt would degrade the moment
+      // the window is closed (M2, M5): its timers must keep their pace while it is hidden.
+      backgroundThrottling: false,
     },
   });
-  window.once('ready-to-show', () => {
-    window.show();
-  });
+  showWhenReady(window, { openedAtLogin });
+  hideOnClose(window, lifecycle);
   // No new windows: the app has no links, and a new window would sit outside these guards.
   window.webContents.setWindowOpenHandler(({ url }) => {
     logger.warn('new window blocked', { url });

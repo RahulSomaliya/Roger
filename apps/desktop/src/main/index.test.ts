@@ -59,4 +59,17 @@ describe('the slots in main/index.ts', () => {
     expect(lineOf('[slot M5-T9c]')).toBeLessThan(window);
     expect(lineOf('[slot M5-T11 lifecycle]')).toBeGreaterThan(window);
   });
+
+  // M5-T11: closing the window hides it and Roger runs on in the menu bar. A handler here that
+  // quits on the last window, or a second `second-instance` listener, would undo that; both now
+  // live in app/windowLifecycle.ts, wired once through startKeepRunning.
+  it('leaves window-all-closed, activate and second-instance to app/keepRunning.ts', () => {
+    expect(source).not.toMatch(/app\.on\(\s*'(window-all-closed|activate|second-instance)'/);
+    expect(source).toContain('startKeepRunning(');
+  });
+
+  it('sets the dev data folder through userDataOverride, which leaves the e2e run alone', () => {
+    expect(source).toContain('userDataOverride(');
+    expect(source).toMatch(/e2eOn: e2e\.on/);
+  });
 });

@@ -1,12 +1,24 @@
-// Stub from P2-F1; owned by M5-T11.
-import type { LoginItemApi } from '../../src/shared/ipc/loginItem';
+import {
+  type LoginItemApi,
+  loginItemChannels,
+  type LoginItemState,
+} from '../../src/shared/ipc/loginItem';
+import type { FakeHub } from './hub';
 
 /**
- * The login item feature's part of the preview's `window.roger`. It implements
- * src/shared/ipc/loginItem.ts: a member added there fails the type check until it is here. Take the
- * hub (`hub: FakeHub`, ./hub.ts; fakeRoger.ts already passes it) once a member needs it: answer
- * requests through `hub.request` and send events with `hub.emit`, so scenarios can drive them.
+ * The login item's part of the preview's `window.roger`: the preview is no packaged Roger, so it
+ * starts `unavailable`, as a dev build's main does. A change a scenario sends on
+ * LoginItemStateChanged becomes what the fake answers, as it would in main (`requires-approval` for
+ * Settings' System Settings line, `enabled` for the line after the first connect).
  */
-export function createLoginItemFake(): LoginItemApi {
-  return {};
+export function createLoginItemFake(hub: FakeHub): LoginItemApi {
+  let state: LoginItemState = { status: 'unavailable' };
+  hub.on(loginItemChannels.LoginItemStateChanged, (next: LoginItemState) => {
+    state = next;
+  });
+  return {
+    getLoginItemState: () => hub.request(loginItemChannels.LoginItemGetState, () => ({ ...state })),
+    onLoginItemStateChanged: (listener) =>
+      hub.on(loginItemChannels.LoginItemStateChanged, listener),
+  };
 }
