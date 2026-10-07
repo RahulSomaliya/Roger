@@ -786,7 +786,10 @@ export class CaptureService {
           onWarning: (source, warning) => {
             // Quiet: on screen only, as the Notifier posts loud warnings alone. The call goes on,
             // without the list on that source until Stop (CaptureSession.connect), so the warning
-            // holds until then; the session logged it.
+            // holds until then; the session logged it. The first warning to hold all meeting, so a
+            // later loud one on the same source (M2-T11's mic-dead) comes on top of it: a view that
+            // joins a source's warnings into one row must date a loud row by its loud warnings,
+            // not the earliest since, or a mic silent for 8 s reads as silent since Start.
             this.sessionWarnings[source] ??= {
               kind: warning.kind,
               source,
