@@ -307,7 +307,9 @@ export class CaptureSession {
   /**
    * Start: open every stream. If any fails, the ones that opened are closed and the first error is
    * rethrown. The opens are taken from the budget together first (AssemblyAI starts 5 sessions a
-   * minute on a free account, and each Start opens two); a refusal throws before any socket.
+   * minute on a free account, and each Start opens two); a refusal throws before any socket. A
+   * source whose jargon list the vendor refuses takes one more, right before its open without the
+   * list (connect), so a Start can take four, and a refusal of that one fails the Start too.
    */
   async open(): Promise<void> {
     // Both or neither: a Start with one source would look like a working meeting.
