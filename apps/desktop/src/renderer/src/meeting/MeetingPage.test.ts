@@ -98,6 +98,8 @@ function shell(fields: {
     navigate: vi.fn(),
     capture: {
       status: fields.status ?? null,
+      // The meeting main named last is the one the shell points at (captureMeeting).
+      lastMeetingId: fields.captureMeeting?.id ?? null,
       segments: fields.segments ?? [],
       interim: { mic: null, system: null },
       localError: null,

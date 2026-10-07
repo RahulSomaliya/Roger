@@ -1,5 +1,4 @@
 import type { CaptureStatus } from '../../../shared/capture';
-import type { TranscriptSegment } from '../../../shared/transcript';
 
 /**
  * The sidebar's refreshKey (useRecentMeetings): it changes when the meetings on this Mac may have
@@ -10,14 +9,15 @@ import type { TranscriptSegment } from '../../../shared/transcript';
  * each a new object over IPC, and that key read `meetings:list` every 2 s all day. Never the phase
  * alone either: React renders a burst of statuses once (the preview's scenarios send `recording`
  * then `idle` in one task), so the list would see idle before and after and miss the recording.
- * The newest line's meeting catches that: main keeps only a meeting someone spoke in, each line
- * reaches `segments` (useCapture), and useCapture empties them when main names the next meeting.
+ * `lastMeetingId` catches that: useCapture takes it from every status main sends, rendered or not
+ * (lastNamedMeeting), so after such a burst it names the meeting the burst recorded. A burst
+ * nobody spoke in costs one read that finds the list as it was.
  */
 export function recentMeetingsKey(
   status: CaptureStatus | null,
-  segments: readonly TranscriptSegment[],
+  lastMeetingId: string | null,
 ): string {
   const named = status?.meetingId ?? null;
   if (named !== null) return `recording ${named}`;
-  return `idle ${segments.at(-1)?.meetingId ?? ''}`;
+  return `idle ${lastMeetingId ?? ''}`;
 }

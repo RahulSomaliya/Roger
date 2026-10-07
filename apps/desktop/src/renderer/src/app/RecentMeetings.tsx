@@ -17,7 +17,7 @@ export function RecentMeetings() {
   const liveId = livePhase !== 'idle' ? (captureMeeting?.id ?? null) : null;
   // Read again when a recording starts or stops, never on main's idle heartbeat: the key is a
   // string built from what changes the list (recentMeetingsKey), never the status object.
-  const recent = useRecentMeetings(recentMeetingsKey(capture.status, capture.segments));
+  const recent = useRecentMeetings(recentMeetingsKey(capture.status, capture.lastMeetingId));
   const meetings = recent.value ?? [];
   const now = new Date();
   return (

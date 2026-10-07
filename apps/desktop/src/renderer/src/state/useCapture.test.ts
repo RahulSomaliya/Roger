@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { StartCaptureRequest } from '../../../shared/capture';
-import { runStartRequests, type StartRequestsApi } from './useCapture';
+import {
+  type CaptureStatus,
+  idleCaptureStatus,
+  type StartCaptureRequest,
+} from '../../../shared/capture';
+import { lastNamedMeeting, runStartRequests, type StartRequestsApi } from './useCapture';
 
 const STANDUP: StartCaptureRequest = { source: 'notification', title: 'Standup' };
 
@@ -80,5 +84,41 @@ describe('runStartRequests', () => {
       [new Error('microphone denied')],
       [new Error('No handler registered')],
     ]);
+  });
+});
+
+describe('lastNamedMeeting', () => {
+  const X = '5c1d7a4e-2f3b-4c8a-9e61-0d2b7f4a9c13';
+  const Y = '9b2e6f10-7c4d-4a5b-8e3f-61a0c2d9e874';
+  const idle = idleCaptureStatus({
+    state: 'idle',
+    pending: 0,
+    rejected: 0,
+    lastError: null,
+    nextAttemptAt: null,
+  });
+  const named = (meetingId: string, phase: CaptureStatus['phase']): CaptureStatus => ({
+    ...idle,
+    phase,
+    meetingId,
+    startedAt: '2026-10-07T09:00:00.000Z',
+  });
+
+  it('is null until main names a meeting', () => {
+    expect(lastNamedMeeting(null, idle)).toBeNull();
+    expect(lastNamedMeeting(null, { ...idle, phase: 'starting' })).toBeNull();
+  });
+
+  it('takes the meeting a status names, and keeps it while statuses name none', () => {
+    const recording = lastNamedMeeting(null, named(X, 'recording'));
+    expect(recording).toBe(X);
+    expect(lastNamedMeeting(recording, named(X, 'stopping'))).toBe(X);
+    // After Stop, and while the next recording starts, main names no meeting.
+    expect(lastNamedMeeting(recording, idle)).toBe(X);
+    expect(lastNamedMeeting(recording, { ...idle, phase: 'starting' })).toBe(X);
+  });
+
+  it('moves to the next meeting once main names it', () => {
+    expect(lastNamedMeeting(X, named(Y, 'recording'))).toBe(Y);
   });
 });

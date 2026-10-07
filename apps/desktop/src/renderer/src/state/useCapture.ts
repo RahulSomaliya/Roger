@@ -9,6 +9,13 @@ import { describeMediaError } from '../audio/sources';
 
 export interface CaptureView {
   status: CaptureStatus | null;
+  /**
+   * The meeting main's status named last: the one recording, and after Stop the one it stopped,
+   * until main names the next (lastNamedMeeting). Null until main names one. Taken from every
+   * status main sends, rendered or not, so a recording that starts and stops between two renders
+   * still shows here, where `status` alone misses it (meeting/recentMeetingsKey.ts).
+   */
+  lastMeetingId: string | null;
   segments: TranscriptSegment[];
   interim: Record<AudioSource, InterimTranscript | null>;
   /** An error raised on this side (device access), as opposed to `status.error` from main. */
@@ -50,6 +57,14 @@ export function runStartRequests(
   return stop;
 }
 
+/**
+ * The meeting `status` leaves CaptureView's `lastMeetingId` at: the one it names, else `previous`.
+ * Main names none while idle, and none while the next recording starts.
+ */
+export function lastNamedMeeting(previous: string | null, status: CaptureStatus): string | null {
+  return status.meetingId ?? previous;
+}
+
 const NO_INTERIM: Record<AudioSource, InterimTranscript | null> = { mic: null, system: null };
 
 /**
@@ -61,6 +76,7 @@ export function useCapture(): CaptureView {
   // Made once: it holds the running capture, and a render must never make a second.
   const [controller] = useState(() => new AudioCaptureController(roger, browserCaptureDevices()));
   const [status, setStatus] = useState<CaptureStatus | null>(null);
+  const [lastMeetingId, setLastMeetingId] = useState<string | null>(null);
   const [segments, setSegments] = useState<TranscriptSegment[]>([]);
   const [interim, setInterim] = useState(NO_INTERIM);
   const [localError, setLocalError] = useState<string | null>(null);
@@ -75,6 +91,7 @@ export function useCapture(): CaptureView {
         setInterim(NO_INTERIM);
       }
       setStatus(next);
+      setLastMeetingId((previous) => lastNamedMeeting(previous, next));
       // Main stopped on its own (no speech, the length cap, sleep): stop capturing too, a source
       // still starting included, or the microphone stays on with nothing listening. Never gate
       // this on `running`: it is false while the mic starts (see followMain). And while main
@@ -151,5 +168,5 @@ export function useCapture(): CaptureView {
     }
   }, [roger, controller]);
 
-  return { status, segments, interim, localError, busy, start, stop };
+  return { status, lastMeetingId, segments, interim, localError, busy, start, stop };
 }

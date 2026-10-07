@@ -21,6 +21,7 @@ function idleShell(): Shell {
     navigate: vi.fn(),
     capture: {
       status: null,
+      lastMeetingId: null,
       segments: [],
       interim: { mic: null, system: null },
       localError: null,

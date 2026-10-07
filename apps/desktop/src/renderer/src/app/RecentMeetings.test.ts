@@ -3,7 +3,6 @@ import { renderToString } from 'react-dom/server';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { type CaptureStatus, idleCaptureStatus } from '../../../shared/capture';
 import type { MeetingSummary } from '../../../shared/meetings';
-import type { TranscriptSegment } from '../../../shared/transcript';
 import type { Read } from '../meeting/useMeeting';
 import type * as UseMeeting from '../meeting/useMeeting';
 import { RecentMeetings } from './RecentMeetings';
@@ -60,14 +59,15 @@ function shell(
   route: Route,
   status: CaptureStatus | null = IDLE,
   recordingId?: string,
-  segments: TranscriptSegment[] = [],
+  lastMeetingId: string | null = status?.meetingId ?? null,
 ): Shell {
   return {
     route,
     navigate: vi.fn(),
     capture: {
       status,
-      segments,
+      lastMeetingId,
+      segments: [],
       interim: { mic: null, system: null },
       localError: null,
       busy: false,
@@ -161,24 +161,9 @@ describe('RecentMeetings', () => {
       shell(home, { ...IDLE, phase: 'recording', meetingId: RENEWAL, startedAt: null }, RENEWAL),
     );
     expect(recording).not.toBe(idle);
-    const stopped = keyFor(shell(home, { ...IDLE }, RENEWAL, [said(RENEWAL)]));
+    // After Stop main names no meeting; useCapture still names the one it stopped.
+    const stopped = keyFor(shell(home, { ...IDLE }, RENEWAL, RENEWAL));
     expect(stopped).not.toBe(recording);
     expect(stopped).not.toBe(idle);
   });
 });
-
-/** A line said in meeting `meetingId`, as useCapture keeps it. */
-function said(meetingId: string): TranscriptSegment {
-  return {
-    id: `${meetingId}-1`,
-    meetingId,
-    source: 'system',
-    speaker: 'them',
-    startMs: 1200,
-    endMs: 3000,
-    text: 'Can we talk about the renewal?',
-    confidence: 0.9,
-    words: null,
-    createdAt: '2026-10-06T14:00:03.000Z',
-  };
-}
