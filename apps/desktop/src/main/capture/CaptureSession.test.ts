@@ -5,6 +5,7 @@ import { InMemoryTranscriptStore } from '../store/InMemoryTranscriptStore';
 import {
   type OpenStreamOptions,
   type SpeechToText,
+  SttConnectError,
   SttEventEmitter,
   type SttEventListener,
   type SttStream,
@@ -14,6 +15,7 @@ import {
   CaptureSession,
   type CaptureSessionListeners,
   type CaptureSessionOptions,
+  type SessionWarning,
   type SourceWatermark,
 } from './CaptureSession';
 import { SttOpenBudget } from './SttOpenBudget';
@@ -77,8 +79,11 @@ class ControlledSpeechToText implements SpeechToText {
   >();
   /** Labels of every openStream call, in order. */
   readonly opens: string[] = [];
+  /** What every openStream call asked for, in order. */
+  readonly openOptions: OpenStreamOptions[] = [];
   openStream(options: OpenStreamOptions): Promise<SttStream> {
     this.opens.push(options.label);
+    this.openOptions.push(options);
     return new Promise((resolve, reject) => {
       this.pending.set(options.label, { resolve, reject });
     });
@@ -112,6 +117,7 @@ function listeners(): CaptureSessionListeners & {
   segments: TranscriptSegment[];
   interims: InterimTranscript[];
   states: string[];
+  warnings: [AudioSource, SessionWarning][];
 } {
   const failures: [AudioSource, string, number | null][] = [];
   const saveFailures: [AudioSource, string][] = [];
@@ -119,6 +125,7 @@ function listeners(): CaptureSessionListeners & {
   const segments: TranscriptSegment[] = [];
   const interims: InterimTranscript[] = [];
   const states: string[] = [];
+  const warnings: [AudioSource, SessionWarning][] = [];
   return {
     failures,
     saveFailures,
@@ -126,6 +133,7 @@ function listeners(): CaptureSessionListeners & {
     segments,
     interims,
     states,
+    warnings,
     onSegment: (segment) => {
       shown.push(segment.text);
       segments.push(segment);
@@ -142,6 +150,9 @@ function listeners(): CaptureSessionListeners & {
     },
     onStreamFailure: (source, reason, retryAtMs) => {
       failures.push([source, reason, retryAtMs]);
+    },
+    onWarning: (source, warning) => {
+      warnings.push([source, warning]);
     },
   };
 }
@@ -1239,6 +1250,273 @@ describe('CaptureSession', () => {
       expect(l.segments.at(-1)).toMatchObject({ text: 'them 119', startMs: 7_142_040 });
       // Arrival jitter never split a stream's audio: one run each, the whole call.
       expect(log.messages.filter((m) => m.message === 'audio timeline: new run')).toEqual([]);
+      await s.close();
+    });
+  });
+
+  describe('a jargon list the vendor rejects (M3-T4b)', () => {
+    /** A token's settings with a list, priced with the vendor's keyterm surcharge. */
+    const listed = { ...settings, pricePerHourUsd: 0.19, keyterms: ['Linkt', 'Roger'] };
+    const fresh = () =>
+      Promise.resolve({
+        accessToken: 'fresh',
+        settings: listed,
+        pricePerHourUsdWithoutKeyterms: 0.15,
+      });
+    /** The core's error for a connect refused over the list (SttConnection.keytermsRefused). */
+    const listRefused = () =>
+      new SttConnectError(
+        'Scripted: rejected with HTTP 400; the jargon list (2 terms) was rejected',
+        400,
+        { keytermsRejected: true },
+      );
+    const warning: SessionWarning = {
+      kind: 'keyterms-rejected',
+      message:
+        'Jargon list rejected by Scripted, transcribing without it. Check the list in Settings.',
+    };
+    /** What each open asked for: its source, the list it carried and the price it is metered at. */
+    const opened = (stt: ControlledSpeechToText) =>
+      stt.openOptions.map(({ label, settings: { keyterms, pricePerHourUsd } }) => [
+        label,
+        keyterms,
+        pricePerHourUsd,
+      ]);
+    const rejectedLines = (messages: Record<string, unknown>[]) =>
+      messages.filter(
+        (m) => m.message === 'speech-to-text jargon list rejected: reopening without it',
+      );
+
+    /** A session whose tokens carry the list, on a test clock, with its budget in reach. */
+    function listedSession(overrides: Partial<CaptureSessionOptions> = {}) {
+      const stt = new ControlledSpeechToText();
+      const l = listeners();
+      const log = recordingLogger();
+      let now = 10_000;
+      const clock = () => now;
+      const budget = overrides.budget ?? openBudget(clock);
+      const store = meetingStore();
+      const s = session(stt, l, clock, store, {
+        settings: listed,
+        pricePerHourUsdWithoutKeyterms: 0.15,
+        refreshCredentials: fresh,
+        logger: log.logger,
+        budget,
+        ...overrides,
+      });
+      return {
+        stt,
+        l,
+        s,
+        log,
+        store,
+        budget,
+        at: (ms: number) => {
+          now = ms;
+        },
+      };
+    }
+
+    /** Started, the mic's list refused at Start and the mic reopened without it. */
+    async function micRefusedAtStart(overrides: Partial<CaptureSessionOptions> = {}) {
+      const started = listedSession(overrides);
+      const opening = started.s.open();
+      started.stt.fail('mic', listRefused());
+      await flush();
+      started.stt.succeed('mic');
+      started.stt.succeed('system');
+      await opening;
+      return started;
+    }
+
+    it('reopens a source refused at Start once without the list, through the budget, and says so', async () => {
+      const { stt, l, s, log, store, budget } = listedSession();
+      const opening = s.open();
+      stt.fail('mic', listRefused());
+      await flush();
+      // The same token, no list, metered at the price without the list's surcharge: what the vendor
+      // bills a stream opened with no list. Taken from the budget like any open.
+      expect(opened(stt)).toEqual([
+        ['mic', ['Linkt', 'Roger'], 0.19],
+        ['system', ['Linkt', 'Roger'], 0.19],
+        ['mic', [], 0.15],
+      ]);
+      expect(stt.openOptions[2]?.accessToken).toBe('t');
+      expect(budget.openedThisMeeting).toBe(3);
+
+      stt.succeed('mic');
+      stt.succeed('system');
+      await opening;
+      expect(l.states.slice(-2).sort()).toEqual(['mic:open', 'system:open']);
+      expect(l.warnings).toEqual([['mic', warning]]);
+      // The term count, never the terms: they name clients and colleagues.
+      expect(rejectedLines(log.messages)).toMatchObject([
+        { level: 'warn', source: 'mic', terms: 2 },
+      ]);
+      expect(JSON.stringify(log.messages)).not.toContain('Linkt');
+      expect(
+        store.listCaptureEvents('m1').map(({ source, kind, detail }) => [source, kind, detail]),
+      ).toEqual([['mic', 'stt-keyterms-rejected', { terms: 2 }]]);
+      await s.close();
+    });
+
+    it('meters the list-free stream at the price with the list when the API names none without it', async () => {
+      // An API older than price_per_hour_usd_without_keyterms: the price with the list errs high.
+      const { stt, s } = await micRefusedAtStart({ pricePerHourUsdWithoutKeyterms: null });
+      expect(opened(stt)[2]).toEqual(['mic', [], 0.19]);
+      await s.close();
+    });
+
+    it('keeps the list off that source for the rest of the meeting, and only that source', async () => {
+      const { stt, l, s, at } = await micRefusedAtStart();
+      at(20_000);
+      stt.streams.get('mic')?.emitter.emit({ type: 'closed', code: 1011, reason: 'timeout' });
+      stt.streams.get('system')?.emitter.emit({ type: 'closed', code: 1011, reason: 'timeout' });
+      at(23_000); // past the first backoff
+      s.pushAudio('mic', new Uint8Array(3200), 22_900);
+      s.pushAudio('system', new Uint8Array(3200), 22_900);
+      await flush();
+      // Each fresh token carries the list again: the mic still opens without it, the system with it.
+      expect(opened(stt).slice(3)).toEqual([
+        ['mic', [], 0.15],
+        ['system', ['Linkt', 'Roger'], 0.19],
+      ]);
+      expect(stt.openOptions[3]?.accessToken).toBe('fresh');
+      stt.succeed('mic');
+      stt.succeed('system');
+      await flush();
+      expect(l.warnings).toHaveLength(1);
+      await s.close();
+    });
+
+    it('fails Start with both reasons when the open without the list fails too, leaking nothing', async () => {
+      const { stt, s } = listedSession();
+      const opening = s.open();
+      stt.fail('mic', listRefused());
+      const system = stt.succeed('system');
+      await flush();
+      stt.fail('mic', new SttConnectError('Scripted: rejected with HTTP 401', 401));
+      await expect(opening).rejects.toThrow(
+        'Scripted: rejected with HTTP 400; the jargon list (2 terms) was rejected; and without the ' +
+          'jargon list: Scripted: rejected with HTTP 401',
+      );
+      expect(system.closed).toBe(true);
+      expect(stt.opens).toEqual(['mic', 'system', 'mic']);
+    });
+
+    it('opens without the list once, never in a loop, even when that open is refused for a list too', async () => {
+      // Only a broken adapter could refuse a connect with no list "for its list": the core asks the
+      // protocol only when one was sent (SttConnection.keytermsRefused).
+      const { stt, s } = listedSession();
+      const opening = s.open();
+      stt.fail('mic', listRefused());
+      stt.succeed('system');
+      await flush();
+      stt.fail('mic', listRefused());
+      await expect(opening).rejects.toThrow('; and without the jargon list: ');
+      expect(stt.opens).toEqual(['mic', 'system', 'mic']);
+    });
+
+    it('fails Start when the budget refuses the open without the list, naming both', async () => {
+      const limited = new SttOpenBudget({ perMinute: 2, perMeeting: 100 }, () => 10_000);
+      limited.beginMeeting();
+      const { stt, l, s } = listedSession({ budget: limited });
+      const opening = s.open();
+      stt.fail('mic', listRefused());
+      const system = stt.succeed('system');
+      await expect(opening).rejects.toThrow(
+        'the jargon list (2 terms) was rejected; not opened again without the jargon list: 2 ' +
+          'speech-to-text sessions opened in the last minute',
+      );
+      expect(stt.opens).toEqual(['mic', 'system']);
+      expect(system.closed).toBe(true);
+      expect(l.warnings).toEqual([['mic', warning]]);
+    });
+
+    it('never retries a refusal that is not about the list, nor one when the list is empty', async () => {
+      const { stt, l, s } = listedSession();
+      const opening = s.open();
+      stt.fail('mic', new SttConnectError('Scripted: rejected with HTTP 401', 401));
+      stt.succeed('system');
+      await expect(opening).rejects.toThrow('HTTP 401');
+      expect(stt.opens).toEqual(['mic', 'system']);
+      expect(l.warnings).toEqual([]);
+
+      // No list to drop: an open without it would be the same open again.
+      const empty = listedSession({ settings });
+      const emptyOpening = empty.s.open();
+      empty.stt.fail('mic', listRefused());
+      empty.stt.succeed('system');
+      await expect(emptyOpening).rejects.toThrow('was rejected');
+      expect(empty.stt.opens).toEqual(['mic', 'system']);
+      expect(empty.l.warnings).toEqual([]);
+    });
+
+    it('reopens a source refused mid-call once without the list, through the budget', async () => {
+      const { stt, l, s, budget, at } = listedSession();
+      const opening = s.open();
+      stt.succeed('mic');
+      const system = stt.succeed('system');
+      await opening;
+      at(20_000);
+      system.emitter.emit({ type: 'closed', code: 1011, reason: 'timeout' });
+      at(23_000);
+      const woke = new Uint8Array(3200).fill(1);
+      s.pushAudio('system', woke, 22_900); // wakes the source: a reopen with a fresh token
+      await flush();
+      stt.fail('system', listRefused());
+      await flush();
+      expect(opened(stt).slice(2)).toEqual([
+        ['system', ['Linkt', 'Roger'], 0.19],
+        ['system', [], 0.15],
+      ]);
+      expect(budget.openedThisMeeting).toBe(4);
+      const reopened = stt.succeed('system');
+      await flush();
+      expect(l.states.at(-1)).toBe('system:open');
+      expect(reopened.sent).toEqual([woke]); // what it held while connecting, sent in order
+      expect(l.warnings).toEqual([['system', warning]]);
+      await s.close();
+    });
+
+    it('waits like any refused reopen when the budget refuses the open without the list, which comes next', async () => {
+      let now = 10_000;
+      const limited = new SttOpenBudget({ perMinute: 3, perMeeting: 100 }, () => now);
+      limited.beginMeeting();
+      const { stt, l, s, at } = listedSession({ budget: limited });
+      const moveTo = (ms: number) => {
+        now = ms;
+        at(ms);
+      };
+      const opening = s.open();
+      stt.succeed('mic');
+      const system = stt.succeed('system');
+      await opening;
+      moveTo(20_000);
+      system.emitter.emit({ type: 'closed', code: 1011, reason: 'timeout' });
+      moveTo(23_000);
+      s.pushAudio('system', new Uint8Array(3200), 22_900);
+      await flush();
+      stt.fail('system', listRefused()); // the 3rd open in the minute; the retry would be the 4th
+      await flush();
+      expect(l.states.at(-1)).toBe('system:retrying');
+      expect(l.failures.at(-1)).toMatchObject([
+        'system',
+        expect.stringContaining('waiting to reconnect'),
+        70_000,
+      ]);
+      expect(l.warnings).toEqual([['system', warning]]);
+
+      moveTo(70_000); // the minute has passed: its next chunk reopens it, without the list
+      s.pushAudio('system', new Uint8Array(3200), 69_900);
+      await flush();
+      expect(opened(stt).slice(2)).toEqual([
+        ['system', ['Linkt', 'Roger'], 0.19],
+        ['system', [], 0.15],
+      ]);
+      stt.succeed('system');
+      await flush();
+      expect(l.states.at(-1)).toBe('system:open');
       await s.close();
     });
   });

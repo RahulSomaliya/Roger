@@ -178,6 +178,7 @@ const TITLES: Readonly<
   'call-audio-silent': 'Call audio is silent',
   offline: 'Transcription is offline',
   'backup-paused': 'Audio backup paused',
+  'keyterms-rejected': 'Jargon list rejected',
 };
 
 /**
