@@ -92,7 +92,9 @@ const SIGNING: Record<SigningSetupState, StateLook> = {
 
 const SERVER: Record<ConnectionSetupState, StateLook> = {
   ok: { label: 'Reachable', tone: 'ok' },
-  failed: { label: 'Not reachable', tone: 'problem' },
+  // Not "Not reachable": most failures are a server that answered (503 for its database, 401 for
+  // the token, 404 when it is older), and main's message beside the label says which.
+  failed: { label: 'Not working', tone: 'problem' },
   unknown: { label: 'Not checked', tone: 'neutral' },
 };
 

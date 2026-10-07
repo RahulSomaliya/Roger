@@ -170,6 +170,23 @@ describe('setupRows', () => {
     expect(row(serverUp, 'speechToText').tone).toBe('attention');
   });
 
+  it('never calls a server that answered "not reachable"', () => {
+    // connectionChecks.ts: GET /health answers 503 while Postgres is down (docs/api-contract.md).
+    const databaseDown: SetupStatus = {
+      ...readyMac(),
+      api: {
+        state: 'failed',
+        message: "Roger's server is running but cannot reach its database.",
+        relaunchNeeded: false,
+      },
+    };
+    expect(row(databaseDown, 'server')).toMatchObject({
+      tone: 'problem',
+      stateLabel: 'Not working',
+    });
+    expect(row(refusedMac(), 'server').stateLabel).toBe('Not working');
+  });
+
   it('offers Check again for a server that did not answer, and a failed notification test again', () => {
     expect(row(refusedMac(), 'server').actions).toEqual([
       { kind: 'recheck', label: 'Check again' },
