@@ -354,6 +354,77 @@ describe('EchoSink: lines from the live recording', () => {
     expect(h.uploaded()).toEqual(['them-1']);
   });
 
+  // CaptureSession's watermark never moves back: a stream retired with a finish (a stall, a
+  // sleep) can still send its last line after the stream that replaced it has passed the spot.
+  it('hides a released mic line when a late line of a replaced call-audio stream repeats it', async () => {
+    const h = harness();
+    h.record();
+    h.say('me-1', 'mic', SAID, 10_120);
+    h.callAudioUpTo(h.say('them-2', 'system', 'and the next item is hiring', 30_000).endMs);
+    expect(h.store.getSegment('me-1')?.uploadAfter).toBeNull();
+
+    h.say('them-1', 'system', SAID, 10_000);
+
+    expect(h.store.getSegment('me-1')).toMatchObject({
+      suppressedReason: 'echo',
+      echoOf: 'them-1',
+    });
+    expect(h.changes.map(({ segmentId, change }) => [segmentId, change])).toEqual([
+      ['me-1', 'hidden'],
+    ]);
+    await h.uploader.flush();
+    expect(h.uploaded()).toEqual(['them-1', 'them-2']);
+  });
+
+  it('hides a mic line never held, stored once the watermark had passed it, when its twin comes late', async () => {
+    const h = harness();
+    h.record();
+    h.callAudioUpTo(h.say('them-2', 'system', 'and the next item is hiring', 30_000).endMs);
+    h.say('me-1', 'mic', SAID, 10_120);
+    expect(h.store.getSegment('me-1')?.uploadAfter).toBeNull();
+
+    h.say('them-1', 'system', SAID, 10_000);
+
+    expect(h.store.getSegment('me-1')?.suppressedReason).toBe('echo');
+    await h.uploader.flush();
+    expect(h.uploaded()).toEqual(['them-1', 'them-2']);
+  });
+
+  it('leaves an uploaded mic line as Postgres has it when its twin comes after the upload', async () => {
+    const h = harness();
+    h.record();
+    h.callAudioUpTo(h.say('them-2', 'system', 'and the next item is hiring', 30_000).endMs);
+    h.say('me-1', 'mic', SAID, 10_120);
+    await h.uploader.flush();
+    expect(h.uploaded()).toEqual(['me-1', 'them-2']);
+
+    h.say('them-1', 'system', SAID, 10_000);
+
+    expect(h.store.getSegment('me-1')?.suppressedReason).toBeNull();
+    expect(h.changes).toEqual([]);
+  });
+
+  it('never hides again a line the user showed again, nor tells the window twice of a hidden one', () => {
+    const h = harness();
+    h.record();
+    h.callAudioUpTo(h.say('them-1', 'system', SAID, 10_000).endMs);
+    h.say('me-1', 'mic', SAID, 10_120);
+    h.say('me-2', 'mic', SAID, 40_120);
+    h.say('them-3', 'system', SAID, 40_000);
+    h.sink.unhide(h.store.getSegment('me-1')!);
+
+    // More call audio near both lines: me-1 is the user's call now, me-2 is hidden already.
+    h.say('them-2', 'system', SAID, 10_050);
+    h.say('them-4', 'system', SAID, 40_050);
+
+    expect(h.store.getSegment('me-1')?.suppressedReason).toBeNull();
+    expect(h.changes.map(({ segmentId, change }) => [segmentId, change])).toEqual([
+      ['me-1', 'hidden'],
+      ['me-2', 'hidden'],
+      ['me-1', 'unhidden'],
+    ]);
+  });
+
   it('re-decides a trimmed line on the words the vendor wrote, not on what the trim left', () => {
     const h = harness();
     h.record();

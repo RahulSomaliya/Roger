@@ -76,13 +76,16 @@ interface LiveMeeting {
  * A call-audio twin can land after its mic line, for as long as that stream reconnects (its
  * backoff is not the mic's). So while recording, each mic line is held (`upload_after`) until the
  * call-audio watermark passes its end plus ECHO_MATCH_WINDOW_MS, until call audio can send no
- * more, until Stop, or at ECHO_HOLD_CAP_MS; and each call-audio line re-decides the held mic lines
- * it may repeat. Every hide, trim and hold goes through the store, which refuses a line the
- * uploader has sent or is sending: the sink reads that as too late and leaves the line as sent.
+ * more, until Stop, or at ECHO_HOLD_CAP_MS; and each call-audio line re-decides the mic lines it
+ * may repeat that have not gone up, held or released. Every hide, trim and hold goes through the
+ * store, which refuses a line the uploader has sent or is sending: the sink reads that as too late
+ * and leaves the line as sent.
  */
 export class EchoSink {
   private readonly clock: () => number;
   private live: LiveMeeting | null = null;
+  /** Lines the user showed again in this run: no later call-audio line hides them again. */
+  private readonly shownAgain = new Set<string>();
 
   constructor(private readonly options: EchoSinkOptions) {
     this.clock = options.clock ?? (() => Date.now());
@@ -138,6 +141,7 @@ export class EchoSink {
         `Line ${segment.id} of meeting ${segment.meetingId} is not hidden: there is nothing to show again.`,
       );
     }
+    this.shownAgain.add(segment.id);
     this.changed(segment, 'unhidden', null, segment.text);
     this.options.logger.info('echo line shown again', {
       meetingId: segment.meetingId,
@@ -242,19 +246,40 @@ export class EchoSink {
       );
       return;
     }
-    for (const held of [...live.held.values()]) {
-      // Words lie inside their line's span, so a held line this far off repeats none of it.
-      const apart =
-        held.startMs > segment.endMs + ECHO_MATCH_WINDOW_MS ||
-        held.endMs < segment.startMs - ECHO_MATCH_WINDOW_MS;
-      if (apart) continue;
+    this.guard(
+      'listing the mic lines a new call-audio line may repeat',
+      { meetingId: live.meetingId, callAudioSegmentId: segment.id },
+      () => {
+        this.onCallAudioLine(live, segment);
+      },
+    );
+  }
+
+  /**
+   * Re-decides every mic line a new call-audio line may repeat that has not gone up, held or not.
+   * Trap: a watermark past a line does not prove its twin has come. A call-audio stream retired
+   * with a finish (a stall, a sleep) may still send its last line after the stream that replaced
+   * it moved the watermark on, and the watermark never moves back (SourceWatermark): re-deciding
+   * only the held lines let a released line, or one never held, upload as an echo. The store
+   * refuses a line the uploader is sending, which reads as too late.
+   */
+  private onCallAudioLine(live: LiveMeeting, segment: TranscriptSegment): void {
+    // Words lie inside their line's span, so a mic line farther off repeats none of it.
+    const near = this.options.store.listSegmentsOverlapping(
+      live.meetingId,
+      'mic',
+      segment.startMs - ECHO_MATCH_WINDOW_MS,
+      segment.endMs + ECHO_MATCH_WINDOW_MS,
+    );
+    for (const line of near) {
+      // Hidden already, or shown again: the user said it was no echo (unhide), and that stands.
+      if (line.suppressedReason !== null || this.shownAgain.has(line.id)) continue;
       this.guard(
-        'checking a held mic line against a new call-audio line',
-        { meetingId: live.meetingId, segmentId: held.id, callAudioSegmentId: segment.id },
+        'checking a mic line against a new call-audio line',
+        { meetingId: live.meetingId, segmentId: line.id, callAudioSegmentId: segment.id },
         () => {
-          const line = this.options.store.getSegment(held.id);
-          const outcome = line === null ? 'too-late' : this.decide(line);
-          if (outcome === 'hidden' || outcome === 'too-late') live.held.delete(held.id);
+          const outcome = line.syncedAt === null ? this.decide(line) : 'too-late';
+          if (outcome === 'hidden' || outcome === 'too-late') live.held.delete(line.id);
         },
       );
     }
