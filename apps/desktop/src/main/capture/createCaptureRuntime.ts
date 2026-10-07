@@ -11,7 +11,14 @@ import type { DesktopConfig } from '../config';
 import { type CaptureRequests, type CaptureWindow, registerIpcHandlers } from '../ipc';
 import type { IpcMainLike } from '../ipc/trust';
 import type { QuitHook } from '../lifecycle';
-import type { Logger } from '../logger';
+import { errorMessage, type Logger } from '../logger';
+import {
+  MeetingAppMonitor,
+  type MeetingAppMonitorOptions,
+  feedRoute,
+} from '../detect/MeetingAppMonitor';
+import { findHelper } from '../native/helperPath';
+import { helperCommand, HelperProcess } from '../native/HelperProcess';
 import type { MicrophoneAccess } from '../permissions';
 import { createSetup } from '../setup/createSetup';
 import { readSigningIdentity } from '../signing';
@@ -317,6 +324,65 @@ export function createCaptureRuntime(deps: CaptureRuntimeDeps): CaptureRuntime {
   });
 
   // [slot M2-T17a] the call app monitor; it feeds the echo sink's RouteProvider
+
+  // `roger-audio monitor` runs from launch to quit, not only while recording: a call is offered
+  // before anyone presses Start (M2-T17b reads `meetingAppMonitor.onCallApps`). Each route event
+  // sets `echoRoute` and `signalMonitor`'s Bluetooth flag, and the status gets `route` and the
+  // mic's device, which SignalMonitor turns into "Switched to <device>" (feedRoute says why in
+  // that order). The helper is found here, not through `systemAudio`: that has no location on
+  // Electron's path.
+  let monitorHelper: MeetingAppMonitorOptions['helper'];
+  try {
+    const lookup = findHelper({
+      isPackaged: app.isPackaged,
+      resourcesPath: process.resourcesPath,
+      appPath: app.getAppPath(),
+      env: process.env,
+    });
+    monitorHelper = lookup.found
+      ? {
+          create: (listener) =>
+            new HelperProcess({
+              name: 'monitor',
+              command: helperCommand(lookup.location, [
+                'monitor',
+                '--parent-pid',
+                String(process.pid),
+                // An unpackaged build must not relaunch: `open -b ai.linkt.roger` starts the
+                // installed Roger.app, not the dev build that died (Monitor.swift).
+                ...(app.isPackaged ? [] : ['--relaunch-dry-run']),
+              ]),
+              stdout: 'lines',
+              listener,
+              logger: logger.child({ component: 'call-monitor-helper' }),
+            }),
+        }
+      : { missing: lookup.reason };
+  } catch (error) {
+    // A relative app path or a failed access check: no helper to run, as selectSystemAudio reads it.
+    monitorHelper = { missing: errorMessage(error) };
+  }
+  const meetingAppMonitor = new MeetingAppMonitor({
+    helper: monitorHelper,
+    // The pids of Roger's renderer, GPU and utility processes change as windows open and close.
+    ownPids: () => new Set([process.pid, ...app.getAppMetrics().map((metric) => metric.pid)]),
+    // The only sign this launch is the helper's relaunch of a killed Roger (ParentWatch.swift).
+    // Electron's `app.relaunch()` without `args` passes argv on, flag included: a Roger that
+    // restarts itself must drop it, or the next Start is read as a relaunch.
+    relaunched: process.argv.includes('--relaunched'),
+    logger: logger.child({ component: 'call-monitor' }),
+  });
+  meetingAppMonitor.attach(capture);
+  feedRoute(meetingAppMonitor, {
+    echoRoute,
+    signalMonitor,
+    refreshStatus: () => {
+      capture.refreshStatus();
+    },
+  });
+  capture.addStatusContributor('route', () => meetingAppMonitor.statusContribution());
+  quitHooks.push(meetingAppMonitor.quitHook);
+  meetingAppMonitor.start();
 
   // [slot M2-T17b] the call offer and auto-stop
 

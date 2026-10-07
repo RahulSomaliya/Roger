@@ -22,6 +22,8 @@ export function electronRuntimeMock(
       // `make check` its dev build exists, and a Start would build a real tap (a privacy prompt).
       getAppPath: () => '/nonexistent/roger-app',
       on: vi.fn(),
+      // M2-T17a's call monitor asks for Roger's own pids at each mic-user list.
+      getAppMetrics: () => [],
       relaunch: vi.fn(),
       quit: vi.fn(),
     },
