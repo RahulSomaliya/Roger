@@ -60,6 +60,20 @@ export function headerAction({
 }
 
 /**
+ * Whether the page has an AI notes tab: notes exist, or are being written, or a run left
+ * something to show. `layout.empty` alone is not that: a run that failed leaves no note and
+ * nothing pending, so it reads empty, yet its banner (and the lines a partial run wrote) live only
+ * in the AI notes pane. Gating the tab on `empty` dropped the tab and the banner with it, and the
+ * header went back to "Write notes" with no word of the failed run: a silent failure (house rule
+ * 1). The page's tab row and this function must stay in step with AiNotesLayout.failure/stream.
+ */
+export function aiNotesTabExists(state: AiNotesState): boolean {
+  if (state.status !== 'ready') return false;
+  const layout = layoutAiNotes(state);
+  return !layout.empty || layout.failure !== null || layout.stream !== null;
+}
+
+/**
  * The template "Write notes" uses: the title's best guess (shared/suggestTemplate.ts), else
  * General (docs/plans/redesign.md, call 6: no question, "Write again as" changes it). The page
  * cannot read notes.sqlite's remembered picks, so `lastPick` is none.

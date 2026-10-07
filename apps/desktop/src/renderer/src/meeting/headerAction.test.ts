@@ -1,7 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { LocalNote, PendingGenerateState } from '../../../shared/notes';
 import type { AiNotesState } from '../notes/aiNotesActions';
+import type { AiNotesStreamView } from '../notes/aiNotesStream';
 import {
+  aiNotesTabExists,
   headerAction,
   type HeaderActionInput,
   notesMenuEntries,
@@ -124,6 +126,45 @@ describe('headerAction: the one primary the table in docs/design.md names', () =
     for (const status of ['loading', 'failed'] as const) {
       expect(headerAction({ ...PAST, notes: { ...READY, status } })).toEqual({ kind: 'none' });
     }
+  });
+});
+
+describe("aiNotesTabExists: the tab that carries the failed run's banner", () => {
+  const failedRun = (wrote: boolean): AiNotesStreamView => ({
+    runId: '6a0d6a52-6f0c-4c35-9d0e-1c8f7f0f8a11',
+    phase: 'failed',
+    templateId: 'general',
+    sections: [],
+    fromNotes: wrote ? ['A line the run wrote before it failed'] : [],
+    dropped: [],
+    error: { code: 'llm_provider_error', message: 'The model provider is down' },
+    saved: null,
+  });
+
+  it('is absent for an empty state, and while main has not answered', () => {
+    expect(aiNotesTabExists(READY)).toBe(false);
+    expect(aiNotesTabExists({ ...READY, status: 'loading' })).toBe(false);
+  });
+
+  it('is there once notes exist or a generate is pending', () => {
+    expect(aiNotesTabExists({ ...READY, note: NOTE })).toBe(true);
+    expect(aiNotesTabExists({ ...READY, pending: pending({ phase: 'running' }) })).toBe(true);
+  });
+
+  // A failed run leaves nothing pending and no note, so `layout.empty` is true; the banner (and
+  // the lines a partial run wrote) live only in the AI notes pane, so the tab must stay for them.
+  it('stays after a run failed with no lines, so its banner has a tab', () => {
+    expect(aiNotesTabExists({ ...READY, stream: failedRun(false) })).toBe(true);
+  });
+
+  it('stays after a run failed with lines written, which only that pane shows', () => {
+    expect(aiNotesTabExists({ ...READY, stream: failedRun(true) })).toBe(true);
+  });
+
+  it('offers Write notes beside that tab: the failed run left nothing to retry from the banner', () => {
+    expect(headerAction({ ...PAST, notes: { ...READY, stream: failedRun(true) } })).toEqual({
+      kind: 'write',
+    });
   });
 });
 

@@ -4,9 +4,13 @@ import type { TranscriptSegment } from '../../../shared/transcript';
 import { meetingPhase } from '../app/captureMeeting';
 import { useShell } from '../app/ShellContext';
 import { isSlotEmpty, SlotOutlet } from '../app/SlotOutlet';
-import { layoutAiNotes } from '../notes/aiNotesActions';
 import { CitationNavigatorProvider } from '../transcript/transcriptNavigator';
-import { headerAction, notesMenuEntries, templateForWriting } from './headerAction';
+import {
+  aiNotesTabExists,
+  headerAction,
+  notesMenuEntries,
+  templateForWriting,
+} from './headerAction';
 import './meeting.css';
 import { MeetingHeader } from './MeetingHeader';
 import { MeetingProblem, ReplaceNotesDialog } from './MeetingProblems';
@@ -56,10 +60,11 @@ export function MeetingPage({ meetingId }: { meetingId: string }) {
   );
 
   // The AI notes tab exists once notes exist or are being written, never as an empty "No AI notes
-  // yet" (docs/design.md: empty states are absent). A generate that failed or waits is not empty
-  // either (layout.empty), so its problem line is on a tab and never hidden with the tab.
+  // yet" (docs/design.md: empty states are absent). A generate that failed or waits, and a run that
+  // failed (its banner and partial lines), keep the tab (aiNotesTabExists), so a problem line is
+  // never hidden with the tab.
   const { session: notes, state: notesState } = useMeetingNotes(meetingId);
-  const aiNotesExist = notesState.status === 'ready' && !layoutAiNotes(notesState).empty;
+  const aiNotesExist = aiNotesTabExists(notesState);
   const tabs = meetingTabs({
     mine: !isSlotEmpty('meetingMyNotes'),
     ai: !isSlotEmpty('meetingAiNotes') && aiNotesExist,
