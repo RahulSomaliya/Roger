@@ -1,7 +1,6 @@
 /**
- * Which notes template a meeting gets without asking (M4, "When notes generate"). Main uses it at
- * Stop (main/notes/NotesGenerator.ts) and the template picker preselects with it (M4-T18). The
- * rule, first match wins:
+ * Which notes template a meeting gets without asking (M4, "When notes generate"). Main uses it
+ * when notes are written (main/notes/NotesGenerator.ts). The rule, first match wins:
  *
  * 1. The template last picked for a meeting with the same title (notes.sqlite's
  *    `template_choices`, keyed by `templateTitleKey`).
@@ -10,8 +9,8 @@
  *    appear).
  * 3. Any invitee outside the user's email domain means client call (M5's invites; a manual start
  *    has none).
- * 4. Nothing: Roger asks "Which kind of call was this?", or uses General when the
- *    `notes.whenUnsure` preference says so. That choice is the caller's, not this file's.
+ * 4. Nothing: Roger does not ask which kind of call it was; the caller writes with General
+ *    (docs/plans/redesign.md, call 6). That choice is the caller's, not this file's.
  *
  * Pure, with no imports: the page bundles it too.
  */
@@ -39,20 +38,22 @@ export interface TemplateCues {
   attendees?: readonly TemplateAttendee[];
 }
 
-/** What the rule found, and which cue said so; `none` means ask (or General, by preference). */
+/** What the rule found, and which cue said so; `none` means General, the caller's choice. */
 export type TemplateSuggestion =
   | { templateId: string; cue: 'last_pick' | 'title' | 'attendees' }
   | { templateId: null; cue: 'none' };
 
 const UNTITLED_MEETING = 'untitled meeting';
 /**
- * The title main gives a manual start, normalised: "Meeting 5 Oct 2026 10:05" from
- * `defaultMeetingTitle` (main/capture/CaptureService.ts, en-GB). ICU writes September "Sept" in
- * en-GB, hence up to four letters. If that format changes, this must change with it, or every
- * manual start remembers a pick under a title no other meeting will ever have and the page
- * offers it as "last picked"; NotesGenerator.test.ts checks every month of the real function.
+ * The title main gives a manual start, normalised: "meeting at 5:01 pm" from `defaultMeetingTitle`
+ * (main/capture/CaptureService.ts). Meetings saved before the redesign keep "Meeting 5 Oct 2026
+ * 10:05" (en-GB, so ICU writes September "Sept", hence up to four letters), so the pattern reads
+ * both: dropping the old one makes every old manual start remember a pick under a title no other
+ * meeting has, and the page offers it as "last picked". If the new format changes, this must
+ * change with it; NotesGenerator.test.ts checks every month of the real function.
  */
-const DEFAULT_MEETING_TITLE = /^meeting \d{1,2} [a-z]{3,4} \d{4} \d{2}:\d{2}$/;
+const DEFAULT_MEETING_TITLE =
+  /^meeting (?:at \d{1,2}:\d{2} [ap]m|\d{1,2} [a-z]{3,4} \d{4} \d{2}:\d{2})$/;
 
 /**
  * Title words, matched on the normalised title, plurals included ("1:1s", "one-on-ones"). `1:1`

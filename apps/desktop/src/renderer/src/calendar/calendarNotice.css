@@ -1,48 +1,51 @@
 /*
- * The meeting page's consent notice (NoticeBanner.tsx) and the calendar status banner above every
- * page (CalendarStatusBanner.tsx). Colours only from theme/tokens.css (noLiteralColours.test.ts
- * fails on a literal one); text reads the ink tokens, never a fill (tokens.test.ts).
+ * The meeting page's consent line (NoticeBanner.tsx). One quiet line: no box, no tint. The notice
+ * text is a popover on hover and focus, out of the flow so nothing under it moves. Colours only
+ * from theme/tokens.css (noLiteralColours.test.ts fails on a literal one); text reads the ink
+ * tokens, never a fill (tokens.test.ts).
  */
 
-.calendar-banner {
+.calendar-notice {
+  position: relative;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 8px 12px;
+  gap: var(--space-2) var(--space-3);
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+  color: var(--ink-muted);
 }
 
-.calendar-banner-text {
+.calendar-notice-line {
   flex: 1 1 240px;
   min-width: 0;
-  overflow-wrap: anywhere;
 }
 
-.calendar-notice {
+.calendar-notice-buttons {
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px 12px;
+  gap: var(--space-2);
 }
 
-.calendar-notice-body {
-  flex: 1 1 280px;
-  min-width: 0;
-}
-
-.calendar-notice-title {
-  margin: 0;
-  font-weight: 600;
-}
-
+/* The notice text. Hidden by opacity, not `display`: a screen reader still reaches it through the
+   Copy button's aria-describedby. */
 .calendar-notice-text {
-  margin: 2px 0 0;
-  font-size: 13px;
-  color: var(--ink-muted);
-  overflow-wrap: anywhere;
-}
-
-.calendar-notice-error {
-  margin: 4px 0 0;
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  z-index: 1;
+  margin: var(--space-1) 0 0;
+  padding: var(--space-3);
+  border-radius: var(--radius-lg);
+  background: var(--raised);
+  box-shadow: var(--e2);
   color: var(--ink);
   overflow-wrap: anywhere;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.calendar-notice:hover .calendar-notice-text,
+.calendar-notice:focus-within .calendar-notice-text {
+  opacity: 1;
 }

@@ -477,7 +477,7 @@ export interface StartCaptureRequest {
    * refused. A calendar event's title has no such limit: main cuts the title of its own requests to
    * fit (fitMeetingTitle), and a page that builds a request from an event cuts it first. Blank as
    * the API reads it (isApiBlank, at any length) or left out, main names the meeting after its
-   * start, "Meeting 6 Oct 2026 09:30" (defaultMeetingTitle in main/capture/CaptureService.ts).
+   * start, "Meeting at 9:30 am" (defaultMeetingTitle in main/capture/CaptureService.ts).
    */
   title?: string;
   /**

@@ -5,6 +5,7 @@ import {
   parseInstant,
   type TimedCalendarEvent,
 } from '../../shared/calendar';
+import { formatClock } from '../../shared/clock';
 
 /**
  * The menu bar item's menu and icon as plain data, with no Electron import, so every rule tests
@@ -32,28 +33,28 @@ export interface TrayModel {
 
 /** How times and days read in the menu, in the Mac's time zone (injected in tests). */
 export interface TrayFormat {
-  /** "09:12". */
+  /** "9:12 am". */
   time(ms: number): string;
   /** "Tue 14 Oct". */
   date(ms: number): string;
-  /** "Wed 09:30" for another day than `nowMs`'s, "09:30" for the same day. */
+  /** "Wed 9:30 am" for another day than `nowMs`'s, "9:30 am" for the same day. */
   when(ms: number, nowMs: number): string;
 }
 
 /**
- * The format in `timeZone` (an IANA name), or in this Mac's zone when omitted. English and 24 h
- * clock, as the plan words them ("since 09:12", "before Tue 14 Oct"); Roger has no other language.
+ * The format in `timeZone` (an IANA name), or in this Mac's zone when omitted. English and the
+ * 12-hour lowercase clock of docs/design.md, Copy ("9:12 am", "before Tue 14 Oct"), whatever the
+ * Mac's own clock setting says; Roger has no other language.
  */
 export function createTrayFormat(timeZone?: string): TrayFormat {
   const zone = timeZone === undefined ? {} : { timeZone };
   const parts = (options: Intl.DateTimeFormatOptions) =>
     new Intl.DateTimeFormat('en-GB', { ...zone, ...options });
-  const clock = parts({ hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
   const weekday = parts({ weekday: 'short' });
   const day = parts({ day: 'numeric' });
   const month = parts({ month: 'short' });
   const dayKey = parts({ year: 'numeric', month: '2-digit', day: '2-digit' });
-  const time = (ms: number): string => clock.format(ms);
+  const time = (ms: number): string => formatClock(ms, timeZone);
   return {
     time,
     date: (ms) => `${weekday.format(ms)} ${day.format(ms)} ${month.format(ms)}`,
@@ -81,6 +82,10 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 /**
  * Trap: `recording` outranks `warning`. The icon is the user's cue that notes are being taken,
  * and a reconnect nag must never hide it; the warning still shows as a menu line.
+ *
+ * A stale calendar says nothing here: Home says it (docs/plans/redesign.md), and a warning icon
+ * for it would point at a menu with no line to explain it. Only a refused or expiring grant, which
+ * has a Reconnect to press, turns the icon to warning.
  */
 export function buildTrayModel(inputs: TrayInputs): TrayModel {
   const { recording, connection, nowMs, format } = inputs;
@@ -90,31 +95,21 @@ export function buildTrayModel(inputs: TrayInputs): TrayModel {
   const entries: TrayMenuEntry[] = [];
 
   if (connection !== null) entries.push({ kind: 'label', text: nextMeetingText(inputs) });
-  const stale = sync !== null && sync.staleSince !== null;
-  if (stale) {
-    entries.push({
-      kind: 'label',
-      text:
-        sync.lastSuccessAt === null
-          ? 'Calendar not updated'
-          : `Calendar not updated since ${format.when(parseInstant(sync.lastSuccessAt), nowMs)}`,
-    });
-  }
   const reconnect = reconnectText(connection, sync, nowMs, format);
   if (reconnect !== null) entries.push({ kind: 'action', action: 'reconnect', text: reconnect });
   if (entries.length > 0) entries.push({ kind: 'separator' });
 
   entries.push(
     recording
-      ? { kind: 'action', action: 'stop', text: 'Stop note' }
-      : { kind: 'action', action: 'start', text: 'Start notes now' },
+      ? { kind: 'action', action: 'stop', text: 'Stop' }
+      : { kind: 'action', action: 'start', text: 'Start notes' },
     { kind: 'action', action: 'open', text: 'Open Roger' },
     { kind: 'separator' },
     { kind: 'action', action: 'quit', text: 'Quit Roger' },
   );
 
-  if (recording) return { icon: 'recording', tooltip: 'Roger: taking notes', entries };
-  if (stale || reconnect !== null) {
+  if (recording) return { icon: 'recording', tooltip: 'Roger: recording', entries };
+  if (reconnect !== null) {
     return { icon: 'warning', tooltip: 'Roger: calendar needs attention', entries };
   }
   return { icon: 'idle', tooltip: 'Roger', entries };

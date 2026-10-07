@@ -15,7 +15,7 @@ import {
 
 // Asia/Kolkata (UTC+5:30, no DST) and America/Los_Angeles: the same instants read differently.
 const format = createTrayFormat('Asia/Kolkata');
-const NOW = Date.parse('2026-10-06T09:00:00.000Z'); // 14:30 in Kolkata
+const NOW = Date.parse('2026-10-06T09:00:00.000Z'); // 2:30 pm in Kolkata
 
 const connection: CalendarConnection = {
   provider: 'google',
@@ -90,15 +90,15 @@ describe('the menu bar menu', () => {
     }
   });
 
-  it('offers Start notes now while idle and Stop note while recording, never both', () => {
+  it('offers Start notes while idle and Stop while recording, never both', () => {
     const idle = buildTrayModel(inputs());
-    expect(texts(idle)).toContain('Start notes now');
-    expect(texts(idle)).not.toContain('Stop note');
+    expect(texts(idle)).toContain('Start notes');
+    expect(texts(idle)).not.toContain('Stop');
     expect(actions(idle)).toContain('start');
 
     const recording = buildTrayModel(inputs({ recording: true }));
-    expect(texts(recording)).toContain('Stop note');
-    expect(texts(recording)).not.toContain('Start notes now');
+    expect(texts(recording)).toContain('Stop');
+    expect(texts(recording)).not.toContain('Start notes');
     expect(actions(recording)).toContain('stop');
   });
 
@@ -110,7 +110,7 @@ describe('the menu bar menu', () => {
         ],
       }),
     );
-    expect(texts(model)[0]).toBe('Next: Acme renewal, 15:30');
+    expect(texts(model)[0]).toBe('Next: Acme renewal, 3:30 pm');
   });
 
   it('names the day when the next meeting is not today', () => {
@@ -119,7 +119,7 @@ describe('the menu bar menu', () => {
         events: [event('a', 'Standup', '2026-10-07T04:00:00.000Z', '2026-10-07T04:15:00.000Z')],
       }),
     );
-    expect(texts(model)[0]).toBe('Next: Standup, Wed 09:30');
+    expect(texts(model)[0]).toBe('Next: Standup, Wed 9:30 am');
   });
 
   it('puts a meeting that has started first, until it ends', () => {
@@ -139,7 +139,7 @@ describe('the menu bar menu', () => {
           inputs({ events: [running, later], nowMs: Date.parse('2026-10-06T09:45:00.000Z') }),
         ),
       )[0],
-    ).toBe('Next: Standup, 15:30');
+    ).toBe('Next: Standup, 3:30 pm');
   });
 
   it('skips declined meetings, all-day items and meetings that ended', () => {
@@ -165,7 +165,7 @@ describe('the menu bar menu', () => {
 
   it('says nothing of meetings when no calendar is connected', () => {
     const model = buildTrayModel(inputs({ connection: null, sync: null }));
-    expect(texts(model)).toEqual(['Start notes now', 'Open Roger', 'Quit Roger']);
+    expect(texts(model)).toEqual(['Start notes', 'Open Roger', 'Quit Roger']);
   });
 
   it('shortens a long title, and names an untitled one', () => {
@@ -175,13 +175,13 @@ describe('the menu bar menu', () => {
         events: [event('a', long, '2026-10-06T10:00:00.000Z', '2026-10-06T11:00:00.000Z')],
       }),
     );
-    expect(texts(model)[0]).toBe('Next: Quarterly planning with every team lead…, 15:30');
+    expect(texts(model)[0]).toBe('Next: Quarterly planning with every team lead…, 3:30 pm');
     const untitled = buildTrayModel(
       inputs({
         events: [event('a', '  ', '2026-10-06T10:00:00.000Z', '2026-10-06T11:00:00.000Z')],
       }),
     );
-    expect(texts(untitled)[0]).toBe('Next: Untitled meeting, 15:30');
+    expect(texts(untitled)[0]).toBe('Next: Untitled meeting, 3:30 pm');
   });
 
   it('never puts attendees into the menu', () => {
@@ -205,32 +205,32 @@ describe('the menu bar menu', () => {
     expect(JSON.stringify(model)).not.toContain('jane@');
   });
 
-  it('says when the calendar was last updated, once it is stale', () => {
+  it('says nothing of a stale calendar: Home says it, and the icon stays as it was', () => {
     const stale: CalendarSyncState = {
       lastSuccessAt: '2026-10-06T03:42:00.000Z',
       lastError: 'offline',
       staleSince: '2026-10-06T04:42:00.000Z',
       reconnectRequired: false,
     };
-    const model = buildTrayModel(inputs({ sync: stale }));
-    expect(texts(model)).toContain('Calendar not updated since 09:12');
-    expect(model.icon).toBe('warning');
+    const never: CalendarSyncState = { ...stale, lastSuccessAt: null };
+    for (const sync of [stale, never]) {
+      const model = buildTrayModel(inputs({ sync }));
+      expect(texts(model).some((text) => text.startsWith('Calendar not updated'))).toBe(false);
+      expect(texts(model)).toEqual([
+        'No upcoming meetings',
+        'Start notes',
+        'Open Roger',
+        'Quit Roger',
+      ]);
+      expect(model.icon).toBe('idle');
+    }
   });
 
   it('says nothing of a calendar that is not connected, whatever health is left over', () => {
     const stale = { ...freshSync, staleSince: '2026-10-06T04:42:00.000Z', reconnectRequired: true };
     const model = buildTrayModel(inputs({ connection: null, sync: stale }));
-    expect(texts(model)).toEqual(['Start notes now', 'Open Roger', 'Quit Roger']);
+    expect(texts(model)).toEqual(['Start notes', 'Open Roger', 'Quit Roger']);
     expect(model.icon).toBe('idle');
-  });
-
-  it('says it without a time when the copy never updated', () => {
-    const model = buildTrayModel(
-      inputs({
-        sync: { ...freshSync, lastSuccessAt: null, staleSince: '2026-10-06T04:42:00.000Z' },
-      }),
-    );
-    expect(texts(model)).toContain('Calendar not updated');
   });
 
   it('offers Reconnect when Google refused the grant', () => {
@@ -246,7 +246,7 @@ describe('the menu bar menu', () => {
   });
 
   it('offers Reconnect with its date from a day before the grant expires, and not before', () => {
-    const expiresHint = '2026-10-14T03:00:00.000Z'; // Wed 14 Oct in Kolkata at 08:30
+    const expiresHint = '2026-10-14T03:00:00.000Z'; // Wed 14 Oct in Kolkata at 8:30 am
     const withHint = { ...connection, expiresHint };
     const early = buildTrayModel(
       inputs({ connection: withHint, nowMs: Date.parse('2026-10-13T02:59:00.000Z') }),
@@ -281,11 +281,11 @@ describe('the menu bar menu', () => {
     const model = buildTrayModel(
       inputs({
         format: la,
-        // 16:30 UTC is 09:30 in Los Angeles in October, and still the 6th there.
+        // 16:30 UTC is 9:30 am in Los Angeles in October, and still the 6th there.
         events: [event('a', 'Call', '2026-10-06T16:30:00.000Z', '2026-10-06T17:00:00.000Z')],
       }),
     );
-    expect(texts(model)[0]).toBe('Next: Call, 09:30');
+    expect(texts(model)[0]).toBe('Next: Call, 9:30 am');
   });
 });
 
@@ -313,7 +313,7 @@ describe('the menu bar icon', () => {
 
   it('has a tooltip that says what the icon says', () => {
     expect(buildTrayModel(inputs()).tooltip).toBe('Roger');
-    expect(buildTrayModel(inputs({ recording: true })).tooltip).toBe('Roger: taking notes');
+    expect(buildTrayModel(inputs({ recording: true })).tooltip).toBe('Roger: recording');
     expect(buildTrayModel(inputs({ connection: refused })).tooltip).toBe(
       'Roger: calendar needs attention',
     );
