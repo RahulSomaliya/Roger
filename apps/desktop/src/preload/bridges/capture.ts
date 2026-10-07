@@ -23,5 +23,6 @@ export const captureBridge: CaptureApi = {
   getCaptureReport: (request) => invoke(captureChannels.CaptureGetReport, request),
   rerunGaps: (request) => invoke(captureChannels.CaptureRerunGaps, request),
   deleteMeetingAudio: (request) => invoke(captureChannels.AudioDeleteMeeting, request),
+  listMeetingsKeptForRerun: () => invoke(captureChannels.AudioListKeptForRerun),
   unhideSegment: (request) => invoke(captureChannels.TranscriptUnhideSegment, request),
 };

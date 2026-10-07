@@ -6,6 +6,7 @@ import type {
   TranscriptSegmentChange,
 } from '../../src/shared/capture';
 import { IpcChannel } from '../../src/shared/ipc';
+import type { MeetingKeptForRerun } from '../../src/shared/ipc/capture';
 import { createCaptureFake } from './capture';
 import { FakeHub } from './hub';
 
@@ -79,6 +80,28 @@ describe('the preview capture fake', () => {
       message: null,
     });
     await expect(capture.getCaptureReport({ meetingId: MEETING })).resolves.toEqual(deleted);
+  });
+
+  it('lists the meetings a scenario keeps for a re-run, and drops one a re-run or delete clears', async () => {
+    const hub = new FakeHub();
+    const capture = createCaptureFake(hub);
+    await expect(capture.listMeetingsKeptForRerun()).resolves.toEqual([]);
+    const other: MeetingKeptForRerun = {
+      meetingId: '9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d',
+      title: 'Design review',
+      keepUntil: '2026-11-05T10:00:00.000Z',
+    };
+    const kept: MeetingKeptForRerun[] = [
+      { meetingId: MEETING, title: 'Weekly sync', keepUntil: '2026-11-06T10:00:00.000Z' },
+      other,
+    ];
+    hub.emit(IpcChannel.AudioListKeptForRerun, kept);
+    await expect(capture.listMeetingsKeptForRerun()).resolves.toEqual(kept);
+
+    await capture.rerunGaps({ meetingId: MEETING });
+    await expect(capture.listMeetingsKeptForRerun()).resolves.toEqual([other]);
+    await capture.deleteMeetingAudio({ meetingId: other.meetingId });
+    await expect(capture.listMeetingsKeptForRerun()).resolves.toEqual([]);
   });
 
   it('unhides a line a scenario hid, with the unhidden event main would send', async () => {

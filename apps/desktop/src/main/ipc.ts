@@ -1,7 +1,7 @@
 import { desktopCapturer } from 'electron';
 import type { CaptureReport } from '../shared/capture';
 import { IpcChannel } from '../shared/ipc';
-import type { MeetingRequest, SegmentRequest } from '../shared/ipc/capture';
+import type { MeetingKeptForRerun, MeetingRequest, SegmentRequest } from '../shared/ipc/capture';
 import type { CaptureService } from './capture/CaptureService';
 import { handleTrusted, onTrusted, type IpcMainLike, type IpcTrust } from './ipc/trust';
 import {
@@ -32,6 +32,8 @@ export interface CaptureRequests {
   deleteMeetingAudio(meetingId: string): Promise<CaptureReport>;
   /** Shows a hidden echo line again (M2-T14b); refuses a line that is not hidden. */
   unhideSegment(request: SegmentRequest): void;
+  /** Every meeting whose audio is kept for a re-run, newest first (M2-T16). Takes no id. */
+  listMeetingsKeptForRerun(): MeetingKeptForRerun[];
 }
 
 /** The main window, as the capture channels use it. */
@@ -94,6 +96,8 @@ export function registerIpcHandlers({
   handleTrusted(trust, IpcChannel.AudioDeleteMeeting, (payload) =>
     requests.deleteMeetingAudio(meetingRequest(payload).meetingId),
   );
+  // No payload: whatever the page sends with it is never read.
+  handleTrusted(trust, IpcChannel.AudioListKeptForRerun, () => requests.listMeetingsKeptForRerun());
   handleTrusted(trust, IpcChannel.TranscriptUnhideSegment, (payload) => {
     const request = parseSegmentRequest(payload);
     if (request === null) throw new Error('invalid segment request');

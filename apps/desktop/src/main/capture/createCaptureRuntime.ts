@@ -1,6 +1,7 @@
 import { app, net, powerMonitor, powerSaveBlocker } from 'electron';
 import type { BackupStatus, CaptureReport, EchoStatus } from '../../shared/capture';
 import { IpcChannel } from '../../shared/ipc';
+import type { MeetingKeptForRerun } from '../../shared/ipc/capture';
 import type { ApiClient } from '../api/ApiClient';
 import { createSystemAudio } from '../audio/system/createSystemAudio';
 import { AudioBackup } from '../backup/AudioBackup';
@@ -64,9 +65,9 @@ export interface CaptureRuntime {
 }
 
 /**
- * What the M2 features answer for the meeting-scoped capture channels; each stays null until its
- * task fills it in its slot below. The ids are checked (ipc.ts) and the meeting is known
- * (createCaptureRequests) before any of these runs.
+ * What the M2 features answer for the capture channels; each stays null until its task fills it in
+ * its slot below. For each member that takes a meeting, the ids are checked (ipc.ts) and the
+ * meeting is known (createCaptureRequests) before it runs; `listMeetingsKeptForRerun` takes none.
  */
 export interface CaptureFeatureHandlers {
   /** M2-T14b: the meeting's echo counts for its report. */
@@ -82,6 +83,8 @@ export interface CaptureFeatureHandlers {
    * ever handed a line of the meeting asked for whose `suppressedReason` is set.
    */
   unhideSegment: ((segment: StoredSegment) => void) | null;
+  /** M2-T16: every meeting whose audio is kept for a re-run, newest first (Home's card). */
+  listMeetingsKeptForRerun: (() => MeetingKeptForRerun[]) | null;
 }
 
 export function noCaptureFeatures(): CaptureFeatureHandlers {
@@ -91,6 +94,7 @@ export function noCaptureFeatures(): CaptureFeatureHandlers {
     deleteMeetingAudio: null,
     rerunGaps: null,
     unhideSegment: null,
+    listMeetingsKeptForRerun: null,
   };
 }
 
@@ -414,5 +418,7 @@ export function createCaptureRequests(
       }
       features.unhideSegment(segment);
     },
+    // Not wired (tests through noCaptureFeatures()): no audio is kept for a re-run, as NO_BACKUP.
+    listMeetingsKeptForRerun: () => features.listMeetingsKeptForRerun?.() ?? [],
   };
 }
