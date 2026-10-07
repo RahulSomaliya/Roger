@@ -23,14 +23,19 @@ const upload = (overrides: Partial<UploadStatus>): UploadStatus => ({
 });
 
 describe('formatOffset', () => {
-  it('renders hh:mm:ss including past one hour', () => {
-    expect(formatOffset(0)).toBe('00:00:00');
-    expect(formatOffset(61_500)).toBe('00:01:01');
-    expect(formatOffset(3_725_000)).toBe('01:02:05');
+  it('renders m:ss, and h:mm:ss past one hour (docs/design.md)', () => {
+    expect(formatOffset(0)).toBe('0:00');
+    expect(formatOffset(61_500)).toBe('1:01');
+    expect(formatOffset(247_000)).toBe('4:07');
+    expect(formatOffset(600_000)).toBe('10:00');
+    expect(formatOffset(3_599_999)).toBe('59:59');
+    expect(formatOffset(3_600_000)).toBe('1:00:00');
+    expect(formatOffset(3_725_000)).toBe('1:02:05');
+    expect(formatOffset(37_325_000)).toBe('10:22:05');
   });
 
   it('never goes negative', () => {
-    expect(formatOffset(-5)).toBe('00:00:00');
+    expect(formatOffset(-5)).toBe('0:00');
   });
 });
 

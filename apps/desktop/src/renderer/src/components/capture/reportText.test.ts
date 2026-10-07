@@ -153,7 +153,7 @@ describe('describeStopReason', () => {
 describe('describeGap', () => {
   it('gives the span, the stream, why audio was lost, and where transcribing it again stands', () => {
     expect(describeGap(gap())).toEqual({
-      span: '00:01:01 to 00:02:05',
+      span: '1:01 to 2:05',
       source: 'Call audio',
       reason: 'the Mac was offline',
       status: 'waiting',

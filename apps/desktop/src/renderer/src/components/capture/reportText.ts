@@ -154,7 +154,7 @@ const GAP_REASON: Readonly<Record<CaptureGapReason, string>> = {
 };
 
 export interface GapView {
-  /** `hh:mm:ss to hh:mm:ss`, offsets from the meeting start. */
+  /** `m:ss to m:ss` (formatOffset), offsets from the meeting start. */
   span: string;
   source: string;
   reason: string;

@@ -18,13 +18,20 @@ export const SOURCE_NAME: Readonly<Record<AudioSource, string>> = {
   system: 'Call audio',
 };
 
-/** `hh:mm:ss` for an offset in milliseconds. */
+/**
+ * An offset in milliseconds as docs/design.md writes it: "4:07", and "1:02:05" past an hour.
+ * Only the leading unit goes unpadded. The offsets that main prints for the API's MCP tools
+ * (`hh:mm:ss`, docs/api-contract.md) and a citation chip's label (`mm:ss`, `chipLabel`) are other
+ * formats, fixed by the contract: they are not this one.
+ */
 export function formatOffset(ms: number): string {
   const total = Math.max(0, Math.floor(ms / 1000));
   const hours = Math.floor(total / 3600);
   const minutes = Math.floor((total % 3600) / 60);
-  const seconds = total % 60;
-  return [hours, minutes, seconds].map((n) => String(n).padStart(2, '0')).join(':');
+  const seconds = String(total % 60).padStart(2, '0');
+  return hours > 0
+    ? `${hours}:${String(minutes).padStart(2, '0')}:${seconds}`
+    : `${minutes}:${seconds}`;
 }
 
 /**
