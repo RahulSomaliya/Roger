@@ -176,8 +176,8 @@ def desktop_stt_provider_ids() -> set[str]:
 # (apps/desktop/README.md) lands a vendor's issuer and preset first and lists it here, since an
 # exact match would turn every gate red in between; meanwhile STT_PROVIDER=<vendor> fails Start on
 # the Mac (UnsupportedSttProviderError). The commit that adds the vendor to registry.ts deletes it
-# here. xAI sits here until the desktop commit that adds its adapter (it deletes the line).
-AWAITING_A_DESKTOP_ADAPTER: frozenset[str] = frozenset({"xai"})
+# here. Empty since xAI's adapter landed (its issuer and preset came first, in the commit before).
+AWAITING_A_DESKTOP_ADAPTER: frozenset[str] = frozenset()
 
 
 def test_every_preset_names_a_registered_vendor() -> None:

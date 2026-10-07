@@ -4,6 +4,7 @@ import { DeepgramSpeechToText } from './deepgram/DeepgramSpeechToText';
 import { FakeSpeechToText } from './fake/FakeSpeechToText';
 import { SonioxSpeechToText } from './soniox/SonioxSpeechToText';
 import type { SpeechToText } from './SpeechToText';
+import { XaiSpeechToText } from './xai/XaiSpeechToText';
 
 export interface SttVendorOptions extends WebSocketSttOptions {
   /** The vendor's websocket origin. Tests point it at a local fake vendor. */
@@ -11,7 +12,8 @@ export interface SttVendorOptions extends WebSocketSttOptions {
   /**
    * Asks the vendor to close a session that receives nothing for this long, where it can
    * (AssemblyAI's `inactivity_timeout`; Deepgram has no such parameter and closes a quiet socket
-   * after about 10 s on its own). The net for when Roger cannot close the session itself.
+   * after about 10 s on its own; xAI documents no idle limit and no parameter for one). The net for
+   * when Roger cannot close the session itself.
    */
   vendorIdleTimeoutMs?: number;
 }
@@ -30,6 +32,7 @@ export const STT_VENDORS: ReadonlyMap<string, SttVendorFactory> = new Map<string
     ['assemblyai', (options) => new AssemblyAiSpeechToText(options)],
     ['deepgram', (options) => new DeepgramSpeechToText(options)],
     ['soniox', (options) => new SonioxSpeechToText(options)],
+    ['xai', (options) => new XaiSpeechToText(options)],
     ['fake', () => new FakeSpeechToText()],
   ],
 );
