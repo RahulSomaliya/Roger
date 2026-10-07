@@ -19,16 +19,15 @@ const render = (attrs: CitationAttrs, removed = false): string =>
 describe('CitationChipButton', () => {
   it('shows the time and says it opens the transcript there', () => {
     const html = render(ATTRS);
-    expect(html).toMatch(/^<button type="button" class="citation-chip"/);
+    expect(html).toMatch(/^<button type="button" class="chip citation-chip"/);
     expect(html).toContain('aria-label="Show the transcript at 03:12"');
     expect(html).toContain('>03:12<');
-    expect(html).not.toContain('check this');
+    expect(html).not.toContain('chip-flag');
   });
 
-  it("says check this when the line's sources may not back it", () => {
+  it("says check when the line's sources may not back it", () => {
     const html = render({ ...ATTRS, support: 'weak' });
-    expect(html).toContain('class="citation-chip citation-chip-weak"');
-    expect(html).toContain('check this');
+    expect(html).toContain('<span class="chip-flag">check</span>');
     expect(html).toMatch(/aria-label="Show the transcript at 03:12\. Check this line[^"]*"/);
   });
 
@@ -36,7 +35,7 @@ describe('CitationChipButton', () => {
     const html = render({ ...ATTRS, support: 'weak' }, true);
     expect(html).toContain('citation-chip-removed');
     expect(html).toContain('Line removed');
-    expect(html).not.toContain('check this');
+    expect(html).not.toContain('>check<');
     expect(html).toContain('aria-label="The transcript line at 03:12 is no longer there"');
   });
 });

@@ -8,16 +8,19 @@ describe('ConflictBanner', () => {
     const html = renderToStaticMarkup(
       createElement(ConflictBanner, { onResolve: () => Promise.resolve() }),
     );
-    expect(html).toMatch(/^<div class="note-conflict" role="alert">/);
+    // A problem line, not a tinted box (docs/design.md, Problem line).
+    expect(html).toMatch(/^<div class="problem note-conflict" role="alert"><svg/);
     expect(html).toContain('These notes also changed somewhere else.');
     expect(html).toContain('yours is kept as a copy');
-    // "Use mine" puts the copy back; "Keep this version" keeps what the editor shows.
+    // "Use mine" puts the copy back; "Keep this version" keeps what the editor shows. Neither is
+    // the page's primary: one secondary, one ghost.
     expect(html).toMatch(
-      /<button type="button" class="btn" data-variant="primary" data-size="sm">Use mine</,
+      /<button type="button" class="btn" data-variant="secondary" data-size="sm">Use mine</,
     );
     expect(html).toMatch(
-      /<button type="button" class="btn" data-variant="secondary" data-size="sm">Keep this version</,
+      /<button type="button" class="btn" data-variant="ghost" data-size="sm">Keep this version</,
     );
+    expect(html).not.toContain('data-variant="primary"');
   });
 
   it('says so when the other version is one Roger cannot show', () => {
@@ -32,10 +35,10 @@ describe('ConflictBanner', () => {
     expect(html).not.toContain('Roger shows that version here');
     expect(html).toContain('yours is kept as a copy');
     expect(html).toMatch(
-      /<button type="button" class="btn" data-variant="primary" data-size="sm">Use mine</,
+      /<button type="button" class="btn" data-variant="secondary" data-size="sm">Use mine</,
     );
     expect(html).toMatch(
-      /<button type="button" class="btn" data-variant="secondary" data-size="sm">Keep the other version</,
+      /<button type="button" class="btn" data-variant="ghost" data-size="sm">Keep the other version</,
     );
   });
 });
