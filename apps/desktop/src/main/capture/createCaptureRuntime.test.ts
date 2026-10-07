@@ -21,8 +21,25 @@ import {
 // slot looks for the audio helper under `app.getAppPath()`: a folder with no helper, so call audio
 // takes Electron's path and no test here runs a helper. Never the real apps/desktop: on a Mac that
 // ran `make check` its dev build exists, and a Start here would build a real tap (a privacy prompt).
-// The M2-T6 slot asks net.isOnline() every second while a recording runs.
+// The M2-T6 slot asks net.isOnline() every second while a recording runs. The M2-T18 slot listens
+// to powerMonitor's suspend and resume, and holds a power save blocker while a recording runs.
 const electronNet = vi.hoisted(() => ({ online: true, reads: 0 }));
+const electronPower = vi.hoisted(() => {
+  const listeners: { event: string; listener: () => void }[] = [];
+  let nextId = 1;
+  return {
+    /** The blocker ids held now. */
+    held: new Set<number>(),
+    on: (event: string, listener: () => void) => {
+      listeners.push({ event, listener });
+    },
+    /** Every runtime built in this file listens: the ones not recording do nothing. */
+    emit: (event: string) => {
+      for (const entry of listeners) if (entry.event === event) entry.listener();
+    },
+    nextId: () => (nextId += 1),
+  };
+});
 vi.mock('electron', () => ({
   desktopCapturer: { getSources: vi.fn() },
   app: { isPackaged: false, getAppPath: () => '/nonexistent/roger-app', on: vi.fn() },
@@ -35,6 +52,15 @@ vi.mock('electron', () => ({
   // Going offline raises M2-T11's loud warning, and the Notifier posts only while Roger is not
   // focused: the harness window (webContents 7) is, so no test here posts a notification.
   BrowserWindow: { getFocusedWindow: () => ({ webContents: { id: 7 } }) },
+  powerMonitor: { on: electronPower.on },
+  powerSaveBlocker: {
+    start: () => {
+      const id = electronPower.nextId();
+      electronPower.held.add(id);
+      return id;
+    },
+    stop: (id: number) => electronPower.held.delete(id),
+  },
 }));
 
 const logger = createLogger({ level: 'error', format: 'json', sink: () => undefined });
@@ -170,6 +196,25 @@ describe('createCaptureRuntime', () => {
       electronNet.online = true;
       vi.useRealTimers();
     }
+  });
+
+  it('pauses the live session while the Mac sleeps, and keeps it awake only while recording (M2-T18)', async () => {
+    const { capture } = runtimeHarness().runtime;
+    expect(electronPower.held.size).toBe(0);
+    await capture.start();
+    expect(electronPower.held.size).toBe(1);
+
+    electronPower.emit('suspend');
+    expect(capture.getStatus()).toMatchObject({
+      phase: 'recording',
+      paused: 'asleep',
+      streams: { mic: 'paused', system: 'paused' },
+    });
+    electronPower.emit('resume'); // a moment later: a short sleep, so the recording goes on
+    expect(capture.getStatus()).toMatchObject({ phase: 'recording', paused: null });
+
+    await capture.stop({ flushUploads: false });
+    expect(electronPower.held.size).toBe(0);
   });
 
   // The runtime has none of its own: each comes from a feature's slot.

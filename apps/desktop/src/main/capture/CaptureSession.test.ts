@@ -835,8 +835,10 @@ describe('CaptureSession', () => {
         at(25_000);
         s.suspendStreams('asleep'); // the call audio stream finishes; the mic's never does
         await flush();
-        // Sockets do not survive sleep: on wake the finish runs out of time. The line the core
-        // held comes first, then its word that the rest is lost.
+        // Sockets do not survive sleep: on wake the finish runs out of time. macOS timers do not
+        // count sleep, so its deadline fires after the wake has lifted the suspend. The line the
+        // core held comes first, then its word that the rest is lost.
+        s.resumeStreams('asleep');
         final(mic, 'held', 10_500, 12_000);
         mic.emitter.emit({
           type: 'error',
@@ -847,8 +849,10 @@ describe('CaptureSession', () => {
         finishing.resolve(undefined);
         await flush();
 
+        // Named for the sleep, as the audio held in it is (hold): the vendor did not fail, the lid
+        // closed on its socket (M2-T18). A pause's or Stop's finish failing stays `stt_failed`.
         expect(gaps(store)).toEqual([
-          { source: 'mic', startMs: 12_000, endMs: 15_000, reason: 'stt_failed' },
+          { source: 'mic', startMs: 12_000, endMs: 15_000, reason: 'asleep' },
         ]);
         // The source had left that stream already: nothing to reopen or show.
         expect(l.failures).toEqual([]);
@@ -1340,10 +1344,13 @@ describe('CaptureSession', () => {
 
       expect(latencyLines(log.messages)[0]?.mic).toMatchObject({ words: 1, displayP50Ms: 1_000 });
       // The held audio never reached a vendor: lost from its first chunk to the last, after the
-      // flushed line's end (3.5 s), the watermark the gap may never start before.
+      // flushed line's end (3.5 s), the watermark the gap may never start before. Named for the
+      // sleep that held it, not `stt_failed`: speech-to-text never failed (M2-T18).
       expect(
-        store.listGaps('m1').map(({ source, startMs, endMs }) => [source, startMs, endMs]),
-      ).toEqual([['mic', 4_000, 5_000]]);
+        store
+          .listGaps('m1')
+          .map(({ source, startMs, endMs, reason }) => [source, startMs, endMs, reason]),
+      ).toEqual([['mic', 4_000, 5_000, 'asleep']]);
       const order = log.messages.map((m) => m.message);
       expect(order.indexOf('speech-to-text gap recorded')).toBeLessThan(
         order.indexOf('stt latency'),

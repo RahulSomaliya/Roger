@@ -5,15 +5,16 @@ import { errorMessage, type Logger } from './logger';
 import { withTimeout } from './util/time';
 
 /**
- * Cost guard G4: whatever ends the app's ability to record (quit, the window closing, the Mac
- * sleeping, a page that cannot be brought back) stops the recording through the normal stop:
- * finish sequence, last lines saved, sessions closed. Left open, each vendor session bills until a
- * vendor timeout (AssemblyAI: the 120 s idle timeout Roger asks for; without it, the 3-hour cap,
- * $0.45 a stream). A renderer crash or a reload no longer stops (M2 D7, M2-T12): the page comes
- * back and reopens the mic because main is recording, and until its chunks come, G2's stall close
- * shuts the mic's session after 30 s, so a crash costs at most that. A page that keeps crashing
- * stops instead (RENDERER_CRASH_LIMIT). The decisions live here and are tested; index.ts only
- * connects Electron's objects.
+ * Cost guard G4: whatever ends the app's ability to record (quit, the window closing, a page that
+ * cannot be brought back) stops the recording through the normal stop: finish sequence, last lines
+ * saved, sessions closed. Left open, each vendor session bills until a vendor timeout (AssemblyAI:
+ * the 120 s idle timeout Roger asks for; without it, the 3-hour cap, $0.45 a stream). A renderer
+ * crash or a reload no longer stops (M2 D7, M2-T12): the page comes back and reopens the mic
+ * because main is recording, and until its chunks come, G2's stall close shuts the mic's session
+ * after 30 s, so a crash costs at most that. A page that keeps crashing stops instead
+ * (RENDERER_CRASH_LIMIT). Nor does a sleep (M2-T18): power/PowerCoordinator.ts finishes and closes
+ * both sessions at `suspend` and stops with `system-sleep` only after a sleep of noSpeechStopMs or
+ * more. The decisions live here and are tested; index.ts only connects Electron's objects.
  */
 
 /**
@@ -67,11 +68,11 @@ export interface RecordingLifecycleOptions {
   quit: () => void;
 }
 
-/** The reasons an Electron event stops a recording; the quit has its own path. */
-export type LifecycleStopReason = Extract<
-  StopReason,
-  'window-closed' | 'renderer-gone' | 'system-sleep'
->;
+/**
+ * The reasons an Electron event stops a recording; the quit has its own path. Not `system-sleep`:
+ * PowerCoordinator decides that one at wake (M2-T18).
+ */
+export type LifecycleStopReason = Extract<StopReason, 'window-closed' | 'renderer-gone'>;
 
 /** Chromium's net error for a load that another load replaced, or one that was cancelled. */
 const ERR_ABORTED = -3;
@@ -233,10 +234,9 @@ export interface QuitEvent {
   preventDefault(): void;
 }
 
-/** The parts of Electron's `app` and `powerMonitor` this needs. */
+/** The parts of Electron's `app` this needs. */
 export interface AppEventSources {
   app: { on(event: 'before-quit' | 'will-quit', listener: (event: QuitEvent) => void): unknown };
-  powerMonitor: { on(event: 'suspend', listener: () => void): unknown };
 }
 
 /** The parts of the main BrowserWindow this needs. */
@@ -263,20 +263,18 @@ export interface WindowEventSource {
   };
 }
 
-export function watchApp(
-  lifecycle: RecordingLifecycle,
-  { app, powerMonitor }: AppEventSources,
-): void {
+export function watchApp(lifecycle: RecordingLifecycle, { app }: AppEventSources): void {
   const onQuit = (event: QuitEvent): void => {
     if (lifecycle.onQuitRequested()) event.preventDefault();
   };
   app.on('before-quit', onQuit);
   // Also here: a quit that skipped before-quit must still stop first.
   app.on('will-quit', onQuit);
-  // Asleep, Roger cannot close anything, and the socket may stay half-open on the vendor's side.
-  powerMonitor.on('suspend', () => {
-    lifecycle.stopFor('system-sleep');
-  });
+  // No stop on `suspend` any more (M2-T18): power/PowerCoordinator.ts, in the T18 slot of
+  // capture/createCaptureRuntime.ts, owns sleep and wake. It finishes and closes both sessions at
+  // suspend (asleep, Roger cannot close anything, and a socket left half-open bills), so a stop
+  // here would only split a call the lid interrupted into two meetings. Never add a second
+  // powerMonitor listener here: two owners would each decide the same sleep.
 }
 
 export function watchWindow(lifecycle: RecordingLifecycle, window: WindowEventSource): void {

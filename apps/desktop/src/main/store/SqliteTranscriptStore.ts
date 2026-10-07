@@ -1035,9 +1035,17 @@ function suppressedReason(value: SQLOutputValue | undefined): SuppressedReason |
   throw new Error(`corrupt segment row: suppressed_reason=${String(value)}`);
 }
 
+/** Every GapReason: the column has no CHECK, so a value missing here makes each read throw. */
 function gapReason(value: SQLOutputValue | undefined): GapReason {
-  if (value === 'stt_failed' || value === 'offline' || value === 'budget' || value === 'crash')
+  if (
+    value === 'stt_failed' ||
+    value === 'offline' ||
+    value === 'asleep' ||
+    value === 'budget' ||
+    value === 'crash'
+  ) {
     return value;
+  }
   throw new Error(`corrupt transcript_gaps row: reason=${String(value)}`);
 }
 

@@ -24,7 +24,11 @@ export type StopReason =
    * reason until M2-T12; old rows keep it.
    */
   | 'renderer-gone'
-  /** G4: the Mac is going to sleep; a socket left open bills until the vendor's idle timeout. */
+  /**
+   * G4: the Mac slept for costGuards.noSpeechStopMs or more; the stop comes at wake
+   * (power/PowerCoordinator.ts, M2-T18). A shorter sleep only pauses both sessions, and the
+   * recording goes on.
+   */
   | 'system-sleep';
 
 /**

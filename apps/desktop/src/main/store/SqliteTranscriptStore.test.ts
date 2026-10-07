@@ -656,6 +656,20 @@ describe.each([
     store.close();
   });
 
+  it('reads back every gap reason, asleep included (M2-T18)', () => {
+    const { store } = openWithMeeting();
+    const reasons = ['stt_failed', 'offline', 'asleep', 'budget', 'crash'] as const;
+    reasons.forEach((reason, index) => {
+      store.addGap(
+        gap(`g${index}`, { startMs: index * 1_000, endMs: index * 1_000 + 500, reason }),
+      );
+    });
+    // A reason the reader does not list makes every read of the meeting's gaps throw "corrupt
+    // transcript_gaps row": its capture report and M2-T16's re-run list both.
+    expect(store.listGaps('m1').map((g) => g.reason)).toEqual(reasons);
+    store.close();
+  });
+
   it('tracks an audio file from open to closed, encoded and deleted', () => {
     const { store } = openWithMeeting();
     store.addAudioFile(audioFile('mic-1', { startMs: 60_000 }));

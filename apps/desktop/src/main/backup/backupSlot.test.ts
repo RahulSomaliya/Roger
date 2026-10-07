@@ -24,6 +24,9 @@ vi.mock('electron', () => ({
   // createCaptureRuntime's M2-T6 slot asks this every second while a recording runs. Left out,
   // each poll logs "network check failed" (the mock has no `net`) and the test still passes.
   net: { isOnline: () => true },
+  // Its M2-T18 slot listens for sleep and wake, and keeps the Mac awake while recording.
+  powerMonitor: { on: () => undefined },
+  powerSaveBlocker: { start: () => 1, stop: () => undefined },
 }));
 
 const logger = createLogger({ level: 'error', format: 'json', sink: () => undefined });

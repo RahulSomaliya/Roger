@@ -1,4 +1,4 @@
-import { app, net } from 'electron';
+import { app, net, powerMonitor, powerSaveBlocker } from 'electron';
 import type { BackupStatus, CaptureReport, EchoStatus } from '../../shared/capture';
 import { IpcChannel } from '../../shared/ipc';
 import type { ApiClient } from '../api/ApiClient';
@@ -17,6 +17,7 @@ import type { SpeechToTextFactory } from '../stt/createSpeechToText';
 import { NetworkStatus } from '../stt/networkStatus';
 import type { TranscriptUploader } from '../upload/TranscriptUploader';
 import { electronNotifierPorts, Notifier } from '../notify/Notifier';
+import { PowerCoordinator } from '../power/PowerCoordinator';
 import { CaptureService } from './CaptureService';
 import { EchoSink } from './echo/EchoSink';
 import { RouteHistory } from './echo/RouteProvider';
@@ -277,6 +278,20 @@ export function createCaptureRuntime(deps: CaptureRuntimeDeps): CaptureRuntime {
   // [slot M2-T17b] the call offer and auto-stop
 
   // [slot M2-T18] sleep and wake: PowerCoordinator
+
+  // The only owner of powerMonitor's suspend and resume for capture (lifecycle.ts no longer stops
+  // on a sleep): suspend finishes and closes both sessions, wake reopens each with its next chunk
+  // and restarts the call audio helper, and a sleep of noSpeechStopMs or more stops at wake. It
+  // keeps the Mac from idling to sleep while a recording runs (powerSaveBlocker).
+  new PowerCoordinator({
+    capture,
+    systemAudio: systemAudio.source,
+    powerMonitor,
+    powerSaveBlocker,
+    noSpeechStopMs: config.costGuards.noSpeechStopMs,
+    logger: logger.child({ component: 'power' }),
+    clock,
+  }).attach();
 
   // [slot M2-T19] permission setup, `setup:*`; no navigation port (index.ts makes it later)
 
