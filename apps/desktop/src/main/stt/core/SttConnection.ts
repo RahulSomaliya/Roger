@@ -779,8 +779,9 @@ export class SttConnection implements SttStream {
 
   /**
    * Every message to the vendor goes through here, so the wire tap sees what the vendor sees. Audio
-   * reaches it only through pump() and sendFrame (pacing); text is the finish sequence and the
-   * keep-alive.
+   * reaches it only through pump() and sendFrame (pacing); text is the protocol's opening messages
+   * (sendOpeningMessages, which can hold the session's settings and jargon), the finish sequence
+   * and the keep-alive.
    */
   private transmit(data: string | Uint8Array): void {
     this.socket.send(data);
