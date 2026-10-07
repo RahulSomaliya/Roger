@@ -143,7 +143,7 @@ export function describeAnswerError({ code, message }: AnswerError): string {
     case 'meeting_too_long':
       return 'This meeting is too long to chat with: over about 10 hours of talk.';
     case 'not_found':
-      return 'This meeting is not on the server yet. Ask again once its transcript has uploaded.';
+      return 'This meeting is not on the server yet. Try again once its transcript has uploaded.';
     case NOT_SENT:
       return STILL_ON_ITS_WAY.test(message)
         ? 'The last try is still closing. Try again in a moment.'

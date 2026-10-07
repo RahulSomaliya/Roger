@@ -316,7 +316,8 @@ describe('the meeting page', () => {
     const html = page();
     expect(text(html)).not.toContain('This meeting is not on this Mac');
     expect(html).toMatch(PANEL);
-    expect(text(html)).toContain('Listening. Lines appear here as people speak.');
+    // The empty live transcript says nothing (no "Listening" line): its log is what is mounted.
+    expect(html).toContain('aria-label="Transcript"');
   });
 
   it('shows the transcript alone, with no tab row, while nothing else is mounted', () => {
@@ -408,6 +409,6 @@ describe('the meeting page', () => {
 
   it('shows the transcript of a meeting recording now before the first read answers', () => {
     fakes.shell = shell({ status: recording(A), captureMeeting: LIVE });
-    expect(text(page())).toContain('Listening. Lines appear here as people speak.');
+    expect(page()).toContain('aria-label="Transcript"');
   });
 });

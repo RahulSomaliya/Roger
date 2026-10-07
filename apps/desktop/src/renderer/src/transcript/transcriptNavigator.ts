@@ -159,8 +159,8 @@ function centreInView(container: RevealContainer, line: RevealLine): void {
 
 /**
  * The navigator over the newest registered transcript. A reveal finds the lines first and does
- * nothing more when none is rendered: following goes on, a narrow page keeps showing the notes,
- * and the chip says "Line removed". Otherwise, in this order:
+ * nothing more when none is rendered: following goes on, the open tab stays open, and the chip
+ * says "Line removed". Otherwise, in this order:
  *
  * 1. Pause following, before anything scrolls: while following, the panel puts the newest line in
  *    view on every new line, which would pull the view straight back from the cited one. Paused
@@ -170,8 +170,8 @@ function centreInView(container: RevealContainer, line: RevealLine): void {
  *    scroll in step 3 needs to lift that line clear of the pill. A pause rendered after that
  *    scroll would bring the room too late and leave the line under the pill.
  * 2. Show the transcript (the page's `showTranscript`, synchronous), so the lines have a layout.
- *    A narrow page hides the notes or chat pane for it, and with it the chip a keyboard user just
- *    pressed: Chromium then drops focus to <body>, the next Tab starts over at the top of the page
+ *    The page shows one tab at a time at every width, so this hides the notes or chat tab, and with
+ *    it the chip a keyboard user just pressed: Chromium then drops focus to <body>, the next Tab starts over at the top of the page
  *    and a screen reader says nothing. So when the element that had focus lost its box, focus
  *    moves to the log, as the panel's own "Jump to live" does. A chip still in view keeps it.
  * 3. Scroll the first line in transcript order to the middle of the log, then bring it into the
@@ -271,8 +271,8 @@ export interface CitationNavigatorProviderProps {
   children: ReactNode;
   /**
    * Called by reveal after it has found the lines and before it scrolls. A page that hides the
-   * transcript region (a narrow window) shows it here, synchronously (`flushSync`), because the
-   * scroll runs as soon as this returns. Keep the transcript mounted while it is hidden: reveal
+   * transcript tab (the meeting page shows one tab at a time) shows it here, synchronously
+   * (`flushSync`), because the scroll runs as soon as this returns. Keep the transcript mounted while it is hidden: reveal
    * looks the lines up in it first, so a chip for a removed line does not switch the view away.
    */
   showTranscript?: () => void;

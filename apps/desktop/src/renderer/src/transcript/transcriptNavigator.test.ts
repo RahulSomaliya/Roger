@@ -160,7 +160,7 @@ class FakeLine implements RevealLine {
 
 /**
  * The chip that had keyboard focus when it was pressed, as the page's `activeElement`: it has a
- * box until the page hides the pane it sits in (a narrow window showing the transcript instead).
+ * box until the page hides the pane it sits in (the transcript tab replacing the notes or chat tab).
  */
 class FakeChip {
   shown = true;
@@ -228,13 +228,17 @@ function fakeLog(count: number, scrollTop = 0): FakeLog {
 }
 
 /**
- * The navigator over one transcript, with a page that records when it shows the transcript. A
- * narrow page shows one pane at a time, so showing the transcript hides the chip's pane.
+ * The navigator over one transcript, with a page that records when it shows the transcript. The
+ * meeting page shows one tab at a time, so from the notes or chat tab (`'tab switch'`) showing the
+ * transcript hides the chip's pane; `'same view'` (the default) keeps the chip in view.
  */
-function navigatorOver(log: FakeLog, page: 'wide' | 'narrow' = 'wide'): CitationNavigator {
+function navigatorOver(
+  log: FakeLog,
+  page: 'same view' | 'tab switch' = 'same view',
+): CitationNavigator {
   return createCitationNavigator({ current: () => log.transcript }, () => {
     log.steps.push('show transcript');
-    if (page === 'narrow') log.chip.shown = false;
+    if (page === 'tab switch') log.chip.shown = false;
   });
 }
 
@@ -247,7 +251,7 @@ describe('reveal', () => {
     const log = fakeLog(20);
 
     expect(navigatorOver(log).reveal(['removed-1', 'removed-2'])).toBe('not_loaded');
-    // Nothing moved: following goes on, a narrow page keeps showing the notes, nothing is marked.
+    // Nothing moved: following goes on, the open tab stays open, nothing is marked.
     expect(log.steps).toEqual([]);
     expect(log.cited()).toEqual([]);
   });
@@ -269,7 +273,7 @@ describe('reveal', () => {
   it('moves keyboard focus to the log when showing the transcript hid the chip', () => {
     const log = fakeLog(20, 300);
 
-    expect(navigatorOver(log, 'narrow').reveal(['s6'])).toBe('shown');
+    expect(navigatorOver(log, 'tab switch').reveal(['s6'])).toBe('shown');
     // Left on a chip in a hidden pane, focus would fall to <body>, and the next Tab would start
     // over at the top of the page.
     expect(log.steps).toEqual([
@@ -284,7 +288,7 @@ describe('reveal', () => {
   it('leaves keyboard focus on a chip that stays in view', () => {
     const log = fakeLog(20, 300);
 
-    navigatorOver(log, 'wide').reveal(['s6']);
+    navigatorOver(log).reveal(['s6']);
     expect(log.steps.filter((step) => step.startsWith('focus'))).toEqual([]);
   });
 

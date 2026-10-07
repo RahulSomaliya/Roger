@@ -423,7 +423,7 @@ describe('MeetingChatStore', () => {
     main.holdCancelReplies();
     chat.cancel(ASKED[0]!);
     // main tells the page at once, and answers the cancel once the API has stopped the run (a
-    // lost answer it follows): Ask again shows meanwhile, and main takes the retry.
+    // lost answer it follows): Try again shows meanwhile, and main takes the retry.
     main.event(ASKED[0]!, {
       type: 'error',
       code: 'cancelled',

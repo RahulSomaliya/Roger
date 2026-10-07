@@ -39,7 +39,11 @@ export interface LiveTranscriptProps extends LiveTranscriptOptions {
 
 const SPEAKER_NAME = { me: 'Me', them: 'Them' } as const;
 
-const EMPTY_LIVE = 'Listening. Lines appear here as people speak.';
+/*
+ * A meeting that records and has no line yet shows an empty log, with no "Listening" line: empty
+ * states are absent (docs/design.md), and the page already says it records. A PAST meeting with no
+ * line says so, because there the person asked for lines and an empty pane would read as broken.
+ */
 const EMPTY_PAST = 'Nothing was transcribed in this meeting.';
 
 export function LiveTranscript(props: LiveTranscriptProps) {
@@ -126,7 +130,9 @@ function TranscriptPanel({ meetingId, storedLines, showHidden, live }: LiveTrans
         onScroll={onScroll}
       >
         {items.length === 0 ? (
-          <p className="live-transcript-empty">{live ? EMPTY_LIVE : EMPTY_PAST}</p>
+          live ? null : (
+            <p className="live-transcript-empty">{EMPTY_PAST}</p>
+          )
         ) : (
           items.map((item) => (
             <TranscriptRow
