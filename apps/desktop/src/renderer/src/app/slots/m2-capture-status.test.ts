@@ -106,6 +106,46 @@ describe('the capture warnings in the banner slot', () => {
   });
 });
 
+describe('lines the server refused for good, in the banner (house rule 1: always seen)', () => {
+  const Banner = only<NoProps>(contributions.banner).component;
+  const banner = (): string => renderToStaticMarkup(createElement(Banner, {}));
+  const LIVE = (id: string): CaptureMeeting => ({ id, startedAt: '2026-10-07T09:00:00.000Z' });
+  const refusedIdle: CaptureStatus = { ...IDLE, upload: { ...IDLE.upload, rejected: 3 } };
+
+  // QA (redesign R13): the line showed under a meeting's header only, never on Home or Settings,
+  // so a person who stopped a call and stayed on Home was not told it was not saved.
+  it('says it on Home and on Settings, whichever meeting the lines were from', () => {
+    for (const route of [{ name: 'home' }, { name: 'settings' }] as const) {
+      fakes.shell = shell(refusedIdle, LIVE(A), route);
+      const html = banner();
+      expect(html).toContain('role="alert"');
+      expect(html).toContain('Roger&#x27;s server refused 3 lines for good');
+    }
+  });
+
+  it("says it on another meeting's page, which has no line of its own", () => {
+    fakes.shell = shell(refusedIdle, LIVE(A), { name: 'meeting', meetingId: B });
+    expect(banner()).toContain('refused 3 lines for good');
+  });
+
+  it('leaves it to the meeting page whose header already says it, so it shows once', () => {
+    // Both decide through captureStatusFor: this page is the meeting main describes (m2-capture-status.ts).
+    fakes.shell = shell(refusedIdle, LIVE(A), { name: 'meeting', meetingId: A });
+    expect(banner()).toBe('');
+    const header = renderToStaticMarkup(
+      createElement(only<MeetingSlotProps>(contributions.meetingBanner).component, {
+        meetingId: A,
+      }),
+    );
+    expect(header).toContain('refused 3 lines for good');
+  });
+
+  it('says nothing when none was refused', () => {
+    fakes.shell = shell(IDLE, LIVE(A), { name: 'home' });
+    expect(banner()).toBe('');
+  });
+});
+
 describe('lines the server refused for good', () => {
   const entry = only<MeetingSlotProps>(contributions.meetingBanner);
   const line = (meetingId: string): string =>
