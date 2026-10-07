@@ -310,6 +310,7 @@ describe('scoreRuns and readSummaryRows', () => {
           adapters: registryAdapters({ logger, guards: DEFAULT_COST_GUARDS }),
           opensPerMinute: 4,
           retryBackoffMs: { first: 2_000, max: 60_000 },
+          silenceGate: null,
           timers,
           out: (line) => lines.push(line),
         },

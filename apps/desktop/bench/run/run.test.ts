@@ -19,6 +19,14 @@ import { ManualTimers } from './testing/manualTimers';
 
 const T0 = Date.UTC(2026, 9, 6, 10, 0, 0);
 
+/** The desktop's default silence gate (costGuards.ts), as cli.ts hands it over. */
+const GATE: RunDeps['silenceGate'] = {
+  closeAfterMs: 30_000,
+  preRollMs: 1_000,
+  reopensPerMeeting: 120,
+  reopenBufferMs: 3_000,
+};
+
 describe('runBench', () => {
   let bench = '';
 
@@ -38,7 +46,12 @@ describe('runBench', () => {
 
   function start(
     options: Partial<RunOptions> = {},
-    setup: { api?: ScriptedTokenApi; vendor?: FakeVendorScript; opensPerMinute?: number } = {},
+    setup: {
+      api?: ScriptedTokenApi;
+      vendor?: FakeVendorScript;
+      opensPerMinute?: number;
+      silenceGate?: RunDeps['silenceGate'];
+    } = {},
   ): {
     timers: ManualTimers;
     vendor: FakeVendor;
@@ -56,6 +69,7 @@ describe('runBench', () => {
       adapters: vendor.adapters,
       opensPerMinute: setup.opensPerMinute ?? 4,
       retryBackoffMs: { first: 2_000, max: 60_000 },
+      silenceGate: setup.silenceGate === undefined ? GATE : setup.silenceGate,
       timers,
       out: (line) => lines.push(line),
     };
@@ -281,22 +295,39 @@ describe('runBench', () => {
     expect(vendor.opens).toBe(0);
   });
 
-  it('stops a --gate run before any token or session until the silence gate lands', async () => {
+  it('refuses --gate before any token or run folder when the desktop has the gate off', async () => {
     await items(2);
+    const { vendor, api, done } = start({ gate: true }, { silenceGate: null });
+
+    await expect(done).rejects.toThrow(/--gate needs the silence gate on: sttSilenceCloseSeconds/);
+    expect(api.calls).toBe(0);
+    expect(vendor.opens).toBe(0);
+    await expect(readdir(join(bench, 'runs'))).rejects.toThrow(/ENOENT/);
+  });
+
+  it("replays --gate through the desktop's gate, its prefetched token fresh by each token's lifetime", async () => {
+    // Talk, 100 s of silence (closed once the session is a minute old), talk again.
+    const audio = new Int16Array(102_000 * 16);
+    audio.set(tone(1_000), 0);
+    audio.set(tone(1_000), 101_000 * 16);
+    await writeTestItem(bench, 'item-1', { audio: { mic: audio } });
+    // freshTokens: each lives 30 s (expires_in), so the run fetches anew 10 s before that.
     const { vendor, api, lines, done } = start({ gate: true });
 
     const outcome = await done;
 
-    expect(outcome).toMatchObject({ ok: 0, failed: 0, runJson: null });
-    expect(outcome.stopped).toMatch(/--gate needs the silence gate \(M3-T20\)/);
-    expect(api.calls).toBe(0);
-    expect(vendor.opens).toBe(0);
-    // The stop's reason, not "no item got a token from the API", which would send the owner
-    // looking at the API.
-    expect(lines.at(-1)).toMatch(
-      /stopped before any item got a token: --gate needs the silence gate .*; nothing was written/,
-    );
-    await expect(readdir(join(bench, 'runs', outcome.runId))).rejects.toThrow(/ENOENT/);
+    expect(outcome).toMatchObject({ ok: 1, failed: 0, stopped: null });
+    expect(lines[0]).toMatch(/keyterms on, through the silence gate$/);
+    const run = await readRun(runPaths(bench, outcome.runId).runJson);
+    expect(run.gate).toBe(true);
+    const sessions = run.items[0]?.attempts[0]?.streams[0]?.sessions ?? [];
+    expect(sessions.map((session) => [session.cause, session.itemOffsetMs])).toEqual([
+      ['start', 0],
+      ['gate', 100_000],
+    ]);
+    // Start's token, the one prefetched at the close (60 s), refreshed at 80 s and 100 s.
+    expect(api.calls).toBe(4);
+    expect(vendor.streams[1]?.options.accessToken).toBe('tok-4');
   });
 
   it('writes nothing when no item ever got a token', async () => {

@@ -17,7 +17,7 @@ import type { BenchAdapterFactory } from './adapters';
 import { BenchCredentialSource, RunStoppedError } from './credentials';
 import { type BenchItem, listItems, readItemAudio } from './items';
 import { BenchOpener } from './opens';
-import { type ItemAttempt, replayItemAttempt } from './replay';
+import { type ItemAttempt, type ReplayGate, replayItemAttempt } from './replay';
 import type { BenchTimers } from './timers';
 
 /**
@@ -37,10 +37,7 @@ export interface RunOptions {
   itemIds: readonly string[] | null;
   /** False for `--no-keyterms`. */
   keyterms: boolean;
-  /**
-   * `--gate`: replay through M3-T20's silence gate. Parsed and recorded here so that M3-T20 adds
-   * the gated replay in replay.ts alone; until then replay.ts refuses it.
-   */
+  /** `--gate`: replay through M3-T20's silence gate, at the desktop's settings (RunDeps). */
   gate: boolean;
   /** Items replayed at once; each holds one session per stream. */
   parallel: number;
@@ -54,6 +51,13 @@ export interface RunDeps {
   opensPerMinute: number;
   /** Wait before a retry, doubling per retry up to `max`: the desktop's reopen backoff. */
   retryBackoffMs: { first: number; max: number };
+  /**
+   * The desktop's silence gate settings, for `--gate` (costGuards.ts: sttSilenceCloseMs,
+   * sttSilencePreRollMs, sttSilenceReopensPerMeeting and sttReopenBufferMs), so run F measures
+   * the gate the app runs. Null when sttSilenceCloseSeconds is 0, the gate off: a `--gate` run
+   * then refuses to start.
+   */
+  silenceGate: Omit<ReplayGate, 'tokenExpiresAtMs'> | null;
   timers: BenchTimers;
   /** Progress for the person running it: ids, counts and vendor errors, never transcript text. */
   out: (line: string) => void;
@@ -70,6 +74,13 @@ export interface RunOutcome {
 }
 
 export async function runBench(options: RunOptions, deps: RunDeps): Promise<RunOutcome> {
+  if (options.gate && deps.silenceGate === null) {
+    // Before any token or run folder: a run labelled `gate` must have run through the gate.
+    throw new Error(
+      '--gate needs the silence gate on: sttSilenceCloseSeconds (ROGER_STT_SILENCE_CLOSE_SECONDS) ' +
+        'is 0 in the desktop settings',
+    );
+  }
   const items = await listItems(deps.benchDir, options.itemIds);
   // Every clip is decoded once before the first session opens: a WAV in the wrong format stops
   // the run here, naming the file, instead of halfway through with sessions billed.
@@ -82,6 +93,7 @@ class BenchRun {
   private readonly paths: RunPaths;
   private readonly startedAt: string;
   private readonly credentials: BenchCredentialSource;
+  private readonly lifetimes: TokenLifetimes;
   private readonly opener: BenchOpener;
   private readonly abort = new AbortController();
   private readonly finished = new Map<string, RunItem>();
@@ -97,14 +109,18 @@ class BenchRun {
   ) {
     this.paths = runPaths(deps.benchDir, runId);
     this.startedAt = new Date(deps.timers.now()).toISOString();
-    this.credentials = new BenchCredentialSource(deps.api, { keyterms: options.keyterms });
+    this.lifetimes = new TokenLifetimes(deps.timers);
+    this.credentials = new BenchCredentialSource(this.lifetimes.watch(deps.api), {
+      keyterms: options.keyterms,
+    });
     this.opener = new BenchOpener({ opensPerMinute: deps.opensPerMinute }, deps.timers);
   }
 
   async run(): Promise<RunOutcome> {
     this.deps.out(
       `run ${this.runId}: ${this.items.length} items, ${this.options.parallel} at a time, ` +
-        `keyterms ${this.options.keyterms ? 'on' : 'off'}`,
+        `keyterms ${this.options.keyterms ? 'on' : 'off'}` +
+        (this.options.gate ? ', through the silence gate' : ''),
     );
     const queue = [...this.items];
     const worker = async (): Promise<void> => {
@@ -155,7 +171,7 @@ class BenchRun {
           adapters: this.deps.adapters,
           timers: this.deps.timers,
           signal: this.abort.signal,
-          gate: this.options.gate,
+          gate: this.replayGate(),
         });
       } catch (error) {
         if (!(error instanceof RunStoppedError)) throw error;
@@ -205,6 +221,16 @@ class BenchRun {
     this.abort.abort(reason);
   }
 
+  /** The gate the replay runs, `--gate` only: the desktop's settings and each token's lifetime. */
+  private replayGate(): ReplayGate | null {
+    const settings = this.deps.silenceGate;
+    if (!this.options.gate || settings === null) return null;
+    return {
+      ...settings,
+      tokenExpiresAtMs: (accessToken) => this.lifetimes.expiresAtMs(accessToken),
+    };
+  }
+
   private backoffMs(retry: number): number {
     const { first, max } = this.deps.retryBackoffMs;
     return Math.min(first * 2 ** (retry - 1), max);
@@ -244,11 +270,39 @@ class BenchRun {
   }
 }
 
+/**
+ * When each token stops opening sessions, from its `expires_in` as it arrived: the gated replay
+ * keeps its prefetched token fresh by it (ReplayGate). BenchCredentials carries no expiry and
+ * credentials.ts has no later writer, so the API the credentials read is watched here instead.
+ */
+class TokenLifetimes {
+  private readonly expiresAt = new Map<string, number>();
+
+  constructor(private readonly timers: BenchTimers) {}
+
+  watch(api: SttTokenApi): SttTokenApi {
+    return {
+      getSttToken: async () => {
+        const token = await api.getSttToken();
+        // 0 or missing: no known lifetime (the API's fake vendor never expires its empty token).
+        if (Number.isFinite(token.expires_in) && token.expires_in > 0) {
+          this.expiresAt.set(token.access_token, this.timers.now() + token.expires_in * 1000);
+        }
+        return token;
+      },
+    };
+  }
+
+  expiresAtMs(accessToken: string): number | null {
+    return this.expiresAt.get(accessToken) ?? null;
+  }
+}
+
 function summaryLine(outcome: RunOutcome): string {
   const counts = `${outcome.ok} ok, ${outcome.failed} failed`;
   if (outcome.runJson === null) {
-    // A stop before the first token (a refused --gate, an open budget no item fits) is not the
-    // API's doing: say why, or the owner goes looking at the API.
+    // A stop before the first token (an open budget no item fits) is not the API's doing: say
+    // why, or the owner goes looking at the API.
     const why =
       outcome.stopped === null
         ? 'no item got a token from the API'
