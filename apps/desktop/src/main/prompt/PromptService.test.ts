@@ -46,6 +46,7 @@ const ACCOUNT = 'rahul@linkt.ai';
 const MEETING = '3f2b8c1e-4d5a-4b6c-8d7e-9f0a1b2c3d4e';
 const EARLIER_MEETING = '0a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d';
 const ZOOM: CallApp = { bundleId: 'us.zoom.xos', name: 'Zoom' };
+const TEAMS: CallApp = { bundleId: 'com.microsoft.teams2', name: 'Microsoft Teams' };
 const MIC_DENIED =
   'Microphone access is denied. Allow Roger under System Settings → Privacy & Security → Microphone.';
 
@@ -911,6 +912,18 @@ describe('PromptService', () => {
       h.offerCall();
       expect(h.cards()).toEqual([]);
       expect(h.callRows()).toEqual([]);
+    });
+
+    it('offer_call_detected_dropped_while_a_prompt_start_waits_for_the_window', async () => {
+      const h = harness({ connected: false });
+      h.offerCall();
+      await h.service.act({ cardId: cardId(h), action: 'take_notes' });
+      // The window has not taken the request: capture is still idle, the start is this service's.
+      expect(h.capture.phase).toBe('idle');
+      h.offerCall(TEAMS);
+
+      expect(h.onlyCard()).toMatchObject({ app: ZOOM, phase: 'taking_notes' });
+      expect(h.callRows()).toHaveLength(1);
     });
 
     it('offer_call_detected_dropped_while_a_calendar_card_shows', () => {
