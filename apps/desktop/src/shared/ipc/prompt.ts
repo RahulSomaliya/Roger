@@ -59,8 +59,15 @@ export interface PromptApi {
   getState(): Promise<PromptPanelState>;
   onStateChanged(listener: (state: PromptPanelState) => void): Unsubscribe;
   /**
-   * Runs a click. Resolves once main has taken it; what follows (the card taking notes, an error
-   * on it, the card gone) arrives as a new state. Rejects only for a request that is not one.
+   * Runs a click. Resolves once main has run it, which for a start can take a while: once capture
+   * has the request, after Join's link opens and after a note being recorded stops, whose uploads
+   * may drain for up to 15 s. The card's `taking_notes` is sent before that wait, and everything
+   * after it (an error on the card, the card gone) arrives as a new state: render from the state,
+   * never hold a button on this promise.
+   *
+   * Rejects for a request that is not one (promptIpc.ts), a sender that is not the panel's page,
+   * and an action main could not log (calendar.sqlite cannot be written: a full or read-only
+   * disk). The card then stays as main last sent it.
    */
   act(request: PromptActionRequest): Promise<void>;
 }

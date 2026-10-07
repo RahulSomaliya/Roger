@@ -802,6 +802,19 @@ describe('PromptService', () => {
       expect(h.row(first)?.action).toBe('dismissed');
       expect(h.row(second)?.action).toBe('dismissed');
     });
+
+    it('rejects a Dismiss it cannot log and keeps the card, as PromptApi.act says', async () => {
+      const standup = call('standup', 1);
+      const h = harness({ events: [standup] });
+      h.offerCalendar(standup);
+      failWrites(h, standup);
+
+      await expect(h.service.act({ cardId: cardId(h), action: 'dismiss' })).rejects.toThrow(
+        'database or disk is full',
+      );
+      expect(h.onlyCard()).toMatchObject({ phase: 'open' });
+      expect(h.row(standup)?.action).toBeNull();
+    });
   });
 
   describe('a stale calendar', () => {

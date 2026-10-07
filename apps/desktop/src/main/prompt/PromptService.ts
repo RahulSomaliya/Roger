@@ -321,8 +321,11 @@ export class PromptService implements PromptOfferPort {
 
   /**
    * Runs a click from the panel. Resolves once the action is done or, for a start, once capture
-   * has the request; the outcome follows in the state. An action on a card that is gone (it
-   * expired as the user clicked) is logged and ignored.
+   * has the request: after Join's link opens and a note being recorded stops (up to 15 s of upload
+   * drain, CaptureService.stop); the outcome follows in the state. An action on a card that is
+   * gone (it expired as the user clicked) is logged and ignored. Throws when its row cannot be
+   * written (PromptLog.recordAction), leaving the card as it was. The panel's contract,
+   * `PromptApi.act` in shared/ipc/prompt.ts, says the same: change both together.
    */
   async act(request: PromptActionRequest): Promise<void> {
     const card = this.cards.find((candidate) => candidate.id === request.cardId);
