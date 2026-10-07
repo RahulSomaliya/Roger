@@ -1,6 +1,6 @@
 # Redesign: Roger in the Course Player style
 
-**Phase:** after 2 · **Status:** draft, waiting for one sign-off · **Owner:** Rahul ·
+**Phase:** after 2 · **Status:** signed off 2026-10-07 (all 8 calls as pre-filled) · **Owner:** Rahul ·
 **Plan written:** 2026-10-07 · **Closed:** -
 
 ## Goal
@@ -105,6 +105,8 @@ Each line: what goes, then why. "Away" is what moves one click away instead of d
 - Stays: the next meeting, Start notes or Stop, Open Roger, Quit Roger.
 
 ## 2. Calls to sign off (pick pre-filled)
+
+Signed off by Rahul on 2026-10-07: "OK on the redesign calls". All eight stand as written below.
 
 1. Sidebar: **delete it**; a slim header (recording chip, Settings icon) and Home's "Earlier" list replace it. (Else: keep a sidebar of recent meetings only.)
 2. Meeting page: **one column at every width, one tab row My notes · AI notes · Transcript · Chat.** (Else: the transcript as a side column above 1280 px.)
