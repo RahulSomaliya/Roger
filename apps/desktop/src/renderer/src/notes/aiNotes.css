@@ -41,7 +41,15 @@
   gap: 8px;
 }
 
-/* Right-aligned, with or without the template line beside them. */
+/* Where a generate stands, over the template line: beside the Stop or Cancel they go with. */
+.ai-notes-bar-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+/* Right-aligned, with or without the text beside them. */
 .ai-notes-bar .ai-notes-actions {
   margin-left: auto;
 }

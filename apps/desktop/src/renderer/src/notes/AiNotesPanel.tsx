@@ -27,7 +27,6 @@ import {
   type FailureBanner,
   layoutAiNotes,
   type Loadable,
-  type PendingPrompt,
 } from './aiNotesActions';
 import type { AiNotesStreamView } from './aiNotesStream';
 import { CitationChipButton } from './CitationChip';
@@ -177,9 +176,9 @@ export function AiNotesView({ meetingId, state, actions, suggested }: AiNotesVie
           actions={actions}
         />
       )}
-      {layout.prompt === null ? null : (
-        <Prompt prompt={layout.prompt} state={state} busy={busy} actions={actions} />
-      )}
+      {layout.prompt?.kind === 'ask' ? (
+        <AskWhichCall state={state} busy={busy} actions={actions} />
+      ) : null}
       {pickerShown ? (
         <TemplatePicker
           question={
@@ -265,10 +264,13 @@ interface AiNotesBarProps {
   onRegenerate: () => void;
 }
 
-/** The notes' template and lines to check, and Regenerate, Restore and Stop. */
+/**
+ * Above the notes: where a pending generate stands (beside its Stop or Cancel), the notes'
+ * template and lines to check, and Regenerate and Restore.
+ */
 function AiNotesBar({ state, layout, actions, onRegenerate }: AiNotesBarProps) {
   const busy = state.busy !== null;
-  const { about } = layout;
+  const { about, prompt } = layout;
   const name = about === null ? null : templateName(state.templates, about.templateId);
   const meta = [
     name === null ? null : `${name} template`,
@@ -278,7 +280,21 @@ function AiNotesBar({ state, layout, actions, onRegenerate }: AiNotesBarProps) {
   ].filter((part) => part !== null);
   return (
     <div className="ai-notes-bar">
-      {meta.length === 0 ? null : <p className="ai-notes-meta">{meta.join(', ')}</p>}
+      <div className="ai-notes-bar-text">
+        {prompt === null || prompt.kind === 'ask' ? null : (
+          <p
+            className={
+              prompt.kind === 'running'
+                ? 'ai-notes-progress ai-notes-progress-running'
+                : 'ai-notes-progress'
+            }
+            role="status"
+          >
+            {prompt.text}
+          </p>
+        )}
+        {meta.length === 0 ? null : <p className="ai-notes-meta">{meta.join(', ')}</p>}
+      </div>
       <div className="ai-notes-actions">
         {layout.canRegenerate ? (
           <button type="button" className="note-button" disabled={busy} onClick={onRegenerate}>
@@ -315,46 +331,38 @@ function AiNotesBar({ state, layout, actions, onRegenerate }: AiNotesBarProps) {
   );
 }
 
-interface PromptProps {
-  prompt: PendingPrompt;
+interface AskWhichCallProps {
   state: AiNotesState;
   busy: boolean;
   actions: AiNotesPanelActions;
 }
 
-/** Where the pending generate stands, or its question. */
-function Prompt({ prompt, state, busy, actions }: PromptProps) {
-  if (prompt.kind === 'ask') {
-    // Roger could not tell at Stop (main applied the same rule, with the remembered picks the page
-    // cannot read): nothing is marked as suggested here.
-    return (
-      <TemplatePicker
-        question="Which kind of call was this?"
-        hint="Roger writes the AI notes in the shape of the call, and remembers your pick for meetings with the same title."
-        templates={state.templates}
-        suggested={null}
-        disabled={busy}
-        onPick={(templateId) => {
-          void actions.generate(templateId);
-        }}
-        onReload={() => {
-          actions.reloadTemplates();
-        }}
-        dismiss={{
-          label: 'Not now',
-          onDismiss: () => {
-            actions.cancel();
-          },
-        }}
-      />
-    );
-  }
-  const className =
-    prompt.kind === 'running' ? 'ai-notes-progress ai-notes-progress-running' : 'ai-notes-progress';
+/**
+ * "Which kind of call was this?": the pending generate needs a template. Roger could not tell at
+ * Stop (main applied the same rule, with the remembered picks the page cannot read), so nothing is
+ * marked as suggested here. The answer keeps the generate's run id (main's `generate`).
+ */
+function AskWhichCall({ state, busy, actions }: AskWhichCallProps) {
   return (
-    <p className={className} role="status">
-      {prompt.text}
-    </p>
+    <TemplatePicker
+      question="Which kind of call was this?"
+      hint="Roger writes the AI notes in the shape of the call, and remembers your pick for meetings with the same title."
+      templates={state.templates}
+      suggested={null}
+      disabled={busy}
+      onPick={(templateId) => {
+        void actions.generate(templateId);
+      }}
+      onReload={() => {
+        actions.reloadTemplates();
+      }}
+      dismiss={{
+        label: 'Not now',
+        onDismiss: () => {
+          actions.cancel();
+        },
+      }}
+    />
   );
 }
 

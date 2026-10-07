@@ -201,10 +201,10 @@ describe('AiNotesView', () => {
     const html = render(
       state({ pending: pending({ phase: 'waiting_for_lines', waitingLines: 12 }) }),
     );
+    // The line and the Cancel that ends its wait share the bar.
     expect(html).toContain(
-      '<p class="ai-notes-progress" role="status">Notes will generate when 12 lines finish uploading.</p>',
+      '<div class="ai-notes-bar"><div class="ai-notes-bar-text"><p class="ai-notes-progress" role="status">Notes will generate when 12 lines finish uploading.</p></div><div class="ai-notes-actions"><button type="button" class="note-button">Cancel</button></div></div>',
     );
-    expect(html).toContain('>Cancel</button>');
     expect(html).not.toContain('Generate notes');
   });
 
