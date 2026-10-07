@@ -1,6 +1,6 @@
 import { realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import type { Page } from 'playwright-core';
+import type { Locator, Page } from 'playwright-core';
 import { afterAll, beforeAll, expect, it } from 'vitest';
 import type { ForcedTheme } from '../preview/control';
 import { LIVE_CALL, LIVE_CALL_FIRST_LINES, PAST_MEETING } from '../preview/scenarios';
@@ -122,6 +122,39 @@ async function newestLineInBox(page: Page): Promise<{ inside: boolean; fromBotto
       fromBottom: box.scrollHeight - box.clientHeight - box.scrollTop,
     };
   }, LINES);
+}
+
+type Speaker = 'Me' | 'Them';
+
+/**
+ * A speaker's lines as M2-T13's Electron smoke test finds them (`linesOf` in e2e/capture.e2e.ts):
+ * by the region's label and the speaker's word, never by class. That test needs Electron on a Mac,
+ * so this browser QA checks its locator against LiveTranscript too; keep the two in step.
+ */
+function smokeTestLines(page: Page, speaker: Speaker): Locator {
+  return page
+    .locator('[aria-label="Transcript"] p')
+    .filter({ has: page.getByText(speaker, { exact: true }) });
+}
+
+/**
+ * How many of a speaker's lines a person could see, counted as the smoke test counts them after
+ * Stop (`visibleLines` in e2e/capture.e2e.ts): the line has a size, its centre is inside the
+ * viewport, and `document.elementFromPoint` there is the line or inside it.
+ */
+function visibleSmokeTestLines(page: Page, speaker: Speaker): Promise<number> {
+  return smokeTestLines(page, speaker).evaluateAll(
+    (lines) =>
+      lines.filter((line) => {
+        const box = line.getBoundingClientRect();
+        if (box.width === 0 || box.height === 0) return false;
+        const x = box.left + box.width / 2;
+        const y = box.top + box.height / 2;
+        if (x < 0 || y < 0 || x >= window.innerWidth || y >= window.innerHeight) return false;
+        const top = document.elementFromPoint(x, y);
+        return top !== null && (top === line || line.contains(top));
+      }).length,
+  );
 }
 
 async function scrollTopOf(page: Page): Promise<number> {
@@ -319,13 +352,8 @@ it(
         expect(await page.locator(PAGE_PANEL).getAttribute('data-following')).toBe('true');
         expect(await count(page, JUMP)).toBe(0);
         // M2-T13's Electron smoke test finds lines by these: the region's label, a speaker word.
-        for (const speaker of ['Me', 'Them']) {
-          expect(
-            await page
-              .locator('[aria-label="Transcript"] p')
-              .filter({ has: page.getByText(speaker, { exact: true }) })
-              .count(),
-          ).toBeGreaterThan(0);
+        for (const speaker of ['Me', 'Them'] as const) {
+          expect(await smokeTestLines(page, speaker).count()).toBeGreaterThan(0);
         }
         await qa.fitShellPage(page);
         await markNewestFinal(page);
@@ -420,12 +448,26 @@ it(
         expect(placed.fromBottom).toBeLessThanOrEqual(1);
         await qa.fitShellPage(page);
         await qa.expectVisible(page, '[data-qa-newest]', { within: LINES });
+        // The smoke test's checks after Stop, on its own locator: it finds exactly the final rows
+        // of each side (each drawn once, no interim, no empty text), and a person can see a line
+        // of each side in the scroll box.
+        const seen = { Me: 0, Them: 0 };
+        for (const [speaker, side] of [
+          ['Me', 'me'],
+          ['Them', 'them'],
+        ] as const) {
+          expect(await smokeTestLines(page, speaker).count()).toBe(
+            await count(page, `${FINALS}[data-speaker="${side}"]`),
+          );
+          seen[speaker] = await visibleSmokeTestLines(page, speaker);
+          expect(seen[speaker], `a ${speaker} line a person can see`).toBeGreaterThan(0);
+        }
         await shoot(
           preview,
           'After Stop',
           `stopped-${shot}`,
           `After Stop, with Roger's stop notice (${theme}, ${width})`,
-          `Every line kept (${linesBeforeStop}). The notice took height from the page (transcript box ${heightBefore} to ${heightAfter} px) and the newest line stayed in view, the box at its bottom.`,
+          `Every line kept (${linesBeforeStop}). The notice took height from the page (transcript box ${heightBefore} to ${heightAfter} px) and the newest line stayed in view, the box at its bottom. M2-T13's smoke-test locator finds exactly the final rows of each side; ${seen.Me} Me and ${seen.Them} Them lines on screen.`,
         );
 
         // New note: the next meeting's transcript, empty until someone speaks.
