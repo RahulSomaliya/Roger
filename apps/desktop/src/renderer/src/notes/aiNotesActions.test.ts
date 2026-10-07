@@ -526,6 +526,20 @@ describe('the session', () => {
     expect(session.getState().actionError).toBeNull();
   });
 
+  it('never shows a request path or an address when the API cannot be reached (QA, R13)', async () => {
+    const main = new FakeMain();
+    main.api.generateNotes.mockRejectedValueOnce(
+      new Error(
+        "Error invoking remote method 'notes:generate': ApiError: POST /v1/meetings/m-1/notes/generate failed: connect ECONNREFUSED 127.0.0.1:8000",
+      ),
+    );
+    const session = await opened(main);
+    expect(await session.generate('standup')).toBe(false);
+    expect(session.getState().actionError).toBe(
+      'Roger could not start writing the notes: Roger could not reach its server.',
+    );
+  });
+
   it('Stop does not wait for the API, and says so when the cancel fails', async () => {
     const main = new FakeMain();
     main.pending = pendingGenerate({ phase: 'running' });

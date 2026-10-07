@@ -1,9 +1,11 @@
+import { daysAgo, meetingDayLabel } from '../app/labels';
 import { formatClock } from '../clock';
 
 /**
  * When a meeting ran, as Home's list and the meeting header say it. The clock is formatClock's
- * (12-hour, lowercase, never the Mac's 24-hour setting: docs/design.md, Copy); the dates follow
- * the Mac's own order. `locale` is for tests, and orders the dates only; the app passes none.
+ * (12-hour, lowercase, never the Mac's 24-hour setting) and the date is Home's `meetingDayLabel`
+ * ("Mon 5 Oct"), both pinned to English (docs/design.md, Copy). Never `toLocaleDateString` here:
+ * the system locale wrote "Mon, Oct 5" on an English-US Mac, a second form for the same day.
  */
 
 interface MeetingSpan {
@@ -12,25 +14,12 @@ interface MeetingSpan {
   endedAt: string | null;
 }
 
-const DAY_MS = 86_400_000;
-
-/** Whole local days from `date` to `now`: 0 today, 1 yesterday. */
-function daysAgo(date: Date, now: Date): number {
-  const midnight = (d: Date): number =>
-    new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
-  // Rounded: a day with a daylight saving change is 23 or 25 hours long.
-  return Math.round((midnight(now) - midnight(date)) / DAY_MS);
-}
-
-/** "Today", "Yesterday", a weekday and date this year, or a date with its year. */
-function dayName(date: Date, now: Date, locale: string | undefined, leading: boolean): string {
+/** "Today", "Yesterday" (lowercase mid-sentence), else Home's "Mon 5 Oct". */
+function dayName(date: Date, now: Date, leading: boolean): string {
   const ago = daysAgo(date, now);
   if (ago === 0) return leading ? 'Today' : 'today';
   if (ago === 1) return leading ? 'Yesterday' : 'yesterday';
-  if (date.getFullYear() !== now.getFullYear()) {
-    return date.toLocaleDateString(locale, { day: 'numeric', month: 'short', year: 'numeric' });
-  }
-  return date.toLocaleDateString(locale, { weekday: 'short', day: 'numeric', month: 'short' });
+  return meetingDayLabel(date.toISOString(), now);
 }
 
 /**
@@ -38,14 +27,9 @@ function dayName(date: Date, now: Date, locale: string | undefined, leading: boo
  * it ended. A meeting with no end that is not recording (a crash left it open, until main closes
  * it at the next start) gives only its start.
  */
-export function meetingTimeLabel(
-  meeting: MeetingSpan,
-  recording: boolean,
-  now: Date,
-  locale?: string,
-): string {
+export function meetingTimeLabel(meeting: MeetingSpan, recording: boolean, now: Date): string {
   const start = new Date(meeting.startedAt);
-  const startDay = dayName(start, now, locale, !recording);
+  const startDay = dayName(start, now, !recording);
   if (recording) {
     const time = formatClock(start);
     return daysAgo(start, now) === 0 ? `Started ${time}` : `Started ${startDay}, ${time}`;
@@ -54,5 +38,5 @@ export function meetingTimeLabel(
   if (meeting.endedAt === null) return from;
   const end = new Date(meeting.endedAt);
   if (daysAgo(end, now) === daysAgo(start, now)) return `${from} to ${formatClock(end)}`;
-  return `${from} to ${dayName(end, now, locale, false)}, ${formatClock(end)}`;
+  return `${from} to ${dayName(end, now, false)}, ${formatClock(end)}`;
 }

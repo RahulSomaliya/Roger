@@ -94,7 +94,10 @@ describe('loading the list', () => {
     const load = editor.load();
     reads[0]!.reject(ipcError('vocabulary:get', OFFLINE));
     await load;
-    expect(editor.getSnapshot()).toEqual({ phase: 'load-failed', error: OFFLINE });
+    expect(editor.getSnapshot()).toEqual({
+      phase: 'load-failed',
+      error: 'Roger could not reach its server.',
+    });
   });
 
   it('reads again on retry, and the list shows once the API answers', async () => {
@@ -135,7 +138,10 @@ describe('saving is refused unless the list was read', () => {
     await editor.save();
 
     expect(api.setVocabulary).not.toHaveBeenCalled();
-    expect(editor.getSnapshot()).toEqual({ phase: 'load-failed', error: OFFLINE });
+    expect(editor.getSnapshot()).toEqual({
+      phase: 'load-failed',
+      error: 'Roger could not reach its server.',
+    });
     expect(canSave(editor.getSnapshot())).toBe(false);
   });
 
@@ -407,7 +413,7 @@ describe('saving', () => {
       draft: ['Linkt', 'Roger', 'Granola'],
       saved: ['Linkt', 'Roger'],
       saving: false,
-      saveError: 'PUT /v1/vocabulary failed: connect ECONNREFUSED 127.0.0.1:8000',
+      saveError: 'Roger could not reach its server.',
     });
     expect(canSave(editor.getSnapshot())).toBe(true);
     // A failed save is not retried by itself: the page says so and offers Try again.
@@ -432,7 +438,7 @@ describe('saving', () => {
     await settle();
     expect(editing(editor)).toMatchObject({
       draft: ['Linkt', 'Roger', 'Granola', 'Deepgram'],
-      saveError: 'PUT /v1/vocabulary failed: offline',
+      saveError: 'Roger could not reach its server.',
     });
   });
 
