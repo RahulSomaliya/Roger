@@ -88,6 +88,39 @@ describe('the capture warnings in the banner slot', () => {
   });
 });
 
+describe('lines the server refused for good', () => {
+  const entry = only<MeetingSlotProps>(contributions.meetingBanner);
+  const line = (meetingId: string): string =>
+    renderToStaticMarkup(createElement(entry.component, { meetingId }));
+  const refused = (meetingId: string, rejected: number): CaptureStatus => ({
+    ...recording(meetingId),
+    warnings: [],
+    upload: { ...IDLE.upload, rejected },
+  });
+  const LIVE = (id: string): CaptureMeeting => ({ id, startedAt: '2026-10-07T09:00:00.000Z' });
+
+  it('shows a loud problem line on the page of the meeting main describes', () => {
+    fakes.shell = shell(refused(A, 2), LIVE(A));
+    const html = line(A);
+    expect(html).toContain('role="alert"');
+    expect(html).toContain('Roger&#x27;s server refused 2 lines for good');
+  });
+
+  it('keeps showing after Stop: the lines are still not on the server', () => {
+    fakes.shell = shell({ ...IDLE, upload: { ...IDLE.upload, rejected: 1 } }, LIVE(A));
+    expect(line(A)).toContain('refused 1 line for good');
+  });
+
+  it('shows nothing when none was refused, before main answers, or on another meeting', () => {
+    fakes.shell = shell(refused(A, 0), LIVE(A));
+    expect(line(A)).toBe('');
+    fakes.shell = shell(null);
+    expect(line(A)).toBe('');
+    fakes.shell = shell(refused(A, 2), LIVE(A));
+    expect(line(B)).toBe('');
+  });
+});
+
 describe("the meeting page's capture status", () => {
   const entry = only<MeetingSlotProps>(contributions.meetingCaptureStatus);
   const region = (meetingId: string): string =>

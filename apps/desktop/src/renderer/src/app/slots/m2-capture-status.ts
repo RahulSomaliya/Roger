@@ -1,6 +1,8 @@
 // Stub from M4-S1; owned by M2-T20a.
 import { createElement } from 'react';
 import { StreamStatus } from '../../components/capture/StreamStatus';
+import { refusedLinesProblem } from '../../components/capture/captureProblems';
+import { ProblemLine } from '../../components/capture/ProblemLine';
 import { WarningBanner } from '../../components/capture/WarningBanner';
 import { captureStatusFor } from '../../meeting/liveMeeting';
 import { useShell } from '../ShellContext';
@@ -28,6 +30,17 @@ function MeetingCaptureStatus({ meetingId }: MeetingSlotProps) {
 }
 
 /**
+ * Lines the server refused for good (house rule 1), under the header of the meeting main describes.
+ * The old capture panel said it in its "Postgres" row; nothing else on the page does.
+ */
+function RefusedLines({ meetingId }: MeetingSlotProps) {
+  const { capture, captureMeeting } = useShell();
+  const status = captureStatusFor(meetingId, captureMeeting, capture.status);
+  const problem = status === null ? null : refusedLinesProblem(status.upload);
+  return problem === null ? null : createElement(ProblemLine, { loud: true }, problem);
+}
+
+/**
  * What M2-T20a mounts: the capture warnings (banner) and the meeting's capture status. A banner
  * entry makes the shell draw its banner box on every page, even with nothing in it.
  * Slot names and their props: ../slotRegistry.ts.
@@ -35,4 +48,6 @@ function MeetingCaptureStatus({ meetingId }: MeetingSlotProps) {
 export const contributions: SlotContributions = {
   banner: [{ id: 'm2-capture-warnings', order: 0, component: CaptureWarnings }],
   meetingCaptureStatus: [{ id: 'm2-capture-status', order: 0, component: MeetingCaptureStatus }],
+  // Equal orders go by id, and `m2-` sorts before M5's consent line: a loss comes first.
+  meetingBanner: [{ id: 'm2-upload-refused', order: 0, component: RefusedLines }],
 };
