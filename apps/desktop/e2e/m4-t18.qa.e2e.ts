@@ -588,7 +588,10 @@ async function shootChecked(
 }
 
 const PANEL = '#m4-t18-harness .ai-notes';
-/** The editor's doc. The streamed lines carry its class too, to look alike: never select by it alone. */
+/**
+ * The editor's doc. The streamed lines carry its class too, to look alike, and come first: never
+ * select by the class alone (the trap on StreamedNotes in AiNotesPanel.tsx).
+ */
 const EDITOR = `${PANEL} .ai-notes-editor .note-editor-content`;
 
 beforeAll(async () => {

@@ -124,7 +124,7 @@ export function AiNotesView({ meetingId, state, actions, suggested }: AiNotesVie
 
   const layout = layoutAiNotes(state);
   const busy = state.busy !== null;
-  // A generate that started elsewhere (Stop, another window's pick) makes the open picker moot.
+  // A generate that started meanwhile (Stop with auto-generate on) makes the open picker moot.
   const pickerShown = picker !== null && state.pending === null && layout.stream !== 'live';
   const pick = (templateId: string): void => {
     const purpose = picker;
@@ -470,6 +470,11 @@ function ConfirmReplace({ confirm, templates, busy, actions }: ConfirmReplacePro
  * A run's lines, drawn with the editor's own styles (`.note-editor-content`) in the shape of the
  * doc the API saves (notes_generation.py): a heading per section, a bullet list of lines, each
  * line's chips after its text, and the closing "From your notes" list.
+ *
+ * Trap: this div carries the editor's class, and comes before the editor in the panel, so a
+ * selector of `.note-editor-content` alone finds the streamed lines first (browser QA read
+ * `contenteditable` from it and got null). Reach the editor as `.ai-notes-editor
+ * .note-editor-content` (e2e/m4-t18.qa.e2e.ts, `EDITOR`).
  */
 function StreamedNotes({ view, live }: { view: AiNotesStreamView; live: boolean }) {
   const empty = view.sections.length === 0 && view.fromNotes.length === 0;
