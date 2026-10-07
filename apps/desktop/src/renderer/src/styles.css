@@ -1,10 +1,66 @@
-/* Every colour, light and dark (theme/tokens.css). Rules here and in other files only read them. */
+/*
+ * The base of every screen and the primitives they share: type, space, radius, motion, focus,
+ * .btn, the problem line, tabs, menu, dialog and chip (docs/design.md is the spec; this file is
+ * the code). Colours come only from theme/tokens.css (light and dark, both OKLCH): nothing here
+ * writes a literal one, and theme/noLiteralColours.test.ts fails if it does. Space, type, radius
+ * and motion live HERE, never in tokens.css, which holds colours and shadows only.
+ *
+ * The page imports this first (App.tsx), so a screen's own sheet loads after it and wins a tie.
+ * The prompt panel is its own page and imports tokens.css only; it does not read this file.
+ */
 @import './theme/tokens.css';
 
 :root {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
-  font-size: 14px;
-  line-height: 1.45;
+  --font-sans: -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif;
+
+  /* Type: size / line-height pairs. Weights are 400 and 600, and 500 on buttons. */
+  --text-xs: 12px;
+  --leading-xs: 16px;
+  --text-sm: 14px;
+  --leading-sm: 20px;
+  --text-base: 16px;
+  --leading-base: 24px;
+  --text-lg: 18px;
+  --leading-lg: 28px;
+  --text-xl: 20px;
+  --leading-xl: 28px;
+  --text-2xl: 24px;
+  --leading-2xl: 30px;
+  --tracking-2xl: -0.015em;
+  --text-3xl: 30px;
+  --leading-3xl: 36px;
+  --tracking-3xl: -0.02em;
+  --tracking-caps: 0.06em;
+  /* Reading text (notes, AI notes, transcript, chat) never runs wider than this. */
+  --measure: 68ch;
+
+  /* Space: the 4px ladder, nothing between its steps. */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-12: 48px;
+  --space-16: 64px;
+  --space-24: 96px;
+
+  /* Radius: three, never a square corner beside a rounded one. */
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-full: 9999px;
+
+  /* Motion: only opacity and transform animate (a background change is a 150 ms hover, nothing
+     more). Exits run at about 70 % of the entrance and use ease-in. */
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-in: cubic-bezier(0.4, 0, 1, 1);
+  --dur-hover: 150ms;
+  --dur-menu: 200ms;
+  --dur-menu-leave: 140ms;
+  --dur-dialog: 260ms;
+  --dur-dialog-leave: 180ms;
+  --dur-arrive: 300ms;
+  --dur-arrive-leave: 200ms;
 }
 
 * {
@@ -15,31 +71,476 @@ body {
   margin: 0;
   background: var(--canvas);
   color: var(--ink);
+  font-family: var(--font-sans);
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+  -webkit-font-smoothing: antialiased;
 }
 
-.button {
-  min-width: 160px;
-  padding: 12px 20px;
-  border: none;
-  border-radius: 10px;
-  font-size: 16px;
-  font-weight: 650;
-  color: var(--on-accent);
+/*
+ * `[hidden]` always wins. Any rule that sets `display` on an element with the attribute (a class
+ * with `display: flex`) beats the browser's own `display: none` and the element stays on screen:
+ * a hidden transcript pane showed through, twice (M4-S4, M4-T20). Tabs hide panes with `hidden`
+ * and never unmount them (docs/design.md, Traps), so this cannot be left to each sheet.
+ */
+[hidden] {
+  display: none !important;
+}
+
+::selection {
+  background: var(--accent-soft);
+  color: var(--ink);
+}
+
+/*
+ * Focus: one ring everywhere. Inside anything that scrolls or clips (the transcript, the chat
+ * log, a menu, a tab track) the ring sits inside the box, or the overflow cuts it off.
+ */
+:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+.focus-inset:focus-visible,
+.menu :focus-visible,
+.tabs :focus-visible {
+  outline-offset: -2px;
+}
+
+/* Under reduced motion every duration and delay is zero, and JS asks matchMedia before it
+   scrolls smoothly. 0.01ms, not 0: an animation of zero length may never fire `animationend`. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-delay: 0s !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    transition-delay: 0s !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+@keyframes arrive {
+  from {
+    opacity: 0.4;
+    transform: translateY(4px);
+  }
+}
+
+@keyframes depart {
+  to {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+
+@keyframes pop-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px) scale(0.98);
+  }
+}
+
+@keyframes pop-out {
+  to {
+    opacity: 0;
+    transform: translateY(-4px) scale(0.98);
+  }
+}
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(12px) scale(0.985);
+  }
+}
+
+@keyframes leave {
+  to {
+    opacity: 0;
+    transform: translateY(12px) scale(0.985);
+  }
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes fade-out {
+  to {
+    opacity: 0;
+  }
+}
+
+/* The label a screen reader reads where the eye sees an icon or a dot. Absolute, so the nearest
+   positioned ancestor must clip it or a stray label scrolls the window (chat/chat.css). */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* Static: nothing in Roger blinks, pulses or bounces, and a pulsing dot would make every QA
+   screenshot differ. The recording chip and any "Recording" row put the word beside it. */
+.recording-dot {
+  flex-shrink: 0;
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-full);
+  background: var(--accent);
+}
+
+/* Reading column and overline */
+
+.overline {
+  font-size: var(--text-xs);
+  line-height: var(--leading-xs);
+  font-weight: 600;
+  letter-spacing: var(--tracking-caps);
+  text-transform: uppercase;
+  color: var(--ink-muted);
+}
+
+/* Buttons: <button class="btn" data-variant="primary|secondary|ghost" data-size="sm|md|lg">.
+   No data-variant reads as secondary and no data-size as md (40 px). Label first, verb first. */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  height: 40px;
+  padding: 0 var(--space-4);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  font-size: var(--text-base);
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
   cursor: pointer;
+  transition:
+    background-color var(--dur-hover) var(--ease-out),
+    opacity var(--dur-hover) var(--ease-out);
 }
 
-.button:disabled {
-  opacity: 0.55;
+.btn[data-size='sm'] {
+  height: 32px;
+  padding: 0 var(--space-3);
+  font-size: var(--text-sm);
+}
+
+/* Large is Home's Start notes and nothing else. */
+.btn[data-size='lg'] {
+  height: 48px;
+  padding: 0 var(--space-6);
+}
+
+.btn svg {
+  flex: none;
+  width: 16px;
+  height: 16px;
+}
+
+.btn[data-variant='primary'] {
+  border-color: transparent;
+  background: var(--accent);
+  color: var(--on-accent);
+  box-shadow: var(--e1);
+}
+
+.btn[data-variant='ghost'] {
+  border-color: transparent;
+  background: transparent;
+  color: var(--ink-muted);
+}
+
+.btn:hover:not(:disabled, [aria-disabled='true']) {
+  background: var(--fill);
+}
+
+.btn[data-variant='primary']:hover:not(:disabled, [aria-disabled='true']) {
+  background: var(--accent-hover);
+}
+
+.btn[data-variant='ghost']:hover:not(:disabled, [aria-disabled='true']) {
+  color: var(--ink);
+}
+
+.btn:active:not(:disabled, [aria-disabled='true']) {
+  opacity: 0.85;
+}
+
+/* A toggle that is on (a "Show hidden lines" button). */
+.btn[aria-pressed='true']:not([data-variant='primary']) {
+  background: var(--fill);
+  color: var(--ink);
+}
+
+/*
+ * Busy is not disabled. A busy button keeps its full colour, says what it is doing ("Stopping...")
+ * and carries aria-disabled="true", so it reads as working and not as "you cannot". CSS cannot
+ * stop the keyboard: Enter and Space still click it, so the handler must return early while busy
+ * (docs/design.md, Components). `disabled` means "nothing to do", and the reason shows beside it.
+ * pointer-events: none also hides it from `elementFromPoint`, so a QA click on a busy button
+ * needs the DOM click, not a point.
+ */
+.btn[aria-disabled='true'] {
+  pointer-events: none;
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  box-shadow: none;
   cursor: default;
 }
 
-.button.start {
-  background: var(--accent);
+/* Problem line: an icon, one sentence and at most one secondary action. No box, no tint, no red
+   (docs/design.md, Components). Loud ones are role="alert" and top of the page; quiet ones are
+   role="status". The icon is <Icon name="circle-alert" /> from components/ui/icons.tsx. */
+
+.problem {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  color: var(--ink);
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+  animation: arrive var(--dur-arrive) var(--ease-out) backwards;
 }
 
-.button.stop {
-  background: var(--accent);
+.problem > svg {
+  flex: none;
+  /* A 16 px icon centred on the first 20 px line. */
+  margin-top: 2px;
 }
+
+.problem-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.problem[role='alert'] {
+  font-weight: 600;
+}
+
+.problem[role='status'] {
+  color: var(--ink-muted);
+}
+
+.problem[data-leaving] {
+  animation: depart var(--dur-arrive-leave) var(--ease-in) forwards;
+}
+
+/* Tabs: a segmented track, the picked tab raised on `control`. Never more than four. No
+   transition on the picked state: a screenshot would catch it mid-change. The panes stay mounted
+   and carry `hidden` (docs/design.md, Traps). */
+
+.tabs {
+  display: inline-flex;
+  gap: var(--space-1);
+  padding: var(--space-1);
+  border-radius: var(--radius-lg);
+  background: var(--fill);
+}
+
+.tab {
+  height: 32px;
+  padding: 0 var(--space-3);
+  border: 0;
+  /* Concentric with the track: 12 px minus its 4 px padding. */
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--ink-muted);
+  font: inherit;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.tab:hover {
+  color: var(--ink);
+}
+
+.tab[aria-selected='true'] {
+  background: var(--control);
+  color: var(--ink);
+  box-shadow: var(--e1);
+}
+
+/* Menu: the rarely used actions behind a ghost trigger. Dark mode lifts `raised`, not the shadow. */
+
+.menu-anchor {
+  position: relative;
+  display: inline-block;
+}
+
+.menu {
+  position: absolute;
+  top: calc(100% + var(--space-1));
+  right: 0;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  min-width: 200px;
+  padding: var(--space-1);
+  border-radius: var(--radius-lg);
+  background: var(--raised);
+  box-shadow: var(--e2);
+  transform-origin: top right;
+  animation: pop-in var(--dur-menu) var(--ease-out);
+}
+
+.menu[data-align='start'] {
+  right: auto;
+  left: 0;
+  transform-origin: top left;
+}
+
+.menu[data-leaving] {
+  animation: pop-out var(--dur-menu-leave) var(--ease-in) forwards;
+}
+
+.menu-item {
+  display: flex;
+  align-items: center;
+  height: 32px;
+  padding: 0 var(--space-3);
+  border: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--ink-muted);
+  font: inherit;
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.menu-item:hover,
+.menu-item:focus-visible {
+  background: var(--fill);
+  color: var(--ink);
+}
+
+/*
+ * Dialog: a native <dialog> shown with showModal(), so the browser traps focus, makes the page
+ * inert and closes on Esc. Never set `display` on .dialog: that overrides the closed dialog's
+ * `display: none` and it stays on screen (the [hidden] trap again). A summary inside it is a
+ * `sunken` panel, not `fill`, which vanishes on `raised` in dark.
+ */
+
+.dialog {
+  width: min(512px, calc(100vw - 2 * var(--space-4)));
+  max-height: calc(100vh - 2 * var(--space-8));
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-lg);
+  background: var(--raised);
+  color: var(--ink);
+  box-shadow: var(--e3);
+  overflow-y: auto;
+}
+
+.dialog[open] {
+  animation: rise var(--dur-dialog) var(--ease-out);
+}
+
+.dialog[open]::backdrop {
+  background: var(--scrim);
+  animation: fade-in var(--dur-dialog) var(--ease-out);
+}
+
+.dialog[data-leaving] {
+  animation: leave var(--dur-dialog-leave) var(--ease-in) forwards;
+}
+
+.dialog[data-leaving]::backdrop {
+  animation: fade-out var(--dur-dialog-leave) var(--ease-in) forwards;
+}
+
+.dialog-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-4);
+  padding: var(--space-6) var(--space-6) 0;
+}
+
+.dialog-title {
+  margin: 0;
+  font-size: var(--text-xl);
+  line-height: var(--leading-xl);
+  font-weight: 600;
+}
+
+.dialog-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  padding: var(--space-4) var(--space-6) var(--space-6);
+  font-size: var(--text-base);
+  line-height: var(--leading-base);
+}
+
+.dialog-panel {
+  padding: var(--space-4);
+  border-radius: var(--radius-md);
+  background: var(--sunken);
+}
+
+.dialog-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
+/* Citation chip: <button class="chip">4:07</button>. A line the
+   model flagged adds <span class="chip-flag">check</span>; the word, not a colour, says it. */
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 0 var(--space-2);
+  border: 0;
+  border-radius: var(--radius-md);
+  background: var(--fill);
+  color: var(--ink-muted);
+  font: inherit;
+  font-size: var(--text-xs);
+  line-height: var(--leading-xs);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+button.chip {
+  cursor: pointer;
+}
+
+button.chip:hover {
+  color: var(--ink);
+}
+
+.chip-flag {
+  color: var(--accent-ink);
+  font-weight: 600;
+}
+
+/* Rules below are the M1 base that screens still read until their tasks move them. */
 
 .error {
   padding: 10px 12px;
