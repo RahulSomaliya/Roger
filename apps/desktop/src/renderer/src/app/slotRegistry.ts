@@ -30,7 +30,7 @@ export interface SlotPropsByName {
   setup: NoProps;
   /** Meeting page: a notice above the meeting (M5's calendar notice). */
   meetingBanner: MeetingSlotProps;
-  /** Meeting page: capture status (M2-T20a; M4-S4 seeds M1's StatusPanel). */
+  /** Meeting page: capture status (M2-T20a). */
   meetingCaptureStatus: MeetingSlotProps;
   /** Meeting page: the note about this meeting's kept audio (M2-T20b). */
   meetingAudioNote: MeetingSlotProps;

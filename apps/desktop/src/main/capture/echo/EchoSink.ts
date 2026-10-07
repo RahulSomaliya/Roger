@@ -201,14 +201,15 @@ export class EchoSink {
    * uploader could otherwise send the line first, and the hide would come too late. A call-audio
    * line is kept. Throws for a line that is not stored.
    *
-   * Known gap, open for the plan owner and M2-T16: a gap on the call-audio side only (`stt_failed`,
-   * `budget`) while the mic stays up. The mic lines said in it repeat Them on the speakers, but
-   * their twins exist only once the re-run stores them: the reopened stream's first line moves the
-   * watermark past the whole gap and releases them (onCallAudioMark), and Stop releases the rest,
-   * so they are uploaded before any re-run. Re-deciding only the re-run's own mic lines leaves the
-   * same words in Postgres under Me and Them. This entry takes any stored mic line, a live one
-   * too, but it can still hide one only if the line is kept unsent until the re-run (held past
-   * Stop and its cap), which the plan does not allow today.
+   * Known gap, open for the owner (M2-T16 landed without closing it; docs/plans/
+   * phase-2-build-order.md, "Open items after Phase 2"): a gap on the call-audio side only
+   * (`stt_failed`, `budget`) while the mic stays up. The mic lines said in it repeat Them on the
+   * speakers, but their twins exist only once the re-run stores them: the reopened stream's first
+   * line moves the watermark past the whole gap and releases them (onCallAudioMark), and Stop
+   * releases the rest, so they are uploaded before any re-run. Re-deciding only the re-run's own
+   * mic lines leaves the same words in Postgres under Me and Them. This entry takes any stored mic
+   * line, a live one too, but it can still hide one only if the line is kept unsent until the
+   * re-run (held past Stop and its cap), which the plan does not allow today.
    */
   filterStored(segmentId: string): EchoOutcome {
     const line = this.options.store.getSegment(segmentId);

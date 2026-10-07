@@ -198,10 +198,11 @@ export function createCaptureRuntime(deps: CaptureRuntimeDeps): CaptureRuntime {
 
   // [slot M2-T10] call audio through the helper: HelperProcess, TapSystemAudio, selection
 
-  // The tap or Electron's path, chosen once; the helper runs while a recording does. M2-T17a's
-  // monitor, M2-T18's wake (`source.restart`) and M2-T19's "I allowed it" (`source.rebuild`,
-  // `verification`) use `systemAudio`. The helper's place comes from the build only
-  // (native/helperPath.ts): the fake helper only under ROGER_E2E=1 in an unpackaged build.
+  // The tap or Electron's path, chosen once; the helper runs while a recording does. M2-T18's wake
+  // (`source.restart`) and M2-T19's "I allowed it" (`source.rebuild`, `verification`) use
+  // `systemAudio`; M2-T17a's monitor does not: it runs from launch and finds the helper itself
+  // (`[slot M2-T17a]`). The helper's place comes from the build only (native/helperPath.ts): the
+  // fake helper only under ROGER_E2E=1 in an unpackaged build.
   const systemAudio = createSystemAudio({
     setting: config.capture.systemAudioCapture,
     helperContext: {

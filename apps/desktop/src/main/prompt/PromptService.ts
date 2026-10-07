@@ -1095,9 +1095,10 @@ function isRecording(phase: CapturePhase): boolean {
  * call audio is legitimately silent, so M2's silence warnings never decide the outcome.
  *
  * Trap (M3-T20, the silence gate): a gated source's stream sits `paused` through silence, which
- * here reads as a dead stream, so every call whose others join after 20 s would log
- * `started_degraded`. When the gate lands, a stream paused by the gate is not a problem: read the
- * gate's state from the status here, with a test in PromptService.test.ts.
+ * here reads as a dead stream. It cannot reach this check inside the 20 s outcome window: the gate
+ * never closes a session younger than 60 s. If that rule or the window ever changes, a stream
+ * paused by the gate is not a problem: read the gate's state from the status here, with a test in
+ * PromptService.test.ts.
  */
 function sourceProblems(status: CaptureStatus, source: AudioSource): string[] {
   const problems: string[] = [];

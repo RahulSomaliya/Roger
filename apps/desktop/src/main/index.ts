@@ -196,6 +196,9 @@ async function main(): Promise<void> {
   // [slot M2-T4 runtime] API client, uploader, capture, capture IPC, the recording lifecycle
 
   const api = new ApiClient(apiConnection);
+  // Built before anything that stores a line: its `launchedAt` (the moment of this construction)
+  // is what the held-line settling and a crash resume (`[slot M2-T23]`) count "created before this
+  // launch" from, so a line stored earlier than the uploader would count as an older run's.
   const uploader = new TranscriptUploader({
     store,
     api,
@@ -294,7 +297,8 @@ async function main(): Promise<void> {
   });
   watchApp(lifecycle, { app });
 
-  // After createCaptureRuntime, so a hook its slots set (T3b's beforeFirstTick) runs first.
+  // After createCaptureRuntime, so the hook its `[slot M2-T14b]` sets (`setBeforeFirstTick`: settle
+  // the lines held since the last run) is in place before the first tick.
   if (missingToken === null) uploader.start();
   else logger.error(missingToken);
 

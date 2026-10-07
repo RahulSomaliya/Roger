@@ -193,7 +193,8 @@
   margin: 0 auto;
 }
 
-/* The meeting fills the page height, so only its transcript scrolls (styles.css .transcript). */
+/* The meeting fills the page height, so only its transcript scrolls (transcript.css
+   .live-transcript). */
 .meeting-page {
   display: flex;
   flex-direction: column;

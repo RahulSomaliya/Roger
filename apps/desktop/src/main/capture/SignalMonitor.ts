@@ -288,10 +288,11 @@ export class SignalMonitor implements AudioSink {
   }
 
   /**
-   * The default input is a Bluetooth device, which may stay silent for longer (D4). Its caller is
-   * M2-T17a, from the monitor helper's `route.input.transport` (AudioRouteStatus carries no input
-   * transport). At the M2-T11 review nothing called it and no task's spec named it: until a caller
-   * lands, D4 is not live and an AirPods mic is called dead at 8 s. The caller drops this line.
+   * The default input is a Bluetooth device, which may stay silent for longer (D4). Called by
+   * detect/MeetingAppMonitor.ts's `feedRoute` (wired in createCaptureRuntime.ts's
+   * `[slot M2-T17a]`) with the monitor helper's `route.input.transport`: AudioRouteStatus carries
+   * no input transport. Without the monitor (no helper) nothing calls it, and an AirPods mic is
+   * called dead at 8 s, not 30 s.
    */
   setMicBluetooth(bluetooth: boolean): void {
     this.micBluetooth = bluetooth;
@@ -393,10 +394,11 @@ export class SignalMonitor implements AudioSink {
    * A new mic device (M2-T12's recovery follows the default input) is a notice, never a warning,
    * and its silence is timed afresh: the old device's silence says nothing about the new one.
    *
-   * At the M2-T11 review nothing in main wrote `sources.mic.device`: M2-T12's "switched" report
-   * lives in the renderer, and the source-state IPC carries no device. Until a contributor sets
-   * it, no "Switched to" notice shows and a switch is not timed afresh. The writer drops this
-   * paragraph.
+   * `sources.mic.device` is written by the monitor's status contributor
+   * (detect/MeetingAppMonitor.ts `statusContribution`, added in createCaptureRuntime.ts's
+   * `[slot M2-T17a]`) from the helper's route. M2-T12's "switched" report lives in the renderer
+   * and the source-state IPC carries no device, so without the monitor (no helper) no "Switched
+   * to" notice shows and a switch is not timed afresh.
    */
   private followMicDevice(recording: Recording, device: string | null): void {
     const previous = this.micDevice;

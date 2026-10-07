@@ -21,6 +21,10 @@ export const MIN_CRASH_TAIL_MS = 300;
  * the call before the crash (a muted mic) re-runs all of it, at real time, billed once more; the
  * gap row cannot know where the vendor had got to. Runs only for meetings a crash ended.
  *
+ * Twin: recovery/CrashRecovery.ts `crashTail` applies the same per-source rule to a meeting it
+ * ends itself at launch (one a resume was refused for); it also starts after the source's existing
+ * gaps. A change to the rule here is a change there.
+ *
  * Reads every line of a source of such a meeting to find its last one (the store has no query for
  * it). Only at launch, only for meetings a crash ended, and their audio, which is what the
  * re-run reads next anyway. Returns how many gaps it recorded.

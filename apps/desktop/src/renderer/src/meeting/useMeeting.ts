@@ -87,8 +87,8 @@ export interface MeetingView {
   /**
    * The meeting's stored lines in transcript order (shared/meetings.ts), without the ones the echo
    * filter hid. The transcript starts from these and adds the live lines it receives itself,
-   * deduplicating by id (mergeTranscriptLines). Read again when this meeting's recording starts or
-   * stops.
+   * deduplicating by id (`addStoredLines`, transcript/liveTranscriptModel.ts). Read again when this
+   * meeting's recording starts or stops.
    */
   readonly storedLines: readonly TranscriptSegment[];
   /**

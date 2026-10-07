@@ -10,10 +10,11 @@ import { MeetingPage } from './MeetingPage';
 import type { Read } from './useMeeting';
 import type * as UseMeeting from './useMeeting';
 
-// The page under renderToString, with the real slot files: M3-T9's live transcript, and M4-S4's
-// seed (M1's StatusPanel) until M2-T20a mounts its capture status. Node has no window.roger, so
-// the shell and the meeting read are stand-ins, and the transcript shows only the stored lines:
-// its subscription to main's events is an effect, which renderToString never runs.
+// The page under renderToString, with the real slot files: M3-T9's live transcript and M2-T20a's
+// capture status. M4-T20's notes slot and M5-T13's calendar slot are mocked below: they mount
+// editors and a calendar banner that read window.roger. Node has no window.roger, so the shell and
+// the meeting read are stand-ins, and the transcript shows only the stored lines: its subscription
+// to main's events is an effect, which renderToString never runs.
 const fakes = vi.hoisted(() => ({
   shell: null as Shell | null,
   /**

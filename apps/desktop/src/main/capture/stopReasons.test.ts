@@ -34,8 +34,8 @@ describe('stopNotice', () => {
   });
 
   it('has no notice for a stop that leaves no window to show it: quit and a closed window', () => {
-    // A closed window quits Roger (index.ts, window-all-closed), and nothing keeps a notice across
-    // launches: the reason is in the log and the meeting's stt_usage row instead.
+    // Only a quit exits Roger (closing the window hides it, M5-T11), and nothing keeps a notice
+    // across launches: the reason is in the log and the meeting's stt_usage row instead.
     expect(stopNotice('quit', at, DEFAULT_COST_GUARDS)).toBeNull();
     expect(stopNotice('window-closed', at, DEFAULT_COST_GUARDS)).toBeNull();
   });

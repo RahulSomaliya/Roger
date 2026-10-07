@@ -16,7 +16,10 @@ export interface RouteProvider {
  * Every route reported, each from the moment it was set, and `unknown` before the first report.
  * Unknown keeps the filter on: it may be the laptop speakers. The M2-T14b slot of
  * createCaptureRuntime.ts builds one (`echoRoute`), and M2-T17a's slot sets it from the helper
- * monitor's `route` events; until then it stays unknown and every mic line is filtered.
+ * monitor's `route` events (`outputRouteOf` in detect/MeetingAppMonitor.ts: a Bluetooth output
+ * counts as headphones only when named like them). It stays unknown, and every mic line is
+ * filtered, while there is no monitor (no helper) or none has reported, and the slot sets it back
+ * to unknown when the monitor is lost.
  *
  * Trap: a line is judged on the route of the moment it was said, never on the latest report. A
  * decision can come long after the words (a held line's twin after call audio reconnects, M2-T16's

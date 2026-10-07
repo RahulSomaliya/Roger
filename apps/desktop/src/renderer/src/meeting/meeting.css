@@ -4,7 +4,8 @@
  * the fills (theme/tokens.test.ts).
  *
  * The page fills the shell's page height (app.css .meeting-page), so each region scrolls inside
- * itself. A region is a flex column: a child with `flex: 1` (styles.css .transcript) fills it.
+ * itself. A region is a flex column: a child with `flex: 1` (transcript.css .live-transcript)
+ * fills it.
  * These rules load before app.css (AppLayout imports this page first), so any rule here that
  * overrides one there needs the higher specificity, not the later place.
  */

@@ -1,7 +1,8 @@
 /**
  * Calendar domain types shared by main, preload and the renderer pages (Home and the prompt panel).
  * The API speaks snake_case (docs/api-contract.md, Calendar); these are the desktop's camelCase
- * mirror, mapped in `main/api/calendarClient.ts` and nowhere else.
+ * mirror, mapped in `main/api/calendarClient.ts`, and by `ApiClient.ts` for the event a meeting
+ * create returns.
  * Keep this file free of runtime imports: it is bundled into every process.
  */
 

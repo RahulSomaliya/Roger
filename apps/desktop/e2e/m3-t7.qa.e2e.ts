@@ -26,10 +26,10 @@ import {
  * the empty states, and a failure path (another meeting's events, a hide before its line, a stale
  * interim).
  *
- * Nothing mounts LiveTranscript in the app until M3-T9, so this script mounts it alone on the
- * preview's `empty-mac` page, in the meeting page's frame (app.css `.meeting-page`), with the
- * app's styles and theme, and drives it through the preview's fake `window.roger`: the events the
- * panel gets are the ones main sends. Run:
+ * LiveTranscript was not in the app when this script was written (M3-T9 mounts it), so it mounts
+ * it alone on the preview's `empty-mac` page, in the meeting page's frame (app.css
+ * `.meeting-page`), with the app's styles and theme, and drives it through the preview's fake
+ * `window.roger`: the events the panel gets are the ones main sends. Run:
  *
  *   ROGER_QA_OUT=<dir> pnpm exec vitest run --config vitest.e2e.config.ts e2e/m3-t7.qa.e2e.ts
  */

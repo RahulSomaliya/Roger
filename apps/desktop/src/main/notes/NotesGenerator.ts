@@ -309,7 +309,8 @@ export class NotesGenerator {
 
   /**
    * Runs inside CaptureService's listener call, after Stop ended or discarded the meeting and
-   * before the upload flush.
+   * before the upload flush. KeptSilentMeetings (notesQuitGuard.ts) hears the same event and reads
+   * `discarded` and `stopFailed` the same way: keep the two in step.
    */
   private recordingEnded(recording: RecordingEnded): void {
     const { meetingId } = recording;

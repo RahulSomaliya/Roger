@@ -58,9 +58,11 @@ export function stopNotice(
       return `Stopped at ${time}: one recording is capped at ${spell(guards.maxRecordingMs)}.`;
     case 'quit':
     case 'window-closed':
-      // The notice lives in memory and Roger is exiting: a closed window quits it (index.ts,
-      // window-all-closed). Cmd+Q showed it for one frame at most. Keeping one across launches
-      // would need it saved and read back at startup; the log and stt_usage.stop_reason have it.
+      // The notice lives in memory and Roger is exiting: only a quit exits (closing the window
+      // hides it, M5-T11), and `window-closed` is the window's `closed`, which with close-hides
+      // comes only while quitting (lifecycle.ts). Cmd+Q showed it for one frame at most. Keeping
+      // one across launches would need it saved and read back at startup; the log and
+      // stt_usage.stop_reason have it.
       return null;
     case 'renderer-gone':
       return `Stopped at ${time} because the Roger window could not reload${detail === null ? '' : ` (${detail})`}.`;
