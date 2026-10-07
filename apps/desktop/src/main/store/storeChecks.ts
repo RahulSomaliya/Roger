@@ -1,6 +1,7 @@
 import { isAbsolute } from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 import { isStartSource, START_SOURCES } from '../../shared/capture';
-import type { SegmentTrim } from './TranscriptStore';
+import type { MeetingSttUsage, SegmentTrim } from './TranscriptStore';
 
 /**
  * Checks both stores run before a write or a list, so the in-memory store refuses what SQLite
@@ -67,4 +68,14 @@ export function checkStartSource(meetingId: string, source: string): void {
       `could not write meeting ${meetingId}: start source "${source}" is not one of ${START_SOURCES.join(', ')}`,
     );
   }
+}
+
+/**
+ * Whether a usage row still holds what the uploader sent (`markSttUsageSynced`). Compared whole,
+ * never by `updatedAt` alone: two saves in one millisecond share it (a stream's close, then Stop's
+ * own save with its reason), and marking the second as sent would keep the meeting's last totals
+ * and its stop reason off the server until a save that never comes.
+ */
+export function holdsSentUsage(stored: MeetingSttUsage, sent: MeetingSttUsage): boolean {
+  return isDeepStrictEqual(stored, sent);
 }

@@ -35,15 +35,26 @@ export interface NewLocalMeeting {
   calendarEvent?: MeetingCalendarEvent | null;
 }
 
+/** One source's share of a meeting's usage, as `stt_usage.by_source_json` keeps it. */
+export interface SourceSttUsage extends SttUsage {
+  /** Stream time the silence gate kept this source's session closed (M3-T20); left out, 0. */
+  gatedMs?: number;
+}
+
 /**
- * What one meeting's speech-to-text sessions used, as the vendor bills it (cost guard G7). Local
- * only until M3 uploads it.
+ * What one meeting's speech-to-text sessions used, as the vendor bills it (cost guard G7): one
+ * `stt_usage` row per meeting, which SttUsageUploader sends to the API after each save (M3-T19b).
  */
 export interface MeetingSttUsage {
   meetingId: string;
   provider: string;
   total: SttUsage;
-  bySource: Record<AudioSource, SttUsage>;
+  bySource: Record<AudioSource, SourceSttUsage>;
+  /**
+   * Stream time the silence gate kept closed, both sources summed (M3-T20; migration 6). A save
+   * that leaves it out stores 0, and every read sets it.
+   */
+  gatedMs?: number;
   /** Why the recording stopped (stopReasons.ts, or `start-failed`); null while it still runs. */
   stopReason: string | null;
   /** ISO 8601 instant, UTC. */
@@ -353,10 +364,24 @@ export interface TranscriptStore {
 
   /**
    * Upsert one meeting's usage. Not tied to the meetings table: a meeting deleted for having no
-   * lines still had billed sessions, and the row keeps them.
+   * lines still had billed sessions, and the row keeps them. Every save clears the row's upload
+   * mark (`synced_at`), so a row saved again after its upload is sent again.
    */
   saveSttUsage(usage: MeetingSttUsage): void;
   getSttUsage(meetingId: string): MeetingSttUsage | null;
+  /**
+   * Usage rows not uploaded since their last save, oldest save first (then by meeting id), at most
+   * `limit`: what SttUsageUploader sends (M3-T19b). Throws on a limit that is not a whole number
+   * from 1.
+   */
+  listSttUsageToUpload(limit: number): MeetingSttUsage[];
+  /**
+   * Mark a row uploaded, or refused by the API: either way it is not sent again until its next
+   * save. `sent` is the row as `listSttUsageToUpload` gave it, and the mark lands only while the
+   * row still holds exactly that (storeChecks.holdsSentUsage): a save that landed while the request
+   * was out stays unmarked, and its newer totals go up on the next pass. Returns whether it marked.
+   */
+  markSttUsageSynced(sent: MeetingSttUsage, syncedAt: string): boolean;
 
   /**
    * The newest meetings first, open ones included, at most `limit`: the sidebar's recent list

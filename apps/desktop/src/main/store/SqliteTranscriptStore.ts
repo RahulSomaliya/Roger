@@ -7,7 +7,6 @@ import {
   type TranscriptSegment,
   type TranscriptWord,
 } from '../../shared/transcript';
-import type { SttUsage } from '../stt/usage';
 import {
   canonicalInstant,
   checkAudioPath,
@@ -15,6 +14,7 @@ import {
   checkListLimit,
   checkStartSource,
   checkTrim,
+  holdsSentUsage,
 } from './storeChecks';
 import type {
   AppStateEntry,
@@ -33,6 +33,7 @@ import type {
   RemoteState,
   SegmentOrigin,
   SegmentTrim,
+  SourceSttUsage,
   StoredSegment,
   SuppressedReason,
   TranscriptGap,
@@ -47,7 +48,7 @@ import type {
  * re-runs every entry above `user_version`. So a wind-back must also undo every later migration,
  * or an `ALTER TABLE ... ADD COLUMN` runs twice and fails with "duplicate column name". With a new
  * migration, add its wind-back to the test file, call it first in the one before (as
- * `windBackToSchema4` must then call `windBackToSchema5`), and raise the `user_version` the
+ * `windBackToSchema5` must then call `windBackToSchema6`), and raise the `user_version` the
  * upgrade tests expect.
  */
 const MIGRATIONS: readonly string[] = [
@@ -175,6 +176,15 @@ const MIGRATIONS: readonly string[] = [
     ON meetings (json_extract(calendar_event_json, '$.eventId'))
     WHERE calendar_event_json IS NOT NULL;
   `,
+  // M3 (STT usage upload): the uploader's mark, which every save clears so a row saved again after
+  // its upload is sent again, and the stream time the silence gate kept closed (M3-T20 fills it).
+  // Every row from before reads as not uploaded, so each goes up once. The index serves
+  // STT_USAGE_TO_UPLOAD, the uploader's list every 30 s.
+  `
+  ALTER TABLE stt_usage ADD COLUMN synced_at TEXT;
+  ALTER TABLE stt_usage ADD COLUMN gated_ms INTEGER NOT NULL DEFAULT 0;
+  CREATE INDEX stt_usage_unsynced ON stt_usage (updated_at, meeting_id) WHERE synced_at IS NULL;
+  `,
 ];
 
 /**
@@ -188,6 +198,16 @@ export const MEETING_IDS_BY_EVENT_IDS = `SELECT id, json_extract(calendar_event_
   WHERE calendar_event_json IS NOT NULL
     AND json_extract(calendar_event_json, '$.eventId') IN (SELECT value FROM json_each(?))
   ORDER BY started_at ASC, id ASC`;
+
+/**
+ * The usage rows to upload (TranscriptStore.listSttUsageToUpload). Its WHERE repeats the index's
+ * condition and its ORDER BY the index's columns (migration 6), or SQLite reads every meeting's
+ * row and sorts them; the store test reads the query plan. Exported for that test. Text order on
+ * `updated_at` is right while every save writes it in `toISOString` form, as CaptureService does.
+ * The sort in InMemoryTranscriptStore.listSttUsageToUpload is its twin: change both.
+ */
+export const STT_USAGE_TO_UPLOAD = `SELECT * FROM stt_usage WHERE synced_at IS NULL
+  ORDER BY updated_at ASC, meeting_id ASC LIMIT ?`;
 
 /**
  * A line can upload when it is not uploaded, not rejected, not hidden and not held: `upload_after`
@@ -246,6 +266,8 @@ export class SqliteTranscriptStore implements TranscriptStore {
     countHeld: StatementSync;
     saveSttUsage: StatementSync;
     getSttUsage: StatementSync;
+    sttUsageToUpload: StatementSync;
+    markSttUsageSynced: StatementSync;
     insertGap: StatementSync;
     gaps: StatementSync;
     unrecoveredGaps: StatementSync;
@@ -387,11 +409,12 @@ export class SqliteTranscriptStore implements TranscriptStore {
       countHeld: this.db.prepare(
         `SELECT COUNT(*) AS n FROM segments WHERE meeting_id = ? AND ${HELD}`,
       ),
+      // Every save clears the upload mark (TranscriptStore.saveSttUsage); an insert starts without.
       saveSttUsage: this.db.prepare(
         `INSERT INTO stt_usage
            (meeting_id, provider, sessions_opened, connected_ms, audio_sent_ms, dropped_chunks,
-            estimated_cost_usd, by_source_json, stop_reason, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            estimated_cost_usd, by_source_json, gated_ms, stop_reason, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT (meeting_id) DO UPDATE SET
            provider = excluded.provider,
            sessions_opened = excluded.sessions_opened,
@@ -400,10 +423,16 @@ export class SqliteTranscriptStore implements TranscriptStore {
            dropped_chunks = excluded.dropped_chunks,
            estimated_cost_usd = excluded.estimated_cost_usd,
            by_source_json = excluded.by_source_json,
+           gated_ms = excluded.gated_ms,
            stop_reason = excluded.stop_reason,
-           updated_at = excluded.updated_at`,
+           updated_at = excluded.updated_at,
+           synced_at = NULL`,
       ),
       getSttUsage: this.db.prepare(`SELECT * FROM stt_usage WHERE meeting_id = ?`),
+      sttUsageToUpload: this.db.prepare(STT_USAGE_TO_UPLOAD),
+      markSttUsageSynced: this.db.prepare(
+        `UPDATE stt_usage SET synced_at = ? WHERE meeting_id = ? AND synced_at IS NULL`,
+      ),
       insertGap: this.db.prepare(
         `INSERT OR IGNORE INTO transcript_gaps
            (id, meeting_id, source, start_ms, end_ms, reason, created_at)
@@ -662,6 +691,7 @@ export class SqliteTranscriptStore implements TranscriptStore {
       total.droppedChunks,
       total.estimatedCostUsd,
       JSON.stringify(usage.bySource),
+      usage.gatedMs ?? 0,
       usage.stopReason,
       usage.updatedAt,
     );
@@ -670,6 +700,19 @@ export class SqliteTranscriptStore implements TranscriptStore {
   getSttUsage(meetingId: string): MeetingSttUsage | null {
     const row = this.statements.getSttUsage.get(meetingId);
     return row ? rowToSttUsage(row) : null;
+  }
+
+  listSttUsageToUpload(limit: number): MeetingSttUsage[] {
+    checkListLimit(limit, 'speech-to-text usage');
+    return this.statements.sttUsageToUpload.all(limit).map(rowToSttUsage);
+  }
+
+  markSttUsageSynced(sent: MeetingSttUsage, syncedAt: string): boolean {
+    // Read, compared and written in one synchronous turn: no save can land in between, and the
+    // single-instance lock keeps every other process off this file.
+    const stored = this.getSttUsage(sent.meetingId);
+    if (stored === null || !holdsSentUsage(stored, sent)) return false;
+    return this.statements.markSttUsageSynced.run(syncedAt, sent.meetingId).changes > 0;
   }
 
   addGap(gap: NewTranscriptGap): void {
@@ -934,8 +977,9 @@ function rowToCaptureEvent(row: Row): CaptureEvent {
 
 function rowToSttUsage(row: Row): MeetingSttUsage {
   const cost = row.estimated_cost_usd;
+  const meetingId = text(row, 'meeting_id');
   return {
-    meetingId: text(row, 'meeting_id'),
+    meetingId,
     provider: text(row, 'provider'),
     total: {
       sessionsOpened: Number(row.sessions_opened),
@@ -944,8 +988,8 @@ function rowToSttUsage(row: Row): MeetingSttUsage {
       droppedChunks: Number(row.dropped_chunks),
       estimatedCostUsd: cost === null || cost === undefined ? null : Number(cost),
     },
-    // Written by saveSttUsage from a typed Record<AudioSource, SttUsage>; the cast restores it.
-    bySource: JSON.parse(text(row, 'by_source_json')) as Record<AudioSource, SttUsage>,
+    bySource: parseBySource(meetingId, text(row, 'by_source_json')),
+    gatedMs: Number(row.gated_ms),
     stopReason:
       row.stop_reason === null || row.stop_reason === undefined ? null : text(row, 'stop_reason'),
     updatedAt: text(row, 'updated_at'),
@@ -965,6 +1009,18 @@ function parseWords(row: Row, key: 'words_json' | 'original_words_json'): Transc
   }
   // Written by appendSegment or trimSegment from a typed TranscriptWord[]; the cast restores it.
   return words as TranscriptWord[];
+}
+
+function parseBySource(meetingId: string, json: string): Record<AudioSource, SourceSttUsage> {
+  let bySource: unknown;
+  try {
+    bySource = JSON.parse(json);
+  } catch {
+    // Named by its meeting: the uploader lists many rows at once, and a SyntaxError names none.
+    throw new Error(`corrupt stt_usage row ${meetingId}: by_source_json is not JSON`);
+  }
+  // Written by saveSttUsage from a typed Record<AudioSource, SourceSttUsage>; the cast restores it.
+  return bySource as Record<AudioSource, SourceSttUsage>;
 }
 
 function parseCalendarEvent(row: Row): MeetingCalendarEvent | null {

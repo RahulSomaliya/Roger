@@ -7,6 +7,7 @@ import {
   checkListLimit,
   checkStartSource,
   checkTrim,
+  holdsSentUsage,
 } from './storeChecks';
 import type {
   AppStateEntry,
@@ -37,6 +38,8 @@ export class InMemoryTranscriptStore implements TranscriptStore {
   readonly stopReasons = new Map<string, string>();
   readonly segments = new Map<string, MemorySegment>();
   readonly sttUsage = new Map<string, MeetingSttUsage>();
+  /** Meetings whose usage row is uploaded since its last save (`stt_usage.synced_at`). */
+  private readonly sttUsageSynced = new Set<string>();
   readonly gaps = new Map<string, TranscriptGap>();
   readonly audioFiles = new Map<string, AudioFile>();
   readonly captureEvents: CaptureEvent[] = [];
@@ -289,12 +292,35 @@ export class InMemoryTranscriptStore implements TranscriptStore {
   }
 
   saveSttUsage(usage: MeetingSttUsage): void {
-    this.sttUsage.set(usage.meetingId, structuredClone(usage));
+    // As SQLite's column default: a save without gated time stores 0, and every read sets it.
+    this.sttUsage.set(usage.meetingId, { ...structuredClone(usage), gatedMs: usage.gatedMs ?? 0 });
+    this.sttUsageSynced.delete(usage.meetingId);
   }
 
   getSttUsage(meetingId: string): MeetingSttUsage | null {
     const usage = this.sttUsage.get(meetingId);
     return usage === undefined ? null : structuredClone(usage);
+  }
+
+  listSttUsageToUpload(limit: number): MeetingSttUsage[] {
+    checkListLimit(limit, 'speech-to-text usage');
+    // The twin of SqliteTranscriptStore's STT_USAGE_TO_UPLOAD: change both. Text compared as
+    // SQLite's BINARY collation compares it.
+    return [...this.sttUsage.values()]
+      .filter((usage) => !this.sttUsageSynced.has(usage.meetingId))
+      .sort(
+        (a, b) => compareText(a.updatedAt, b.updatedAt) || compareText(a.meetingId, b.meetingId),
+      )
+      .slice(0, limit)
+      .map((usage) => structuredClone(usage));
+  }
+
+  markSttUsageSynced(sent: MeetingSttUsage, _syncedAt: string): boolean {
+    const stored = this.sttUsage.get(sent.meetingId);
+    if (stored === undefined || this.sttUsageSynced.has(sent.meetingId)) return false;
+    if (!holdsSentUsage(stored, sent)) return false;
+    this.sttUsageSynced.add(sent.meetingId);
+    return true;
   }
 
   addGap(gap: NewTranscriptGap): void {

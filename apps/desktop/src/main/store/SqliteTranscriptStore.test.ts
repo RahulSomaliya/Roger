@@ -7,7 +7,11 @@ import type { MeetingCalendarEvent } from '../../shared/calendar';
 import { START_SOURCES, type StartSource } from '../../shared/capture';
 import type { TranscriptSegment } from '../../shared/transcript';
 import { InMemoryTranscriptStore } from './InMemoryTranscriptStore';
-import { MEETING_IDS_BY_EVENT_IDS, SqliteTranscriptStore } from './SqliteTranscriptStore';
+import {
+  MEETING_IDS_BY_EVENT_IDS,
+  SqliteTranscriptStore,
+  STT_USAGE_TO_UPLOAD,
+} from './SqliteTranscriptStore';
 import type {
   MeetingSttUsage,
   NewAudioFile,
@@ -32,12 +36,26 @@ function segment(n: number, overrides: Partial<TranscriptSegment> = {}): Transcr
 }
 
 /**
- * Undo migration 5 on a file, leaving it as M2's build (schema 4) wrote it. Every older wind-back
- * calls this first: `migrate()` re-runs each migration above `user_version`, and one left in place
- * fails with "duplicate column name". When migration 6 lands, write `windBackToSchema5` and call
- * it at the top of this one (see MIGRATIONS).
+ * Undo migration 6 on a file, leaving it as M5-T5's build (schema 5) wrote it. Every older
+ * wind-back calls this first: `migrate()` re-runs each migration above `user_version`, and one left
+ * in place fails with "duplicate column name". When migration 7 lands, write `windBackToSchema6`
+ * and call it at the top of this one (see MIGRATIONS).
  */
+function windBackToSchema5(path: string): void {
+  const raw = new DatabaseSync(path);
+  // The index first: SQLite refuses to drop a column an index reads.
+  raw.exec(`
+    DROP INDEX stt_usage_unsynced;
+    ALTER TABLE stt_usage DROP COLUMN gated_ms;
+    ALTER TABLE stt_usage DROP COLUMN synced_at;
+    PRAGMA user_version = 5;
+  `);
+  raw.close();
+}
+
+/** Undo migrations 6 and 5, leaving the file as M2's build (schema 4) wrote it. */
 function windBackToSchema4(path: string): void {
+  windBackToSchema5(path);
   const raw = new DatabaseSync(path);
   // The index first: SQLite refuses to drop a column an index reads.
   raw.exec(`
@@ -49,7 +67,7 @@ function windBackToSchema4(path: string): void {
   raw.close();
 }
 
-/** Undo migrations 5 and 4, leaving the file as the cost-guard build (schema 3) wrote it. */
+/** Undo migrations 6, 5 and 4, leaving the file as the cost-guard build (schema 3) wrote it. */
 function windBackToSchema3(path: string): void {
   windBackToSchema4(path);
   const raw = new DatabaseSync(path);
@@ -225,6 +243,8 @@ function usage(meetingId: string, overrides: Partial<MeetingSttUsage> = {}): Mee
       estimatedCostUsd: 0.005,
     },
     bySource: { mic: source(60_000), system: source(60_000) },
+    // As every read sets it (MeetingSttUsage.gatedMs), so a row read back equals this.
+    gatedMs: 0,
     stopReason: null,
     updatedAt: '2026-10-06T10:02:00.000Z',
     ...overrides,
@@ -254,6 +274,78 @@ describe.each([
     store.saveSttUsage(usage('m1'));
     expect(store.deleteMeetingIfEmpty('m1')).toBe(true);
     expect(store.getSttUsage('m1')).toEqual(usage('m1'));
+    store.close();
+  });
+
+  // Migration 6 (M3-T19b): the usage uploader's mark and the silence gate's time.
+
+  it('reads a usage saved without gated time as 0, and keeps the gated time of one that has it', () => {
+    const store = open();
+    const { gatedMs: _left, ...withoutGated } = usage('m1');
+    store.saveSttUsage(withoutGated);
+    expect(store.getSttUsage('m1')).toEqual(usage('m1'));
+    expect(store.listSttUsageToUpload(10)).toEqual([usage('m1')]);
+
+    const gated = usage('m2', {
+      gatedMs: 45_000.5,
+      bySource: {
+        mic: { ...usage('m2').bySource.mic, gatedMs: 30_000.5 },
+        system: { ...usage('m2').bySource.system, gatedMs: 15_000 },
+      },
+    });
+    store.saveSttUsage(gated);
+    expect(store.getSttUsage('m2')).toEqual(gated);
+    store.close();
+  });
+
+  it('lists the rows not uploaded since their last save, oldest save first, and a save clears the mark', () => {
+    const store = open();
+    store.saveSttUsage(usage('m2', { updatedAt: '2026-10-06T10:02:00.000Z' }));
+    store.saveSttUsage(usage('m3', { updatedAt: '2026-10-06T10:03:00.000Z' }));
+    store.saveSttUsage(usage('m1', { updatedAt: '2026-10-06T10:02:00.000Z' }));
+    const ids = (limit = 10): string[] => store.listSttUsageToUpload(limit).map((u) => u.meetingId);
+    // Same save time: by meeting id.
+    expect(ids()).toEqual(['m1', 'm2', 'm3']);
+    expect(ids(2)).toEqual(['m1', 'm2']);
+
+    const [first] = store.listSttUsageToUpload(1);
+    expect(first).toEqual(usage('m1', { updatedAt: '2026-10-06T10:02:00.000Z' }));
+    expect(store.markSttUsageSynced(first!, '2026-10-06T10:02:30.000Z')).toBe(true);
+    expect(ids()).toEqual(['m2', 'm3']);
+    // Marked once: a second mark of the same row changes nothing.
+    expect(store.markSttUsageSynced(first!, '2026-10-06T10:02:31.000Z')).toBe(false);
+    expect(store.getSttUsage('m1')).toEqual(first);
+
+    // The meeting's next save (a stream closed, or Stop) is sent again, after the older ones.
+    const stopped = usage('m1', { stopReason: 'user', updatedAt: '2026-10-06T10:04:00.000Z' });
+    store.saveSttUsage(stopped);
+    expect(ids()).toEqual(['m2', 'm3', 'm1']);
+    expect(store.listSttUsageToUpload(10)[2]).toEqual(stopped);
+    store.close();
+  });
+
+  it('marks a row only while it still holds what was sent: a save during the upload is sent next', () => {
+    const store = open();
+    store.saveSttUsage(usage('m1'));
+    const [sent] = store.listSttUsageToUpload(10);
+    // Saved again while the request was out, in the same millisecond: Stop's own save right after
+    // a stream's close. Only the stop reason tells the two apart.
+    const stopped = usage('m1', { stopReason: 'user' });
+    store.saveSttUsage(stopped);
+
+    expect(store.markSttUsageSynced(sent!, '2026-10-06T10:02:01.000Z')).toBe(false);
+    expect(store.listSttUsageToUpload(10)).toEqual([stopped]);
+    expect(store.markSttUsageSynced(stopped, '2026-10-06T10:02:02.000Z')).toBe(true);
+    expect(store.listSttUsageToUpload(10)).toEqual([]);
+    expect(store.markSttUsageSynced(usage('unknown'), '2026-10-06T10:02:03.000Z')).toBe(false);
+    store.close();
+  });
+
+  it('refuses a list limit that is not a whole number from 1', () => {
+    const store = open();
+    store.saveSttUsage(usage('m1'));
+    expect(() => store.listSttUsageToUpload(0)).toThrow('the limit must be a whole number from 1');
+    expect(() => store.listSttUsageToUpload(1.5)).toThrow('the limit must be a whole number');
     store.close();
   });
 });
@@ -859,7 +951,7 @@ describe('SqliteTranscriptStore migration 4 and crash reopen', () => {
 
     const store = new SqliteTranscriptStore(path, () => new Date(T0));
     const raw = new DatabaseSync(path);
-    expect(raw.prepare('PRAGMA user_version').get()?.user_version).toBe(5);
+    expect(raw.prepare('PRAGMA user_version').get()?.user_version).toBe(6);
     raw.close();
     expect(store.getMeeting('m1')).toMatchObject({
       endedAt: '2026-10-05T10:30:00Z',
@@ -1116,7 +1208,7 @@ describe('SqliteTranscriptStore migration 5', () => {
 
     const store = new SqliteTranscriptStore(path);
     const raw = new DatabaseSync(path);
-    expect(raw.prepare('PRAGMA user_version').get()?.user_version).toBe(5);
+    expect(raw.prepare('PRAGMA user_version').get()?.user_version).toBe(6);
     raw.close();
     expect(store.getMeeting('m1')).toEqual({
       id: 'm1',
@@ -1288,5 +1380,75 @@ describe('SqliteTranscriptStore finding meetings by event', () => {
       .join('\n');
     raw.close();
     expect(plan).toContain('USING INDEX meetings_by_calendar_event');
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// The usage uploader's mark and the silence gate's time (M3-T19b, migration 6).
+
+describe('SqliteTranscriptStore migration 6', () => {
+  it('upgrades a store at schema 5 in place: every usage row is kept, not uploaded, nothing gated', () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'roger-store-')), 'roger.sqlite');
+    const first = new SqliteTranscriptStore(path);
+    first.createMeeting({ id: 'm1', title: 'T', startedAt: '2026-10-05T10:00:00.000Z' });
+    first.saveSttUsage(usage('m1', { stopReason: 'user' }));
+    // A meeting deleted for having no lines keeps its row (no foreign key).
+    first.saveSttUsage(usage('m2', { stopReason: 'start-failed' }));
+    first.close();
+    windBackToSchema5(path);
+
+    const store = new SqliteTranscriptStore(path);
+    const raw = new DatabaseSync(path);
+    expect(raw.prepare('PRAGMA user_version').get()?.user_version).toBe(6);
+    expect(
+      raw
+        .prepare('SELECT meeting_id, synced_at, gated_ms FROM stt_usage ORDER BY meeting_id')
+        .all()
+        .map((row) => ({ ...row })),
+    ).toEqual([
+      { meeting_id: 'm1', synced_at: null, gated_ms: 0 },
+      { meeting_id: 'm2', synced_at: null, gated_ms: 0 },
+    ]);
+    raw.close();
+    expect(store.getSttUsage('m1')).toEqual(usage('m1', { stopReason: 'user' }));
+    expect(store.getMeeting('m1')?.title).toBe('T');
+    // Each row from before goes up once.
+    const waiting = store.listSttUsageToUpload(10);
+    expect(waiting.map((u) => u.meetingId)).toEqual(['m1', 'm2']);
+    store.markSttUsageSynced(waiting[0]!, '2026-10-06T10:03:00.000Z');
+    store.close();
+
+    const again = new SqliteTranscriptStore(path); // migration 6 does not run twice
+    expect(again.listSttUsageToUpload(10).map((u) => u.meetingId)).toEqual(['m2']);
+    again.close();
+  });
+
+  // The uploader asks every 30 s: an index, not a scan of every meeting's row.
+  it('lists the rows to upload through their index', () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'roger-store-')), 'roger.sqlite');
+    new SqliteTranscriptStore(path).close();
+    const raw = new DatabaseSync(path);
+    const plan = raw
+      .prepare(`EXPLAIN QUERY PLAN ${STT_USAGE_TO_UPLOAD}`)
+      .all(10)
+      .map((row) => String(row.detail))
+      .join('\n');
+    raw.close();
+    expect(plan).toContain('USING INDEX stt_usage_unsynced');
+    expect(plan).not.toContain('TEMP B-TREE');
+  });
+
+  it('names the meeting whose by-source usage is not JSON', () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'roger-store-')), 'roger.sqlite');
+    const store = new SqliteTranscriptStore(path);
+    store.saveSttUsage(usage('m1'));
+    const raw = new DatabaseSync(path);
+    raw.prepare(`UPDATE stt_usage SET by_source_json = '{mic' WHERE meeting_id = 'm1'`).run();
+    raw.close();
+
+    expect(() => store.listSttUsageToUpload(10)).toThrow(
+      'corrupt stt_usage row m1: by_source_json is not JSON',
+    );
+    store.close();
   });
 });
