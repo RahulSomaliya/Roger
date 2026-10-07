@@ -1,8 +1,48 @@
-// Stub from M4-S1; owned by M4-T20.
-import type { SlotContributions } from '../slotRegistry';
+import { createElement, useEffect } from 'react';
+import { MeetingChat } from '../../chat/MeetingChat';
+import { AiNotesPanel } from '../../notes/AiNotesPanel';
+import { notesFlushResponder } from '../../notes/debouncedSaver';
+import { NoteEditor } from '../../notes/NoteEditor';
+import { NotesSettings } from '../../notes/NotesSettings';
+import type { MeetingSlotProps, SlotContributions } from '../slotRegistry';
+
+/** The "My notes" tab. The label is the tab's name: it is the editor's accessible name too. */
+function MyNotes({ meetingId }: MeetingSlotProps) {
+  return createElement(NoteEditor, {
+    meetingId,
+    kind: 'user',
+    label: 'My notes',
+    placeholder: 'Type your notes. Roger turns them into clean notes after the call.',
+  });
+}
 
 /**
- * What M4-T20 mounts: My notes, AI notes, the meeting chat and the notes settings.
- * Slot names and their props: ../slotRegistry.ts.
+ * Starts the page's one answer to main's `notes:flush-request` as the app starts, and draws
+ * nothing. Mounted in the banner, which every page shows and keeps across routes, not in a
+ * meeting region: a window that never opened a meeting's notes (Home, Settings) must ack as well,
+ * or main's quit and every Stop of a meeting nobody spoke in wait their full 1 s for it, and that
+ * Stop keeps the meeting for the uploader to discard instead of discarding it (the contract is
+ * notesFlushResponder's, notes/debouncedSaver.ts). An effect, never a render-time call: the
+ * responder subscribes to `window.roger`, which a render under Node does not have.
  */
-export const contributions: SlotContributions = {};
+function StartNotesFlushResponder() {
+  useEffect(() => {
+    notesFlushResponder();
+  }, []);
+  return null;
+}
+
+/**
+ * What M4-T20 mounts: My notes, AI notes and the meeting chat (all inside the meeting page's
+ * CitationNavigatorProvider, which their chips reveal lines through), the notes preferences, and
+ * the flush responder's start. Slot names and their props: ../slotRegistry.ts.
+ *
+ * Settings order: M3's jargon list is 10, the notes preferences follow it.
+ */
+export const contributions: SlotContributions = {
+  banner: [{ id: 'm4-notes-flush', order: 0, component: StartNotesFlushResponder }],
+  settings: [{ id: 'm4-notes', order: 20, component: NotesSettings }],
+  meetingMyNotes: [{ id: 'm4-my-notes', order: 0, component: MyNotes }],
+  meetingAiNotes: [{ id: 'm4-ai-notes', order: 0, component: AiNotesPanel }],
+  meetingChat: [{ id: 'm4-chat', order: 0, component: MeetingChat }],
+};

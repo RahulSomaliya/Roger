@@ -16,6 +16,7 @@ import {
   type PendingGenerateStatus,
   noteDocProblem,
 } from '../../src/shared/notes';
+import { fromApi } from '../control';
 import type { FakeHub } from './hub';
 
 /** The model a preview run reports until a scenario's `run` event names one. */
@@ -266,7 +267,11 @@ export function createNotesFake(hub: FakeHub): NotesApi {
         });
       }),
     listNoteTemplates: () =>
-      hub.request(notesChannels.NotesListTemplates, () => structuredClone(TEMPLATES)),
+      hub.request(
+        notesChannels.NotesListTemplates,
+        // Main fetches the list live (notesClient), so it fails while the API is away.
+        fromApi('GET /v1/note-templates', () => structuredClone(TEMPLATES)),
+      ),
     generateNotes: ({ meetingId, templateId }) =>
       hub.request(notesChannels.NotesGenerate, () => {
         const current = pending.get(meetingId);
@@ -308,14 +313,19 @@ export function createNotesFake(hub: FakeHub): NotesApi {
     getPendingGenerate: (meetingId) =>
       hub.request(notesChannels.NotesGetPendingGenerate, () => pending.get(meetingId) ?? null),
     getNotesRun: ({ meetingId, runId }) =>
-      hub.request(notesChannels.NotesGetRun, () => {
-        const run = runs.get(runId);
-        if (run?.meetingId !== meetingId) {
-          throw new Error(`notes run ${runId} not found for meeting ${meetingId}`);
-        }
-        // A snapshot, as main's answer is: the fake keeps updating its record as events arrive.
-        return structuredClone(run);
-      }),
+      hub.request(
+        notesChannels.NotesGetRun,
+        // A run's stored docs live only in the API ("Restore previous notes"), so main reads them
+        // live and the read fails while the API is away.
+        fromApi('GET /v1/meetings/{id}/runs/{run_id}', () => {
+          const run = runs.get(runId);
+          if (run?.meetingId !== meetingId) {
+            throw new Error(`notes run ${runId} not found for meeting ${meetingId}`);
+          }
+          // A snapshot, as main's answer is: the fake keeps updating its record as events arrive.
+          return structuredClone(run);
+        }),
+      ),
     // The ack goes back through the hub, so a scenario can wait for it as main's quit hook does.
     ackNotesFlush: (ack) => {
       hub.emit(notesChannels.NotesFlushAck, ack);

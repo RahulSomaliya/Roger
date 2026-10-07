@@ -184,6 +184,12 @@
   flex-direction: column;
   min-height: 0;
   padding-top: 10px;
+  /*
+   * The panel scrolls inside itself. Without this a long AI notes panel (a failure banner, the
+   * picker and the notes above the editor) outgrew its grid row on a wide page and was drawn over
+   * the chat under it, which then answered the clicks meant for the notes (M4-T20 browser QA).
+   */
+  overflow-y: auto;
 }
 
 /* `display: flex` above would otherwise show the closed tab: [hidden] is only a UA default. */
