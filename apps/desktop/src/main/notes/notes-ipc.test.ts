@@ -700,6 +700,37 @@ describe('the notes and chat IPC', () => {
     expect(h.sentOn(chatChannels.ChatThreadChanged)).toHaveLength(1);
   });
 
+  it('a second cancel after the API could not take the first asks again, and tells the page once', async () => {
+    const h = harness();
+    await h.invoke(chatChannels.ChatSend, MAIN_PAGE, {
+      meetingId: MEETING,
+      messageId: MESSAGE,
+      text: 'Why?',
+    });
+    h.runStatuses.push('running', 'running', 'cancelled');
+    h.cancelAnswers.push(new ApiError(0, 'network_error', 'POST run cancel failed'));
+    h.chatEnds[0]?.settle({ kind: 'dropped', runId: RUN, cause: 'network_error' });
+    await vi.advanceTimersByTimeAsync(0);
+
+    await expect(
+      h.invoke(chatChannels.ChatCancel, MAIN_PAGE, { meetingId: MEETING, messageId: MESSAGE }),
+    ).rejects.toThrow('POST run cancel failed');
+    await vi.advanceTimersByTimeAsync(0);
+    await h.invoke(chatChannels.ChatCancel, MAIN_PAGE, { meetingId: MEETING, messageId: MESSAGE });
+    await vi.advanceTimersByTimeAsync(0);
+
+    // One terminal event per message, as LlmStreams sends for a stream it cancels.
+    expect(h.sentOn(chatChannels.ChatEvent)).toEqual([CANCELLED_EVENT]);
+    expect(h.calls.slice(1)).toEqual([
+      `get run ${RUN}`,
+      `cancel run ${RUN}`,
+      `get run ${RUN}`,
+      `cancel run ${RUN}`,
+      `get run ${RUN}`,
+    ]);
+    expect(h.sentOn(chatChannels.ChatThreadChanged)).toEqual([]);
+  });
+
   it('a cancel while the thread is read for the run of a lost answer stops that run', async () => {
     const h = harness();
     await h.invoke(chatChannels.ChatSend, MAIN_PAGE, {

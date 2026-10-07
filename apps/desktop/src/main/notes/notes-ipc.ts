@@ -61,6 +61,12 @@ class FollowedAnswer {
   });
   /** The page's cancel during the follow, once sent: settles when the API answered it. */
   cancel: Promise<void> | null = null;
+  /**
+   * Whether the page was told `cancelled`. Its own flag, not `cancel`: a cancel the API could not
+   * take resets `cancel` so that the next one asks again, and the page must still hear one
+   * terminal event per message, as LlmStreams sends for a stream (M4-T19's chatStream).
+   */
+  pageTold = false;
   /** Ends the poll's wait early, so it reads at once what the cancel did; null while none. */
   wake: (() => void) | null = null;
 
@@ -387,21 +393,25 @@ class NotesIpc {
   }
 
   /**
-   * The page's cancel of a lost answer main follows: the page is told `cancelled` at once, as
-   * LlmStreams tells it for a stream, and the run is asked to stop once the follow knows it.
-   * Settles when the API answered, and rejects when that request failed (the follow goes on, and
-   * a second cancel asks again). A question with no follow, or of another meeting, does nothing.
+   * The page's cancel of a lost answer main follows: the page is told `cancelled` at once, once
+   * per answer, as LlmStreams tells it for a stream, and the run is asked to stop once the follow
+   * knows it. Settles when the API answered, and rejects when that request failed (the follow goes
+   * on, and a second cancel asks again, telling the page nothing new). A question with no follow,
+   * or of another meeting, does nothing.
    */
   private cancelFollowed(request: ChatAnswerRequest): Promise<void> {
     const follow = this.following.get(request.messageId);
     if (follow?.meetingId !== request.meetingId) return Promise.resolve();
     if (follow.cancel === null) {
-      const cancelled: ChatStreamMessage = {
-        meetingId: request.meetingId,
-        messageId: request.messageId,
-        event: { type: 'error', code: 'cancelled', message: CHAT_CANCELLED_MESSAGE },
-      };
-      this.toPage(chatChannels.ChatEvent, cancelled);
+      if (!follow.pageTold) {
+        follow.pageTold = true;
+        const cancelled: ChatStreamMessage = {
+          meetingId: request.meetingId,
+          messageId: request.messageId,
+          event: { type: 'error', code: 'cancelled', message: CHAT_CANCELLED_MESSAGE },
+        };
+        this.toPage(chatChannels.ChatEvent, cancelled);
+      }
       follow.cancel = this.stopFollowedRun(follow).catch((error: unknown) => {
         follow.cancel = null;
         throw error;
