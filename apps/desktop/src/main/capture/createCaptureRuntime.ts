@@ -5,6 +5,7 @@ import type { ApiClient } from '../api/ApiClient';
 import { createSystemAudio } from '../audio/system/createSystemAudio';
 import { AudioBackup } from '../backup/AudioBackup';
 import type { ApiConnection } from '../api/http';
+import { SttUsageClient } from '../api/sttUsageClient';
 import type { DesktopConfig } from '../config';
 import { type CaptureRequests, type CaptureWindow, registerIpcHandlers } from '../ipc';
 import type { IpcMainLike } from '../ipc/trust';
@@ -15,6 +16,7 @@ import { readSigningIdentity } from '../signing';
 import type { StoredSegment, TranscriptStore } from '../store/TranscriptStore';
 import type { SpeechToTextFactory } from '../stt/createSpeechToText';
 import { NetworkStatus } from '../stt/networkStatus';
+import { SttUsageUploader } from '../upload/SttUsageUploader';
 import type { TranscriptUploader } from '../upload/TranscriptUploader';
 import { electronNotifierPorts, Notifier } from '../notify/Notifier';
 import { PowerCoordinator } from '../power/PowerCoordinator';
@@ -296,6 +298,25 @@ export function createCaptureRuntime(deps: CaptureRuntimeDeps): CaptureRuntime {
   // [slot M2-T19] permission setup, `setup:*`; no navigation port (index.ts makes it later)
 
   // [slot M3-T19b] the STT usage uploader
+
+  // Each meeting's stt_usage row to the API: every 30 s, and at once after a Stop, whose save holds
+  // the meeting's last totals and its stop reason. `ended` runs before Stop's transcript flush, and
+  // the uploader never waits on TranscriptUploader. A Stop that threw (`stopFailed`) may not have
+  // saved those totals: the next pass sends whatever was saved. Without a token every request is
+  // refused, so it never starts (as index.ts treats the transcript uploader); the rows wait for a
+  // launch that has one.
+  const usageUploader = new SttUsageUploader({
+    store,
+    api: new SttUsageClient(deps.apiConnection),
+    logger: logger.child({ component: 'stt-usage' }),
+  });
+  capture.onRecording({
+    ended: ({ stopFailed }) => {
+      if (!stopFailed) usageUploader.sendNow();
+    },
+  });
+  if (deps.apiConnection.token !== '') usageUploader.start();
+  quitHooks.push(usageUploader.quitHook);
 
   registerIpcHandlers({
     ipcMain: deps.ipcMain,

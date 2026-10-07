@@ -95,7 +95,9 @@ source in its tooltip; each source's own time on its row; "Last recording" after
 (`stt meter` after every session that closes mid-meeting, `stt meter at stop` with the reason) and
 in `roger.sqlite`'s `stt_usage` table, one row per meeting, kept even when the meeting itself is
 discarded. The cost is an estimate from the price the API returns (`stream.price_per_hour_usd`).
-Nothing is uploaded yet (M3).
+Each row goes up to the API after it changes (every 30 s while the API answers, backing off to at
+most 5 min after failures, and at once after Stop), where `GET /v1/stt-usage/summary` sums the
+cost per meeting hour (docs/api-contract.md, "STT usage").
 
 ## Layout
 
