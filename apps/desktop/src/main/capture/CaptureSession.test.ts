@@ -17,6 +17,7 @@ import {
   type CaptureSessionOptions,
   type SessionWarning,
   type SourceWatermark,
+  type StreamCredentials,
 } from './CaptureSession';
 import { SttOpenBudget } from './SttOpenBudget';
 
@@ -117,6 +118,8 @@ function listeners(): CaptureSessionListeners & {
   segments: TranscriptSegment[];
   interims: InterimTranscript[];
   states: string[];
+  /** The message each state came with, `${source}:${state}:${message}`. */
+  stateMessages: string[];
   warnings: [AudioSource, SessionWarning][];
 } {
   const failures: [AudioSource, string, number | null][] = [];
@@ -125,6 +128,7 @@ function listeners(): CaptureSessionListeners & {
   const segments: TranscriptSegment[] = [];
   const interims: InterimTranscript[] = [];
   const states: string[] = [];
+  const stateMessages: string[] = [];
   const warnings: [AudioSource, SessionWarning][] = [];
   return {
     failures,
@@ -133,6 +137,7 @@ function listeners(): CaptureSessionListeners & {
     segments,
     interims,
     states,
+    stateMessages,
     warnings,
     onSegment: (segment) => {
       shown.push(segment.text);
@@ -145,8 +150,9 @@ function listeners(): CaptureSessionListeners & {
       interims.push(interim);
     },
     onStreamClosed: () => undefined,
-    onStreamState: (source, state) => {
+    onStreamState: (source, state, message) => {
       states.push(`${source}:${state}`);
+      stateMessages.push(`${source}:${state}:${message ?? ''}`);
     },
     onStreamFailure: (source, reason, retryAtMs) => {
       failures.push([source, reason, retryAtMs]);
@@ -1724,6 +1730,436 @@ describe('CaptureSession', () => {
       expect(l.shown).toEqual(['kept anyway']);
       expect(store.countSegments('m1')).toBe(1);
       await s.close();
+    });
+  });
+  describe('the silence gate (M3-T20)', () => {
+    const GATE = { closeAfterMs: 30_000, preRollMs: 1_000, reopensPerMeeting: 120 };
+    /** 100 ms of a voice at about -6 dBFS: speech in any room. */
+    const voice = (): Uint8Array => new Uint8Array(3200).fill(64);
+    const quiet = (): Uint8Array => new Uint8Array(3200);
+    const GATED_MESSAGE = /^mic:paused:silent for \d+ s; reopens when someone speaks$/;
+
+    /**
+     * A session with the gate on, on a clock the pushes move. Each token is good for 30 s from
+     * when it came (the API's expires_in), and the source counts every fetch.
+     */
+    async function gated(
+      overrides: Partial<CaptureSessionOptions> = {},
+      limits = { perMinute: 100, perMeeting: 100 },
+    ) {
+      const stt = new ControlledSpeechToText();
+      const l = listeners();
+      const log = recordingLogger();
+      let now = 10_000;
+      const clock = (): number => now;
+      let fetched = 0;
+      let failing = 0;
+      const budget = new SttOpenBudget(limits, clock);
+      budget.beginMeeting();
+      const store = meetingStore();
+      const s = session(stt, l, clock, store, {
+        silenceGate: GATE,
+        refreshCredentials: (): Promise<StreamCredentials> => {
+          fetched += 1;
+          if (failing > 0) {
+            failing -= 1;
+            return Promise.reject(new Error('API unreachable'));
+          }
+          return Promise.resolve({
+            accessToken: `token-${fetched}`,
+            settings,
+            expiresAtMs: now + 30_000,
+          });
+        },
+        budget,
+        logger: log.logger,
+        ...overrides,
+      });
+      const opening = s.open();
+      const mic = stt.succeed('mic');
+      const system = stt.succeed('system');
+      await opening;
+      /** Capture time of every chunk pushed, by its bytes: what each stream was sent, in order. */
+      const capturedAt = new Map<Uint8Array, number>();
+      const push = (source: AudioSource, atMs: number, pcm: Uint8Array = quiet()): void => {
+        now = atMs;
+        capturedAt.set(pcm, atMs);
+        s.pushAudio(source, pcm, atMs);
+      };
+      return {
+        stt,
+        l,
+        s,
+        store,
+        mic,
+        system,
+        budget,
+        log,
+        push,
+        fetched: () => fetched,
+        failFetches: (count: number) => {
+          failing = count;
+        },
+        at: (ms: number) => {
+          now = ms;
+        },
+        /** Chunks of `source` every 100 ms from `fromMs` up to `toMs`, the clock following. */
+        pushUntil: (source: AudioSource, fromMs: number, toMs: number, pcm = quiet): void => {
+          for (let t = fromMs; t < toMs; t += 100) push(source, t, pcm());
+        },
+        sentAt: (stream: ScriptedStream) => stream.sent.map((pcm) => capturedAt.get(pcm)),
+        /** The mic's latest state and its message, `mic:<state>:<message>`. */
+        micState: () => l.stateMessages.filter((line) => line.startsWith('mic:')).at(-1),
+        logged: (message: string) => log.messages.filter((line) => line.message === message),
+      };
+    }
+
+    /** Closes the mic for silence at 70 s: Start was at 10 s, and a session lives 60 s at least. */
+    async function micGated(
+      overrides: Partial<CaptureSessionOptions> = {},
+      limits?: { perMinute: number; perMeeting: number },
+    ) {
+      const g = await gated(overrides, limits);
+      g.pushUntil('mic', 10_000, 70_100);
+      await flush();
+      return g;
+    }
+
+    function gaps(store: InMemoryTranscriptStore) {
+      return store
+        .listGaps('m1')
+        .map(({ source, startMs, endMs, reason }) => ({ source, startMs, endMs, reason }));
+    }
+
+    it('closes a silent source through the normal close, and only speech reopens it', async () => {
+      const g = await gated();
+      const finishing = gate<undefined>();
+      g.mic.finishing = finishing;
+      g.pushUntil('mic', 10_000, 70_000);
+      // Silent for 59.9 s, but open for less than the 60 s every session lives.
+      expect(g.mic.closed).toBe(false);
+      g.push('mic', 70_000);
+      expect(g.mic.closed).toBe(true);
+      expect(g.micState()).toMatch(GATED_MESSAGE);
+      // The finish still saves the last lines the vendor sends.
+      final(g.mic, 'last words', 1_000, 2_000);
+      finishing.resolve(undefined);
+      await flush();
+      expect(g.l.shown).toEqual(['last words']);
+      expect(g.fetched()).toBe(1); // the token prefetched at the close
+
+      g.pushUntil('mic', 70_100, 80_000);
+      await flush();
+      expect(g.stt.opens).toEqual(['mic', 'system']); // silence never reopens it
+      expect(g.l.states.at(-1)).toBe('mic:paused');
+
+      g.push('mic', 80_000, voice());
+      await flush();
+      expect(g.stt.opens).toEqual(['mic', 'system', 'mic']);
+      expect(g.fetched()).toBe(1); // no API call at the onset
+      expect(g.stt.openOptions.at(-1)?.accessToken).toBe('token-1');
+      const reopened = g.stt.succeed('mic');
+      await flush();
+      // The second before the speech first, then the chunk that woke it.
+      expect(g.sentAt(reopened)).toEqual([
+        ...Array.from({ length: 10 }, (_, i) => 79_000 + i * 100),
+        80_000,
+      ]);
+      // Its time zero is the pre-roll's first chunk: the line is dated at meeting time.
+      final(reopened, 'hello again', 1_000, 1_100);
+      expect(g.l.segments.at(-1)).toMatchObject({ startMs: 70_000, endMs: 70_100 });
+      await g.s.close();
+    });
+
+    it('keeps the whole pre-roll through a slow connect, and drops no audio', async () => {
+      const g = await micGated({ silenceGate: { ...GATE, preRollMs: 2_000 } });
+      g.pushUntil('mic', 70_100, 80_000);
+      g.push('mic', 80_000, voice());
+      await flush();
+      // 1.5 s of speech arrives while it connects: with the 2 s pre-roll, more than the 3 s
+      // reopen buffer, which alone would cut the pre-roll's start.
+      g.pushUntil('mic', 80_100, 81_600, voice);
+      const reopened = g.stt.succeed('mic');
+      await flush();
+      expect(g.sentAt(reopened)[0]).toBe(78_000);
+      expect(reopened.sent).toHaveLength(20 + 16);
+      expect(g.logged('audio dropped while reconnecting')).toEqual([]);
+      await g.s.close();
+    });
+
+    it('refreshes the token before its TTL while gated, and fetches at the onset without one', async () => {
+      const g = await micGated();
+      expect(g.fetched()).toBe(1); // at 70 s, good until 100 s
+      g.pushUntil('mic', 70_100, 90_000);
+      await flush();
+      expect(g.fetched()).toBe(1);
+      g.push('mic', 90_000); // 10 s before it expires
+      await flush();
+      expect(g.fetched()).toBe(2);
+
+      // No chunk for 26 s (a stall): the token has under 5 s left at the onset.
+      g.push('mic', 116_000, voice());
+      await flush();
+      expect(g.fetched()).toBe(3);
+      expect(g.stt.openOptions.at(-1)?.accessToken).toBe('token-3');
+      g.stt.succeed('mic');
+      await flush();
+      await g.s.close();
+    });
+
+    it('logs a failed prefetch and falls back to a fetch at the onset', async () => {
+      const g = await gated();
+      g.failFetches(1);
+      g.pushUntil('mic', 10_000, 70_100);
+      await flush();
+      expect(g.logged('speech-to-text token prefetch failed')).toHaveLength(1);
+      g.push('mic', 70_100, voice());
+      await flush();
+      expect(g.fetched()).toBe(2);
+      expect(g.stt.openOptions.at(-1)?.accessToken).toBe('token-2');
+      g.stt.succeed('mic');
+      await flush();
+      await g.s.close();
+    });
+
+    it('tries a failed prefetch again while the source stays gated', async () => {
+      const g = await gated();
+      g.failFetches(1);
+      g.pushUntil('mic', 10_000, 70_100);
+      await flush();
+      g.pushUntil('mic', 70_100, 80_000);
+      await flush();
+      expect(g.fetched()).toBe(1);
+      g.push('mic', 80_000);
+      await flush();
+      expect(g.fetched()).toBe(2);
+      g.push('mic', 80_100, voice());
+      await flush();
+      expect(g.fetched()).toBe(2);
+      g.stt.succeed('mic');
+      await flush();
+      await g.s.close();
+    });
+
+    it('leaves a stall to its own path: any chunk reopens it, on the meeting allowance', async () => {
+      const g = await gated();
+      g.pushUntil('system', 10_000, 20_000);
+      g.at(50_000);
+      g.s.pauseSource('system', 30_000);
+      g.push('system', 50_000); // silent, but a stall reopens on any chunk
+      await flush();
+      expect(g.stt.opens).toEqual(['mic', 'system', 'system']);
+      expect(g.budget.openedThisMeeting).toBe(3);
+      g.stt.succeed('system');
+      await flush();
+      await g.s.close();
+    });
+
+    it('keeps a gated source gated across an offline flip and a wake, reopening only on speech', async () => {
+      const g = await micGated();
+      g.s.suspendStreams('offline');
+      g.pushUntil('mic', 70_100, 75_000);
+      g.s.resumeStreams('offline');
+      expect(g.micState()).toMatch(GATED_MESSAGE);
+      g.pushUntil('mic', 75_000, 80_000);
+      g.s.suspendStreams('asleep');
+      g.at(200_000);
+      g.s.resumeStreams('asleep');
+      expect(g.micState()).toMatch(GATED_MESSAGE);
+      g.pushUntil('mic', 200_000, 205_000);
+      await flush();
+      expect(g.stt.opens).toEqual(['mic', 'system']);
+
+      g.push('mic', 205_000, voice());
+      await flush();
+      expect(g.stt.opens).toEqual(['mic', 'system', 'mic']);
+      g.stt.succeed('mic');
+      await flush();
+      // Nothing was said while it was gated, offline or not: no gap.
+      expect(gaps(g.store)).toEqual([]);
+      await g.s.close();
+    });
+
+    it('reopens on speech heard while offline once the network is back, with a gap from the onset', async () => {
+      const g = await micGated();
+      g.s.suspendStreams('offline');
+      g.pushUntil('mic', 70_100, 72_000);
+      g.pushUntil('mic', 72_000, 77_000, voice); // 5 s of speech the vendor never hears
+      g.s.resumeStreams('offline');
+      expect(g.micState()).toBe('mic:paused:reconnects with its next audio');
+      g.push('mic', 77_000);
+      await flush();
+      expect(g.stt.opens).toEqual(['mic', 'system', 'mic']);
+      const reopened = g.stt.succeed('mic');
+      await flush();
+      // Held: its newest pre-roll plus reopen buffer, 4 s. The second before the onset and the
+      // first second of speech were dropped: that is the gap, never the silence before it.
+      expect(g.sentAt(reopened)[0]).toBe(73_100);
+      expect(gaps(g.store)).toEqual([
+        { source: 'mic', startMs: 61_000, endMs: 63_100, reason: 'offline' },
+      ]);
+      await g.s.close();
+    });
+
+    it("takes a per-minute slot for a gate reopen, never one of the meeting's opens", async () => {
+      // The defaults: Start's two leave 28 of the meeting's opens, fewer than the 30 cycles.
+      const g = await gated({}, { perMinute: 4, perMeeting: 30 });
+      let t = 10_000;
+      for (let cycle = 0; cycle < 30; cycle += 1) {
+        g.pushUntil('mic', t, t + 60_100); // silent past the 60 s a session lives: closed
+        await flush();
+        g.push('mic', t + 60_100, voice());
+        await flush();
+        g.stt.succeed('mic');
+        await flush();
+        t += 60_200;
+      }
+      expect(g.stt.opens.filter((label) => label === 'mic')).toHaveLength(31);
+      expect(g.budget.openedThisMeeting).toBe(2); // Start's two
+      // The last reopen holds a slot in the minute: with the default of 4, three are left.
+      expect(g.budget.check(3, 'minute').ok).toBe(true);
+      expect(g.budget.check(4, 'minute').ok).toBe(false);
+      await g.s.close();
+    });
+
+    it('turns itself off once its own reopens are spent: one log line, sessions stay open', async () => {
+      const g = await gated({ silenceGate: { ...GATE, reopensPerMeeting: 2 } });
+      expect(g.s.silenceGateState).toBe('on');
+      let t = 10_000;
+      for (let cycle = 0; cycle < 2; cycle += 1) {
+        g.pushUntil('mic', t, t + 60_100);
+        await flush();
+        g.push('mic', t + 60_100, voice());
+        await flush();
+        g.stt.succeed('mic');
+        await flush();
+        t += 60_200;
+      }
+      expect(g.s.silenceGateState).toBe('spent');
+      const spent = g.logged('silence gate off for this meeting: its reopens are spent');
+      expect(spent).toHaveLength(1);
+      expect(spent[0]?.reopens).toBe(2);
+      const last = g.stt.streams.get('mic');
+      g.pushUntil('mic', t, t + 180_000);
+      await flush();
+      expect(last?.closed).toBe(false);
+      expect(g.stt.opens.filter((label) => label === 'mic')).toHaveLength(3);
+      // The other source never closes for silence either.
+      g.pushUntil('system', t, t + 120_000);
+      expect(g.system.closed).toBe(false);
+      await g.s.close();
+    });
+
+    it('never closes a session that opened less than 60 s ago', async () => {
+      const g = await micGated();
+      g.push('mic', 80_000, voice());
+      await flush();
+      g.at(81_000);
+      const reopened = g.stt.succeed('mic'); // opened at 81 s
+      await flush();
+      g.pushUntil('mic', 80_100, 140_900); // 60 s of silence after the speech
+      expect(reopened.closed).toBe(false);
+      g.push('mic', 141_000);
+      expect(reopened.closed).toBe(true);
+      await g.s.close();
+    });
+
+    it('writes no gap for a gated window, and starts the gap of a failed speech reopen at the onset', async () => {
+      const g = await gated();
+      g.failFetches(2); // the prefetch at the close fails, and so does the fetch at the onset
+      g.pushUntil('mic', 10_000, 80_000);
+      await flush();
+      g.push('mic', 80_000, voice());
+      await flush();
+      expect(g.l.states.at(-1)).toBe('mic:retrying');
+      // A failure takes the landed retry: any chunk after the backoff, on the meeting allowance.
+      g.pushUntil('mic', 80_100, 82_100, voice);
+      await flush();
+      expect(g.budget.openedThisMeeting).toBe(3);
+      const reopened = g.stt.succeed('mic');
+      await flush();
+      // From the onset (the pre-roll's first chunk at 79 s) to the new stream's first audio.
+      const first = g.sentAt(reopened)[0] ?? 0;
+      expect(gaps(g.store)).toEqual([
+        { source: 'mic', startMs: 69_000, endMs: first - 10_000, reason: 'stt_failed' },
+      ]);
+      await g.s.close();
+    });
+
+    it('starts the gap of a speech reopen the per-minute window holds back at the onset', async () => {
+      const g = await micGated({}, { perMinute: 4, perMeeting: 100 });
+      g.pushUntil('mic', 70_100, 80_000);
+      await flush();
+      expect(g.budget.acquire(4, 'minute').ok).toBe(true); // the minute is full until 140 s
+      g.push('mic', 80_000, voice());
+      await flush();
+      expect(g.l.states.at(-1)).toBe('mic:retrying');
+      g.pushUntil('mic', 80_100, 140_100, voice);
+      await flush();
+      const reopened = g.stt.succeed('mic');
+      await flush();
+      expect(g.budget.openedThisMeeting).toBe(2); // still the gate's reopen, in the minute only
+      // Held while it waited: the pre-roll plus the reopen buffer, the newest 4 s.
+      expect(g.sentAt(reopened)[0]).toBe(136_100);
+      expect(gaps(g.store)).toEqual([
+        { source: 'mic', startMs: 69_000, endMs: 126_100, reason: 'budget' },
+      ]);
+      await g.s.close();
+    });
+
+    it('times the words of gate-reopened sessions in figures of their own', async () => {
+      const g = await micGated();
+      g.pushUntil('mic', 70_100, 80_000);
+      g.push('mic', 80_000, voice());
+      await flush();
+      const reopened = g.stt.succeed('mic');
+      await flush();
+      g.at(81_500);
+      final(reopened, 'hello', 1_000, 1_100, [[1_000, 1_100]]); // said at 80.1 s, shown 1.4 s on
+      await g.s.close();
+      const [line] = g.logged('stt latency');
+      expect(line?.mic).toMatchObject({ words: 0 });
+      expect(line?.gateReopened).toMatchObject({
+        mic: { words: 1, displayP50Ms: 1_400 },
+        system: { words: 0 },
+      });
+    });
+
+    it('counts the time each source was gated and what it saved at its price', async () => {
+      const priced = { ...settings, pricePerHourUsd: 0.36 };
+      const g = await micGated({ settings: priced });
+      g.pushUntil('mic', 70_100, 80_000);
+      expect(g.s.gateUsage('mic')).toEqual({ gatedMs: 9_900, estimatedSavedUsd: 0.001 });
+      g.push('mic', 80_000, voice());
+      await flush();
+      g.at(90_000);
+      // The window ended at the onset: connecting is not gated time.
+      expect(g.s.gateUsage('mic')).toEqual({ gatedMs: 10_000, estimatedSavedUsd: 0.001 });
+      expect(g.s.gateUsage('system')).toEqual({ gatedMs: 0, estimatedSavedUsd: 0 });
+      expect(g.s.gateUsage()).toEqual({ gatedMs: 10_000, estimatedSavedUsd: 0.001 });
+      expect(g.s.gateReopens).toBe(1);
+      g.stt.succeed('mic');
+      await flush();
+      await g.s.close();
+      expect(g.store.listCaptureEvents('m1').map(({ kind }) => kind)).toEqual([
+        'stt-gate-closed',
+        'stt-gate-window',
+        'stt-reopened',
+      ]);
+      expect(g.store.listCaptureEvents('m1')[1]?.detail).toEqual({
+        gatedMs: 10_000,
+        peakDb: -90,
+        endedBy: 'speech',
+      });
+    });
+
+    it('is off without its settings: a silent source keeps its session', async () => {
+      const g = await gated({ silenceGate: null });
+      expect(g.s.silenceGateState).toBe('off');
+      g.pushUntil('mic', 10_000, 130_000);
+      expect(g.mic.closed).toBe(false);
+      expect(g.s.gateUsage()).toEqual({ gatedMs: 0, estimatedSavedUsd: 0 });
+      await g.s.close();
     });
   });
 });

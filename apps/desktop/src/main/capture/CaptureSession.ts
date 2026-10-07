@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import type { CaptureWarningKind, SttStreamState } from '../../shared/capture';
+import type { CaptureWarningKind, SilenceGateState, SttStreamState } from '../../shared/capture';
 import { PCM_SAMPLE_RATE } from '../../shared/ipc';
 import { pcmBytesToMs } from '../../shared/pcm';
 import {
@@ -20,7 +20,8 @@ import {
   type SttStreamSettings,
 } from '../stt/SpeechToText';
 import { AudioTimeline } from './AudioTimeline';
-import type { SttOpenBudget, SttOpenDecision } from './SttOpenBudget';
+import { type GateChunk, type Heard, SilenceGate } from './SilenceGate';
+import type { SttOpenBudget, SttOpenDecision, SttOpenScope } from './SttOpenBudget';
 
 export interface CaptureSessionListeners {
   onSegment(segment: TranscriptSegment): void;
@@ -81,11 +82,40 @@ export interface CaptureSessionOptions {
   logger: Logger;
   listeners: CaptureSessionListeners;
   clock?: () => number;
+  /**
+   * The silence gate (M3-T20): a source whose chunks hold no speech for the hang-over closes its
+   * session, and its next speech chunk reopens it. Null or left out: off (sttSilenceCloseSeconds
+   * 0), and a silent source keeps its session as before.
+   */
+  silenceGate?: SilenceGateSettings | null;
 }
+
+/** The silence gate's settings (costGuards.ts, M3-T20). */
+export interface SilenceGateSettings {
+  /** The hang-over: chunks with no speech for this long close the session (sttSilenceCloseMs). */
+  closeAfterMs: number;
+  /** Audio kept while closed, sent first on the reopen (sttSilencePreRollMs). */
+  preRollMs: number;
+  /** The gate's own reopens this meeting, both sources (sttSilenceReopensPerMeeting). */
+  reopensPerMeeting: number;
+}
+
+/**
+ * Why a `paused` source is closed (M3-T20), which decides what reopens it (pushAudio): `stall`, it
+ * sent no chunk for the stall window and any chunk reopens it; `silence`, the gate closed it and
+ * only a speech chunk does.
+ */
+export type PauseCause = 'stall' | 'silence';
 
 export interface StreamCredentials {
   accessToken: string;
   settings: SttStreamSettings;
+  /**
+   * Clock time after which the token opens nothing (the API's `expires_in`, counted from when it
+   * arrived; CaptureService). The gate's prefetched token is refreshed before it. Null or left out:
+   * no known expiry, as for the fake vendor's empty token.
+   */
+  expiresAtMs?: number | null;
   /**
    * USD per hour of one stream opened with no jargon list (the token's
    * `price_per_hour_usd_without_keyterms`): the price of a source whose list the vendor refused,
@@ -141,6 +171,23 @@ const SAMPLE_BYTES = 2;
  */
 const HEALTHY_STREAM_MS = 60_000;
 
+/**
+ * The silence gate never closes a session younger than this (M3-T20): at most one gate reopen per
+ * source per minute, the open budget's window, and every gated session has billed a minute anyway.
+ */
+const GATE_MIN_OPEN_MS = 60_000;
+
+/** The gate's prefetched token is fetched again this long before it expires (while gated). */
+const PREFETCH_REFRESH_LEAD_MS = 10_000;
+
+/** A gate reopen opens with the prefetched token only when it has this long left. */
+const PREFETCH_MIN_LEFT_MS = 5_000;
+
+/** After a failed prefetch, the next try waits this long (while a source is still gated). */
+const PREFETCH_RETRY_MS = 10_000;
+
+const MS_PER_HOUR = 3_600_000;
+
 interface HeldChunk {
   pcm: Uint8Array;
   /** Wall clock of its first sample, where it was captured: its stream's timeline dates it. */
@@ -169,6 +216,14 @@ interface StreamHandle {
   /** Dropped with no finish sequence (the offline suspend): never asked twice. */
   terminated: boolean;
   readonly openedAtMs: number;
+  /**
+   * Speech reopened it after the silence gate closed its source (M3-T20): its words are timed in
+   * their own latency pool (close), since they run up to the pre-roll plus the connect late by
+   * design (T18 paces that backlog at 1x).
+   */
+  readonly gateReopened: boolean;
+  /** The price it was opened at (streamSettings): what a gated window after it saves per hour. */
+  readonly pricePerHourUsd: number | null;
   /** Meeting offset where this stream's latest line ends, or null before its first (loseTail). */
   lineEndMs: number | null;
   /** Meeting offset just past the last audio this stream was sent, or null before any. */
@@ -210,6 +265,31 @@ interface SourceLink {
    * meeting goes without the list (streamSettings), though each fresh token carries it again.
    */
   withoutKeyterms: boolean;
+  /**
+   * Why it is `paused` (PauseCause), null when it is not (M3-T20). Kept through a suspend: a source
+   * the gate closed before an offline flip or a sleep is still gated after resumeStreams().
+   */
+  pauseCause: PauseCause | null;
+  /**
+   * Its next reopen is the gate's: speech ended its gated window. It takes a slot in the minute
+   * only (its reopen was counted against sttSilenceReopensPerMeeting at the close), and holds the
+   * pre-roll on top of reopenBufferMs. Kept over a per-minute wait and a suspend; dropped when it
+   * opens, or by a failure, whose retry is the landed one on the meeting's allowance.
+   */
+  gateReopen: boolean;
+  /** Clock time its current gated window began, or null while it is not gated. */
+  gatedSinceMs: number | null;
+  /** The price of the stream the gate closed: what each second of this window saves. */
+  gatedPricePerHourUsd: number | null;
+  /** Gated time of its finished windows, ms. */
+  gatedMs: number;
+  /** What its finished windows saved, unrounded; null once one had no known price. */
+  savedUsd: number | null;
+  /**
+   * Meeting offset of the speech onset that ended its latest gated window (its pre-roll's first
+   * chunk), or null: no gap of this source starts before it (gapStartMs).
+   */
+  gatedUntilMs: number | null;
   /** Meeting offset where this source's latest final line ends (SourceWatermark.finalEndMs). */
   finalEndMs: number | null;
   /** The watermark the listeners last heard, so each change is told once. */
@@ -259,6 +339,13 @@ interface SourceLink {
  * budget, and that source goes without the list until Stop (connect): a call without the list
  * loses a few names, a refused Start loses the meeting.
  *
+ * The silence gate (M3-T20, SilenceGate) closes a source whose chunks hold no speech for its
+ * hang-over through the same close as a stall (pauseCause `silence`), never within a minute of an
+ * open, and only a speech chunk reopens it, sending the pre-roll first with a token prefetched
+ * while it was closed. A gate reopen takes a slot in the budget's minute and one of the gate's own
+ * reopens, never one of the meeting's, which failures need; once those are spent the gate is off
+ * until Stop. A gated window is never a gap: nothing was said.
+ *
  * The Mac going offline or to sleep suspends both sources at once (suspendStreams, M2-T6): offline
  * terminates each socket, asleep finishes and closes it, and either way audio is held as for a
  * pause, and no token is fetched and nothing opens until resumeStreams() has lifted every reason.
@@ -285,6 +372,24 @@ export class CaptureSession {
   private readonly reopening = new Set<Promise<void>>();
   /** Every stream's latency meter, closed ones too, by source: close() logs them pooled. */
   private readonly latencyMeters: Record<AudioSource, LatencyMeter[]> = { mic: [], system: [] };
+  /** The same for streams the silence gate reopened: their words are timed apart (M3-T20). */
+  private readonly gateLatencyMeters: Record<AudioSource, LatencyMeter[]> = {
+    mic: [],
+    system: [],
+  };
+  /** Each source's silence gate; empty when the gate is off. */
+  private readonly gates: Partial<Record<AudioSource, SilenceGate>> = {};
+  /**
+   * Gate closes this meeting, both sources. Each takes its reopen with it, so a source the gate
+   * closed can always reopen on speech; once they reach reopensPerMeeting the gate is spent.
+   */
+  private gateCloses = 0;
+  /** The gate's token for a speech reopen, fetched at a close and kept fresh while gated. */
+  private prefetched: StreamCredentials | null = null;
+  /** The prefetch in flight: a reopen at the onset waits for it rather than fetch twice. */
+  private prefetching: Promise<StreamCredentials | null> | null = null;
+  /** No prefetch before this clock time (after one failed). */
+  private prefetchNotBeforeMs = 0;
   /** The suspend reasons in force, each with the clock time it began (suspendStreams). */
   private readonly suspended = new Map<SuspendReason, number>();
   private readonly watermarkListeners = new Set<WatermarkListener>();
@@ -305,10 +410,57 @@ export class CaptureSession {
         `Speech-to-text needs a positive whole sample rate, not ${options.settings.sampleRate}.`,
       );
     }
+    const gate = options.silenceGate ?? null;
+    if (gate !== null) {
+      for (const source of AUDIO_SOURCES) {
+        this.gates[source] = new SilenceGate({
+          closeAfterMs: gate.closeAfterMs,
+          preRollMs: gate.preRollMs,
+          sampleRate: this.sampleRate,
+        });
+      }
+    }
   }
 
   get storedSegmentCount(): number {
     return this.segmentsStored;
+  }
+
+  /** The silence gate this meeting: off without its settings, spent once its reopens are used. */
+  get silenceGateState(): SilenceGateState {
+    const gate = this.options.silenceGate ?? null;
+    if (gate === null) return 'off';
+    return this.gateCloses >= gate.reopensPerMeeting ? 'spent' : 'on';
+  }
+
+  /** Gate closes this meeting, both sources: each took one of sttSilenceReopensPerMeeting. */
+  get gateReopens(): number {
+    return this.gateCloses;
+  }
+
+  /**
+   * What the silence gate kept closed this meeting, for the meter (M3-T20): its gated time, a
+   * window still open counted up to now, and that time at the price of the stream each window
+   * closed, to 1/10000 USD (null when one had no known price, as the meter's cost). One source, or
+   * both.
+   */
+  gateUsage(source?: AudioSource): { gatedMs: number; estimatedSavedUsd: number | null } {
+    let gatedMs = 0;
+    let savedUsd: number | null = 0;
+    for (const each of source === undefined ? AUDIO_SOURCES : [source]) {
+      const link = this.links[each];
+      const openMs = link.gatedSinceMs === null ? 0 : this.clock() - link.gatedSinceMs;
+      gatedMs += link.gatedMs + openMs;
+      const openUsd = savedAt(openMs, link.gatedPricePerHourUsd);
+      savedUsd =
+        savedUsd === null || link.savedUsd === null || openUsd === null
+          ? null
+          : savedUsd + link.savedUsd + openUsd;
+    }
+    return {
+      gatedMs,
+      estimatedSavedUsd: savedUsd === null ? null : Math.round(savedUsd * 10_000) / 10_000,
+    };
   }
 
   /**
@@ -358,24 +510,32 @@ export class CaptureSession {
     const link = this.links[source];
     // Every chunk, sent or not: the end of a gap that lasts until Stop (endLoss).
     link.audioEndMs = this.meetingOffset(capturedAtMs + this.chunkMs(pcm));
+    // Every chunk, whatever the state: the noise floor and the hang-over follow the audio itself.
+    const heard = this.gates[source]?.hear(pcm, capturedAtMs) ?? null;
     switch (link.state) {
       case 'open':
         if (link.current !== null) this.send(link.current, pcm, capturedAtMs);
+        this.closeIfSilent(source);
         return;
       case 'connecting':
       case 'offline':
         // Offline: no token and no open until the network is back; resumeStreams makes it paused.
-        this.hold(source, pcm, capturedAtMs);
+        this.hold(source, pcm, capturedAtMs, heard);
         return;
       case 'paused':
       case 'retrying':
-        this.hold(source, pcm, capturedAtMs);
+        this.hold(source, pcm, capturedAtMs, heard);
         // The one place a source with no session decides to reopen: never while a suspend holds
-        // (offline, asleep), nor before its backoff or the budget's minute has passed. M3-T20 (wave
-        // 6) adds its silence gate to this one condition, so a source the gate closed reopens only
-        // on speech, after resumeStreams() and the wake too (resumeStreams leaves every source
-        // paused for that reason). A copy of the decision anywhere else would reopen a gated source.
-        if (this.suspended.size === 0 && this.clock() >= link.notBeforeMs) {
+        // (offline, asleep), nor before its backoff or the budget's minute has passed, nor while
+        // the silence gate keeps it closed (M3-T20): hold() ends the gated window on a speech
+        // chunk alone, so a gated source reopens only on speech, after resumeStreams() and the wake
+        // too (resumeStreams leaves every source paused and keeps its cause). A copy of the
+        // decision anywhere else would reopen a gated source on silence.
+        if (
+          this.suspended.size === 0 &&
+          this.clock() >= link.notBeforeMs &&
+          link.pauseCause !== 'silence'
+        ) {
           this.startReopen(source);
         }
         return;
@@ -423,7 +583,9 @@ export class CaptureSession {
    * Lifts one reason suspendStreams set. Once none is left, every suspended source is `paused`
    * with no backoff wait, and reopens with its next chunk through the open budget, as after a
    * stall: whether and when it reopens is then decided where a paused source's always is
-   * (pushAudio), which is how M3-T20 keeps a gated source shut until speech.
+   * (pushAudio). A source the silence gate had closed keeps its pause cause, so it stays shut
+   * until speech: reopening it on its next silent chunk would spend an open and bill at least the
+   * gate's minute of silence at every offline flip and every wake (M3-T20).
    */
   resumeStreams(reason: SuspendReason): void {
     const since = this.suspended.get(reason);
@@ -440,7 +602,13 @@ export class CaptureSession {
         this.showSuspended(source);
       } else {
         link.notBeforeMs = 0;
-        this.setState(source, 'paused', 'reconnects with its next audio');
+        this.setState(
+          source,
+          'paused',
+          link.pauseCause === 'silence'
+            ? this.gatedMessage(source)
+            : 'reconnects with its next audio',
+        );
       }
     }
   }
@@ -478,6 +646,9 @@ export class CaptureSession {
     if (link.state !== 'open' && link.state !== 'connecting') return;
     link.notBeforeMs = 0;
     link.attempt += 1;
+    // Any chunk reopens a stall (pushAudio); a gate reopen it caught connecting is over.
+    link.pauseCause = 'stall';
+    link.gateReopen = false;
     const handle = link.current;
     link.current = null;
     // Audio held for a reopen still connecting will never be sent: lost, up to the last of it.
@@ -505,6 +676,9 @@ export class CaptureSession {
     link.current = null;
     this.endLoss(source, link.audioEndMs);
     this.dropHeld(link);
+    this.endGatedTime(source, 'closed');
+    link.pauseCause = null;
+    link.gateReopen = false;
     if (link.state === 'closed') return;
     this.setState(source, 'closed', reason);
     this.recordEvent(source, 'stt-closed', { reason });
@@ -521,11 +695,14 @@ export class CaptureSession {
     // A failed Start closes twice (open() itself, then CaptureService): one latency line a session.
     const firstClose = !this.closing;
     this.closing = true;
-    for (const link of Object.values(this.links)) {
+    for (const source of AUDIO_SOURCES) {
+      const link = this.links[source];
       link.attempt += 1;
       if (link.current !== null) void this.retire(link.current);
       link.current = null;
       this.dropHeld(link);
+      // Stop ends a gated window: the meter read after close() counts it up to here, not to now.
+      this.endGatedTime(source, 'stop');
     }
     // A reopen still connecting closes its stream itself once it lands (it is stale now). The wait
     // is bounded by the API client's timeout and the adapter's connect timeout (10 s each).
@@ -536,24 +713,35 @@ export class CaptureSession {
     // Before the latency line, so a summary that fails can never cost a gap row M2-T16 re-runs.
     for (const source of AUDIO_SOURCES) this.endLoss(source, this.links[source].audioEndMs);
     // Logged once every stream has closed, so the lines each close flushed are timed too. M3's exit
-    // check reads this line from a real call: word display p95 for mic and for system.
+    // check reads this line from a real call: word display p95 for mic and for system, over the
+    // words outside gate-reopened sessions, with those sessions' own figures beside them (M3-T20).
     if (firstClose) {
       this.options.logger.info('stt latency', {
         mic: LatencyMeter.pool(this.latencyMeters.mic),
         system: LatencyMeter.pool(this.latencyMeters.system),
+        gateReopened: {
+          mic: LatencyMeter.pool(this.gateLatencyMeters.mic),
+          system: LatencyMeter.pool(this.gateLatencyMeters.system),
+        },
       });
     }
   }
 
   private async openStream(source: AudioSource): Promise<void> {
     const { accessToken, settings, pricePerHourUsdWithoutKeyterms = null } = this.options;
+    const credentials: StreamCredentials = {
+      accessToken,
+      settings,
+      pricePerHourUsdWithoutKeyterms,
+    };
     const link = this.links[source];
     const attempt = (link.attempt += 1);
     this.setState(source, 'connecting', null);
     const connected = await this.connect(
       source,
-      { accessToken, settings, pricePerHourUsdWithoutKeyterms },
+      credentials,
       () => this.closing || link.attempt !== attempt,
+      'meeting',
     );
     if (!connected.ok) {
       // Start takes its opens before any socket and fails whole when refused (open()): so here.
@@ -561,7 +749,7 @@ export class CaptureSession {
         `${connected.rejection}; not opened again without the jargon list: ${connected.refusal.message}`,
       );
     }
-    const handle = this.track(source, connected.stream);
+    const handle = this.track(source, connected.stream, credentials, false);
     if (this.closing || link.attempt !== attempt) {
       // Another stream failed, or the source closed, while this one was connecting: do not leak it.
       await this.retire(handle);
@@ -583,8 +771,15 @@ export class CaptureSession {
     const link = this.links[source];
     const attempt = (link.attempt += 1);
     const stale = (): boolean => this.closing || link.attempt !== attempt;
+    // Trap (M3-T20): a gate reopen draws on the minute alone (`acquire(1, 'minute')`), never on
+    // the meeting's allowance (sttOpensPerMeeting): its reopen was counted against the gate's own
+    // sttSilenceReopensPerMeeting when it closed. Through the plain acquire(), a stop-and-start
+    // meeting spends the opens a failing vendor needs in minutes and leaves M2-T16's re-run
+    // nothing. SttOpenBudget's doc comment lists the callers and the scope each takes.
+    const gateReopen = link.gateReopen;
+    const scope: SttOpenScope = gateReopen ? 'minute' : 'meeting';
     // Asked before the token too, so a spent budget costs no API call.
-    const ahead = this.options.budget.check();
+    const ahead = this.options.budget.check(1, scope);
     if (!ahead.ok) {
       this.budgetRefused(source, ahead);
       return;
@@ -592,25 +787,30 @@ export class CaptureSession {
     this.setState(source, 'connecting', null);
     let handle: StreamHandle;
     try {
-      const credentials = await this.options.refreshCredentials();
+      const credentials = gateReopen
+        ? await this.gateCredentials()
+        : await this.options.refreshCredentials();
       if (stale()) return;
       // Taken right before the open, the only place an open happens: an adapter never opens one.
-      const grant = this.options.budget.acquire();
+      const grant = this.options.budget.acquire(1, scope);
       if (!grant.ok) {
         this.budgetRefused(source, grant);
         return;
       }
-      const connected = await this.connect(source, credentials, stale);
+      const connected = await this.connect(source, credentials, stale, scope);
       if (!connected.ok) {
         // Its list stays off: the open after the wait goes without it.
         this.budgetRefused(source, connected.refusal);
         return;
       }
-      handle = this.track(source, connected.stream);
+      handle = this.track(source, connected.stream, credentials, gateReopen);
     } catch (error) {
       if (stale()) return;
       const reason = `could not reconnect: ${errorMessage(error)}`;
       this.options.logger.warn('speech-to-text stream did not reopen', { source, reason });
+      // A failure is the vendor's or the API's, whatever reopened it: its retry is the landed one,
+      // on the meeting's allowance, which bounds a vendor that keeps failing (M3-T20).
+      link.gateReopen = false;
       const retryAtMs = this.scheduleRetry(source, reason, null);
       this.recordEvent(source, 'stt-failed', {
         stage: 'reopen',
@@ -633,7 +833,8 @@ export class CaptureSession {
    * Opens one vendor stream for `source`, its open already taken from the budget. A connect the
    * vendor refused over the jargon list (SttConnectError.keytermsRejected: the core set it with
    * the socket already closed, and never retries) is opened once more without the list, through
-   * the budget like any open (M3-T4b), and the source goes without it until Stop. Once, never a
+   * the budget like any open (M3-T4b), on `scope` as the first was, and the source goes without it
+   * until Stop. Once, never a
    * loop: the second open carries no list, so the core never blames one, and a source already
    * without its list is never retried. A retry anywhere else (the core, an adapter) would open a
    * billed session the budget never saw (house rule 9).
@@ -649,12 +850,14 @@ export class CaptureSession {
     source: AudioSource,
     credentials: StreamCredentials,
     stale: () => boolean,
+    scope: SttOpenScope,
   ): Promise<Connected> {
     try {
       return { ok: true, stream: await this.openVendorStream(source, credentials) };
     } catch (error) {
       if (stale() || !this.listRejected(source, credentials, error)) throw error;
-      const grant = this.options.budget.acquire();
+      // On the scope of the open it repeats: a gate reopen's second try stays in the minute only.
+      const grant = this.options.budget.acquire(1, scope);
       if (!grant.ok) return { ok: false, refusal: grant, rejection: errorMessage(error) };
       try {
         return { ok: true, stream: await this.openVendorStream(source, credentials) };
@@ -785,6 +988,8 @@ export class CaptureSession {
   private attach(source: AudioSource, handle: StreamHandle, reopened: boolean): void {
     const link = this.links[source];
     link.current = handle;
+    link.pauseCause = null;
+    link.gateReopen = false;
     const held = link.held;
     // Audio lost while the source had no stream ends where this one's begins: its first held chunk
     // (T5's timeline dates it). A reconnect that lost nothing held from that very chunk: no row.
@@ -804,6 +1009,7 @@ export class CaptureSession {
       this.recordEvent(source, 'stt-reopened', {
         heldMs: Math.round(link.heldMs),
         droppedChunks: link.heldDropped,
+        ...(handle.gateReopened ? { gate: true } : {}),
       });
     }
     this.dropHeld(link);
@@ -818,31 +1024,186 @@ export class CaptureSession {
    * Keeps the newest reopenBufferMs of audio. Once the stream opens the core paces it at 1x
    * (AssemblyAI closes a session sent audio faster than real time, 3007), so every held second is
    * lag on that session until it closes: the bound stays a few seconds
-   * (costGuards.sttReopenBufferMs); a connect takes about one.
+   * (costGuards.sttReopenBufferMs); a connect takes about one. A gate reopen holds its pre-roll on
+   * top (M3-T20): under the plain bound a 2 s pre-roll and a 1.5 s connect would cut the pre-roll's
+   * start and log "audio dropped while reconnecting" on a reopen that lost nothing.
    *
    * Audio from both sides of a gap is kept: each chunk keeps its capture time, so the stream's
    * timeline starts a new run at the gap and the lines on either side keep their own times. (M1
    * dropped the held audio before any gap over 1 s, because it dated lines from the first chunk
    * alone and a gap would have made every later line early.)
+   *
+   * A source the silence gate closed holds nothing: its gate keeps the pre-roll, so a gated window
+   * never reaches `held`, the gap accounting (heldFromMs) or the dropped count. A speech chunk ends
+   * the window (endGatedWindow), and its pre-roll is held ahead of that chunk.
    */
-  private hold(source: AudioSource, pcm: Uint8Array, capturedAtMs: number): void {
+  private hold(
+    source: AudioSource,
+    pcm: Uint8Array,
+    capturedAtMs: number,
+    heard: Heard | null,
+  ): void {
     const link = this.links[source];
+    if (link.pauseCause === 'silence') {
+      if (heard?.speech !== true) {
+        this.keepTokenFresh();
+        return;
+      }
+      for (const chunk of this.endGatedWindow(source, capturedAtMs)) this.keepHeld(link, chunk);
+    }
+    this.keepHeld(link, { pcm, capturedAtMs });
+    this.publishWatermark(source);
+  }
+
+  /** One chunk into `held`, under its bound (hold). */
+  private keepHeld(link: SourceLink, chunk: GateChunk): void {
     // Kept when the bound below drops this chunk: a dropped chunk never reaches a vendor (endLoss).
-    link.heldFromMs ??= this.meetingOffset(capturedAtMs);
+    link.heldFromMs ??= this.meetingOffset(chunk.capturedAtMs);
     // Held because the Mac is offline or asleep: if any of it is lost, that is why. Asleep, it is
     // lost when a Stop at wake comes first (PowerCoordinator) or the hold overflows; left
     // unnamed it read as `stt_failed`, a vendor failure that never happened (M2-T18).
     if (this.suspended.has('offline')) link.lostReason ??= 'offline';
     else if (this.suspended.has('asleep')) link.lostReason ??= 'asleep';
-    link.held.push({ pcm, capturedAtMs });
-    link.heldMs += this.chunkMs(pcm);
-    while (link.heldMs > this.options.reopenBufferMs && link.held.length > 1) {
+    link.held.push(chunk);
+    link.heldMs += this.chunkMs(chunk.pcm);
+    const boundMs =
+      this.options.reopenBufferMs +
+      (link.gateReopen ? (this.options.silenceGate?.preRollMs ?? 0) : 0);
+    while (link.heldMs > boundMs && link.held.length > 1) {
       const oldest = link.held.shift();
       if (oldest === undefined) break;
       link.heldMs -= this.chunkMs(oldest.pcm);
       link.heldDropped += 1;
     }
-    this.publishWatermark(source);
+  }
+
+  /**
+   * The silence gate's close (M3-T20): once the source's chunks have held no speech for the
+   * hang-over, its session closes through the normal close (finish sequence, last lines saved),
+   * as a stall's does, and it waits `paused` for speech. Never within GATE_MIN_OPEN_MS of its open,
+   * and never once the gate is spent. Each close takes the reopen it will need from the gate's own
+   * count, so a source the gate closed can always reopen; the close that takes the last one turns
+   * the gate off for the meeting, and says so once.
+   */
+  private closeIfSilent(source: AudioSource): void {
+    const gate = this.gates[source];
+    const settings = this.options.silenceGate ?? null;
+    const link = this.links[source];
+    const handle = link.current;
+    if (gate === undefined || settings === null || handle === null || !gate.shouldClose) return;
+    if (this.gateCloses >= settings.reopensPerMeeting) return;
+    if (this.clock() - handle.openedAtMs < GATE_MIN_OPEN_MS) return;
+    link.attempt += 1;
+    link.current = null;
+    link.pauseCause = 'silence';
+    link.gatedSinceMs = this.clock();
+    link.gatedPricePerHourUsd = handle.pricePerHourUsd;
+    gate.close();
+    this.gateCloses += 1;
+    const silentForMs = Math.round(gate.silentForMs);
+    this.options.logger.info('speech-to-text stream closed: silence', { source, silentForMs });
+    this.setState(source, 'paused', this.gatedMessage(source));
+    this.recordEvent(source, 'stt-gate-closed', { silentForMs });
+    void this.retire(handle);
+    if (this.gateCloses >= settings.reopensPerMeeting) {
+      // Sessions stay open through silence from here to Stop; a source gated now still reopens.
+      this.options.logger.info('silence gate off for this meeting: its reopens are spent', {
+        reopens: this.gateCloses,
+      });
+      this.recordEvent(null, 'stt-gate-spent', { reopens: this.gateCloses });
+    }
+    this.keepTokenFresh();
+  }
+
+  /** A gated source's state message, with how long it has heard no speech. */
+  private gatedMessage(source: AudioSource): string {
+    const seconds = Math.round((this.gates[source]?.silentForMs ?? 0) / 1000);
+    return `silent for ${seconds} s; reopens when someone speaks`;
+  }
+
+  /**
+   * A speech chunk ended the source's gated window: its next reopen is the gate's, and any of its
+   * audio lost from here is a gap from the speech onset, the pre-roll's first chunk (gapStartMs),
+   * never from the silence before it. Answers the pre-roll, which the caller holds ahead of the
+   * speech chunk at `capturedAtMs`.
+   */
+  private endGatedWindow(source: AudioSource, capturedAtMs: number): GateChunk[] {
+    const link = this.links[source];
+    const { preRoll, peakDb } = this.gates[source]?.open() ?? { preRoll: [], peakDb: null };
+    link.pauseCause = null;
+    link.gateReopen = true;
+    link.gatedUntilMs = this.meetingOffset(preRoll[0]?.capturedAtMs ?? capturedAtMs);
+    this.endGatedTime(source, 'speech', peakDb);
+    return preRoll;
+  }
+
+  /**
+   * Adds the source's gated window, if one is open, to its gated time and savings, and records it
+   * as a capture event with its peak level: a gated window is never a gap, nothing was said.
+   */
+  private endGatedTime(
+    source: AudioSource,
+    endedBy: 'speech' | 'closed' | 'stop',
+    peakDb: number | null = null,
+  ): void {
+    const link = this.links[source];
+    if (link.gatedSinceMs === null) return;
+    const windowMs = this.clock() - link.gatedSinceMs;
+    link.gatedSinceMs = null;
+    link.gatedMs += windowMs;
+    const savedUsd = savedAt(windowMs, link.gatedPricePerHourUsd);
+    link.savedUsd = link.savedUsd === null || savedUsd === null ? null : link.savedUsd + savedUsd;
+    this.recordEvent(source, 'stt-gate-window', {
+      gatedMs: Math.round(windowMs),
+      peakDb: peakDb === null ? null : Math.round(peakDb * 10) / 10,
+      endedBy,
+    });
+  }
+
+  /**
+   * Keeps the gate's prefetched token fresh while any source is gated (M3-T20): fetched at a close,
+   * fetched again PREFETCH_REFRESH_LEAD_MS before it expires, so speech after a silence opens with
+   * no API call at the onset (one token serves both sources, as at Start). Driven by the gated
+   * chunks that keep arriving, not a timer: with no chunk there is no onset to be ready for. Never
+   * while suspended: no token is fetched until resumeStreams() (M2-T6). A failed fetch is logged
+   * and tried again PREFETCH_RETRY_MS later; meanwhile a reopen fetches at the onset, as before.
+   */
+  private keepTokenFresh(): void {
+    if (this.closing || this.suspended.size > 0 || this.prefetching !== null) return;
+    if (!AUDIO_SOURCES.some((source) => this.links[source].pauseCause === 'silence')) return;
+    const now = this.clock();
+    if (now < this.prefetchNotBeforeMs) return;
+    const token = this.prefetched;
+    if (token !== null && tokenLeftMs(token, now) > PREFETCH_REFRESH_LEAD_MS) return;
+    const fetching = this.options.refreshCredentials().then(
+      (credentials) => {
+        this.prefetched = credentials;
+        return credentials;
+      },
+      (error: unknown) => {
+        this.prefetchNotBeforeMs = this.clock() + PREFETCH_RETRY_MS;
+        this.options.logger.warn('speech-to-text token prefetch failed', {
+          error: errorMessage(error),
+          retryInMs: PREFETCH_RETRY_MS,
+        });
+        return null;
+      },
+    );
+    this.prefetching = fetching;
+    void fetching.finally(() => {
+      if (this.prefetching === fetching) this.prefetching = null;
+    });
+  }
+
+  /**
+   * The token a gate reopen opens with: the prefetched one (waiting for a prefetch still on its
+   * way) while it has PREFETCH_MIN_LEFT_MS or more left, else a fetch now, as any reopen does.
+   */
+  private async gateCredentials(): Promise<StreamCredentials> {
+    const fetched = this.prefetching === null ? null : await this.prefetching;
+    const token = fetched ?? this.prefetched;
+    if (token !== null && tokenLeftMs(token, this.clock()) >= PREFETCH_MIN_LEFT_MS) return token;
+    return this.options.refreshCredentials();
   }
 
   private dropHeld(link: SourceLink): void {
@@ -855,8 +1216,16 @@ export class CaptureSession {
     return pcmBytesToMs(pcm.byteLength, this.sampleRate);
   }
 
-  /** Every stream is tracked from the moment it exists, so close() can never miss one. */
-  private track(source: AudioSource, stream: SttStream): StreamHandle {
+  /**
+   * Every stream is tracked from the moment it exists, so close() can never miss one. `credentials`
+   * are what it opened with, for the price a gated window after it saves at.
+   */
+  private track(
+    source: AudioSource,
+    stream: SttStream,
+    credentials: StreamCredentials,
+    gateReopened: boolean,
+  ): StreamHandle {
     const handle: StreamHandle = {
       stream,
       source,
@@ -867,6 +1236,9 @@ export class CaptureSession {
       closing: null,
       terminated: false,
       openedAtMs: this.clock(),
+      gateReopened,
+      // After connect(): the settings say whether the vendor refused the list on this very open.
+      pricePerHourUsd: this.streamSettings(source, credentials).pricePerHourUsd,
       lineEndMs: null,
       audioEndMs: null,
       lost: false,
@@ -874,7 +1246,7 @@ export class CaptureSession {
       finishLostAs: 'stt_failed',
     };
     this.handles.add(handle);
-    this.latencyMeters[source].push(handle.latency);
+    (gateReopened ? this.gateLatencyMeters : this.latencyMeters)[source].push(handle.latency);
     stream.on((event) => {
       this.handleEvent(source, handle, event);
     });
@@ -1073,21 +1445,24 @@ export class CaptureSession {
   /**
    * Where a gap starts (a meeting offset), or null when nothing is lost: the earliest of `fromMs`
    * (a lost stream's first audio, the first chunk held since), never before `watermarkMs` (audio up
-   * to the end of a line got its lines). endLoss asks it for a source's window, loseTail for a
-   * stream's cut-short tail.
+   * to the end of a line got its lines), nor before `gatedUntilMs`, the speech onset that ended the
+   * source's latest silence-gated window (M3-T20). endLoss asks it for a source's window, loseTail
+   * for a stream's cut-short tail.
    *
-   * The one place a gap's start is decided. M3-T20 (wave 6) makes it the speech onset for a source
-   * its silence gate had closed: a gated window is billed silence the gate chose to drop, never a
-   * gap, or M2-T16 would re-run minutes of it. A copy of this rule elsewhere would miss that change.
+   * The one place a gap's start is decided. A gated window is silence the gate chose not to bill,
+   * never a gap, or M2-T16 would re-run minutes of it at the vendor's price: so a failure or budget
+   * gap on a source the gate had closed starts at the onset. A copy of this rule elsewhere would
+   * miss that.
    */
   private gapStartMs(
     fromMs: readonly (number | null)[],
     watermarkMs: number | null,
+    gatedUntilMs: number | null = null,
   ): number | null {
     const candidates = fromMs.filter((ms): ms is number => ms !== null);
     if (candidates.length === 0) return null;
-    const startMs = Math.min(...candidates);
-    return watermarkMs === null ? startMs : Math.max(startMs, watermarkMs);
+    const floors = [watermarkMs, gatedUntilMs].filter((ms): ms is number => ms !== null);
+    return Math.max(Math.min(...candidates), ...floors);
   }
 
   /**
@@ -1096,7 +1471,11 @@ export class CaptureSession {
    */
   private endLoss(source: AudioSource, untilMs: number | null): void {
     const link = this.links[source];
-    const startMs = this.gapStartMs([link.lostStreamFromMs, link.heldFromMs], link.finalEndMs);
+    const startMs = this.gapStartMs(
+      [link.lostStreamFromMs, link.heldFromMs],
+      link.finalEndMs,
+      link.gatedUntilMs,
+    );
     const reason = link.lostReason ?? 'stt_failed';
     link.lostStreamFromMs = null;
     link.heldFromMs = null;
@@ -1298,6 +1677,13 @@ function newLink(): SourceLink {
     notBeforeMs: 0,
     failures: 0,
     withoutKeyterms: false,
+    pauseCause: null,
+    gateReopen: false,
+    gatedSinceMs: null,
+    gatedPricePerHourUsd: null,
+    gatedMs: 0,
+    savedUsd: 0,
+    gatedUntilMs: null,
     finalEndMs: null,
     // Before Start a source has no stream and holds nothing: watermark() reads it as closed.
     published: { finalEndMs: null, closed: true },
@@ -1306,6 +1692,21 @@ function newLink(): SourceLink {
     heldFromMs: null,
     lostReason: null,
   };
+}
+
+/**
+ * What `ms` of a gated window saved at a price per stream-hour, unrounded: 0 for no time, null when
+ * the price is unknown (the meter then says the savings are unknown, never $0).
+ */
+function savedAt(ms: number, pricePerHourUsd: number | null): number | null {
+  if (ms <= 0) return 0;
+  return pricePerHourUsd === null ? null : (ms / MS_PER_HOUR) * pricePerHourUsd;
+}
+
+/** How long a token has left at `nowMs`; one with no known expiry never runs out. */
+function tokenLeftMs(credentials: StreamCredentials, nowMs: number): number {
+  const expiresAtMs = credentials.expiresAtMs ?? null;
+  return expiresAtMs === null ? Number.POSITIVE_INFINITY : expiresAtMs - nowMs;
 }
 
 function describeClose(code: number | null, reason: string | null): string {
