@@ -346,6 +346,53 @@ describe('AudioBackupWriter', () => {
     backup.end(MEETING);
   });
 
+  it.each([
+    [
+      'paused for the whole call',
+      (backup: AudioBackupWriter) => {
+        freeBytes = BACKUP_MIN_FREE_BYTES - 1;
+        backup.begin({ meetingId: MEETING, meetingStartedAtMs: T0 });
+        feed(backup, 'mic', T0, 2_000);
+        backup.end(MEETING);
+      },
+    ],
+    [
+      'stopped before its first chunk',
+      (backup: AudioBackupWriter) => {
+        backup.begin({ meetingId: MEETING, meetingStartedAtMs: T0 });
+        backup.end(MEETING);
+      },
+    ],
+    [
+      'still starting at quit',
+      (backup: AudioBackupWriter) => {
+        backup.begin({ meetingId: MEETING, meetingStartedAtMs: T0 });
+        backup.stop();
+      },
+    ],
+  ])('leaves no folder behind for a recording %s', (_how, record) => {
+    record(writer());
+
+    // No row names it, so no retention sweep or delete would ever find it.
+    expect(files()).toEqual([]);
+    expect(existsSync(meetingAudioDir(userData, MEETING))).toBe(false);
+  });
+
+  it("keeps the folder of a resumed meeting that holds the earlier recording's audio", () => {
+    const backup = writer();
+    backup.begin({ meetingId: MEETING, meetingStartedAtMs: T0 });
+    feed(backup, 'mic', T0, 1_000);
+    backup.end(MEETING);
+    // Resumed (M2 D7) on a nearly full disk: this recording keeps nothing.
+    freeBytes = BACKUP_MIN_FREE_BYTES - 1;
+    backup.begin({ meetingId: MEETING, meetingStartedAtMs: T0 });
+    feed(backup, 'mic', T0 + 60_000, 1_000);
+    backup.end(MEETING);
+
+    expect(spans('mic')).toEqual([[0, 1_000]]);
+    expect(existsSync(join(userData, files('mic')[0]!.path))).toBe(true);
+  });
+
   it('closes the files of a recording still running at quit, and takes no more', () => {
     const backup = writer();
     backup.begin({ meetingId: MEETING, meetingStartedAtMs: T0 });

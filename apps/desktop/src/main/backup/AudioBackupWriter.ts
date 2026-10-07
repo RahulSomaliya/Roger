@@ -16,6 +16,7 @@ import type { CaptureEvent, JsonObject, TranscriptStore } from '../store/Transcr
 import {
   ensureMeetingAudioDir,
   PRIVATE_FILE_MODE,
+  removeEmptyMeetingAudioDir,
   resolveStoredAudioPath,
   storedAudioPath,
 } from './audioPaths';
@@ -230,7 +231,7 @@ export class AudioBackupWriter implements AudioSink {
     const rec = this.recording;
     if (rec?.meetingId !== meetingId) return;
     this.recording = null;
-    this.closeAll(rec);
+    this.finish(rec);
   }
 
   /** At quit, for a recording whose Stop outran its bound: its files are closed now. */
@@ -238,7 +239,7 @@ export class AudioBackupWriter implements AudioSink {
     this.stopped = true;
     const rec = this.recording;
     this.recording = null;
-    if (rec !== null) this.closeAll(rec);
+    if (rec !== null) this.finish(rec);
   }
 
   /** The recording's backup; null while none runs. */
@@ -338,8 +339,9 @@ export class AudioBackupWriter implements AudioSink {
     const name = `${source}-${String(startMs).padStart(9, '0')}-${id.slice(0, 8)}.wav`;
     const path = join(rec.dir, name);
     const storedPath = storedAudioPath(rec.meetingId, name);
-    // The file before its row: a crash between leaves a stray file the meeting's delete removes,
-    // never a row that names nothing.
+    // The file before its row: a crash between leaves a header-only file no row names, never a
+    // row that names nothing. The meeting's delete removes it with the folder; if it was the
+    // meeting's first file nothing does, as no sweep or delete walks a folder without rows.
     const fd = openSync(path, 'wx', PRIVATE_FILE_MODE);
     try {
       writeAll(fd, wavHeader(0), 0, WAV_HEADER_BYTES, null);
@@ -395,6 +397,25 @@ export class AudioBackupWriter implements AudioSink {
       closedAt: new Date(this.clock()).toISOString(),
     });
     this.options.onFileClosed({ id: file.id, meetingId: rec.meetingId, path: file.storedPath });
+  }
+
+  /**
+   * The recording is over: its files are closed, and its folder is removed if it holds none (the
+   * backup paused or failed before its first file, or Stop came before the first chunk). No row
+   * names such a folder, so no sweep or delete would ever find it. Never throws.
+   */
+  private finish(rec: Recording): void {
+    this.closeAll(rec);
+    if (rec.dir === null) return;
+    try {
+      removeEmptyMeetingAudioDir(this.options.userData, rec.meetingId);
+    } catch (error) {
+      // Harmless: an empty folder, and the next recording of the meeting uses it again.
+      this.options.logger.warn('audio backup: could not remove an empty audio folder', {
+        meetingId: rec.meetingId,
+        error: errorMessage(error),
+      });
+    }
   }
 
   /** Closes both sources' files; one that cannot be closed is left for the launch repair. */
@@ -507,7 +528,8 @@ export class AudioBackupWriter implements AudioSink {
     try {
       rmSync(path, { force: true });
     } catch (error) {
-      // Harmless: the meeting's folder goes with its audio.
+      // Harmless: a header-only file with no audio, which the meeting's delete removes with its
+      // folder (see openFile).
       this.options.logger.warn('audio backup: could not remove a file it did not keep', {
         meetingId,
         error: errorMessage(error),
