@@ -262,10 +262,26 @@ describe('the system audio row', () => {
     expect((await dev.service.status()).systemAudio.message).toBe(
       "Roger's call audio helper is not built, so it cannot record call audio. Build it with make native.",
     );
-    await expect(installed.service.testSystemAudio()).resolves.toMatchObject({
-      systemAudio: { state: 'unknown' },
-    });
     expect(installed.ports.probe).not.toHaveBeenCalled();
+  });
+
+  it('says why Test does nothing without the helper, rather than answering the same status', async () => {
+    const missing: HelperLookup = {
+      found: false,
+      location: HELPER.location,
+      reason: `no audio helper at ${HELPER.location.path}`,
+    };
+    const installed = harness({ helper: missing });
+    await expect(installed.service.testSystemAudio()).rejects.toThrow(
+      'Roger has no call audio helper to test with. Reinstall Roger with make install-desktop.',
+    );
+    expect(installed.ports.probe).not.toHaveBeenCalled();
+    const dev = harness({ helper: missing, isPackaged: false });
+    await expect(dev.service.confirmSystemAudioAllowed()).rejects.toThrow(
+      'Roger has no call audio helper to test with. Build it with make native.',
+    );
+    // The failed press leaves nothing behind: the next one asks again.
+    await expect(installed.service.testSystemAudio()).rejects.toThrow('no call audio helper');
   });
 
   it('shows Screen Recording instead on the Electron path, and runs no probe there', async () => {

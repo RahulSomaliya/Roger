@@ -373,8 +373,14 @@ export class PermissionService {
       reason: lookup.reason,
     });
     return this.options.isPackaged
-      ? "Roger's call audio helper is missing from this copy of Roger, so it cannot record call audio. Reinstall Roger with make install-desktop."
-      : "Roger's call audio helper is not built, so it cannot record call audio. Build it with make native.";
+      ? `Roger's call audio helper is missing from this copy of Roger, so it cannot record call audio. ${this.helperFix()}`
+      : `Roger's call audio helper is not built, so it cannot record call audio. ${this.helperFix()}`;
+  }
+
+  private helperFix(): string {
+    return this.options.isPackaged
+      ? 'Reinstall Roger with make install-desktop.'
+      : 'Build it with make native.';
   }
 
   private lookUpHelper(): HelperLookup | { found: false; reason: string } {
@@ -389,7 +395,11 @@ export class PermissionService {
   private async probe(): Promise<void> {
     const { ports, systemAudio } = this.options;
     const lookup = this.lookUpHelper();
-    if (!lookup.found) return;
+    // The row's Test is its lead button once the missing helper turns it amber (setupRows.ts): a
+    // press that answered the same status would look like a test that ran and changed nothing.
+    if (!lookup.found) {
+      throw new Error(`Roger has no call audio helper to test with. ${this.helperFix()}`);
+    }
     let outcome = await ports.probe(lookup.location);
     // No answer says nothing about the permission (a route change, a tap that failed): probe once
     // more rather than leave the person a test that did nothing. Never counted as a silence.
