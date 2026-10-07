@@ -33,18 +33,6 @@ function dayName(date: Date, now: Date, locale: string | undefined, leading: boo
   return date.toLocaleDateString(locale, { weekday: 'short', day: 'numeric', month: 'short' });
 }
 
-/** A past meeting's label in a list: its start time today, else its day. */
-export function recentMeetingLabel(startedAt: string, now: Date, locale?: string): string {
-  const start = new Date(startedAt);
-  const ago = daysAgo(start, now);
-  if (ago === 0) return formatClock(start);
-  if (ago === 1) return 'Yesterday';
-  if (start.getFullYear() !== now.getFullYear()) {
-    return start.toLocaleDateString(locale, { day: 'numeric', month: 'short', year: 'numeric' });
-  }
-  return start.toLocaleDateString(locale, { day: 'numeric', month: 'short' });
-}
-
 /**
  * The meeting header's line: "Started 9:05 am" while it records, "Today, 9:30 am to 9:41 am" once
  * it ended. A meeting with no end that is not recording (a crash left it open, until main closes

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { meetingTimeLabel, recentMeetingLabel } from './meetingTimes';
+import { meetingTimeLabel } from './meetingTimes';
 
 // Built from local clock readings, so the day boundaries hold in any time zone the suite runs in.
 const at = (day: number, hour: number, minute: number, year = 2026): string =>
@@ -8,15 +8,6 @@ const NOW = new Date(2026, 9, 6, 15, 0);
 // The clock never follows the locale (formatClock: 12-hour, lowercase, whatever the Mac says); the
 // locale only orders the dates.
 const LOCALE = 'en-GB';
-
-describe('recentMeetingLabel', () => {
-  it('is the start time for a meeting today, else its day', () => {
-    expect(recentMeetingLabel(at(6, 9, 5), NOW, LOCALE)).toBe('9:05 am');
-    expect(recentMeetingLabel(at(5, 23, 50), NOW, LOCALE)).toBe('Yesterday');
-    expect(recentMeetingLabel(at(2, 9, 5), NOW, LOCALE)).toBe('2 Oct');
-    expect(recentMeetingLabel(at(2, 9, 5, 2025), NOW, LOCALE)).toBe('2 Oct 2025');
-  });
-});
 
 describe('meetingTimeLabel', () => {
   it('says when a meeting that is still recording started', () => {

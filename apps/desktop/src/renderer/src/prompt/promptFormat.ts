@@ -1,4 +1,4 @@
-import { parseInstant, type CalendarAttendee, type CallApp } from '../../../shared/calendar';
+import { parseInstant, type CallApp } from '../../../shared/calendar';
 import { formatClock } from '../clock';
 
 /**
@@ -29,44 +29,6 @@ export function eventTitle(event: { title: string }): string {
 /** "Zoom is using the microphone": the call-detected card's headline. */
 export function callDetectedTitle(app: CallApp): string {
   return `${app.name} is using the microphone`;
-}
-
-/** A first name for the card: the display name's first word, else the address before the "@". */
-function shortName(attendee: CalendarAttendee): string {
-  const first = attendee.displayName?.trim().split(/\s+/)[0];
-  if (first !== undefined && first !== '') return first;
-  return attendee.email.split('@')[0] ?? attendee.email;
-}
-
-/**
- * Who else is on the call, for one line: "Jane, Ali and 3 others", "Jane and Ali", or null when
- * nobody else is listed. The user is never counted. Up to three are named; more are the first two
- * and a count, so 40 attendees stay one short line. When Google left some out
- * (`attendeesOmitted`) the count is a floor: "3+ others", or "and others" when two or fewer are
- * known.
- */
-export function attendeeSummary(event: {
-  attendees: readonly CalendarAttendee[];
-  attendeesOmitted: boolean;
-}): string | null {
-  const names = event.attendees.filter((each) => !each.isSelf).map(shortName);
-  if (event.attendeesOmitted) {
-    if (names.length === 0) return 'Others';
-    if (names.length <= 2) return `${names.join(', ')} and others`;
-    return `${names.slice(0, 2).join(', ')} and ${names.length - 2}+ others`;
-  }
-  switch (names.length) {
-    case 0:
-      return null;
-    case 1:
-      return names[0] ?? null;
-    case 2:
-      return `${names[0]} and ${names[1]}`;
-    case 3:
-      return `${names[0]}, ${names[1]} and ${names[2]}`;
-    default:
-      return `${names[0]}, ${names[1]} and ${names.length - 2} others`;
-  }
 }
 
 /**
