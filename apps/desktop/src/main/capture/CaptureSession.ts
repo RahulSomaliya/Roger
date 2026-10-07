@@ -143,6 +143,13 @@ interface StreamHandle {
   lost: boolean;
   /** Its finish was cut short: its tail becomes a gap once its close settles (loseTail). */
   cutShort: GapReason | null;
+  /**
+   * Why its finish would fail (finishFailed): `asleep` for the sleep's finish, else `stt_failed`.
+   * Stamped when the sleep retires it (suspendSource), never read from `suspended` when the finish
+   * fails: macOS timers do not count sleep, so its deadline runs out after the wake has already
+   * lifted the suspend, and the closed lid would read as a vendor failure (M2-T18).
+   */
+  finishLostAs: GapReason;
 }
 
 /** What one audio source has with the vendor right now. */
@@ -338,9 +345,10 @@ export class CaptureSession {
    * no finish sequence (the network is gone: a finish could only wait out its deadline while a
    * half-open socket may still bill), and what its vendor had not turned into lines becomes a gap;
    * asleep finishes and closes each stream, its last lines saved, unless the finish never completes
-   * (sockets do not survive sleep: its deadline runs out on wake, or going offline cuts it short),
-   * which leaves that stream's tail a gap (finishCutShort). Either way audio is held as for a
-   * paused source (the newest reopenBufferMs), and no token is fetched and nothing opens until
+   * (sockets do not survive sleep), which leaves that stream's tail a gap (finishCutShort): an
+   * `asleep` one when its deadline runs out on wake (finishLostAs), an `offline` one when going
+   * offline cuts it short first, as offline outranks asleep in hold. Either way audio is held as for
+   * a paused source (the newest reopenBufferMs), and no token is fetched and nothing opens until
    * resumeStreams() has lifted every reason: offline and asleep stack. A closed or failed source
    * stays as it is.
    */
@@ -711,6 +719,7 @@ export class CaptureSession {
       audioEndMs: null,
       lost: false,
       cutShort: null,
+      finishLostAs: 'stt_failed',
     };
     this.handles.add(handle);
     this.latencyMeters[source].push(handle.latency);
@@ -840,6 +849,7 @@ export class CaptureSession {
     link.current = null;
     if (handle !== null) {
       if (reason === 'offline') this.loseStream(link, handle, 'offline');
+      else handle.finishLostAs = 'asleep';
       void this.retire(handle, reason === 'offline' ? 'terminate' : 'finish');
     }
     if (reason === 'offline' && link.held.length > 0) link.lostReason ??= 'offline';
@@ -888,10 +898,11 @@ export class CaptureSession {
   /**
    * A fatal error from a stream that is no longer the source's (or arrives during Stop): its
    * finish failed, and its last lines will not come. Never a reopen: the source left this stream.
+   * Its tail is named for why it was finishing (finishLostAs): a sleep's, for the sleep.
    */
   private finishFailed(source: AudioSource, handle: StreamHandle, reason: string): void {
     if (handle.lost) return;
-    this.finishCutShort(handle, 'stt_failed');
+    this.finishCutShort(handle, handle.finishLostAs);
     this.recordEvent(source, 'stt-failed', { stage: 'finish', reason });
   }
 
