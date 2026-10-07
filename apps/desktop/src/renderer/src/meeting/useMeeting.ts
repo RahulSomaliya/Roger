@@ -62,9 +62,10 @@ export function useMeeting(meetingId: string, refreshKey: string): Read<StoredMe
 /**
  * `window.roger`'s notes channels, looked up at each call. The session is made while the page
  * renders, and `window.roger` does not exist under Node, where the page tests render it: only
- * `start()` (an effect, never run there) and the buttons reach the channels.
+ * `start()` (an effect, never run there) and the buttons reach the channels. The AI notes panel's
+ * session (notes/AiNotesPanel.tsx) takes the same object.
  */
-const rogerNotes: AiNotesApi = {
+export const rogerNotes: AiNotesApi = {
   getNotes: (...args) => window.roger.getNotes(...args),
   saveNote: (...args) => window.roger.saveNote(...args),
   listNoteTemplates: (...args) => window.roger.listNoteTemplates(...args),

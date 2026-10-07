@@ -191,17 +191,17 @@ export interface KeptSilentMeetingsOptions {
 
 /**
  * Drops the pending generate of a meeting nobody spoke in that Stop kept and the uploader then
- * discarded as empty (the M4-T23 hand-off: a row written at Stop for a meeting later discarded is
- * never cleaned up otherwise).
+ * discarded as empty (the M4-T23 hand-off: a row for a meeting later discarded is never cleaned up
+ * otherwise). Since the redesign Stop writes no row of its own: the row is a Write notes pressed
+ * during the recording.
  *
  * Stop keeps such a meeting, and tells its listeners `discarded: false`, when its save failed
  * (NotesQuitGuard.saveOpenNotes: every page until M4-T20 mounts the flush responder, and a busy
  * one after), when the notes check failed, or when it found notes (CaptureService.keepsForNotes).
- * NotesGenerator then writes its generate. The uploader's pending rule decides the meeting again,
- * on Stop's own upload or a later tick, and deletes it when it still holds no line and no notes,
- * telling nobody (TranscriptUploader.syncMeeting). A generate asking for its template would then
- * wait for good, its meeting page gone, read again at every re-check and launch; one with a
- * template would send a run the API can only answer `404`.
+ * The uploader's pending rule decides the meeting again, on Stop's own upload or a later tick, and
+ * deletes it when it still holds no line and no notes, telling nobody
+ * (TranscriptUploader.syncMeeting). A generate left on it would send a run the API can only answer
+ * `404`.
  *
  * So each such meeting is followed until the uploader decides it: from Stop, or from launch for
  * one an earlier launch kept with a generate (a quit's Stop uploads nothing, so the next launch's

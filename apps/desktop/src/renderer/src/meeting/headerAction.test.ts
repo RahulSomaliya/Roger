@@ -21,7 +21,6 @@ const READY: AiNotesState = {
   lastRun: { status: 'none' },
   templates: { status: 'loading' },
   confirm: null,
-  picker: null,
   busy: null,
   cancelling: false,
   actionError: null,

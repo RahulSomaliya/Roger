@@ -28,7 +28,11 @@ export interface StoredPendingGenerate {
    * after a failed run takes a new one (the API would replay the stored failure to the old one).
    */
   runId: string;
-  /** Null until a template is known: Roger asks "Which kind of call was this?". */
+  /**
+   * Never null in a row written now. A row an earlier build left asking "Which kind of call was
+   * this?" (redesign call 6 deleted the question) still reads null, and NotesGenerator drops it.
+   * The column stays nullable: dropping that needs a migration for no gain.
+   */
   templateId: string | null;
   reason: GenerateReason;
   /** UTC ISO 8601. */

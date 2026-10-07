@@ -22,7 +22,7 @@ import type { FakeHub } from './hub';
 /** The model a preview run reports until a scenario's `run` event names one. */
 const PREVIEW_MODEL = 'fake';
 
-/** Stand-ins for the API's templates (M4-T3, note_templates/*.json), for the template picker. */
+/** Stand-ins for the API's templates (M4-T3, note_templates/*.json), for the Write again as menu. */
 const TEMPLATES: NoteTemplate[] = [
   {
     id: 'general',

@@ -28,11 +28,7 @@ import { NotesClient } from './api/notesClient';
 import { createStreamRequest } from './api/streamRequest';
 import { VocabularyClient } from './api/vocabularyClient';
 import { buildAppMenu } from './appMenu';
-import {
-  CALENDAR_QUIT_TIMEOUT_MS,
-  createCalendarRuntime,
-  meetingAttendees,
-} from './calendar/createCalendarRuntime';
+import { CALENDAR_QUIT_TIMEOUT_MS, createCalendarRuntime } from './calendar/createCalendarRuntime';
 import { SqliteCalendarCache } from './calendar/SqliteCalendarCache';
 import { createCaptureRuntime } from './capture/createCaptureRuntime';
 import { loadConfig, readConfigFile } from './config';
@@ -379,14 +375,8 @@ async function main(): Promise<void> {
     transcripts: store,
     uploads: uploader,
     recordings: capture,
-    preferences: {
-      autoGenerate: () => preferences.get('notes.autoGenerate'),
-      whenUnsure: () => preferences.get('notes.whenUnsure'),
-    },
     // The same webContents object at every call: LlmStreams tracks a window by identity.
     window: () => (window === null || window.isDestroyed() ? null : window.webContents),
-    // M4's template rule reads an invitee outside the user's domain as a client call.
-    attendees: meetingAttendees(store),
     logger: notesLogger,
   });
   // Stop keeps a meeting nobody spoke in when the windows did not save their notes in time (every

@@ -167,8 +167,8 @@ describe('the notes fake', () => {
     for (const template of templates) expect(template.sections.length).toBeGreaterThan(0);
   });
 
-  it('starts a generate with a new run id; one waiting for a template takes it and keeps its id', async () => {
-    const { hub, notes, pending } = setUp();
+  it('starts a generate with a new run id, and refuses a second while it runs', async () => {
+    const { notes, pending } = setUp();
     const started = await notes.generateNotes({ meetingId: MEETING, templateId: 'standup' });
     expect(started).toMatchObject({
       meetingId: MEETING,
@@ -182,19 +182,6 @@ describe('the notes fake', () => {
     await expect(
       notes.generateNotes({ meetingId: MEETING, templateId: 'general' }),
     ).rejects.toThrow('already running');
-
-    const asking: PendingGenerateState = {
-      meetingId: MEETING,
-      runId: '0b5a3c2d-1e4f-4a6b-8c7d-9e0f1a2b3c4d',
-      templateId: null,
-      reason: 'after_stop',
-      createdAt: '2026-10-06T10:30:00.000Z',
-      status: { phase: 'needs_template' },
-    };
-    hub.emit(notesChannels.NotesPendingGenerateChanged, { meetingId: MEETING, pending: asking });
-    await expect(
-      notes.generateNotes({ meetingId: MEETING, templateId: 'client_call' }),
-    ).resolves.toEqual({ ...asking, templateId: 'client_call', status: { phase: 'running' } });
   });
 
   it('keeps the run id and reason of a generate waiting for lines or notes', async () => {

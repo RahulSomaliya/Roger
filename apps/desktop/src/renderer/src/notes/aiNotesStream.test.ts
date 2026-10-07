@@ -222,7 +222,7 @@ describe('applyNotesEvent', () => {
   it('a cancelled run ends as cancelled, with no lines to keep', () => {
     const view = play([
       RUN_EVENT,
-      { type: 'error', code: 'cancelled', message: 'Notes generation was cancelled.' },
+      { type: 'error', code: 'cancelled', message: 'Writing the notes was cancelled.' },
     ]);
     expect(view?.phase).toBe('cancelled');
     expect(shownStream(view ?? null)).toBeNull();
@@ -232,7 +232,7 @@ describe('applyNotesEvent', () => {
     // After a cancel the run may still be polled and found failed; the page heard `cancelled`.
     const cancelled = play([
       RUN_EVENT,
-      { type: 'error', code: 'cancelled', message: 'Notes generation was cancelled.' },
+      { type: 'error', code: 'cancelled', message: 'Writing the notes was cancelled.' },
     ]);
     const after = play(
       [
@@ -289,7 +289,7 @@ describe('afterNoteChanged', () => {
     // cancel_unconfirmed: the page heard `cancelled`, then main loaded what the run saved.
     const cancelled = play([
       RUN_EVENT,
-      { type: 'error', code: 'cancelled', message: 'Notes generation was cancelled.' },
+      { type: 'error', code: 'cancelled', message: 'Writing the notes was cancelled.' },
     ]);
     expect(afterNoteChanged(cancelled, localAi())).toBeNull();
     const streaming = play([RUN_EVENT]);
@@ -366,14 +366,14 @@ describe('afterPendingChanged', () => {
         status: {
           phase: 'failed',
           code: 'internal_error',
-          message: 'Roger could not generate the notes. It will try again.',
+          message: 'Roger could not write the notes. It will try again.',
         },
       }),
     );
     expect(internal?.phase).toBe('failed');
     expect(internal?.error).toEqual({
       code: 'internal_error',
-      message: 'Roger could not generate the notes. It will try again.',
+      message: 'Roger could not write the notes. It will try again.',
     });
     expect(shownStream(internal ?? null)).toBe('partial');
 
