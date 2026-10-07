@@ -1,5 +1,6 @@
 import { app, net } from 'electron';
 import type { BackupStatus, CaptureReport, EchoStatus } from '../../shared/capture';
+import { IpcChannel } from '../../shared/ipc';
 import type { ApiClient } from '../api/ApiClient';
 import { createSystemAudio } from '../audio/system/createSystemAudio';
 import { AudioBackup } from '../backup/AudioBackup';
@@ -17,6 +18,8 @@ import { NetworkStatus } from '../stt/networkStatus';
 import type { TranscriptUploader } from '../upload/TranscriptUploader';
 import { electronNotifierPorts, Notifier } from '../notify/Notifier';
 import { CaptureService } from './CaptureService';
+import { EchoSink } from './echo/EchoSink';
+import { RouteHistory } from './echo/RouteProvider';
 import { SignalMonitor } from './SignalMonitor';
 import { SttOpenBudget } from './SttOpenBudget';
 
@@ -87,7 +90,7 @@ export function noCaptureFeatures(): CaptureFeatureHandlers {
   };
 }
 
-/** Until M2-T14b counts them: nothing is hidden, trimmed or held without the echo filter. */
+/** Without an echo handler (tests through noCaptureFeatures()): nothing hidden, trimmed or held. */
 const NO_ECHO: Readonly<EchoStatus> = Object.freeze({ hidden: 0, trimmed: 0, held: 0 });
 
 /** Without a backup handler (tests through noCaptureFeatures()): none is kept. */
@@ -210,6 +213,43 @@ export function createCaptureRuntime(deps: CaptureRuntimeDeps): CaptureRuntime {
   });
 
   // [slot M2-T14b] the echo sink, T3b's beforeFirstTick, unhide and the echo report
+
+  // Mic lines that repeat call audio (laptop speakers) are hidden or trimmed, and each waits for
+  // the call-audio watermark before it may upload (M2 D2). M2-T16 runs its re-run mic lines through
+  // `echoSink.filterStored`; M2-T17a sets `echoRoute` from the monitor's route events as each comes:
+  // it keeps every report, dated on the clock meetings start by, and known headphones turn the
+  // filter off for the lines said while they played. The sink's segment listener runs before
+  // ipc.ts's (registered below), so a `hidden` change reaches the window before the line it names,
+  // as TranscriptSegmentChange allows: the page keeps such a change until its line arrives.
+  const echoRoute = new RouteHistory(clock);
+  const echoSink = new EchoSink({
+    store,
+    enabled: config.capture.echoFilter,
+    route: echoRoute,
+    publishChange: (change) => {
+      const window = deps.getWindow();
+      if (window && !window.isDestroyed()) {
+        window.webContents.send(IpcChannel.TranscriptSegmentChanged, change);
+      }
+    },
+    logger: logger.child({ component: 'echo' }),
+    clock,
+  });
+  echoSink.attach(capture);
+  // The holds an earlier run left are decided before anything uploads. The settle touches only
+  // lines created before the uploader's launchedAt (EchoSink.settleAll says why): it can be retried
+  // after a Start of this run.
+  deps.uploader.setBeforeFirstTick((launchedAt) => {
+    echoSink.settleAll(launchedAt);
+  });
+  capture.addStatusContributor('echo', ({ meetingId }) => {
+    const echo = echoSink.liveStatus(meetingId);
+    return echo === null ? {} : { echo };
+  });
+  features.echoReport = (meetingId) => echoSink.report(meetingId);
+  features.unhideSegment = (segment) => {
+    echoSink.unhide(segment);
+  };
 
   // [slot M2-T15] the audio backup (a sink), retention, header repair, delete-audio
 
