@@ -2,6 +2,7 @@ import { app } from 'electron';
 import type { BackupStatus, CaptureReport, EchoStatus } from '../../shared/capture';
 import type { ApiClient } from '../api/ApiClient';
 import { createSystemAudio } from '../audio/system/createSystemAudio';
+import { AudioBackup } from '../backup/AudioBackup';
 import type { ApiConnection } from '../api/http';
 import type { DesktopConfig } from '../config';
 import { type CaptureRequests, type CaptureWindow, registerIpcHandlers } from '../ipc';
@@ -194,6 +195,23 @@ export function createCaptureRuntime(deps: CaptureRuntimeDeps): CaptureRuntime {
   // [slot M2-T14b] the echo sink, T3b's beforeFirstTick, unhide and the echo report
 
   // [slot M2-T15] the audio backup (a sink), retention, header repair, delete-audio
+
+  // Each recording's audio under userData/audio, deleted past `audioRetentionDays`. start()
+  // repairs the WAVs a crash left open before M2-T16's slot below reads them; M2-T16 calls
+  // `audioBackup.refresh(meetingId)` once a re-run recovers a gap, so the status after Stop stops
+  // saying the audio is kept for it.
+  const audioBackup = new AudioBackup({
+    capture,
+    store,
+    userData: deps.userData,
+    settings: config.capture,
+    logger: logger.child({ component: 'audio-backup' }),
+    clock,
+  });
+  audioBackup.start();
+  features.backupReport = (meetingId) => audioBackup.report(meetingId);
+  features.deleteMeetingAudio = (meetingId) => audioBackup.deleteMeetingAudio(meetingId);
+  quitHooks.push(audioBackup.quitHook);
 
   // [slot M2-T16] the gap re-run: every session takes `budget.acquire(1, 'minute')` first
 
