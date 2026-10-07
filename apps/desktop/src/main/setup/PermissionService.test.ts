@@ -108,7 +108,7 @@ function harness(options: HarnessOptions = {}) {
     logger,
     clock: () => Date.parse('2026-10-07T09:00:00.000Z'),
   });
-  return { service, ports, store, rebuild, access };
+  return { service, ports, store, rebuild, access, verification };
 }
 
 describe('the microphone row', () => {
@@ -223,6 +223,34 @@ describe('the system audio row', () => {
       relaunchNeeded: false,
     });
     // The next real silence is still the first for this identity.
+    expect((await service.testSystemAudio()).systemAudio.state).toBe('pending');
+  });
+
+  it('takes call audio a recording heard after a silent test as the proof', async () => {
+    const { service, verification } = harness({ probes: [SILENT, SILENT] });
+    await service.testSystemAudio();
+    expect((await service.testSystemAudio()).systemAudio.state).toBe('not-heard');
+    // The person unmuted and recorded a call: the tap heard it (TapSystemAudio).
+    verification?.markHeard('tap');
+    expect((await service.status()).systemAudio).toEqual({
+      state: 'verified',
+      message: null,
+      relaunchNeeded: false,
+    });
+  });
+
+  it('takes a heard call over the first silence too, which asked for I allowed it', async () => {
+    const { service, verification } = harness({ probes: [SILENT] });
+    expect((await service.testSystemAudio()).systemAudio.state).toBe('pending');
+    verification?.markHeard('tap');
+    expect((await service.status()).systemAudio.state).toBe('verified');
+  });
+
+  it('lets a silent test outweigh a proof from before it: the switch may be off since', async () => {
+    const store = new InMemoryTranscriptStore();
+    store.setAppState(SYSTEM_AUDIO_VERIFIED_KEY, LOCAL.requirementHash, '2026-10-01T09:00:00.000Z');
+    const { service } = harness({ store, probes: [SILENT] });
+    expect((await service.status()).systemAudio.state).toBe('verified');
     expect((await service.testSystemAudio()).systemAudio.state).toBe('pending');
   });
 

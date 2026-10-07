@@ -102,6 +102,8 @@ export class PermissionService {
   private lastProbe: 'heard' | 'silent' | null = null;
   /** After a silent probe: whether it was the first for this identity. */
   private silentState: 'pending' | 'not-heard' = 'pending';
+  /** Whether the tap's proof already held when the last silent probe answered. */
+  private verifiedBeforeSilence = false;
   /** A silent probe this run, for an identity with no hash to store it under. */
   private silentThisRun = false;
   /** Why the last test gave no answer, until the next one does. */
@@ -357,12 +359,17 @@ export class PermissionService {
   }
 
   private systemAudioState(): SystemAudioSetupState {
-    // A silence heard after the proof wins over it: the switch may have been turned off since.
-    if (this.lastProbe === 'silent') return this.silentState;
-    if (this.lastProbe === 'heard' || this.options.systemAudio.verification?.verified === true) {
-      return 'verified';
+    const verified = this.options.systemAudio.verification?.verified === true;
+    if (this.lastProbe === 'silent') {
+      // A silence heard after the proof wins over it: the switch may have been turned off since.
+      // A proof that came after the silence (a recording's tap heard the call) wins over the
+      // silence, or the row says "not allowed" and offers a Relaunch for a permission that works.
+      // SystemAudioVerification reports only its first proof (markHeard does nothing once
+      // verified), so a call heard after a silence that followed a proof cannot be told apart:
+      // that row waits for the next Test.
+      return verified && !this.verifiedBeforeSilence ? 'verified' : this.silentState;
     }
-    return 'unknown';
+    return this.lastProbe === 'heard' || verified ? 'verified' : 'unknown';
   }
 
   /** Why the helper cannot run here, for people, or null when it can. */
@@ -412,6 +419,10 @@ export class PermissionService {
         return;
       case 'silent':
         this.probeProblem = null;
+        // After `ready`: a proof stored by an earlier launch is older than this silence, and must
+        // not read as one that came after it (systemAudioState).
+        await systemAudio.verification?.ready;
+        this.verifiedBeforeSilence = systemAudio.verification?.verified === true;
         this.silentState = await this.recordSilence();
         this.lastProbe = 'silent';
         return;
