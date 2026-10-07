@@ -50,6 +50,7 @@ import { SqliteNotesStore } from './notes/SqliteNotesStore';
 import { ensureMicrophoneAccess } from './permissions';
 import { PreferencesStore } from './preferences/PreferencesStore';
 import { registerPreferencesIpc } from './preferences/preferences-ipc';
+import { CrashRecovery } from './recovery/CrashRecovery';
 import { SqliteTranscriptStore } from './store/SqliteTranscriptStore';
 import { createSpeechToText } from './stt/createSpeechToText';
 import { TranscriptUploader } from './upload/TranscriptUploader';
@@ -150,10 +151,33 @@ async function main(): Promise<void> {
   // [slot M2-T23] meetings a previous run left open (M2-T23 replaces this with CrashRecovery)
 
   // No session can be running at startup, so any open meeting was cut off by a crash, a force-quit,
-  // or a quit whose stop outran quitStopTimeoutMs (lifecycle.ts).
-  const recovered = store.endMeetingsLeftOpen(new Date().toISOString());
-  if (recovered > 0)
-    logger.warn('ended meetings left open by a previous run', { count: recovered });
+  // or a quit whose stop outran quitStopTimeoutMs (lifecycle.ts). Each is ended here, before the
+  // runtime below records the crash tails of ended meetings and re-runs them, except the one Roger
+  // was recording under 10 minutes ago when this launch is the monitor's relaunch: it resumes in
+  // the same meeting id (M2 D7, recovery/CrashRecovery.ts).
+  const crashRecovery = new CrashRecovery({
+    store,
+    relaunched: process.argv.includes('--relaunched'),
+    // A launch nobody relaunched would also resume while a call app holds the mic, but the call
+    // app monitor stays inside createCaptureRuntime, so it cannot be asked here yet.
+    callApps: null,
+    logger: logger.child({ component: 'crash-recovery' }),
+  });
+  crashRecovery.endMeetingsLeftOpen();
+  // The resume needs the capture service `[slot M2-T4 runtime]` builds below, and the uploader it
+  // builds first, whose launchedAt then precedes every line the resume stores. Trap: this reads
+  // `capture` before its line. It runs once main() has run to its end, so it finds it only while
+  // nothing between here and createCaptureRuntime awaits (CrashRecovery.test.ts checks).
+  setImmediate(() => {
+    try {
+      void crashRecovery.start(capture);
+    } catch (error) {
+      // `capture` unset (a ReferenceError): main() threw before its line, and Roger is exiting.
+      logger.error('crash recovery not started: Roger did not finish starting', {
+        error: errorMessage(error),
+      });
+    }
+  });
 
   // [slot M4-T16 notes store] notes.sqlite. Before the runtime: the uploader and capture need it.
 
