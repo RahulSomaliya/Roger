@@ -225,7 +225,6 @@ describe('createCalendarRuntime', () => {
         powerMonitor,
         powerSaveBlocker: { start: () => 1, stop: () => undefined },
         shell: { openExternal: () => Promise.resolve() },
-        clipboard: { writeText: () => undefined },
       },
       logger: silent,
       ...overrides,
