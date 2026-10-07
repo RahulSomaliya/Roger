@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
 import { CalendarSettings } from '../../calendar/CalendarSettings';
-import { CalendarStatusBanner } from '../../calendar/CalendarStatusBanner';
 import { NoticeBanner } from '../../calendar/NoticeBanner';
 import { TodaySection } from '../../calendar/TodaySection';
 import type { SlotEntry } from '../slotRegistry';
@@ -16,10 +15,11 @@ function only<Props>(entries: readonly SlotEntry<Props>[] | undefined, slot: str
 }
 
 describe("M5-T13's mounts", () => {
-  it('mounts Today in Home, the calendar section in Settings, and the status banner above every page', () => {
+  it('mounts Today in Home and the calendar section in Settings', () => {
     expect(only(contributions.home, 'home').component).toBe(TodaySection);
     expect(only(contributions.settings, 'settings').component).toBe(CalendarSettings);
-    expect(only(contributions.banner, 'banner').component).toBe(CalendarStatusBanner);
+    // The calendar's health is a line in Today (R1), not a banner above every page.
+    expect(contributions.banner ?? []).toEqual([]);
   });
 
   it("mounts the consent notice in the meeting page's banner slot", () => {
@@ -31,7 +31,6 @@ describe("M5-T13's mounts", () => {
     const ids = [
       only(contributions.home, 'home').id,
       only(contributions.settings, 'settings').id,
-      only(contributions.banner, 'banner').id,
       only(contributions.meetingBanner, 'meetingBanner').id,
     ];
     for (const id of ids) expect(id.startsWith('m5-')).toBe(true);
@@ -46,6 +45,6 @@ describe("M5-T13's mounts", () => {
       'm5-calendar',
     ]);
     expect(slots.meetingBanner.map((entry) => entry.id)).toEqual(['m5-calendar-notice']);
-    expect(slots.banner.map((entry) => entry.id)).toContain('m5-calendar-status');
+    expect(slots.banner.map((entry) => entry.id)).not.toContain('m5-calendar-status');
   });
 });
