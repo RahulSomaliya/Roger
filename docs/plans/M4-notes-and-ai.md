@@ -746,6 +746,14 @@ Desktop (`apps/desktop/src/`, vitest under Node; components are checked in the b
 
 Filled in when the check runs on real calls.
 
+First real-key check (2026-10-07, not an exit-check call: a 22-line test meeting in the dev
+database, through the API on this Mac). `NOTES_PROVIDER=openrouter`, default model
+`xiaomi/mimo-v2.6-pro`, every request with `zdr: true` and `data_collection: deny`. Notes run
+(`general`): succeeded, 5 sections, 5 lines kept, 3 flagged, 0 dropped, 1,281 tokens in, 93 out,
+$0.00064. Chat question: complete, 8 citations, 1,199 in, 32 out, $0.00054. Both logged
+`reasoning_tokens=0`, so `reasoning: {effort: none}` is honoured on the zero-retention route (D2).
+No request sets `json_schema` yet, so `require_parameters` is still unexercised.
+
 | Date | Call | Template (suggested or asked) | Length | Minutes of fixing | Edit size | Dropped / flagged / from notes | Cost |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 

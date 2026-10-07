@@ -18,8 +18,11 @@ No SDK and no new dependency (M4 plan, D1). OpenRouter's docs, read 2026-10-06:
   `finish_reason: "length"`.
 - Closing the connection cancels the generation, and its billing where the provider supports it.
 
-What is still unchecked without a key: whether the default model's zero-retention endpoints honour
-`effort: "none"` (M4 D2 asks for a real call; if not, cap reasoning through NOTES_REASONING=on).
+Checked with a real key on 2026-10-07 (M4 D2): `xiaomi/mimo-v2.6-pro` answered a notes run and a
+chat question under `zdr: true` and `data_collection: deny`, and `effort: "none"` was honoured
+(`reasoning_tokens` 0 in `notes_model_stream_ended`). If a later model bills reasoning anyway, cap
+it through NOTES_REASONING=on. No request sets `json_schema` yet, so `require_parameters` has not
+met a real route.
 """
 
 from collections.abc import AsyncIterator
