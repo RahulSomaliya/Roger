@@ -1,4 +1,9 @@
-import { parseInstant, type CalendarEvent } from '../../../shared/calendar';
+import {
+  parseInstant,
+  type AllDayCalendarEvent,
+  type CalendarEvent,
+  type TimedCalendarEvent,
+} from '../../../shared/calendar';
 
 /**
  * What Home's "Today" lists, worked out from the events main hands over: pure, so the day's edges
@@ -16,8 +21,8 @@ const MINUTE_MS = 60_000;
 export const START_NOTES_LEAD_MS = 15 * MINUTE_MS;
 
 /** One row of Home's list. */
-export interface TodayEntry {
-  event: CalendarEvent;
+export interface TodayEntry<Event extends CalendarEvent = CalendarEvent> {
+  event: Event;
   /** The user said no: the row is greyed and sorts after the rest. */
   declined: boolean;
   /** Start notes is on offer now (timed events only; startNotesAvailable). */
@@ -28,11 +33,11 @@ export interface TodayEntry {
 
 export interface TodayGroups {
   /** The strip on top: all-day events, in the order main gave them, declined ones last. */
-  allDay: TodayEntry[];
+  allDay: TodayEntry<AllDayCalendarEvent>[];
   /** Timed events by start, declined ones last. */
-  timed: TodayEntry[];
+  timed: TodayEntry<TimedCalendarEvent>[];
   /** The meeting under way, else the next to start, never a declined one; null when none is left. */
-  next: TodayEntry | null;
+  next: TodayEntry<TimedCalendarEvent> | null;
 }
 
 export interface TodayInputs {
@@ -63,15 +68,15 @@ export function todayGroups({ events, links, nowMs }: TodayInputs): TodayGroups 
   const dayEnd = new Date(day.getFullYear(), day.getMonth(), day.getDate() + 1).getTime();
   const dayKey = localDateKey(day);
 
-  const entryOf = (event: CalendarEvent): TodayEntry => ({
+  const entryOf = <Event extends CalendarEvent>(event: Event): TodayEntry<Event> => ({
     event,
     declined: event.selfResponse === 'declined',
     startNotes: startNotesAvailable(event, nowMs),
     meetingId: links.get(event.id) ?? null,
   });
 
-  const allDay: TodayEntry[] = [];
-  const timed: { entry: TodayEntry; startMs: number; endMs: number }[] = [];
+  const allDay: TodayEntry<AllDayCalendarEvent>[] = [];
+  const timed: { entry: TodayEntry<TimedCalendarEvent>; startMs: number; endMs: number }[] = [];
   for (const event of events) {
     if (event.allDay) {
       // Plain dates, end exclusive, compared as text: "2026-10-06" sorts as it reads.
@@ -100,7 +105,7 @@ export function todayGroups({ events, links, nowMs }: TodayInputs): TodayGroups 
 }
 
 /** A stable partition: the entries the user accepted keep their order, then the declined ones. */
-function declinedLast(entries: TodayEntry[]): TodayEntry[] {
+function declinedLast<Entry extends TodayEntry>(entries: Entry[]): Entry[] {
   return [
     ...entries.filter((entry) => !entry.declined),
     ...entries.filter((entry) => entry.declined),

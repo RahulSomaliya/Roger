@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import type { CalendarConnection, CalendarSyncState } from '../../../shared/calendar';
-import { calendarNotices, createCalendarFormat, reconnectLabel, staleText } from './calendarFormat';
+import { LOGIN_ITEMS_SETTINGS_PATH } from '../../../shared/ipc/loginItem';
+import {
+  calendarNotices,
+  createCalendarFormat,
+  openAtLoginHint,
+  reconnectLabel,
+  staleText,
+} from './calendarFormat';
 
 // Asia/Kolkata is UTC+5:30 with no DST, so the same instants read differently from UTC.
 const format = createCalendarFormat('Asia/Kolkata');
@@ -134,5 +141,31 @@ describe('calendarNotices', () => {
     });
     expect(notices.map((notice) => notice.kind)).toEqual(['reconnect-soon', 'stale']);
     expect(notices[0]?.action).toBe('Reconnect before Tue 6 Oct');
+  });
+});
+
+describe('openAtLoginHint', () => {
+  it('says where to allow Roger when macOS waits for the user, with the path System Settings uses', () => {
+    const hint = openAtLoginHint('on', 'requires-approval');
+    expect(hint).toContain(LOGIN_ITEMS_SETTINGS_PATH);
+    expect(hint).toContain('missed');
+  });
+
+  it('says it is on when macOS opens Roger at login', () => {
+    expect(openAtLoginHint('on', 'enabled')).toBe(
+      'Roger opens when you log in, so it can remind you before your first call.',
+    );
+  });
+
+  it('says what a dev build, or a Roger macOS cannot find, cannot do', () => {
+    expect(openAtLoginHint('off', 'unavailable')).toContain('Not available');
+  });
+
+  it('says what an off or not yet registered login item means, by the choice', () => {
+    expect(openAtLoginHint('off', 'disabled')).toContain('only when you open it');
+    expect(openAtLoginHint('off', null)).toContain('only when you open it');
+    expect(openAtLoginHint('auto', 'disabled')).toBe(
+      'Roger turns this on when you connect your calendar.',
+    );
   });
 });

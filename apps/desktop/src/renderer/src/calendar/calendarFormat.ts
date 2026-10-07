@@ -3,13 +3,15 @@ import {
   type CalendarConnection,
   type CalendarSyncState,
 } from '../../../shared/calendar';
+import type { OpenAtLogin } from '../../../shared/calendarPrefs';
+import { LOGIN_ITEMS_SETTINGS_PATH, type LoginItemStatus } from '../../../shared/ipc/loginItem';
 
 /**
  * The words the calendar's banners and Settings use for times and for the calendar's health: pure,
  * so the exact strings are tested.
  *
  * Trap: src/main/app/trayMenu.ts words the same states for the menu bar ("Calendar not updated
- * since 09:12", "Reconnect Google Calendar (before Tue 14 Oct)") with the same rules: stale from
+ * since 09:12", "Reconnect Google Calendar (before Wed 14 Oct)") with the same rules: stale from
  * `staleSince`, the reconnect line from 24 h before `expiresHint`. The renderer cannot import main,
  * so the rules live twice; change one and change the other, or the menu bar and the window tell
  * the user different things about one calendar.
@@ -21,7 +23,7 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 export interface CalendarFormat {
   /** "09:12". */
   time(ms: number): string;
-  /** "Tue 14 Oct". */
+  /** "Wed 14 Oct". */
   date(ms: number): string;
   /** "Wed 09:30" for another day than `nowMs`'s, "09:30" for the same day. */
   when(ms: number, nowMs: number): string;
@@ -29,7 +31,11 @@ export interface CalendarFormat {
 
 /**
  * The format in `timeZone` (an IANA name), or in this Mac's zone when omitted. English and 24 h
- * clock, as the plan words them ("since 09:12", "before Tue 14 Oct"); Roger has no other language.
+ * clock, as the plan words them ("since 09:12", "before Wed 14 Oct"); Roger has no other language.
+ *
+ * Trap: call it per render, never once at import. An Intl formatter keeps the time zone it was made
+ * in, so one built at import goes on writing the old zone's clock after a macOS zone change, while
+ * the day's meetings (cut with the page's own Date, todayGroups.ts) follow the new one.
  */
 export function createCalendarFormat(timeZone?: string): CalendarFormat {
   const zone = timeZone === undefined ? {} : { timeZone };
@@ -131,4 +137,25 @@ export function calendarNotices({
     notices.push({ kind: 'stale', text: staleText(sync, nowMs, format), action: null });
   }
   return notices;
+}
+
+/**
+ * The line under Settings' "Open at login": what macOS did with the choice. `status` is null
+ * until macOS answers. A packaged build that waits for the user (`requires-approval`) says where to
+ * allow it, since until then Roger is not running for the first calls of the day.
+ */
+export function openAtLoginHint(choice: OpenAtLogin, status: LoginItemStatus | null): string {
+  switch (status) {
+    case 'unavailable':
+      return 'Not available in this copy of Roger (a development build, or Roger is not in Applications).';
+    case 'requires-approval':
+      return `Allow Roger in ${LOGIN_ITEMS_SETTINGS_PATH} so it can open at login. Until then reminders for your first calls are missed.`;
+    case 'enabled':
+      return 'Roger opens when you log in, so it can remind you before your first call.';
+    case 'disabled':
+    case null:
+      return choice === 'auto'
+        ? 'Roger turns this on when you connect your calendar.'
+        : 'Roger opens only when you open it, so it cannot remind you before then.';
+  }
 }
