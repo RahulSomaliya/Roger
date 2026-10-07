@@ -3,7 +3,6 @@ import {
   type CalendarConnection,
   type CalendarSyncState,
 } from '../../../shared/calendar';
-import type { OpenAtLogin } from '../../../shared/calendarPrefs';
 import { LOGIN_ITEMS_SETTINGS_PATH, type LoginItemStatus } from '../../../shared/ipc/loginItem';
 import { formatClock } from '../clock';
 import type { CalendarState } from './calendarStore';
@@ -16,7 +15,8 @@ import type { CalendarState } from './calendarStore';
  * since 9:12 am", "Reconnect Google Calendar (before Wed 14 Oct)") with the same rules: stale from
  * `staleSince`, the reconnect line from 24 h before `expiresHint`. The renderer cannot import main,
  * so the rules live twice; change one and change the other, or the menu bar and the window tell
- * the user different things about one calendar.
+ * the user different things about one calendar. The words differ on purpose: the menu line keeps
+ * "Reconnect Google Calendar" (it has no page around it), the window's button says "Reconnect".
  */
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -77,13 +77,11 @@ export function reconnectLabel(
 ): string | null {
   if (connection === null) return null;
   const refused = connection.status === 'reconnect_required' || sync?.reconnectRequired === true;
-  if (refused) return 'Reconnect Google Calendar';
+  if (refused) return 'Reconnect';
   if (connection.expiresHint === null) return null;
   const expiresMs = parseInstant(connection.expiresHint);
   if (nowMs < expiresMs - DAY_MS) return null;
-  return nowMs < expiresMs
-    ? `Reconnect before ${format.date(expiresMs)}`
-    : 'Reconnect Google Calendar';
+  return nowMs < expiresMs ? `Reconnect before ${format.date(expiresMs)}` : 'Reconnect';
 }
 
 export type CalendarNoticeKind = 'reconnect-required' | 'reconnect-soon' | 'stale';
@@ -117,7 +115,7 @@ export function calendarNotices({
 }: CalendarNoticeInputs): CalendarNotice[] {
   if (connection === null) return [];
   const label = reconnectLabel(connection, sync, nowMs, format);
-  if (label === 'Reconnect Google Calendar') {
+  if (label === 'Reconnect') {
     return [
       {
         kind: 'reconnect-required',
@@ -199,23 +197,20 @@ export function calendarProblem({
   return null;
 }
 
+/** The login-item states that earn a hint under Settings' "Open at login". */
+export type OpenAtLoginHintStatus = Extract<LoginItemStatus, 'requires-approval' | 'unavailable'>;
+
 /**
- * The line under Settings' "Open at login": what macOS did with the choice. `status` is null
- * until macOS answers. A packaged build that waits for the user (`requires-approval`) says where to
- * allow it, since until then Roger is not running for the first calls of the day.
+ * The line under Settings' "Open at login", said only when there is something to do or to know:
+ * a packaged build that waits for the user (`requires-approval`) says where to allow it, since
+ * until then Roger is not running for the first calls of the day; `unavailable` says this copy
+ * cannot register a login item. Every other state is the switch alone (OpenAtLoginField).
  */
-export function openAtLoginHint(choice: OpenAtLogin, status: LoginItemStatus | null): string {
+export function openAtLoginHint(status: OpenAtLoginHintStatus): string {
   switch (status) {
     case 'unavailable':
       return 'Not available in this copy of Roger (a development build, or Roger is not in Applications).';
     case 'requires-approval':
       return `Allow Roger in ${LOGIN_ITEMS_SETTINGS_PATH} so it can open at login. Until then reminders for your first calls are missed.`;
-    case 'enabled':
-      return 'Roger opens when you log in, so it can remind you before your first call.';
-    case 'disabled':
-    case null:
-      return choice === 'auto'
-        ? 'Roger turns this on when you connect your calendar.'
-        : 'Roger opens only when you open it, so it cannot remind you before then.';
   }
 }
