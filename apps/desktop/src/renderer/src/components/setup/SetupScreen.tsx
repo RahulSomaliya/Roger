@@ -1,12 +1,16 @@
 import { useEffect, useId, useState, useSyncExternalStore } from 'react';
 import { SetupModel, type SetupScreenState } from './setupModel';
+import { Icon } from '../ui/icons';
 import {
+  leadingFix,
+  needsYou,
+  passingLine,
   type SetupAction,
   type SetupActionKind,
   type SetupRowId,
   type SetupRowView,
   setupRows,
-  setupSummary,
+  splitRows,
 } from './setupRows';
 import './setup.css';
 
@@ -21,16 +25,23 @@ const RUNNING_TEXT: Record<SetupActionKind, string> = {
   recheck: 'Checking…',
 };
 
+interface SetupScreenProps {
+  /** Leaves setup. The route has no header button for it: Done shows here, once all pass. */
+  onDone: () => void;
+}
+
 /**
  * The permission setup screen (M2-T19), in the shell's full-window `setup` route
- * (app/slots/m2-setup.ts): one row per thing Roger needs on this Mac, what is wrong in main's
- * words, and the buttons that fix it. It reads the status again whenever the window regains
- * focus, so a switch flipped in System Settings shows the moment the person comes back.
+ * (app/slots/m2-setup.ts): what Roger needs on this Mac, what is wrong in main's words, and the
+ * buttons that fix it. Checks that pass fold into one line. It reads the status again whenever
+ * the window regains focus, so a switch flipped in System Settings shows the moment the person
+ * comes back.
  */
-export function SetupScreen() {
+export function SetupScreen({ onDone }: SetupScreenProps) {
   // One model per mount: leaving setup and coming back reads the Mac afresh.
   const [model] = useState(() => new SetupModel(window.roger));
   const state = useSyncExternalStore(model.subscribe, model.getSnapshot);
+  const [showPassing, setShowPassing] = useState(false);
   useEffect(() => {
     // load() and run() never reject: a failure becomes the state that shows it.
     void model.load();
@@ -45,53 +56,88 @@ export function SetupScreen() {
   return (
     <SetupView
       state={state}
+      showPassing={showPassing}
+      onTogglePassing={() => {
+        setShowPassing((shown) => !shown);
+      }}
       onAction={(row, action) => {
         void model.run(row, action);
       }}
       onRetry={() => {
         void model.load();
       }}
+      onDone={onDone}
     />
   );
 }
 
 interface SetupViewProps {
   state: SetupScreenState;
+  /** Whether the checks that pass are listed, not just counted. */
+  showPassing: boolean;
+  onTogglePassing: () => void;
   onAction: (row: SetupRowId, action: SetupAction) => void;
   onRetry: () => void;
+  onDone: () => void;
 }
 
 /** The screen for one state. */
-export function SetupView({ state, onAction, onRetry }: SetupViewProps) {
+export function SetupView(props: SetupViewProps) {
   return (
     <div className="setup">
       <p className="setup-intro">
-        Roger records two things on this Mac: your microphone, and the call audio your Mac plays.
-        Each check below says what is missing and how to fix it.
+        Roger records your microphone and the call audio your Mac plays.
       </p>
-      <SetupBody state={state} onAction={onAction} onRetry={onRetry} />
+      <SetupBody {...props} />
       <p className="setup-privacy">
-        Roger keeps each call’s audio on this Mac for a few days (7 unless audioRetentionDays says
-        otherwise), so a part it missed can be transcribed again. It is never uploaded.
+        Call audio stays on this Mac for a few days, never uploaded, so a part Roger missed can be
+        transcribed again.
       </p>
     </div>
   );
 }
 
-function SetupBody({ state, onAction, onRetry }: SetupViewProps) {
-  const { status, loadError } = state;
-  const retry = (
-    <button
-      type="button"
-      className="btn"
-      data-variant="secondary"
-      data-size="sm"
-      disabled={state.running !== null}
-      onClick={onRetry}
-    >
-      Try again
-    </button>
+/** A failed read or action: a problem line (no box, no red) and, for a read, its one fix. */
+function Failure({
+  message,
+  onRetry,
+  busy,
+}: {
+  message: string;
+  onRetry: () => void;
+  busy: boolean;
+}) {
+  return (
+    <div className="setup-failed">
+      <div className="problem" role="alert">
+        <Icon name="circle-alert" />
+        <span className="problem-text">{message}</span>
+      </div>
+      <div className="setup-actions">
+        <button
+          type="button"
+          className="btn"
+          data-variant="secondary"
+          data-size="sm"
+          disabled={busy}
+          onClick={onRetry}
+        >
+          Try again
+        </button>
+      </div>
+    </div>
   );
+}
+
+function SetupBody({
+  state,
+  showPassing,
+  onTogglePassing,
+  onAction,
+  onRetry,
+  onDone,
+}: SetupViewProps) {
+  const { status, loadError } = state;
   if (status === null) {
     if (loadError === null) {
       return (
@@ -101,33 +147,70 @@ function SetupBody({ state, onAction, onRetry }: SetupViewProps) {
       );
     }
     return (
-      <div className="setup-failed">
-        <p className="error" role="alert">
-          Roger could not check this Mac: {loadError}
-        </p>
-        <div className="setup-actions">{retry}</div>
-      </div>
+      <Failure
+        message={`Roger could not check this Mac: ${loadError}`}
+        onRetry={onRetry}
+        busy={state.running !== null}
+      />
     );
   }
   const rows = setupRows(status);
+  const { open, passing } = splitRows(rows);
+  const lead = leadingFix(rows);
+  const list = (views: readonly SetupRowView[], label: string) =>
+    views.length === 0 ? null : (
+      <ul className="setup-list" aria-label={label}>
+        {views.map((view) => (
+          <SetupRow
+            key={view.id}
+            view={view}
+            state={state}
+            leads={view.id === lead}
+            onAction={onAction}
+          />
+        ))}
+      </ul>
+    );
   return (
     <>
       {loadError === null ? null : (
-        <div className="setup-failed">
-          <p className="error" role="alert">
-            Roger could not check again: {loadError}
-          </p>
-          <div className="setup-actions">{retry}</div>
+        <Failure
+          message={`Roger could not check again: ${loadError}`}
+          onRetry={onRetry}
+          busy={state.running !== null}
+        />
+      )}
+      {list(open, 'What Roger needs')}
+      {passing.length === 0 ? null : (
+        <div className="setup-passing">
+          <span>{passingLine(passing.length)}</span>
+          <span aria-hidden="true">&middot;</span>
+          <button
+            type="button"
+            className="btn"
+            data-variant="ghost"
+            data-size="sm"
+            aria-expanded={showPassing}
+            onClick={onTogglePassing}
+          >
+            {showPassing ? 'Hide' : 'Show'}
+          </button>
         </div>
       )}
-      <p className="setup-summary" role="status">
-        {setupSummary(rows)}
-      </p>
-      <ul className="setup-list" aria-label="What Roger needs">
-        {rows.map((view) => (
-          <SetupRow key={view.id} view={view} state={state} onAction={onAction} />
-        ))}
-      </ul>
+      {showPassing ? list(passing, 'Checks that pass') : null}
+      {needsYou(rows) ? null : (
+        <div className="setup-actions">
+          <button
+            type="button"
+            className="btn"
+            data-variant="primary"
+            data-size="md"
+            onClick={onDone}
+          >
+            Done
+          </button>
+        </div>
+      )}
     </>
   );
 }
@@ -135,15 +218,22 @@ function SetupBody({ state, onAction, onRetry }: SetupViewProps) {
 interface SetupRowProps {
   view: SetupRowView;
   state: SetupScreenState;
+  /** This row's first fix is the screen's one main button (leadingFix). */
+  leads: boolean;
   onAction: (row: SetupRowId, action: SetupAction) => void;
 }
 
-function SetupRow({ view, state, onAction }: SetupRowProps) {
+/** The icon beside a state's words: a check for a pass, an exclamation for what needs a look. */
+function StateMark({ tone }: { tone: SetupRowView['tone'] }) {
+  if (tone === 'ok') return <Icon name="check" />;
+  if (tone === 'problem' || tone === 'attention') return <Icon name="circle-alert" />;
+  return null;
+}
+
+function SetupRow({ view, state, leads, onAction }: SetupRowProps) {
   const titleId = useId();
   const running = state.running?.row === view.id ? state.running.action : null;
   const failure = state.failure?.row === view.id ? state.failure.message : null;
-  // The first fix stands out only where something needs fixing; a test on a fine row does not.
-  const leads = view.tone === 'problem' || view.tone === 'attention';
   return (
     <li
       className="setup-row"
@@ -153,22 +243,21 @@ function SetupRow({ view, state, onAction }: SetupRowProps) {
       aria-busy={running !== null}
     >
       <div className="setup-row-head">
-        <div className="setup-row-text">
-          <h2 id={titleId} className="setup-row-title">
-            {view.title}
-          </h2>
-          <p className="setup-row-description">{view.description}</p>
-        </div>
+        <h2 id={titleId} className="setup-row-title">
+          {view.title}
+        </h2>
         <span className="setup-state">
+          <StateMark tone={view.tone} />
           <span className="visually-hidden">Status: </span>
           {view.stateLabel}
         </span>
       </div>
       {view.message === null ? null : <p className="setup-row-message">{view.message}</p>}
       {failure === null ? null : (
-        <p className="error setup-row-error" role="alert">
-          {failure}
-        </p>
+        <div className="problem" role="alert">
+          <Icon name="circle-alert" />
+          <span className="problem-text">{failure}</span>
+        </div>
       )}
       {running === null ? null : (
         <p className="setup-busy" role="status">
@@ -177,22 +266,28 @@ function SetupRow({ view, state, onAction }: SetupRowProps) {
       )}
       {view.actions.length === 0 ? null : (
         <div className="setup-actions">
-          {view.actions.map((action, index) => (
-            <button
-              key={action.kind === 'open-pane' ? `${action.kind}-${action.pane}` : action.kind}
-              type="button"
-              className="btn"
-              data-variant={leads && index === 0 ? 'primary' : 'secondary'}
-              data-size="sm"
-              data-action={action.kind}
-              disabled={state.running !== null}
-              onClick={() => {
-                onAction(view.id, action);
-              }}
-            >
-              {action.label}
-            </button>
-          ))}
+          {view.actions.map((action, index) => {
+            // Busy is not disabled (docs/design.md): the button that runs keeps its colour and
+            // takes no clicks; the rest wait, and the status line above says for what.
+            const busy = running === action.kind;
+            return (
+              <button
+                key={action.kind === 'open-pane' ? `${action.kind}-${action.pane}` : action.kind}
+                type="button"
+                className="btn"
+                data-variant={leads && index === 0 ? 'primary' : 'secondary'}
+                data-size="sm"
+                data-action={action.kind}
+                disabled={state.running !== null && !busy}
+                aria-disabled={busy ? true : undefined}
+                onClick={() => {
+                  onAction(view.id, action);
+                }}
+              >
+                {action.label}
+              </button>
+            );
+          })}
         </div>
       )}
     </li>

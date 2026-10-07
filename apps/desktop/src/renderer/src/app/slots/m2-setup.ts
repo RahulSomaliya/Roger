@@ -1,15 +1,29 @@
 // Stub from M4-S1; owned by M2-T19.
 import { createElement, useEffect, useState } from 'react';
+import { Icon } from '../../components/ui/icons';
 import { SetupScreen } from '../../components/setup/SetupScreen';
 import { SetupRedirect } from '../../components/setup/setupRedirect';
 import { describeError } from '../describeError';
-import type { Route } from '../router';
+import { HOME, type Route } from '../router';
 import { useShell } from '../ShellContext';
 import type { SlotContributions } from '../slotRegistry';
 
 const SETUP: Route = { name: 'setup' };
 
 let redirect: SetupRedirect | null = null;
+
+/**
+ * The setup slot's mount: the screen with Done going Home, since the route has no sidebar to leave
+ * by. Done is the screen's own and shows only once nothing fails (SetupScreen.tsx).
+ */
+function SetupSlot() {
+  const { navigate } = useShell();
+  return createElement(SetupScreen, {
+    onDone: () => {
+      navigate(HOME);
+    },
+  });
+}
 
 /** The page's one redirect: made at first use, so "once per page load" holds across routes. */
 function pageSetupRedirect(): SetupRedirect {
@@ -55,7 +69,12 @@ function OpenSetupWhenNeeded() {
   }, [error, busy, phase, navigate]);
   return failure === null
     ? null
-    : createElement('div', { role: 'alert', className: 'error' }, failure);
+    : createElement(
+        'div',
+        { role: 'alert', className: 'problem' },
+        createElement(Icon, { name: 'circle-alert' }),
+        createElement('span', { className: 'problem-text' }, failure),
+      );
 }
 
 /**
@@ -63,6 +82,6 @@ function OpenSetupWhenNeeded() {
  * it. Slot names and their props: ../slotRegistry.ts.
  */
 export const contributions: SlotContributions = {
-  setup: [{ id: 'm2-setup', order: 0, component: SetupScreen }],
+  setup: [{ id: 'm2-setup', order: 0, component: SetupSlot }],
   banner: [{ id: 'm2-open-setup', order: 0, component: OpenSetupWhenNeeded }],
 };
