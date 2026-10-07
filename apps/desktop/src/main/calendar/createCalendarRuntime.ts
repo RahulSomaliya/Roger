@@ -1,8 +1,4 @@
-import {
-  toMeetingCalendarEvent,
-  type CalendarAttendee,
-  type CalendarEvent,
-} from '../../shared/calendar';
+import { toMeetingCalendarEvent, type CalendarEvent } from '../../shared/calendar';
 import { isApiBlank, type StartCaptureRequest } from '../../shared/capture';
 import { CalendarClient } from '../api/calendarClient';
 import type { ApiConnection } from '../api/http';
@@ -88,19 +84,6 @@ export interface CalendarRuntime {
   prompts: PromptService;
   /** For the quit-hook list in index.ts: stops the calendar, then closes calendar.sqlite. */
   stop(): Promise<void>;
-}
-
-/**
- * The invite's attendees for a local meeting, from what M5-T5 stored on it
- * (`meetings.calendar_event_json`); none for a meeting no event was linked to. This is the
- * `attendees` getter of the `new NotesGenerator` call in index.ts: M4's template rule reads an
- * invitee outside the user's domain as a client call, and without it every meeting reads as having
- * no attendees.
- */
-export function meetingAttendees(
-  store: Pick<TranscriptStore, 'getMeeting'>,
-): (meetingId: string) => readonly CalendarAttendee[] {
-  return (meetingId) => store.getMeeting(meetingId)?.calendarEvent?.attendees ?? [];
 }
 
 /**

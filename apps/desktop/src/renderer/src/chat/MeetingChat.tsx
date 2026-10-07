@@ -156,7 +156,7 @@ function LogContent({ state, actions }: { state: MeetingChatState; actions: Chat
           </button>
         }
       >
-        Could not open this chat: {state.error}
+        Could not open this chat. {state.error}
       </ChatProblem>
     );
   }

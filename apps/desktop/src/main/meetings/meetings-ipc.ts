@@ -67,7 +67,15 @@ export function registerMeetingsIpc({ ipcMain, store, getWindow, logger }: Meeti
       // Null, not an error: the page says this Mac has no such meeting (never recorded here, or
       // deleted at Stop because nobody spoke).
       if (meeting === null) return null;
-      return { ...toSummary(meeting), segments: store.listSegments(meetingId) };
+      return {
+        ...toSummary(meeting),
+        segments: store.listSegments(meetingId),
+        // Address and "is the user" only: names and answers stay in main.
+        attendees: (meeting.calendarEvent?.attendees ?? []).map(({ email, isSelf }) => ({
+          email,
+          isSelf,
+        })),
+      };
     });
   });
 }

@@ -60,7 +60,7 @@ describe('CaptureReport', () => {
 
   it('lists each gap with its span, stream, reason and where transcribing it again stands', () => {
     const html = render(REPORT);
-    expect(html).toContain('00:01:01 to 00:02:05');
+    expect(html).toContain('1:01 to 2:05');
     expect(html).toContain('Call audio');
     expect(html).not.toContain('Call audio (them)');
     expect(html).toContain('the Mac was offline');

@@ -4,8 +4,8 @@
  * theme/noLiteralColours.test.ts fails on a literal colour here. Type, space and radius read the
  * ladders in styles.css.
  *
- * The rules under "Shared page rules" are still read by other screens (Settings, Set up Roger,
- * the notes panel, the kept-audio card): each goes when its last user does, not before.
+ * The rules under "Shared page rules" are still read by other screens (Settings, Set up Roger):
+ * each goes when its last user does, not before.
  */
 
 .shell {
@@ -259,50 +259,4 @@
   font-weight: 600;
   letter-spacing: var(--tracking-3xl);
   overflow-wrap: anywhere;
-}
-
-.card {
-  padding: 14px 16px;
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  background: var(--surface);
-}
-
-.card-text {
-  flex: 1;
-  min-width: 0;
-}
-
-.card-title {
-  margin: 0;
-  font-weight: 600;
-}
-
-.card-meta {
-  margin: 2px 0 0;
-  font-size: 13px;
-  color: var(--ink-muted);
-}
-
-.empty-state {
-  padding: 28px 24px;
-  border: 1px dashed var(--line);
-  border-radius: 12px;
-  text-align: center;
-}
-
-.empty-state-title {
-  margin: 0 0 6px;
-  font-size: 15px;
-  font-weight: 600;
-}
-
-.empty-state-text {
-  margin: 0;
-  color: var(--ink-muted);
-}
-
-.empty-state .empty-state-text {
-  max-width: 52ch;
-  margin: 0 auto;
 }

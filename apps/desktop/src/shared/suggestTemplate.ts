@@ -1,6 +1,7 @@
 /**
- * Which notes template a meeting gets without asking (M4, "When notes generate"). Main uses it
- * when notes are written (main/notes/NotesGenerator.ts). The rule, first match wins:
+ * Which notes template a meeting gets without asking (M4, "When notes generate"). The page uses it
+ * when "Write notes" is pressed (renderer meeting/headerAction.ts `templateForWriting`); main only
+ * remembers the pick (main/notes/NotesGenerator.ts). The rule, first match wins:
  *
  * 1. The template last picked for a meeting with the same title (notes.sqlite's
  *    `template_choices`, keyed by `templateTitleKey`).
@@ -31,7 +32,7 @@ export interface TemplateCues {
   /**
    * The template last picked for meetings with this normalised title, or null (notes.sqlite's
    * `getTemplateChoice`). Never asked for a title `templateTitleKey` refuses. The page, which
-   * cannot read notes.sqlite, passes `() => null`.
+   * cannot read notes.sqlite (no IPC carries the picks), passes `() => null`.
    */
   lastPick: (titleKey: string) => string | null;
   /** The invite's attendees (M5); none for a manual start. */

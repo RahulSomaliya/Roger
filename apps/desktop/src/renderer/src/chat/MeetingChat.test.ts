@@ -193,9 +193,9 @@ describe('ChatPanel', () => {
 
   it('says it is opening, then why the thread could not be read, with Try again', () => {
     expect(render(state({ status: 'loading' }))).toContain('Opening the chat...');
-    const html = render(state({ status: 'failed', error: 'GET /v1/meetings/x/chat failed' }));
+    const html = render(state({ status: 'failed', error: 'Roger could not reach its server.' }));
     expect(textOf(html)).toContain(
-      'Could not open this chat: GET /v1/meetings/x/chat failed Try again',
+      'Could not open this chat. Roger could not reach its server. Try again',
     );
     expect(html).toMatch(/<div class="problem" role="alert"><svg/);
     expect(html).not.toMatch(/class="(?:[^"]* )?error[" ]/);

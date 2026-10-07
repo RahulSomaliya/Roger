@@ -55,8 +55,8 @@ export interface NotesStore {
   getNotes(meetingId: string): MeetingNotes;
   /**
    * Store the page's doc as a new local revision (a new `revisionId`), dirty. The sync state
-   * becomes `saved_locally`, except that `waiting_for_meeting` and `offline` stay: the save does
-   * not change why the note cannot upload. A conflict copy stays until it is resolved. Throws,
+   * becomes `saved_locally`, except that `waiting_for_meeting`, `offline`, `refused` and
+   * `refused_access` stay: the save does not change why the note cannot upload. A conflict copy stays until it is resolved. Throws,
    * storing nothing, on a doc `noteDocProblem` refuses: the API would refuse it with a `422`, and
    * it would stay dirty and be re-sent forever.
    *

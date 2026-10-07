@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { chatChannels, type ChatStreamMessage } from '../../src/shared/ipc/chat';
 import type { ChatMessage, ChatStreamEvent } from '../../src/shared/notes';
+import { PreviewHub } from '../control';
 import { createChatFake } from './chat';
 import { FakeHub } from './hub';
 
@@ -99,5 +100,21 @@ describe('the chat fake', () => {
     stream(second, { type: 'done', message: answer({ replyTo: second }) });
     await chat.cancelChatAnswer({ meetingId: MEETING, messageId: second });
     expect(events.map((message) => message.event.type)).toEqual(['error', 'done']);
+  });
+});
+
+describe('the chat fake with the API offline', () => {
+  it("fails the thread read with main's ApiError for its route, which the page words", async () => {
+    const hub = new PreviewHub();
+    const chat = createChatFake(hub);
+    hub.setApiOffline(true);
+    await expect(chat.getChatThread(MEETING)).rejects.toThrow(
+      `Error invoking remote method 'chat:get-thread': ApiError: GET /v1/meetings/${MEETING}/chat failed: connect ECONNREFUSED 127.0.0.1:8000`,
+    );
+    hub.setApiOffline(false);
+    await expect(chat.getChatThread(MEETING)).resolves.toEqual({
+      meetingId: MEETING,
+      messages: [],
+    });
   });
 });

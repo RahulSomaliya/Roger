@@ -446,7 +446,9 @@ export class NotesSync {
       kind,
       serverVersion: serverNote?.version ?? null,
     });
-    store.setSyncState(meetingId, kind, 'saved_locally');
+    // `refused`, never `saved_locally`: the page shows that as silence (renderer notes/saveStatus.ts),
+    // and a note the server will not take is a loss the user must see.
+    store.setSyncState(meetingId, kind, 'refused');
     return 'refused';
   }
 
@@ -488,7 +490,13 @@ export class NotesSync {
       code: error.code,
       error: error.message,
     });
-    store.setSyncState(meetingId, kind, 'saved_locally');
+    // As above: its own state, so the page says "Not saved to Roger". A `401` or `403` is about
+    // this Mac's access, which the page words apart from a note the server found fault with.
+    store.setSyncState(
+      meetingId,
+      kind,
+      error.status === 401 || error.status === 403 ? 'refused_access' : 'refused',
+    );
     return 'refused';
   }
 

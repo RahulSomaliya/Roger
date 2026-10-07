@@ -174,6 +174,20 @@ describe('templateForWriting', () => {
     expect(templateForWriting('Meeting at 5:01 pm')).toBe('general');
     expect(templateForWriting('Untitled meeting')).toBe('general');
   });
+
+  it('reads an outside guest as a client call, and a call with only colleagues as General', () => {
+    const me = { email: 'me@linkt.ai', isSelf: true };
+    expect(templateForWriting('Sync', [me, { email: 'sam@northwind.com', isSelf: false }])).toBe(
+      'client_call',
+    );
+    expect(templateForWriting('Sync', [me, { email: 'ana@linkt.ai', isSelf: false }])).toBe(
+      'general',
+    );
+    // The title still wins over the guests, as suggestTemplate orders its cues.
+    expect(
+      templateForWriting('Daily standup', [me, { email: 'sam@northwind.com', isSelf: false }]),
+    ).toBe('standup');
+  });
 });
 
 describe('notesMenuEntries', () => {

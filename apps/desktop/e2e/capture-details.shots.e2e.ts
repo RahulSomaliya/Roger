@@ -5,14 +5,12 @@ import { LIVE_CALL, PAST_MEETING, segmentIdForLine } from '../preview/scenarios'
 import * as qa from '../qa/driver';
 import type { CaptureReport, CaptureStatus, TranscriptSegmentChange } from '../src/shared/capture';
 import { IpcChannel } from '../src/shared/ipc';
-import type { MeetingKeptForRerun } from '../src/shared/ipc/capture';
 
 /*
  * Browser QA for M2-T20b, the capture details UI (qa/README.md): both themes, 1440 and 390 wide.
  *  - The past meeting's page after Stop: the audio note ("kept for a re-run", the delete with its
  *    confirmation, the re-run and its progress), the echo lines and their toggle (Unhide on the
  *    hidden lines only; a failed Unhide), and the capture report.
- *  - Home's card of meetings kept for a re-run, with a re-run that fails.
  *  - The live call: the "Roger restarted and kept taking notes" notice and its Stop, the toggle
  *    against the real transcript, and the banner's "the call ended" notice after Stop.
  * Every check runs before its shot.
@@ -42,12 +40,10 @@ afterAll(async () => {
 const NOTE = '[aria-label="Audio kept"]';
 const REPORT = '[aria-label="Capture report"]';
 const ECHO = '[aria-label="Echo filter"]';
-const KEPT_CARD = '[aria-label="Audio kept for a re-run"]';
 const TOGGLE = `${ECHO} .echo-lines-head .shell-button`;
 
 const PAST = PAST_MEETING.meetingId;
 const OTHER = '9b2e6f10-7c4d-4a5b-8e3f-61a0c2d9e874';
-const THIRD = '3f6c1d92-0b7a-4e58-a1d4-7c92e05b8a61';
 
 const ago = (seconds: number): string => new Date(Date.now() - seconds * 1000).toISOString();
 const ahead = (days: number): string =>
@@ -142,17 +138,6 @@ function pastReport(echo: { hidden: number; trimmed: number }): CaptureReport {
   };
 }
 
-const keptList = (): MeetingKeptForRerun[] => [
-  { meetingId: PAST, title: PAST_MEETING.title, keepUntil: ahead(30) },
-  {
-    meetingId: OTHER,
-    title:
-      'Quarterly planning with the platform, finance and customer success teams, including the long agenda item about the migration',
-    keepUntil: ahead(12),
-  },
-  { meetingId: THIRD, title: 'Client call', keepUntil: ahead(3) },
-];
-
 const hiddenLine = (line: number, text: string): TranscriptSegmentChange => ({
   meetingId: PAST,
   segmentId: segmentIdForLine(PAST, line),
@@ -180,12 +165,6 @@ async function openMeeting(page: Page, title: string): Promise<void> {
     (wanted) => document.querySelector('.meeting-page h1')?.textContent === wanted,
     title,
   );
-  await qa.settle(page);
-}
-
-async function goHome(page: Page): Promise<void> {
-  await page.locator('.sidebar button', { hasText: 'Home' }).click();
-  await page.waitForSelector('.meeting-page', { state: 'detached' });
   await qa.settle(page);
 }
 
@@ -247,9 +226,8 @@ it(
       const tag = `${theme}-${width}`;
       const preview = await run.open({ scenario: 'past-meeting', theme, width });
       const { page } = preview;
-      // Main's answers, as the fake keeps them: the report and the list are read when a page opens.
+      // Main's answers, as the fake keeps them: the report is read when a page opens.
       await qa.emitEvent(page, IpcChannel.CaptureGetReport, pastReport({ hidden: 2, trimmed: 1 }));
-      await qa.emitEvent(page, IpcChannel.AudioListKeptForRerun, keptList());
       await openMeeting(page, PAST_MEETING.title);
       // The filter's changes arrive as events once the page listens: the only way it learns text.
       await qa.emitEvent(
@@ -536,140 +514,6 @@ it(
         'pass',
         'The note says the audio is deleted and the lines stay, with no button left; the report and the transcript are unchanged.',
       );
-      await preview.close();
-    }
-  },
-  FLOW_TIMEOUT_MS,
-);
-
-it(
-  'lists the meetings kept for a re-run on Home',
-  async () => {
-    for (const { theme, width } of combos()) {
-      const tag = `${theme}-${width}`;
-      const preview = await run.open({ scenario: 'past-meeting', theme, width });
-      const { page } = preview;
-      await qa.emitEvent(page, IpcChannel.AudioListKeptForRerun, keptList());
-      await openMeeting(page, PAST_MEETING.title);
-      await goHome(page);
-      await qa.fitShellPage(page);
-
-      await qa.expectVisible(page, KEPT_CARD);
-      expect(await count(page, '.kept-meeting')).toBe(3);
-      expect(await textOf(page, '.kept-meeting-title')).toBe(PAST_MEETING.title);
-      expect(await textOf(page, `${KEPT_CARD} .card-meta`)).toContain('kept until');
-      expect(await count(page, `${KEPT_CARD} .shell-button[aria-label^="Re-run gaps"]`)).toBe(3);
-      expect(await count(page, `${KEPT_CARD} .audio-actions-hint`)).toBe(0);
-      await expectClean(preview);
-      await gallery.shoot(
-        page,
-        'Home card',
-        `home-${tag}`,
-        `Home's card of audio kept for a re-run (${theme}, ${width})`,
-        'pass',
-        'Three meetings, newest first, each with when its audio goes, Open, Re-run gaps and Delete audio; the long title wraps inside the card and the page does not scroll sideways.',
-      );
-
-      // Progress shows under the meeting being re-run, and only that one.
-      const base = await page.evaluate(() => window.roger.getCaptureStatus());
-      await emit(page, IpcChannel.CaptureStatusChanged, {
-        ...base,
-        rerun: { meetingId: OTHER, state: 'running', gaps: 3, finished: 1 },
-      } satisfies CaptureStatus);
-      expect(await count(page, `${KEPT_CARD} .rerun-progress`)).toBe(1);
-      expect(
-        await page
-          .locator('.kept-meeting', { hasText: 'Quarterly planning' })
-          .locator('.rerun-progress')
-          .count(),
-      ).toBe(1);
-      await expectClean(preview);
-      await gallery.shoot(
-        page,
-        'Home card',
-        `home-progress-${tag}`,
-        `A re-run on the second meeting (${theme}, ${width})`,
-        'pass',
-        'The progress line and bar sit under that meeting alone: "Re-running 3 gaps from the audio backup: 1 of 3 done."',
-      );
-      await emit(page, IpcChannel.CaptureStatusChanged, {
-        ...base,
-        rerun: null,
-      } satisfies CaptureStatus);
-
-      // Failure path: main refuses the re-run; the card says why and keeps the meeting listed.
-      await qa.failNextRequest(
-        page,
-        'Roger is recording: gaps are re-run once the recording stops.',
-      );
-      await page
-        .locator(`${KEPT_CARD} .shell-button[aria-label="Re-run gaps of Client call"]`)
-        .click();
-      await waitFor(
-        page,
-        'the failure shows',
-        async () => (await count(page, `${KEPT_CARD} .audio-error`)) === 1,
-      );
-      expect(await textOf(page, `${KEPT_CARD} .audio-error`)).toContain('Roger is recording');
-      expect(await count(page, '.kept-meeting')).toBe(3);
-      await expectClean(preview);
-      await gallery.shoot(
-        page,
-        'Home card',
-        `home-failed-${tag}`,
-        `A re-run main refused (${theme}, ${width})`,
-        'pass',
-        "The card ends in an alert with main's own words; every meeting is still listed.",
-      );
-
-      // A re-run takes its meeting off the list (the fake does what main's list does), and the
-      // list is asked again: no event announces it.
-      await page
-        .locator(`${KEPT_CARD} .shell-button[aria-label="Re-run gaps of Client call"]`)
-        .click();
-      await waitFor(
-        page,
-        'the meeting leaves the card',
-        async () => (await count(page, '.kept-meeting')) === 2,
-      );
-      expect(await count(page, `${KEPT_CARD} .audio-error`)).toBe(0);
-
-      // A delete asks first, then removes that meeting alone.
-      await page
-        .locator(`${KEPT_CARD} .shell-button[aria-label^="Delete the audio of Quarterly"]`)
-        .click();
-      await qa.settle(page);
-      await qa.fitShellPage(page);
-      expect(await count(page, `${KEPT_CARD} .audio-confirm`)).toBe(1);
-      await expectClean(preview);
-      await gallery.shoot(
-        page,
-        'Home card',
-        `home-delete-${tag}`,
-        `The delete asks first, for one meeting (${theme}, ${width})`,
-        'pass',
-        'Only the second meeting shows the question and the Delete and Keep it buttons; the other keeps its two.',
-      );
-      await page.locator(`${KEPT_CARD} .capture-danger-button`).click();
-      await waitFor(
-        page,
-        'the meeting leaves the card',
-        async () => (await count(page, '.kept-meeting')) === 1,
-      );
-
-      // Open goes to the meeting, whose own note is the same audio.
-      await page.locator(`${KEPT_CARD} .shell-button[aria-label^="Open"]`).click();
-      await page.waitForSelector('.meeting-page');
-      await qa.settle(page);
-      await goHome(page);
-      await page
-        .locator(
-          `${KEPT_CARD} .shell-button[aria-label="Delete the audio of ${PAST_MEETING.title}"]`,
-        )
-        .click();
-      await page.locator(`${KEPT_CARD} .capture-danger-button`).click();
-      await waitFor(page, 'the card goes', async () => (await count(page, KEPT_CARD)) === 0);
-      await expectClean(preview);
       await preview.close();
     }
   },

@@ -5,7 +5,7 @@ import { NoticeBanner } from '../../calendar/NoticeBanner';
 /**
  * What M5-T13 mounts: the calendar settings and the consent notice on the meeting page. Slot
  * names and their props: ../slotRegistry.ts. Today is not here: HomePage mounts TodaySection
- * itself, and no outlet reads the `home` slot for it.
+ * itself, and there is no Home slot.
  *
  * The components are M5-T12's and read one shared store each (calendar/useCalendar.ts), so the
  * mounts show one calendar. Orders: Settings keeps M3's jargon list (10) before the calendar.

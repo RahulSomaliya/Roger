@@ -275,7 +275,7 @@ it is never a sub-second flash.
 | Regenerate, Regenerate as which kind of call | **Write again as** |
 | kind of call, template, meeting type | **template** (menus only) |
 | Jargon list, vocabulary, keyterms, names | **Jargon list**; one entry is a **term** |
-| Synced, Syncing, Saving…, Saved, Offline: saved on this Mac | nothing when saved; **Saved on this Mac** when offline; **Not saved** with the reason when it failed |
+| Synced, Syncing, Saving…, Saved, Offline: saved on this Mac | nothing when saved; **Saved on this Mac** when offline; **Not saved** with the reason when it failed on this Mac; **Not saved to Roger** with the reason when the server refused the upload |
 | Postgres, Roger server, the API | **Roger's server** (Details and Setup only) |
 | Mic (me), Microphone | **microphone**; the transcript speaker is **Me** |
 | Call audio (them) | **call audio**; the transcript speaker is **Them** |

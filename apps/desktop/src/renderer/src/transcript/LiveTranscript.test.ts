@@ -67,10 +67,10 @@ describe('LiveTranscript', () => {
     const html = render();
     const rows = [...html.matchAll(/<p [^>]*data-segment-id="([^"]+)"[^>]*>(.*?)<\/p>/g)];
     expect(rows.map(([, id]) => id)).toEqual(STORED.map((segment) => segment.id));
-    expect(rows[0]?.[2]).toContain('00:01:01');
+    expect(rows[0]?.[2]).toContain('1:01');
     expect(rows[0]?.[2]).toContain('Them');
     expect(rows[0]?.[2]).toContain('So the main thing is the renewal.');
-    expect(rows[1]?.[2]).toContain('01:02:05');
+    expect(rows[1]?.[2]).toContain('1:02:05');
     expect(rows[1]?.[2]).toContain('Me');
   });
 

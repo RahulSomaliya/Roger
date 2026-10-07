@@ -63,9 +63,6 @@ function registered() {
       Promise.resolve(report(meetingId)),
     ),
     unhideSegment: vi.fn<CaptureRequests['unhideSegment']>(),
-    listMeetingsKeptForRerun: vi.fn<CaptureRequests['listMeetingsKeptForRerun']>(() => [
-      { meetingId: MEETING, title: 'Weekly sync', keepUntil: '2026-11-06T10:00:00.000Z' },
-    ]),
   };
   registerIpcHandlers({
     ipcMain: {
@@ -132,18 +129,6 @@ describe('the capture IPC', () => {
     expect(ipc.requests.getReport).toHaveBeenCalledWith(MEETING);
     expect(ipc.requests.rerunGaps).toHaveBeenCalledWith(MEETING);
     expect(ipc.requests.deleteMeetingAudio).toHaveBeenCalledWith(MEETING);
-  });
-
-  it('lists the meetings kept for a re-run, whatever the page sends with the ask', async () => {
-    const ipc = registered();
-    const kept = [
-      { meetingId: MEETING, title: 'Weekly sync', keepUntil: '2026-11-06T10:00:00.000Z' },
-    ];
-    await expect(ipc.invoke(IpcChannel.AudioListKeptForRerun)).resolves.toEqual(kept);
-    await expect(
-      ipc.invoke(IpcChannel.AudioListKeptForRerun, { meetingId: '../x' }),
-    ).resolves.toEqual(kept);
-    expect(ipc.requests.listMeetingsKeptForRerun).toHaveBeenCalledTimes(2);
   });
 
   it('refuses a meeting id that is not a lowercase UUIDv4 before anything runs', async () => {

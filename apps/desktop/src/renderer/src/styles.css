@@ -542,15 +542,6 @@ button.chip:hover {
 
 /* Rules below are the M1 base that screens still read until their tasks move them. */
 
-/* Only chat/MeetingChat.tsx (`meeting-chat-read-error`) still reads `.error`: it moves to the
-   problem line with the chat's own redesign task, and this rule goes with its last reader. */
-.error {
-  padding: 10px 12px;
-  border-radius: 8px;
-  background: var(--fill);
-  color: var(--ink);
-}
-
 .muted {
   color: var(--ink-muted);
 }

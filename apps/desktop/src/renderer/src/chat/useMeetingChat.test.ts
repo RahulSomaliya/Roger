@@ -493,9 +493,15 @@ describe('MeetingChatStore', () => {
     const chat = new MeetingChatStore(main.api, MEETING, () => ASKED[0]!);
     chat.start();
     await main.failLoad(
-      new Error("Error invoking remote method 'chat:get-thread': ApiError: GET failed"),
+      new Error(
+        "Error invoking remote method 'chat:get-thread': ApiError: GET /v1/meetings/m/chat failed: fetch failed",
+      ),
     );
-    expect(chat.getState()).toMatchObject({ status: 'failed', error: 'GET failed' });
+    // Plain words, never the request path.
+    expect(chat.getState()).toMatchObject({
+      status: 'failed',
+      error: 'Roger could not reach its server.',
+    });
 
     chat.reload();
     expect(chat.getState()).toMatchObject({ status: 'loading', error: null });

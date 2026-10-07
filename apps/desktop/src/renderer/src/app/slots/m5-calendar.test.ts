@@ -14,8 +14,7 @@ function only<Props>(entries: readonly SlotEntry<Props>[] | undefined, slot: str
 }
 
 describe("M5-T13's mounts", () => {
-  it('mounts the calendar section in Settings, and nothing in Home (HomePage mounts Today itself)', () => {
-    expect(contributions.home ?? []).toEqual([]);
+  it('mounts the calendar section in Settings (HomePage mounts Today itself)', () => {
     expect(only(contributions.settings, 'settings').component).toBe(CalendarSettings);
     // The calendar's health is a line in Today (R1), not a banner above every page.
     expect(contributions.banner ?? []).toEqual([]);
@@ -36,7 +35,6 @@ describe("M5-T13's mounts", () => {
   });
 
   it("shows in the merged shell, after M3's Settings section", () => {
-    expect(slots.home.map((entry) => entry.id)).not.toContain('m5-today');
     expect(slots.settings.map((entry) => entry.id)).toEqual(['m3-vocabulary', 'm5-calendar']);
     // M2's lines under the header (refused lines, the crash resume) share the slot (R3).
     expect(slots.meetingBanner.map((entry) => entry.id)).toContain('m5-calendar-notice');
