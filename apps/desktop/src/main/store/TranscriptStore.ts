@@ -407,10 +407,8 @@ export interface TranscriptStore {
    * has one (M5-T12). An event no meeting links is left out. Matched on the event id alone:
    * Google's ids are letters, digits and `_`, and the fake provider's all start with `fake-`.
    *
-   * Main only, so far: no planned channel serves it to the renderer (M5-T6's calendar IPC carries
-   * the account, events and sync state; M5-T12 owns renderer files only). The task that adds the
-   * channel, its shared type, bridge and preview fake is to be named before M5-T12 builds Open
-   * note; that task updates this line.
+   * The renderer asks through M5-T6's `calendar:find-meetings` channel (`calendarIpc.ts`, bridged
+   * as `findCalendarMeetings`), whose port createCalendarRuntime fills with this method.
    */
   findMeetingIdsByEventIds(eventIds: readonly string[]): Map<string, string>;
   close(): void;

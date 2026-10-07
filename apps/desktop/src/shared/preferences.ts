@@ -16,7 +16,8 @@
  * 2. Main: the milestone hands its specs to `PreferencesStore.register` before the window opens,
  *    from its own slot in src/main/index.ts (M5: `registerCalendarPreferences`, M5-T9a, from
  *    M5-T9c's slot). A key typed here but never registered in main is missing from
- *    `getPreferences` at run time, and nothing catches that: until M5-T9c lands, M5's are.
+ *    `getPreferences` at run time, and nothing catches that: M5's are registered by
+ *    createCalendarRuntime (M5-T9c), the first thing it does.
  * 3. The preview: preview/fakes/prefs.ts registers every milestone's specs, because M4-S2 is
  *    that file's one writer in Phase 2 (phase-2-build-order.md) and no M5 task may edit it. Its
  *    spec map is typed with every key, so a key typed here but missing there fails the type check.

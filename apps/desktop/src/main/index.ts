@@ -4,12 +4,16 @@ import { join, resolve } from 'node:path';
 import { parseEnv } from 'node:util';
 import {
   app,
+  clipboard,
   desktopCapturer,
   dialog,
   ipcMain,
   Menu,
   Notification,
+  powerMonitor,
+  powerSaveBlocker,
   session,
+  shell,
   systemPreferences,
   type BrowserWindow,
 } from 'electron';
@@ -20,6 +24,12 @@ import { NotesClient } from './api/notesClient';
 import { createStreamRequest } from './api/streamRequest';
 import { VocabularyClient } from './api/vocabularyClient';
 import { buildAppMenu } from './appMenu';
+import {
+  CALENDAR_QUIT_TIMEOUT_MS,
+  createCalendarRuntime,
+  meetingAttendees,
+} from './calendar/createCalendarRuntime';
+import { SqliteCalendarCache } from './calendar/SqliteCalendarCache';
 import { createCaptureRuntime } from './capture/createCaptureRuntime';
 import { loadConfig, readConfigFile } from './config';
 import { enterE2eMode, resolveE2eMode } from './e2eMode';
@@ -188,6 +198,10 @@ async function main(): Promise<void> {
     logger,
   });
 
+  // Filled by `[slot M5-T9c]`, which runs after this lifecycle is built: the hook list below is
+  // read at quit, so the calendar's stop (its own account, sync and cache) joins it late.
+  let stopCalendar: (() => Promise<void>) | null = null;
+
   // Quit and the window closing stop the recording, and so does a page that cannot be brought
   // back (lifecycle.ts); a crash or a reload reloads the page, and a sleep pauses the sessions
   // (capture/createCaptureRuntime.ts, M2-T18). After the stop, a quit runs the hooks below in
@@ -202,6 +216,11 @@ async function main(): Promise<void> {
       // [slot M4-T16 quit] ask each window to flush its notes (1 s), then close notes.sqlite
 
       notesQuitGuard.quitHook,
+      {
+        name: 'stop the calendar and close calendar.sqlite',
+        timeoutMs: CALENDAR_QUIT_TIMEOUT_MS,
+        run: () => stopCalendar?.(),
+      },
 
       // [slot M2-T4 quit] stop the uploader and close the transcript store
 
@@ -312,6 +331,8 @@ async function main(): Promise<void> {
     },
     // The same webContents object at every call: LlmStreams tracks a window by identity.
     window: () => (window === null || window.isDestroyed() ? null : window.webContents),
+    // M4's template rule reads an invitee outside the user's domain as a client call.
+    attendees: meetingAttendees(store),
     logger: notesLogger,
   });
   // Stop keeps a meeting nobody spoke in when the windows did not save their notes in time (every
@@ -351,6 +372,30 @@ async function main(): Promise<void> {
   }
 
   // [slot M5-T9c] the calendar runtime and the start-request enricher
+
+  // Google Calendar: the synced copy, reminders, the prompt service (M5-T10's panel window draws
+  // it, and registers its IPC), the calendar IPC, and the enricher that links a manual start to the
+  // one call that is on. Each preference key it reads is registered inside, before anything reads.
+  const calendar = createCalendarRuntime({
+    cache: new SqliteCalendarCache(join(userData, 'calendar.sqlite')),
+    apiConnection,
+    preferences,
+    store,
+    capture,
+    navigation,
+    ipcMain,
+    getWindow: () => window,
+    // What the app menu's `open` does, for the prompt panel's "Open Roger".
+    openWindow: () => {
+      if (window === null) return;
+      if (window.isMinimized()) window.restore();
+      window.show();
+      window.focus();
+    },
+    electron: { app, powerMonitor, powerSaveBlocker, shell, clipboard },
+    logger: logger.child({ component: 'calendar' }),
+  });
+  stopCalendar = () => calendar.stop();
 
   const page = resolveAppPage();
   installPermissionHandlers(

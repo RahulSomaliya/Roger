@@ -69,7 +69,7 @@ export interface NotesGeneratorOptions {
   preferences: NotesGeneratorPreferences;
   /** The window whose page shows notes runs; null while none is open. */
   window: () => StreamWindow | null;
-  /** The invitees of the event a meeting was started for (M5); none until M5 stores them. */
+  /** The invitees of the event a meeting was started for (index.ts: `meetingAttendees`, M5). */
   attendees?: (meetingId: string) => readonly TemplateAttendee[];
   logger: Logger;
   clock?: () => Date;
