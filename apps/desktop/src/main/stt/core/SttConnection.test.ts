@@ -1304,6 +1304,40 @@ describe('SttConnection', () => {
       await connection.close();
     });
 
+    it('starts the deadline over when main was blocked with no ping owed, and still catches a cut after it', async () => {
+      const clock = manualClock(0);
+      const { connection, events } = await answering(clock);
+      const served = vendor.last();
+      served.answersPings = false; // no pong in flight once main is stuck below
+      await ticks();
+      // The save of the line that just came waits on a SQLite lock (busy_timeout, 5 s) inside this
+      // socket's own callback. The pings come from the timer main is not running, so none goes and
+      // no pong is owed for the whole stall: nothing waits in the socket to be read.
+      connection.on((event) => {
+        if (event.type !== 'final') return;
+        clock.set(4_000);
+        blockMain(TICK_MS * 6);
+      });
+      served.socket.send(JSON.stringify({ type: 'final', text: 'saved slowly' }));
+      await waitFor(() => events.length > 0);
+      await ticks();
+
+      expect(events.map((event) => event.type)).toEqual(['final']);
+      expect(connection.state).toBe('open');
+
+      // The deadline started over at the first check after the stall: a cut is still caught.
+      clock.set(7_999);
+      await ticks();
+      expect(events.map((event) => event.type)).toEqual(['final']);
+      clock.set(8_000);
+      await waitFor(() => events.some((event) => event.type === 'closed'));
+      expect(events[1]).toEqual({
+        type: 'error',
+        message: 'Toy stopped answering: nothing received for 4 s',
+        fatal: true,
+      });
+    });
+
     it('stops pinging once Stop begins', async () => {
       vendor.script.onText = () => undefined; // never answers Finish: Stop waits for its deadline
       const clock = manualClock(0);

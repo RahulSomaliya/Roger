@@ -94,6 +94,8 @@ export type SttWireTap = (record: SttWireRecord) => void;
  * it through the open budget. With the check once per pingIntervalMs, a cut is declared at most
  * deadAfterMs plus one interval after the last thing heard (4 to 5 s), whatever the phase of the
  * cycle: inside the exit check's 10 s warning, with the 1 s network poll catching Wi-Fi off first.
+ * Only a silence with a ping owed counts: after main was stuck no ping went, so the deadline starts
+ * over (checkLiveness), and a pong still unread gets one more poll (lookAgain).
  */
 export interface SttLiveness {
   /** A WebSocket ping this often while audio flows; the deadline is checked as often. */
@@ -195,6 +197,8 @@ export class SttConnection implements SttStream {
   private secondLook: NodeJS.Immediate | null = null;
   /** paceClock time the vendor last sent anything: a pong, a ping, a message. */
   private heardAtMs = 0;
+  /** A ping went since the vendor was last heard: only then is a silence the socket's. */
+  private pingOwed = false;
   /**
    * Whether this socket answered a ping: unknown until its first pong, or firstPongWithinMs.
    * `ignored` lasts until a pong comes (answersPings).
@@ -483,8 +487,17 @@ export class SttConnection implements SttStream {
     }
     if (this.answersPings()) {
       if (now - this.heardAtMs >= this.liveness.deadAfterMs) {
-        this.lookAgain();
-        return;
+        if (this.pingOwed) {
+          this.lookAgain();
+          return;
+        }
+        // Past the deadline with no ping owed: the vendor was heard after the last ping, so this
+        // check is seconds late and main was stuck (a line's SQLite save waiting on a lock inside
+        // a socket callback). The pings come from this timer, so none went during the stall and no
+        // pong was owed, and with no audio a vendor sends nothing either: the second look found an
+        // empty socket and declared a healthy one dead. The deadline starts over, as when audio
+        // resumes; a cut is caught 4 s on. A stall just under it still leaves a pong one interval.
+        this.heardAtMs = now;
       }
     } else if (
       this.pongs === 'unknown' &&
@@ -498,17 +511,19 @@ export class SttConnection implements SttStream {
       );
     }
     this.socket.ping();
+    this.pingOwed = true;
     this.firstPingAtMs ??= now;
   }
 
   /**
-   * The deadline passed, but main may be the one that was stuck. A synchronous SQLite write waiting
-   * on a lock (busy_timeout, 5 s) inside a socket callback (CaptureSession saving a line) blocks
-   * main, and libuv then runs this timer before it reads the sockets again: the pongs that arrived
-   * meanwhile sit unread, and both healthy sockets were declared dead at once (two billed reopens,
-   * two false stt_failed gaps for M2-T16 to re-run). So one more poll first (setImmediate runs
-   * right after it): a frame read there moves heardAtMs, and only a socket still silent is dead.
-   * HelperProcess.watchdogFired guards the audio helper from the same trap.
+   * The deadline passed with a ping owed, but main may be the one that was stuck. A synchronous
+   * SQLite write waiting on a lock (busy_timeout, 5 s) inside a socket callback (CaptureSession
+   * saving a line) blocks main, and libuv then runs this timer before it reads the sockets again:
+   * the pongs that arrived meanwhile sit unread, and both healthy sockets were declared dead at once
+   * (two billed reopens, two false stt_failed gaps for M2-T16 to re-run). So one more poll first
+   * (setImmediate runs right after it): a frame read there moves heardAtMs, and only a socket still
+   * silent is dead. A stall with no ping owed never gets here: checkLiveness starts the deadline
+   * over. HelperProcess.watchdogFired guards the audio helper from the same trap.
    */
   private lookAgain(): void {
     if (this.secondLook !== null) return;
@@ -532,6 +547,7 @@ export class SttConnection implements SttStream {
 
   private heard(): void {
     this.heardAtMs = this.paceClock();
+    this.pingOwed = false;
   }
 
   /**
