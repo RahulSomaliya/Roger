@@ -6,6 +6,7 @@ import type { Locator, Page } from 'playwright-core';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { GalleryManifest } from '../qa/driver';
 import type { CapturePhase } from '../src/shared/capture';
+import type { SpeakerLabel } from '../src/shared/transcript';
 import {
   APP_DIR,
   launchRoger,
@@ -21,9 +22,9 @@ import {
  * fake microphone plays a tone into the page's worklet, which sends it over IPC to main; the fake
  * helper plays the call audio; the fake STT turns each 2 s of sound into a line. It checks what
  * only a real Chromium shows (M1 checked the worklet and getUserMedia wiring only on a real call):
- * both sides' lines on screen within 10 s of Start, all of them in roger.sqlite after Stop, and
- * no macOS prompt asked for on the way. It also checks the harness's screenshot helper and its
- * raised open budget, which M2-T19 and M2-T20 rely on. Run alone:
+ * both sides' lines on screen within 10 s of Start, each of them (by id) in roger.sqlite after
+ * Stop, and no macOS prompt asked for on the way. It also checks the harness's screenshot helper
+ * and its raised open budget, which M2-T19 and M2-T20 rely on. Run alone:
  *   pnpm --filter @roger/desktop exec electron-vite build
  *   pnpm --filter @roger/desktop exec vitest run --config vitest.e2e.config.ts e2e/capture.e2e.ts
  */
@@ -36,10 +37,21 @@ const FAKE_LINE = '(fake transcript) heard';
 
 type Speaker = 'Me' | 'Them';
 
-/** One line as the transcript on screen shows it. */
-interface ShownLine {
-  speaker: Speaker;
+const SPEAKER_LABEL = { me: 'Me', them: 'Them' } as const satisfies Record<SpeakerLabel, Speaker>;
+
+/** A final line as main sent the page (`transcript:segment`), the fields this test compares. */
+interface SentLine {
+  id: string;
+  meetingId: string;
+  speaker: SpeakerLabel;
   text: string;
+}
+
+declare global {
+  interface Window {
+    /** Set by watchSentLines. A name only this file uses: tsconfig.e2e.json is one program. */
+    __m2t13Sent?: SentLine[];
+  }
 }
 
 /** Launches Roger for the tests of the enclosing describe, and quits it after them. */
@@ -70,19 +82,43 @@ function linesOf(page: Page, speaker: Speaker): Locator {
     .filter({ has: page.getByText(speaker, { exact: true }) });
 }
 
-async function shownLines(page: Page): Promise<ShownLine[]> {
-  return page.evaluate((fakeLine) => {
-    const lines: { speaker: 'Me' | 'Them'; text: string }[] = [];
-    for (const line of document.querySelectorAll('[aria-label="Transcript"] p')) {
-      const spans = [...line.querySelectorAll('span')].map((span) => span.textContent);
-      const speaker = spans.find((text) => text === 'Me' || text === 'Them');
-      const text = spans.find((words) => words.startsWith(fakeLine));
-      if ((speaker === 'Me' || speaker === 'Them') && text !== undefined) {
-        lines.push({ speaker, text });
-      }
-    }
-    return lines;
-  }, FAKE_LINE);
+/** How many final lines of each speaker the transcript draws. */
+async function shownCounts(page: Page): Promise<Record<Speaker, number>> {
+  return { Me: await linesOf(page, 'Me').count(), Them: await linesOf(page, 'Them').count() };
+}
+
+function countBySide(lines: readonly SentLine[]): Record<Speaker, number> {
+  const counts = { Me: 0, Them: 0 };
+  for (const line of lines) counts[SPEAKER_LABEL[line.speaker]] += 1;
+  return counts;
+}
+
+function byId(a: SentLine, b: SentLine): number {
+  return a.id.localeCompare(b.id);
+}
+
+/**
+ * Records, in the page, every final line main sends it from now on: the lines the transcript
+ * draws, with the ids its rows do not carry (M1's TranscriptView). Text cannot stand in for the
+ * id: the fake STT writes the same words for every 2 s of a steady tone, so a store that kept one
+ * line per side still held a line equal to each one shown, and a check by text passed it. Each id
+ * once, as useCapture keeps them.
+ */
+async function watchSentLines(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    const sent: SentLine[] = [];
+    window.__m2t13Sent = sent;
+    window.roger.onTranscriptSegment(({ id, meetingId, speaker, text }) => {
+      if (!sent.some((line) => line.id === id)) sent.push({ id, meetingId, speaker, text });
+    });
+  });
+}
+
+/** The final lines main sent the page for one meeting since watchSentLines, in id order. */
+async function sentLines(page: Page, meetingId: string): Promise<SentLine[]> {
+  const sent = await page.evaluate(() => window.__m2t13Sent);
+  if (sent === undefined) throw new Error('watchSentLines was not called on this page');
+  return sent.filter((line) => line.meetingId === meetingId).sort(byId);
 }
 
 /**
@@ -174,6 +210,7 @@ describe('a recording', () => {
   it('shows both sides within 10 s of Start, and Stop saves every line', async () => {
     const run = roger();
     const { page } = run;
+    await watchSentLines(page);
     const startedAt = Date.now();
     await page.getByRole('button', { name: 'New note' }).click();
     for (const speaker of ['Me', 'Them'] as const) {
@@ -194,24 +231,48 @@ describe('a recording', () => {
     expect(recording.systemCapture).toBe('tap');
     const meetingId = recording.meetingId;
     if (meetingId === null) throw new Error(withLog(run, 'A recording with no meeting id'));
-    const shown = await shownLines(page);
+    // Two lines a side before Stop, not one: a store that keeps one row per side (ids that
+    // collide under its INSERT OR IGNORE, or each line overwriting the last) still holds a line of
+    // each side, and only a second one shows it lost the rest.
+    for (const speaker of ['Me', 'Them'] as const) {
+      await linesOf(page, speaker)
+        .nth(1)
+        .waitFor({ timeout: LINES_WITHIN_MS })
+        .catch((error: unknown) => {
+          const message = `No second "${speaker}" line within ${LINES_WITHIN_MS} ms`;
+          throw new Error(withLog(run, message), { cause: error });
+        });
+    }
 
     await page.getByRole('button', { name: 'Stop', exact: true }).click();
     await waitForPhase(run, 'idle');
 
-    // Main's store, as the meeting page reads it: every line that was on screen, from both sides.
+    // Every line main sent the page, the last ones Stop's flush sent included (main sends them
+    // before it goes idle), and the transcript draws each of them: these ids are the lines shown.
+    const sent = await sentLines(page, meetingId);
+    await expect
+      .poll(() => shownCounts(page), {
+        timeout: PHASE_WITHIN_MS,
+        message: withLog(run, 'The transcript does not draw each line main sent, once'),
+      })
+      .toEqual(countBySide(sent));
+
+    // Main's store, as the meeting page reads it: each line shown, by id, and no other.
     const saved = await page.evaluate(
       (id) => window.roger.getMeeting({ meetingId: id }),
       meetingId,
     );
     if (saved === null) throw new Error(withLog(run, `Meeting ${meetingId} was not saved`));
     expect(saved.endedAt, withLog(run, `Meeting ${meetingId} is open after Stop`)).not.toBeNull();
-    const savedLines = saved.segments.map((segment) => ({
-      speaker: segment.speaker === 'me' ? 'Me' : 'Them',
-      text: segment.text,
-    }));
-    for (const line of shown) expect(savedLines).toContainEqual(line);
-    expect(new Set(savedLines.map((line) => line.speaker))).toEqual(new Set(['Me', 'Them']));
+    const savedLines = saved.segments
+      .map(({ id, meetingId: savedIn, speaker, text }) => ({
+        id,
+        meetingId: savedIn,
+        speaker,
+        text,
+      }))
+      .sort(byId);
+    expect(savedLines, withLog(run, 'Stop did not save each line shown')).toEqual(sent);
 
     // The TCC gate answered in e2e mode, without macOS; nothing reached a prompt.
     expect(await run.promptCalls()).toEqual({
