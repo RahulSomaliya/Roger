@@ -1,5 +1,7 @@
 import {
   notesChannels,
+  noteSaveBase,
+  saveBaseKey,
   type NotesApi,
   type NotesStreamMessage,
   type PendingGenerateChange,
@@ -71,12 +73,18 @@ const TEMPLATES: NoteTemplate[] = [
  * `done` takes the AI notes and ends the pending generate, an `error` fails the run and keeps the
  * generate only for `llm_provider_error` (Retry). getNotesRun answers for every run the fake
  * started or saw streamed. Every state change goes through the hub, so the page hears it too.
+ * A save on a doc a scenario has replaced since (its `base`) is kept as the conflict copy, as
+ * main keeps it (NotesStore.saveLocal), except that the fake replaces any copy it finds.
  */
 export function createNotesFake(hub: FakeHub): NotesApi {
   const notes = new Map<string, LocalNote>();
   const pending = new Map<string, PendingGenerateState>();
   const runs = new Map<string, LlmRun>();
   const noteKey = (meetingId: string, kind: NoteKind): string => `${meetingId}/${kind}`;
+  /** Per note, the base of the page saves that wrote its doc since a doc from elsewhere. */
+  const saveBases = new Map<string, string>();
+  /** The note the fake is publishing for a page save: its own write keeps the saves' base. */
+  let pageSave: LocalNote | null = null;
 
   const publishNote = (note: LocalNote): LocalNote => {
     hub.emit(notesChannels.NotesChanged, note);
@@ -168,7 +176,16 @@ export function createNotesFake(hub: FakeHub): NotesApi {
   };
 
   hub.on(notesChannels.NotesChanged, (note: LocalNote) => {
-    notes.set(noteKey(note.meetingId, note.kind), note);
+    const key = noteKey(note.meetingId, note.kind);
+    const before = notes.get(key);
+    notes.set(key, note);
+    if (note === pageSave || before === undefined) return;
+    // A doc from elsewhere (a scenario's push, a run's `done`, "Use mine") ends the page saves'
+    // base; the same text under a new name keeps saves on the old name current, as in main.
+    const was = saveBaseKey(noteSaveBase(before));
+    if (saveBaseKey(noteSaveBase(note)) === was) return;
+    if (JSON.stringify(before.doc) !== JSON.stringify(note.doc)) saveBases.delete(key);
+    else if (!saveBases.has(key)) saveBases.set(key, was);
   });
   hub.on(notesChannels.NotesPendingGenerateChanged, (change: PendingGenerateChange) => {
     if (change.pending === null) pending.delete(change.meetingId);
@@ -183,13 +200,32 @@ export function createNotesFake(hub: FakeHub): NotesApi {
         user: notes.get(noteKey(meetingId, 'user')) ?? null,
         ai: notes.get(noteKey(meetingId, 'ai')) ?? null,
       })),
-    saveNote: ({ meetingId, kind, doc }) =>
+    saveNote: ({ meetingId, kind, doc, base }) =>
       hub.request(notesChannels.NotesSave, () => {
         const problem = noteDocProblem(doc);
         if (problem !== null) throw new Error(`note not saved: ${problem}`);
-        const current = notes.get(noteKey(meetingId, kind));
+        const key = noteKey(meetingId, kind);
+        const current = notes.get(key);
+        const baseKey = saveBaseKey(base);
+        const stale =
+          current !== undefined &&
+          baseKey !== saveBaseKey(noteSaveBase(current)) &&
+          baseKey !== saveBases.get(key);
+        if (stale) {
+          if (JSON.stringify(doc) === JSON.stringify(current.doc)) {
+            saveBases.set(key, baseKey);
+            return current;
+          }
+          return publishNote({
+            ...current,
+            conflictCopy: doc,
+            sync: 'conflict',
+            updatedAt: new Date().toISOString(),
+          });
+        }
+        saveBases.set(key, baseKey);
         const conflictCopy = current?.conflictCopy ?? null;
-        return publishNote({
+        pageSave = {
           meetingId,
           kind,
           doc,
@@ -202,7 +238,8 @@ export function createNotesFake(hub: FakeHub): NotesApi {
           conflictCopy,
           sync: conflictCopy === null ? 'saved_locally' : 'conflict',
           updatedAt: new Date().toISOString(),
-        });
+        };
+        return publishNote(pageSave);
       }),
     resolveNoteConflict: ({ meetingId, kind, keep }) =>
       hub.request(notesChannels.NotesResolveConflict, () => {

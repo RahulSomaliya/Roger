@@ -1,3 +1,4 @@
+import type { NoteSaveBase } from '../../shared/ipc/notes';
 import type {
   GenerateReason,
   LocalNote,
@@ -54,8 +55,21 @@ export interface NotesStore {
    * not change why the note cannot upload. A conflict copy stays until it is resolved. Throws,
    * storing nothing, on a doc `noteDocProblem` refuses: the API would refuse it with a `422`, and
    * it would stay dirty and be re-sent forever.
+   *
+   * `base` is the note the edits build on (SaveNoteRequest.base). A save on a doc main has
+   * replaced since (a `409`'s or a pull's server doc, a run's AI notes, "Use mine") would store
+   * the edits over that doc, and the server's version would then be kept nowhere: it becomes the
+   * conflict copy instead, and the doc stays; the answer then holds the other doc, not this
+   * save's. It replaces a copy only of that editor's own earlier typing: a copy of other text (a
+   * conflict from before, or a previous launch) is the only place that text lives, so such a save
+   * is held on disk behind it instead, and becomes the copy once the user has picked for the one
+   * before (`resolveConflict`); the note is written again, the same but for `updatedAt`, so the
+   * page is told main's doc. Never thrown: the typing would then live only in an editor whose
+   * later saves are refused the same way, and be lost at quit. Saves an editor sends before an
+   * earlier one answered carry the same base, and are taken. Left out, the save builds on the doc
+   * main holds.
    */
-  saveLocal(meetingId: string, kind: NoteKind, doc: NoteDoc): LocalNote;
+  saveLocal(meetingId: string, kind: NoteKind, doc: NoteDoc, base?: NoteSaveBase | null): LocalNote;
   /**
    * Take the server's note (a load, a `409`, a run's `done`), so notes.sqlite never holds an
    * older doc than Postgres:
@@ -82,7 +96,10 @@ export interface NotesStore {
   /**
    * End a conflict. `mine`: the conflict copy becomes the doc again as a new local revision, to
    * upload over the server's ("Use mine"); edits made to the server's doc during the conflict are
-   * dropped, by the user's choice. `theirs`: the copy is dropped. Throws when there is no copy.
+   * dropped, by the user's choice. `theirs`: the copy is dropped. Then the oldest save held behind
+   * the copy (`saveLocal`), if any, is the copy: still `conflict`, the user picks again. Held
+   * typing that says what the doc then says needs no choice and goes. Throws when there is no
+   * copy.
    */
   resolveConflict(meetingId: string, kind: NoteKind, keep: 'mine' | 'theirs'): LocalNote;
   /** Notes with edits the server has not stored, oldest save first, across meetings. */
@@ -98,15 +115,16 @@ export interface NotesStore {
    * CaptureService make before discarding a meeting nobody spoke in (M4-T22). A doc with no text
    * (the editor saves an empty paragraph on blur) does not count, or every empty meeting whose
    * notepad was opened would be kept and uploaded. Such a note outlives its discarded meeting
-   * until NotesSync deletes it (`deleteNoteIfEmpty`).
+   * until NotesSync deletes it (`deleteNoteIfEmpty`). Text in a conflict copy, or in a save held
+   * behind one (`saveLocal`), counts.
    */
   hasNotes(meetingId: string): boolean;
   /**
-   * Delete the note if it holds no text by `hasNotes`'s rule (a conflict copy with text counts),
-   * and say whether it did. NotesSync calls it for a meeting neither roger.sqlite nor Postgres
-   * holds: one discarded as empty, whose notepad saved an empty paragraph on blur. Nothing the
-   * user wrote is lost; kept, the note would wait for its meeting for good. Emits nothing: no page
-   * shows a discarded meeting, and `notes:changed` carries a note.
+   * Delete the note if it holds no text by `hasNotes`'s rule (a conflict copy or a held save with
+   * text counts), and say whether it did. NotesSync calls it for a meeting neither roger.sqlite
+   * nor Postgres holds: one discarded as empty, whose notepad saved an empty paragraph on blur.
+   * Nothing the user wrote is lost; kept, the note would wait for its meeting for good. Emits
+   * nothing: no page shows a discarded meeting, and `notes:changed` carries a note.
    */
   deleteNoteIfEmpty(meetingId: string, kind: NoteKind): boolean;
   /**

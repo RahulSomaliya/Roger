@@ -6,11 +6,13 @@ import { describeError } from '../app/describeError';
  * Shown above a note main holds in `conflict` (M4 plan, "Conflict rule"): the server had a newer
  * version, so the editor now shows it, and main keeps the local doc as the conflict copy. Nothing
  * is lost until the user picks: "Use mine" puts the copy back as the doc; "Keep this version"
- * drops the copy and keeps what the editor shows. Not yet when the 409 meets typing the editor has
- * not saved: main stores that typing over the server's doc (followNoteDocument in
- * useNoteDocument.ts says why, and what main must change). When the server's doc is one this
- * build cannot show, NoteEditor shows no editor but still this banner: "Use mine" is then the only
- * way back to the user's own notes.
+ * drops the copy and keeps what the editor shows. Typing the editor had not saved when the 409
+ * landed is kept the same way: it goes out on the doc it was typed on, and main keeps a save on a
+ * replaced doc as the copy (followNoteDocument in useNoteDocument.ts). When the copy already holds
+ * other typing, main holds the save on disk and makes it the copy once the user has picked here,
+ * so the banner comes back for it. When the server's doc is one this build cannot show,
+ * NoteEditor shows no editor but still this banner: "Use mine" is then the only way back to the
+ * user's own notes.
  */
 
 export interface ConflictBannerProps {
