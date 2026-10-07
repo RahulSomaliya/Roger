@@ -131,3 +131,137 @@
   list-style: none;
   overflow-wrap: anywhere;
 }
+
+/*
+ * Stream rows (the meeting page's capture status region). The panel sits above the transcript in
+ * a window that opens 520 px wide, so a healthy source takes two short lines: its name, state and
+ * level, then what it captured. The reason line shows only while its stream is not open.
+ */
+
+.capture-status {
+  container: capture-status / inline-size;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.capture-streams {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0 0 10px;
+  border-bottom: 1px solid var(--line);
+  list-style: none;
+}
+
+.capture-stream {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.capture-stream-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+}
+
+.capture-stream-name {
+  min-width: 9.5em;
+  font-weight: 600;
+}
+
+.capture-stream-head .level-meter {
+  flex: 1 1 160px;
+  max-width: 260px;
+  margin-left: auto;
+}
+
+/* Narrow: the meter takes a line of its own, as wide as the row. */
+@container capture-status (max-width: 420px) {
+  .capture-stream-name {
+    min-width: 0;
+  }
+
+  .capture-stream-head .level-meter {
+    flex-basis: 100%;
+    max-width: none;
+    margin-left: 0;
+  }
+}
+
+.stream-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 1px 9px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  background: var(--chip-bg);
+  color: var(--ink);
+}
+
+.stream-state::before {
+  content: '';
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.stream-state[data-tone='ok'] {
+  background: var(--ok-bg);
+}
+
+.stream-state[data-tone='ok']::before {
+  background: var(--ok);
+}
+
+.stream-state[data-tone='warn'] {
+  background: var(--warn-bg);
+}
+
+.stream-state[data-tone='warn']::before {
+  background: var(--warn);
+}
+
+.stream-state[data-tone='error'] {
+  background: var(--danger-bg);
+}
+
+.stream-state[data-tone='error']::before {
+  background: var(--danger);
+}
+
+.stream-state[data-tone='off'] {
+  border-color: var(--line);
+  background: transparent;
+}
+
+.stream-state[data-tone='off']::before {
+  background: var(--muted);
+}
+
+.capture-stream-detail,
+.capture-stream-reason {
+  margin: 0;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.capture-stream-detail {
+  color: var(--muted);
+}
+
+/* No audio, a dead track or a source error: the call is being lost. */
+.capture-stream[data-health='stalled'] .capture-stream-detail,
+.capture-stream[data-health='ended'] .capture-stream-detail,
+.capture-stream[data-health='error'] .capture-stream-detail {
+  color: var(--danger-ink);
+}
