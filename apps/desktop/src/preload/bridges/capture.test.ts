@@ -62,6 +62,11 @@ describe('the capture bridge', () => {
     ]);
   });
 
+  it('asks main for the meetings whose audio is kept for a re-run, with no payload', async () => {
+    await captureBridge.listMeetingsKeptForRerun();
+    expect(ipc.invoked.at(-1)).toEqual(['audio:list-kept-for-rerun', undefined]);
+  });
+
   it('hands every segment change to the listener until it unsubscribes', () => {
     const change: TranscriptSegmentChange = {
       meetingId: MEETING,

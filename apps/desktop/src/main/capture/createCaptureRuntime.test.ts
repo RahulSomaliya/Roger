@@ -374,6 +374,23 @@ describe('the capture requests', () => {
     expect(rerun).not.toHaveBeenCalled();
   });
 
+  it('lists the meetings kept for a re-run through the re-run feature, and none without it', () => {
+    const kept = [
+      { meetingId: MEETING, title: 'T', keepUntil: '2026-11-06T10:00:00.000Z' },
+      { meetingId: OTHER_MEETING, title: 'Open', keepUntil: null },
+    ];
+    // No meeting id to check: the list is of every meeting, and the store need not know any.
+    const requests = createCaptureRequests(new InMemoryTranscriptStore(), {
+      ...noCaptureFeatures(),
+      listMeetingsKeptForRerun: () => kept,
+    });
+    expect(requests.listMeetingsKeptForRerun()).toEqual(kept);
+    // Not wired (tests through noCaptureFeatures()): no audio is kept for a re-run.
+    expect(
+      createCaptureRequests(storeWithMeeting(), noCaptureFeatures()).listMeetingsKeptForRerun(),
+    ).toEqual([]);
+  });
+
   it('shows a hidden line again through the echo feature, and refuses any other line', () => {
     const store = storeWithMeeting();
     store.appendSegment(line(THEM_LINE, 'system', 'shall we start with the numbers'));
