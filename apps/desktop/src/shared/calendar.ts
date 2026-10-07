@@ -188,7 +188,7 @@ export type PromptOffer =
 /** What put a calendar card up: its reminder, or a detected call that matched the event. */
 export type PromptShownBy = 'calendar' | 'call_detected';
 
-/** `taking_notes`: the 5 s "Taking notes · Open Roger" state after a start action. */
+/** `taking_notes`: the 5 s "Recording, Open Roger" state after a start action. */
 export type PromptCardPhase = 'open' | 'taking_notes';
 
 interface ActionablePromptCard {
@@ -214,11 +214,4 @@ export interface CallDetectedPromptCard extends ActionablePromptCard {
   app: CallApp;
 }
 
-/** "Calendar not updated since …": once per stale spell. */
-export interface StaleCalendarPromptCard {
-  kind: 'stale_calendar';
-  id: string;
-  lastSuccessAt: string | null;
-}
-
-export type PromptCard = CalendarPromptCard | CallDetectedPromptCard | StaleCalendarPromptCard;
+export type PromptCard = CalendarPromptCard | CallDetectedPromptCard;

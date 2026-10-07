@@ -1,17 +1,21 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { CalendarAttendee } from '../../../shared/calendar';
 import {
   attendeeSummary,
   callDetectedTitle,
   eventTitle,
-  staleLabel,
   startLabel,
+  stopsLabel,
   timeRange,
 } from './promptFormat';
 
 const START = '2026-10-07T10:00:00.000Z';
 const at = (offsetMs: number): number => Date.parse(START) + offsetMs;
 const MIN = 60_000;
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
 
 const person = (name: string | null, email: string, isSelf = false): CalendarAttendee => ({
   email,
@@ -105,46 +109,53 @@ describe('eventTitle and callDetectedTitle', () => {
     expect(eventTitle({ title: ' Weekly sync ' })).toBe('Weekly sync');
   });
 
-  it('says which app is using the mic', () => {
+  it('says which app is using the microphone', () => {
     expect(callDetectedTitle({ bundleId: 'us.zoom.xos', name: 'Zoom' })).toBe(
-      'Zoom is using the mic',
+      'Zoom is using the microphone',
     );
   });
 });
 
 describe('timeRange', () => {
-  it('writes the start and end in the given zone and locale', () => {
-    expect(timeRange('2026-10-07T10:00:00.000Z', '2026-10-07T10:30:00.000Z', 'en-US', 'UTC')).toBe(
-      '10:00 – 10:30 AM',
+  it('writes both ends as 12-hour lowercase, the period once when it is shared', () => {
+    vi.stubEnv('TZ', 'UTC');
+    // Without this a TZ test passes when the switch did nothing (apps/desktop/CLAUDE.md, M5-T8).
+    expect(new Date(START).getTimezoneOffset()).toBe(0);
+    expect(timeRange('2026-10-07T10:00:00.000Z', '2026-10-07T10:30:00.000Z')).toBe(
+      '10:00 \u2013 10:30 am',
     );
-    expect(
-      timeRange('2026-10-07T10:00:00.000Z', '2026-10-07T10:30:00.000Z', 'en-US', 'Asia/Kolkata'),
-    ).toBe('3:30 – 4:00 PM');
+    expect(timeRange('2026-10-07T11:30:00.000Z', '2026-10-07T12:30:00.000Z')).toBe(
+      '11:30 am \u2013 12:30 pm',
+    );
+    expect(timeRange('2026-10-07T00:00:00.000Z', '2026-10-07T01:00:00.000Z')).toBe(
+      '12:00 \u2013 1:00 am',
+    );
+  });
+
+  it('follows the Mac when its time zone changes', () => {
+    vi.stubEnv('TZ', 'Asia/Kolkata');
+    expect(new Date(START).getTimezoneOffset()).toBe(-330);
+    expect(timeRange('2026-10-07T10:00:00.000Z', '2026-10-07T10:30:00.000Z')).toBe(
+      '3:30 \u2013 4:00 pm',
+    );
   });
 
   it('uses ordinary spaces, not the narrow no-break space newer ICU writes', () => {
-    expect(
-      timeRange('2026-10-07T11:30:00.000Z', '2026-10-07T12:30:00.000Z', 'en-US', 'UTC'),
-    ).not.toMatch(/[\u202f\u2009\u00a0]/);
+    vi.stubEnv('TZ', 'UTC');
+    expect(timeRange('2026-10-07T11:30:00.000Z', '2026-10-07T12:30:00.000Z')).not.toMatch(
+      /[^\x20-\x7E\u2013]/,
+    );
   });
 });
 
-describe('staleLabel', () => {
-  const now = Date.parse('2026-10-07T18:00:00.000Z');
-
-  it('gives the time when the last success was today', () => {
-    expect(staleLabel('2026-10-07T09:41:00.000Z', now, 'en-US', 'UTC')).toBe(
-      'Calendar not updated since 9:41 AM',
-    );
+describe('stopsLabel', () => {
+  it('names the note a start would stop', () => {
+    expect(stopsLabel('Weekly sync')).toBe('Stops notes on Weekly sync');
+    expect(stopsLabel(' Weekly sync ')).toBe('Stops notes on Weekly sync');
   });
 
-  it('adds the day when it was not today', () => {
-    expect(staleLabel('2026-10-06T21:05:00.000Z', now, 'en-US', 'UTC')).toBe(
-      'Calendar not updated since Tue 9:05 PM',
-    );
-  });
-
-  it('says so when there has been no update at all', () => {
-    expect(staleLabel(null, now, 'en-US', 'UTC')).toBe('Calendar has not updated yet');
+  it('falls back to "your current notes" while the recording has no title', () => {
+    expect(stopsLabel(null)).toBe('Stops your current notes');
+    expect(stopsLabel('   ')).toBe('Stops your current notes');
   });
 });

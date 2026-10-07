@@ -2,10 +2,10 @@ import type {
   CalendarPromptCard,
   CallDetectedPromptCard,
   PromptCard,
-  StaleCalendarPromptCard,
   TimedCalendarEvent,
 } from '../../../shared/calendar';
 import type { PromptActionRequest, PromptPanelState } from '../../../shared/ipc/prompt';
+import { Icon } from '../components/ui/icons';
 import {
   callDetectedButtons,
   eventButtons,
@@ -13,14 +13,7 @@ import {
   openRogerButton,
   type PromptButton,
 } from './promptButtons';
-import {
-  attendeeSummary,
-  callDetectedTitle,
-  eventTitle,
-  staleLabel,
-  startLabel,
-  timeRange,
-} from './promptFormat';
+import { callDetectedTitle, eventTitle, startLabel, stopsLabel, timeRange } from './promptFormat';
 import './prompt.css';
 
 export interface PromptPanelProps {
@@ -32,8 +25,6 @@ export interface PromptPanelProps {
   nowMs: number;
   /** A click main refused (`PromptApi.act` rejected), by card id. */
   failures: Readonly<Record<string, string>>;
-  /** The card whose notice was just copied: its button says "Copied" for a moment. */
-  copiedCardId: string | null;
   onAct: (request: PromptActionRequest) => void;
 }
 
@@ -51,12 +42,15 @@ export function PromptPanel(props: PromptPanelProps) {
   return (
     <div className="prompt-stack">
       {error !== null && (
-        <p className="prompt-error" role="alert">
-          {error}
-        </p>
+        // On a card of its own: the window is transparent, so a bare line would float over the call.
+        <section className="prompt-card">
+          <Problem>{error}</Problem>
+        </section>
       )}
       {state !== null &&
-        cards.map((card) => <Card key={card.id} card={card} {...props} state={state} />)}
+        cards.map((card, index) => (
+          <Card key={card.id} card={card} {...props} state={state} leading={index === 0} />
+        ))}
     </div>
   );
 }
@@ -64,6 +58,8 @@ export function PromptPanel(props: PromptPanelProps) {
 interface CardProps extends PromptPanelProps {
   card: PromptCard;
   state: PromptPanelState;
+  /** The panel's first card: its first start is the one primary button (promptButtons.ts). */
+  leading: boolean;
 }
 
 function Card(props: CardProps) {
@@ -73,17 +69,8 @@ function Card(props: CardProps) {
     <section className="prompt-card" data-kind={card.kind} aria-label={cardLabel(card)}>
       {card.kind === 'calendar' && <CalendarCard {...props} card={card} />}
       {card.kind === 'call_detected' && <CallDetectedCard {...props} card={card} />}
-      {card.kind === 'stale_calendar' && <StaleCard {...props} card={card} />}
-      {card.kind !== 'stale_calendar' && card.error !== null && (
-        <p className="prompt-error" role="alert">
-          {card.error}
-        </p>
-      )}
-      {failure !== undefined && (
-        <p className="prompt-error" role="alert">
-          Roger could not do that: {failure}
-        </p>
-      )}
+      {card.error !== null && <Problem>{card.error}</Problem>}
+      {failure !== undefined && <Problem>Roger could not do that: {failure}</Problem>}
     </section>
   );
 }
@@ -94,35 +81,31 @@ function cardLabel(card: PromptCard): string {
       return eventTitle(card.events[0]);
     case 'call_detected':
       return callDetectedTitle(card.app);
-    case 'stale_calendar':
-      return 'Calendar not updated';
   }
 }
 
 function CalendarCard(props: CardProps & { card: CalendarPromptCard }) {
-  const { card, state, nowMs } = props;
+  const { card, leading } = props;
   if (card.phase === 'taking_notes') return <TakingNotes {...props} card={card} />;
   return (
     <>
-      {card.events.map((event) => (
-        <CalendarEvent key={event.id} {...props} event={event} />
+      {card.events.map((event, index) => (
+        <CalendarEvent key={event.id} {...props} event={event} leading={leading && index === 0} />
       ))}
-      <Footer {...props} nowMs={nowMs} state={state} />
+      <Footer {...props} />
     </>
   );
 }
 
 function CalendarEvent(props: CardProps & { card: CalendarPromptCard; event: TimedCalendarEvent }) {
-  const { card, event, state, nowMs, onAct } = props;
-  const attendees = attendeeSummary(event);
+  const { card, event, nowMs, leading, onAct } = props;
   return (
     <div className="prompt-event">
       <p className="prompt-when">{startLabel(event.start, nowMs)}</p>
       <h2 className="prompt-title">{eventTitle(event)}</h2>
       <p className="prompt-meta">{timeRange(event.start, event.end)}</p>
-      {attendees !== null && <p className="prompt-meta prompt-attendees">{attendees}</p>}
       <div className="prompt-actions">
-        {eventButtons(card, event, state.recording).map((button) => (
+        {eventButtons(card, event, leading).map((button) => (
           <Button key={button.request.action} button={button} onAct={onAct} />
         ))}
       </div>
@@ -131,14 +114,14 @@ function CalendarEvent(props: CardProps & { card: CalendarPromptCard; event: Tim
 }
 
 function CallDetectedCard(props: CardProps & { card: CallDetectedPromptCard }) {
-  const { card, state, onAct } = props;
+  const { card, leading, onAct } = props;
   if (card.phase === 'taking_notes') return <TakingNotes {...props} card={card} />;
   return (
     <>
       <div className="prompt-event">
         <h2 className="prompt-title">{callDetectedTitle(card.app)}</h2>
         <div className="prompt-actions">
-          {callDetectedButtons(card, state.recording).map((button) => (
+          {callDetectedButtons(card, leading).map((button) => (
             <Button key={button.request.action} button={button} onAct={onAct} />
           ))}
         </div>
@@ -148,47 +131,33 @@ function CallDetectedCard(props: CardProps & { card: CallDetectedPromptCard }) {
   );
 }
 
-function StaleCard(props: CardProps & { card: StaleCalendarPromptCard }) {
-  const { card, nowMs } = props;
-  return (
-    <>
-      <p className="prompt-title prompt-stale">{staleLabel(card.lastSuccessAt, nowMs)}</p>
-      <Footer {...props} />
-    </>
-  );
-}
-
 /**
- * "Taking notes · Open Roger" for the 5 s after a start. A prompt action never brings Roger's
+ * "Recording and Open Roger" for the 5 s after a start. A prompt action never brings Roger's
  * window forward (the call stays on top); this is the one button that does, so it is the user's
- * own choice to leave the call.
+ * own choice to leave the call. The dot is static: nothing in Roger blinks.
  */
 function TakingNotes(props: CardProps & { card: CalendarPromptCard | CallDetectedPromptCard }) {
   const { card, onAct } = props;
   return (
     <p className="prompt-taking">
-      <span className="prompt-dot" aria-hidden="true" />
-      <span>Taking notes</span>
-      <span aria-hidden="true">·</span>
+      <span className="recording-dot" aria-hidden="true" />
+      <span>Recording</span>
       <Button button={openRogerButton(card)} onAct={onAct} />
     </p>
   );
 }
 
+/**
+ * Dismiss, and on its left the one line a start needs when another note records. Said once per
+ * card, not once per call: the stop is the same whichever call starts.
+ */
 function Footer(props: CardProps) {
-  const { card, state, onAct, copiedCardId } = props;
+  const { card, state, onAct } = props;
   return (
     <div className="prompt-footer">
-      {footerButtons(card, state).map((button) => (
-        <Button
-          key={button.request.action}
-          button={
-            button.request.action === 'copy_notice' && copiedCardId === card.id
-              ? { ...button, label: 'Copied' }
-              : button
-          }
-          onAct={onAct}
-        />
+      {state.recording && <p className="prompt-helper">{stopsLabel(state.recordingTitle)}</p>}
+      {footerButtons(card).map((button) => (
+        <Button key={button.request.action} button={button} onAct={onAct} />
       ))}
     </div>
   );
@@ -204,12 +173,24 @@ function Button({
   return (
     <button
       type="button"
-      className={`prompt-button prompt-${button.tone}`}
+      className="btn"
+      data-variant={button.variant}
+      data-size="sm"
       onClick={() => {
         onAct(button.request);
       }}
     >
       {button.label}
     </button>
+  );
+}
+
+/** A loud problem line (docs/design.md): an icon, one sentence in ink, no box and no red. */
+function Problem({ children }: { children: React.ReactNode }) {
+  return (
+    <p className="problem" role="alert">
+      <Icon name="circle-alert" />
+      <span className="problem-text">{children}</span>
+    </p>
   );
 }

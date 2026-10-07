@@ -390,7 +390,7 @@ export interface CaptureReport {
  * - notification: a click on the calendar prompt (M5); the exit check's streak counts only these
  * - home: a start from Home (M5-T12)
  * - tray: a start from the menu bar (M5-T11)
- * - call_detected: Take notes on the call-detected card (M2's detection, on M5's panel)
+ * - call_detected: Start notes on the call-detected card (M2's detection, on M5's panel)
  */
 export const START_SOURCES = ['manual', 'notification', 'home', 'tray', 'call_detected'] as const;
 

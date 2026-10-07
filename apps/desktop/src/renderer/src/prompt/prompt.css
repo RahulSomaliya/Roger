@@ -1,16 +1,38 @@
 /*
- * The prompt panel's page (M5-T10). Colours come only from the theme tokens (theme/tokens.css,
- * light and dark); theme/noLiteralColours.test.ts fails on a literal one here. The window is
- * transparent and frameless: the cards are the only pixels, and the transparent gaps between them
- * let clicks through to the call. Nothing transitions a colour: a screenshot or a glance mid-fade
- * would read the wrong state.
+ * The prompt panel's page (M5-T10, redesign R8). Colours come only from the theme tokens
+ * (theme/tokens.css, light and dark); theme/noLiteralColours.test.ts fails on a literal one here.
+ * The window is transparent and frameless: the cards are the only pixels, and the transparent gaps
+ * between them let clicks through to the call. Nothing transitions a colour that states something:
+ * a screenshot or a glance mid-fade would read the wrong state.
+ *
+ * Trap: this page does NOT load styles.css (it is its own page, prompt.html), so everything the
+ * panel borrows from it is copied below: the space, type, radius and motion tokens, `.btn` and
+ * `.problem`. `promptCss.test.ts` fails when a copied rule drifts from styles.css, and when a
+ * `var(--x)` here is defined in no sheet THIS page loads (tokenReads.test.ts pools every sheet, so
+ * it would pass on a token only styles.css defines). Import styles.css instead and the page pulls
+ * the whole app's sheet into a window that shows two buttons.
  */
 @import '../theme/tokens.css';
 
 :root {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
-  font-size: 13px;
-  line-height: 1.4;
+  --font-sans: -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif;
+  --text-xs: 12px;
+  --leading-xs: 16px;
+  --text-sm: 14px;
+  --leading-sm: 20px;
+  --text-base: 16px;
+  --leading-base: 24px;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-6: 24px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-full: 9999px;
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --dur-hover: 150ms;
+  --dur-arrive: 300ms;
 }
 
 * {
@@ -23,10 +45,43 @@ body {
   /* The window is transparent (PromptWindow.ts): a page background would draw a box round it. */
   background: transparent;
   color: var(--ink);
+  font-family: var(--font-sans);
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+  -webkit-font-smoothing: antialiased;
   overflow: hidden;
   /* A panel is not text to select, and a drag would start nothing. */
   user-select: none;
   cursor: default;
+}
+
+/* Same rule as styles.css: a `display` set on an element with `hidden` would override it. */
+[hidden] {
+  display: none !important;
+}
+
+:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-delay: 0s !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    transition-delay: 0s !important;
+  }
+}
+
+@keyframes arrive {
+  from {
+    opacity: 0.4;
+    transform: translateY(4px);
+  }
 }
 
 /*
@@ -42,47 +97,49 @@ body {
 .prompt-stack {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-2);
 }
 
+/*
+ * `raised` on a 1 px `line`, no `--e2`: the window sets `hasShadow` (PromptWindow.ts), so macOS
+ * draws the card's shadow round the opaque pixels, and a CSS shadow would be cut off at the
+ * window's edge. In dark `raised` is the lighter surface, which is the elevation there.
+ */
 .prompt-card {
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  padding: 12px 14px;
+  gap: var(--space-3);
+  padding: var(--space-4);
   border: 1px solid var(--line);
-  border-radius: 12px;
-  background: var(--surface);
-}
-
-.prompt-card[data-kind='stale_calendar'] {
-  border-left: 3px solid var(--ink-muted);
+  border-radius: var(--radius-lg);
+  background: var(--raised);
 }
 
 .prompt-event {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: var(--space-1);
   min-width: 0;
 }
 
 .prompt-event + .prompt-event {
-  padding-top: 10px;
+  padding-top: var(--space-3);
   border-top: 1px solid var(--line);
 }
 
 .prompt-when {
   margin: 0;
-  color: var(--accent-ink);
-  font-size: 12px;
-  font-weight: 600;
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
+  line-height: var(--leading-xs);
+  font-variant-numeric: tabular-nums;
 }
 
 .prompt-title {
   margin: 0;
-  font-size: 15px;
-  font-weight: 650;
-  line-height: 1.3;
+  font-size: var(--text-base);
+  line-height: var(--leading-base);
+  font-weight: 600;
   /* A long title wraps to two lines, then ends in an ellipsis: the card keeps its shape. */
   display: -webkit-box;
   -webkit-box-orient: vertical;
@@ -91,15 +148,11 @@ body {
   overflow-wrap: anywhere;
 }
 
-.prompt-stale {
-  font-size: 13px;
-  font-weight: 600;
-}
-
 .prompt-meta {
   margin: 0;
   overflow: hidden;
   color: var(--ink-muted);
+  font-variant-numeric: tabular-nums;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -107,72 +160,135 @@ body {
 .prompt-actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
-  margin-top: 8px;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
 }
 
+/* Dismiss sits at the right whether or not the helper is there. */
 .prompt-footer {
   display: flex;
+  align-items: center;
   justify-content: flex-end;
-  gap: 4px;
+  gap: var(--space-2);
 }
 
-.prompt-button {
-  min-height: 28px;
-  padding: 5px 12px;
-  border: 1px solid transparent;
-  border-radius: 8px;
-  background: transparent;
-  color: var(--ink);
-  font: inherit;
-  font-weight: 600;
-  cursor: pointer;
-}
-
-.prompt-button:focus-visible {
-  outline: 2px solid var(--ring);
-  outline-offset: 1px;
-}
-
-.prompt-primary {
-  background: var(--accent);
-  color: var(--on-accent);
-}
-
-.prompt-secondary {
-  border-color: var(--line);
-}
-
-.prompt-quiet {
-  padding-inline: 8px;
+.prompt-helper {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
   color: var(--ink-muted);
-  font-weight: 500;
+  font-size: var(--text-xs);
+  line-height: var(--leading-xs);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .prompt-taking {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-2);
   margin: 0;
   font-weight: 600;
 }
 
-.prompt-taking .prompt-quiet {
-  padding-inline: 4px;
-  color: var(--accent-ink);
-}
-
-.prompt-dot {
+/* Static: nothing in Roger blinks, and a pulsing dot would make every QA screenshot differ. */
+.recording-dot {
+  flex-shrink: 0;
   width: 8px;
   height: 8px;
-  border-radius: 50%;
+  border-radius: var(--radius-full);
   background: var(--accent);
 }
 
-.prompt-error {
-  margin: 0;
-  padding: 8px 10px;
-  border-radius: 8px;
-  background: var(--fill);
+/* Buttons: a copy of styles.css `.btn` (the trap above). The panel uses sm, 32 px, so its two
+   buttons and Dismiss fit one 328 px row. */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  height: 40px;
+  padding: 0 var(--space-4);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--surface);
   color: var(--ink);
+  font: inherit;
+  font-size: var(--text-base);
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    background-color var(--dur-hover) var(--ease-out),
+    opacity var(--dur-hover) var(--ease-out);
+}
+
+.btn[data-size='sm'] {
+  height: 32px;
+  padding: 0 var(--space-3);
+  font-size: var(--text-sm);
+}
+
+.btn[data-variant='primary'] {
+  border-color: transparent;
+  background: var(--accent);
+  color: var(--on-accent);
+  box-shadow: var(--e1);
+}
+
+.btn[data-variant='ghost'] {
+  border-color: transparent;
+  background: transparent;
+  color: var(--ink-muted);
+}
+
+.btn:hover:not(:disabled, [aria-disabled='true']) {
+  background: var(--fill);
+}
+
+.btn[data-variant='primary']:hover:not(:disabled, [aria-disabled='true']) {
+  background: var(--accent-hover);
+}
+
+.btn[data-variant='ghost']:hover:not(:disabled, [aria-disabled='true']) {
+  color: var(--ink);
+}
+
+.btn:active:not(:disabled, [aria-disabled='true']) {
+  opacity: 0.85;
+}
+
+/* Problem line: a copy of styles.css `.problem`. An icon, one sentence, no box and no red. */
+
+.prompt-card .problem {
+  margin: 0;
+}
+
+.problem {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  color: var(--ink);
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+  animation: arrive var(--dur-arrive) var(--ease-out) backwards;
+}
+
+.problem > svg {
+  flex: none;
+  /* A 16 px icon centred on the first 20 px line. */
+  margin-top: 2px;
+}
+
+.problem-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.problem[role='alert'] {
+  font-weight: 600;
 }

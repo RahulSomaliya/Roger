@@ -137,11 +137,19 @@ const LEFT_DISPLAY = {
 };
 
 const ONE_CARD: PromptPanelState = {
-  cards: [{ kind: 'stale_calendar', id: 'prompt-1', lastSuccessAt: null }],
+  cards: [
+    {
+      kind: 'call_detected',
+      id: 'prompt-1',
+      phase: 'open',
+      error: null,
+      app: { bundleId: 'us.zoom.xos', name: 'Zoom' },
+    },
+  ],
   recording: false,
-  noticeEnabled: true,
+  recordingTitle: null,
 };
-const NO_CARDS: PromptPanelState = { cards: [], recording: false, noticeEnabled: true };
+const NO_CARDS: PromptPanelState = { cards: [], recording: false, recordingTitle: null };
 
 function harness(page: AppPage = PACKAGED) {
   let state = NO_CARDS;

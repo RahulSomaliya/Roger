@@ -1,11 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import type { PromptApi, PromptPanelState } from '../../../shared/ipc/prompt';
 import { followPromptState, type PromptFeed } from './promptState';
+import { callDetectedCard } from './promptTesting';
 
 const state = (ids: string[]): PromptPanelState => ({
-  cards: ids.map((id) => ({ kind: 'stale_calendar', id, lastSuccessAt: null })),
+  cards: ids.map((id) => callDetectedCard({ id })),
   recording: false,
-  noticeEnabled: true,
+  recordingTitle: null,
 });
 
 /** A panel API whose read answers when the test says so. */
