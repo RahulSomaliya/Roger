@@ -390,15 +390,19 @@ plus one slot block. Every task is TDD: the failing test first,
   `stt/testing/fakeVendorServer.ts`, so every registered vendor proves it;
   `src/main/stt/networkStatus.ts` (+ test, `net.isOnline()` every 1 s) and the T6 runtime slot that
   feeds it to the live session; in `src/main/capture/CaptureSession.ts`: `suspendStreams(reason)`
-  (`'offline'` or `'asleep'`) and `resumeStreams()` (terminate at once when offline, finish and
-  close when asleep; hold audio as G2 does; no token fetch and no open while suspended; T18 uses
+  (`'offline'` or `'asleep'`) and `resumeStreams(reason)` (terminate at once when offline, finish
+  and close when asleep; hold audio as G2 does; no token fetch and no open while suspended; T18 uses
   `asleep`), the `offline` state, gap rows from the watermark to the new stream's first audio
   (`stt_failed`, `offline`, `budget`), capture events for every pause, failure, suspend and reopen,
   and the published watermark per source. No edit to `CaptureService.ts` or to any vendor file.
   Where a gap starts is one function, and whether a `paused` source reopens stays in `pushAudio`'s
   `paused` branch: M3-T20 (wave 6) changes both for gated sources (a gap from the speech onset;
-  a gated source stays gated after `resumeStreams()`), and a copy elsewhere would miss it. Say so
-  in a comment at each. Merges before M3-T6b in wave 4.
+  a gated source stays gated after `resumeStreams(reason)`), and a copy elsewhere would miss it.
+  Say so in a comment at each. Merges before M3-T6b in wave 4. As built (branch `p2/m2-t6`, merging
+  after wave 4's other seven, so after M3-T6b): the reason of `resumeStreams` is required and the
+  two reasons stack (each resume lifts only its own); `stt/SpeechToText.ts` gained an optional
+  `SttStream.terminate?()`; the pong record is kept per adapter, so a vendor that answered a ping
+  once keeps the dead-socket check on its later streams.
 - [x] **M2-T7 Helper: tap, framing, build** · M · desktop (Swift) · depends on: P2-F3.
   Owns `apps/desktop/native/roger-audio/{main,Protocol,Tap,RingBuffer,Lifecycle,SelfTest}.swift`,
   stub `Probe.swift` and `Monitor.swift` (T7b and T8 replace their bodies, so neither edits
@@ -481,7 +485,7 @@ plus one slot block. Every task is TDD: the failing test first,
   call audio also opens when `systemCapture` is missing (a main from before T10).
   The "switched" report reaches main as an `active` source state whose message main drops: the
   notice comes from T17a's mic device instead.
-- [ ] **M2-T13 Electron smoke test** · M · desktop · depends on: T10, T12.
+- [x] **M2-T13 Electron smoke test** · M · desktop · depends on: T10, T12.
   Owns `apps/desktop/e2e/harness.ts`, `e2e/capture.e2e.ts`, `src/main/e2eMode.ts` (+ test) and
   `[slot M2-T13]` in `index.ts` (P2-F3 already added `vitest.e2e.config.ts`, the `test:e2e`
   script, the `e2e-desktop` target and `playwright-core`). M5-T11's "Roger Dev" userData must not
@@ -491,7 +495,12 @@ plus one slot block. Every task is TDD: the failing test first,
   run asserts the TCC gate was skipped and no prompt was asked for. The fake provider's opens pass
   `SttOpenBudget` too, so the harness sets `ROGER_STT_OPENS_PER_MINUTE=100` (the guard's maximum)
   for runs that press Start more than twice a minute. Exposes a screenshot helper (both themes,
-  wide and narrow) for T19 and T20.
+  wide and narrow) for T19 and T20. As built: the microphone plays a 330 Hz tone WAV made per run
+  (no checked-in fixture), which needs `--disable-features=AudioServiceSandbox`; "no prompt" is
+  proven by e2e mode's log line and main-process counters on `askForMediaAccess`, `getSources` and
+  `Notification#show` (all 0); Stop's check compares the lines main sent the page, by id, with
+  the stored lines; the shot helper (`shoot`) takes a required check and shoots only if it passes.
+  Run alone after `electron-vite build`; the whole `make e2e-desktop` has not run since wave 2.
 - [x] **M2-T14a Echo filter, pure** · S · desktop · depends on: none (wave 0).
   Owns `src/main/capture/echo/EchoFilter.ts` (+ test): hide, trim runs of 3 or more words, no
   Electron imports, so M3-T11's bench can load it.
@@ -505,12 +514,18 @@ plus one slot block. Every task is TDD: the failing test first,
   `markSegmentsSent`) as for an uploaded one: too late, the line stays, and the sink needs no
   in-flight handling of its own. Route comes through a `RouteProvider` interface (unknown until
   T17a wires the monitor; unknown means filter on).
-- [ ] **M2-T15 Audio backup and retention** · M · desktop · depends on: T2, T3, T4, T5.
+- [x] **M2-T15 Audio backup and retention** · M · desktop · depends on: T2, T3, T4, T5.
   Owns `src/main/backup/*` (`AudioBackupWriter`, `wav.ts`, `AudioCompressor`,
   `AudioRetentionSweeper`, `audioPaths.ts`, disk guard) and the T15 runtime slot. Header repair at
   startup; the sweeper keeps audio of meetings with unrecovered gaps (30-day cap); delete-audio
   handler with the path check. Its tests read T3's backup fixture; the `audio_files` contract with
-  M3-T12 is in the M3 plan ("Where recordings come from").
+  M3-T12 is in the M3 plan ("Where recordings come from"). As built: a failed write (or an audio
+  folder that cannot be made) ends the backup for that recording with `BackupStatus.state`
+  `error`, an error log and a `backup_failed` event, and raises no loud warning (low disk is the
+  loud `backup-paused` one; an owner call); free space is read every 10 s on the wall clock, and
+  at once when it steps back; the live `bytes` is the meeting's audio on disk (an encoded file at
+  its m4a size, a resumed meeting's earlier audio included); a recording that kept no audio leaves
+  no folder. No call lists the meetings whose audio is kept for a re-run: T16 adds it (wave 6).
 - [ ] **M2-T16 Gap re-run** · M · desktop · depends on: T6, T14b, T15.
   Owns `src/main/rerun/*`. Reads WAV or decodes m4a with `afconvert -f WAVE -d LEI16@16000`,
   streams at real time through a fresh `SttStream`, drops overlapping words, runs mic lines
@@ -521,7 +536,11 @@ plus one slot block. Every task is TDD: the failing test first,
   a meeting with gaps is the one whose failures spent it), and waits when the minute is full; none
   starts while a recording runs (house rule 9: the budget is the one gate, and a live reopen must
   never wait behind a re-run). No edit to `CaptureService.ts` or `SttOpenBudget.ts`. Its usage is
-  added to the meeting's `stt_usage` row (the vendor bills it).
+  added to the meeting's `stt_usage` row (the vendor bills it). Assigned after wave 4 (neither T15
+  nor M5-T5 built it): the call that lists the meetings whose audio is kept for a re-run, for
+  T20b's Home card, with its channel in `shared/ipc/capture.ts` (bridge, preview fake, the stub in
+  `AudioCaptureController.test.ts`), its request in `main/ipc.ts` and `createCaptureRequests`, and
+  its handler filled from the T16 slot (build order, section 10, "From wave 4").
 - [ ] **M2-T17a Call app monitor** · S · desktop · depends on: T8, T10, T14b.
   Owns `src/main/detect/MeetingAppMonitor.ts`, `src/main/detect/callApps.ts`. Runs the monitor
   helper through `HelperProcess` while Roger runs, sends `recording on` and `recording off`,
@@ -544,11 +563,13 @@ plus one slot block. Every task is TDD: the failing test first,
   Owns `src/main/power/PowerCoordinator.ts` and, in wave 5, the `suspend` handling in
   `src/main/lifecycle.ts` (with its test). Suspend and resume as designed (a delta on G4:
   `watchApp` no longer stops on `suspend`; `PowerCoordinator` calls T6's
-  `suspendStreams('asleep')`, then at `resume` either `resumeStreams()` or, after a sleep of
-  `noSpeechStopMs` or more, the normal stop with `system-sleep`), and the power save blocker.
+  `suspendStreams('asleep')`, then at `resume` either `resumeStreams('asleep')` or, after a sleep
+  of `noSpeechStopMs` or more, the normal stop with `system-sleep`), and the power save blocker.
   Through T4's session listeners and the T18 runtime slot; no edit to `CaptureService.ts` or
-  `CaptureSession.ts`. The wake goes through `resumeStreams()`, so a source M3-T20's gate had
-  closed stays closed until speech (T20 keeps it so in `CaptureSession`).
+  `CaptureSession.ts`. The wake goes through `resumeStreams('asleep')`, so a source M3-T20's gate
+  had closed stays closed until speech (T20 keeps it so in `CaptureSession`). The reason is
+  required and lifts only `asleep`: an `offline` suspend still in force stays until T6's network
+  poll lifts it.
 - [ ] **M2-T19 Permission setup screen** · M · desktop · depends on: T1, T2, T7b, T9, T10, T11,
   T13, M4-S1 (setup route), M4-S3 (preview harness).
   Owns `src/main/setup/*`, `src/renderer/src/components/setup/*`, `e2e/setup.shots.e2e.ts`,
@@ -582,7 +603,8 @@ plus one slot block. Every task is TDD: the failing test first,
   `renderer/src/app/slots/m2-capture-details.ts`. No call-detected card: M5-T10's panel renders
   it (M5 D5). "Stopped because the call ended" notice, a toggle that shows hidden and
   trimmed echo text, with Unhide on hidden lines only (main refuses a trimmed one), "audio kept until ..." with delete and "kept for a re-run",
-  re-run progress, capture report, "Roger restarted and kept taking notes" with Stop.
+  re-run progress, capture report, "Roger restarted and kept taking notes" with Stop. The Home
+  card's list of meetings kept for a re-run comes from T16's call (assigned after wave 4).
 - [ ] **M2-T21 Docs** · S · docs · depends on: all others.
   CLAUDE.md repo map (`apps/desktop/native`), commands (`make native`, `make e2e-desktop`,
   `make test-native-route`), failure log lines found during M2 (each in the file its trap belongs

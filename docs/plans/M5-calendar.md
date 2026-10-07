@@ -510,7 +510,7 @@ T11 in wave 6; T12 in wave 7; T13 in wave 8.
 - [x] **M5-T4** Owns the calendar parts of `schemas/meetings.py`, `services/meetings.py`,
   `routers/meetings.py` and the meetings section of `docs/api-contract.md`. `StartSource` carries
   `call_detected`. Attendees load in one `WHERE meeting_id IN (...)` query per page.
-- [ ] **M5-T5** Owns `StartSource` (five values), `StartCaptureRequest` and `title` on
+- [x] **M5-T5** Owns `StartSource` (five values), `StartCaptureRequest` and `title` on
   `CaptureStatus` in `src/shared/capture.ts`; the `capture:start` payload,
   `capture:start-requested` and `capture:take-pending-start` in `src/shared/ipc/capture.ts`, its
   bridge and preview fake, `src/main/ipc.ts`, `src/main/ipc-validation.ts`;
@@ -525,12 +525,24 @@ T11 in wave 6; T12 in wave 7; T13 in wave 8.
   taking a pending request on mount. Edits `CaptureService.ts` after M2-T4 and M4-T22, and
   `TranscriptUploader.ts` after M2-T3b and M4-T22. `start(request)` keeps the landed cost guards:
   a requested start passes `SttOpenBudget` like a pressed one, and a refusal (a third quick start
-  in a minute) reaches `PromptService` as the start's outcome.
+  in a minute) reaches `PromptService` as the start's outcome. As built: the enricher is set once
+  with `capture.setStartRequestEnricher(fn)` (T9c's slot runs after the runtime is built; a second
+  set throws) and runs on every start that makes a meeting, never on a resume; its answer is
+  checked again, and a throw or a refused answer is logged and the start goes on with the request
+  as it came. `requestStart` and the enricher's answer have their title cut to fit
+  (`fitMeetingTitle`); a window's own over-long title is refused at the IPC. A Start that arrives
+  during a Stop waits for it, then starts; one that meets a recording starting or running joins it
+  and only logs that its request was not applied, so T9b stops a recording note first. A title
+  blank as the API reads it (U+001C to U+001F included) gets the default title. No channel serves
+  `findMeetingIdsByEventIds` yet: T6 adds it (assigned after wave 4).
 - [ ] **M5-T6** Owns `src/main/calendar/oauthLoopback.ts`, `src/main/calendar/CalendarAccount.ts`,
   `src/main/api/calendarClient.ts` (implementing T8's `CalendarApiPort` on P2-F1's `http.ts`,
   DELETE included), `src/shared/ipc/calendar.ts` (account status, connect, disconnect, events, sync
   state including stale and `expires_hint`) with its bridge and preview fake,
-  `src/main/calendar/calendarIpc.ts`.
+  `src/main/calendar/calendarIpc.ts`. Assigned after wave 4 (T5 built the store read, nothing
+  serves it): a channel in `shared/ipc/calendar.ts` that answers the newest local meeting started
+  for each of a list of event ids, through a port T9c fills with the transcript store's
+  `findMeetingIdsByEventIds`, for T12's Open note.
   Opens only `https://accounts.google.com/` URLs, or its own redirect in fake mode. A second
   Connect cancels the first. Times out after 3 minutes. Connect and disconnect go through T7's `CalendarSync.connected(accountEmail)`
   and `disconnected()`, which write `connections_log`; never the cache's `recordConnected` or
@@ -567,7 +579,9 @@ T11 in wave 6; T12 in wave 7; T13 in wave 8.
   (one clear match), and `src/main/calendar/calendarFlow.test.ts`. Also passes M4's template rule
   the invite's attendees: the optional `attendees` getter on the `new NotesGenerator` call in
   `[slot M4-T16 notes]`, read from the local meeting's `calendar_event_json` (build order,
-  section 10, "From wave 3").
+  section 10, "From wave 3"). And T6's event-to-meeting port: pass it the transcript store's
+  `findMeetingIdsByEventIds`, and reword that method's doc in `store/TranscriptStore.ts` (which
+  says no channel serves it) to name T6's channel ("From wave 4").
 - [ ] **M5-T10** Owns `src/main/prompt/PromptWindow.ts`, `src/main/prompt/promptBounds.ts`,
   `src/preload/prompt.ts` (exposes only `window.rogerPrompt`), `src/renderer/prompt.html`,
   `src/renderer/src/prompt/*`; adds the second preload and page to `electron.vite.config.ts`;
@@ -583,7 +597,9 @@ T11 in wave 6; T12 in wave 7; T13 in wave 8.
   their `@2x`, and two slots in `src/main/index.ts`. `[slot M5-T11 userData]`: `userData` set to
   "Roger Dev" when not packaged, before `requestSingleInstanceLock`, with a comment saying why it
   must come first, and never when `ROGER_E2E=1` or `--user-data-dir` already set it (M2-T13's
-  slot comes first). `[slot M5-T11 lifecycle]`:
+  slot comes first and leaves `const e2e` in scope: read `e2e.on`, and
+  `app.commandLine.hasSwitch('user-data-dir')`, which Electron honours by itself; register no login
+  item while `e2e.on`, or macOS shows a "background item added" notice). `[slot M5-T11 lifecycle]`:
   `window-all-closed` no longer quits; `activate` shows the window; login launch from
   `wasOpenedAtLogin`. Edits `src/main/window.ts` after M2-T12: close hides, `backgroundThrottling:
   false`. Edits `src/main/lifecycle.ts` (wave 6, after M2-T12 and M2-T18): today `watchWindow` stops
@@ -606,7 +622,8 @@ T11 in wave 6; T12 in wave 7; T13 in wave 8.
   `requires-approval` and its System Settings path), `NoticeBanner`, `CalendarStatusBanner`
   (stale, reconnect, reconnect before <date>), `useCalendar`, `todayGroups.ts`, `calendarFormat.ts`.
   Standalone components; T13 mounts them. Start notes shows from 15 min before start to the end;
-  Open note when a local meeting already has the event. After the first connect a line says "Roger
+  Open note when a local meeting already has the event (T6's channel, asked again when the
+  recording's meeting changes). After the first connect a line says "Roger
   will open at login so it can remind you" with Undo. Colours from theme tokens only.
 - [ ] **M5-T13** Owns `renderer/src/app/slots/m5-calendar.ts` (Home section, Settings section,
   meeting banner), and the QA script (on M4-S3's `qa/driver.ts`, playwright-core) and gallery for

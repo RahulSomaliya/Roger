@@ -552,8 +552,17 @@ API:
   As built: a heading the template lacks starts its own section (sections in the order the model
   wrote them); a run that keeps nothing writes TipTap's empty doc (one empty paragraph); one new
   run id sent to two meetings at once is a `409`, not a `500`.
-- [ ] **M4-T9. Long calls: map then reduce.** M. Depends on: T8.
-  Owns `services/notes_long.py` and the budget switch in `notes_generation.py`.
+- [x] **M4-T9. Long calls: map then reduce.** M. Depends on: T8.
+  Owns `services/notes_long.py` and the budget switch in `notes_generation.py`. As built: windows
+  of whole lines of at most 60,000 tokens or the budget, if smaller, overlapping by 20 lines
+  (capped at half a window, and shrunk so each window reaches a new line); a call whose lines all
+  fit one window stays one pass even when its notes make the prompt long; drafts send no events,
+  and the reduce is shown only the lines the drafts cite and may cite no others (it is not itself
+  checked against the budget); a long run stores `prompt_version` with `+long-v1`. The budget is a
+  required keyword of `generate_notes` and `start_notes_run`, so no caller falls back to a default
+  (T9 edited T8's `routers/notes_runs.py` to pass `NOTES_MAX_INPUT_TOKENS`, which notes never read
+  before); the contract's runs section says only the last pass streams, so a long call's stream
+  may carry only `: ping` for minutes.
 - [x] **M4-T10. Chat with one meeting.** M. Depends on: T4, T5, T6, T7.
   Owns `services/chat.py`, `services/chat_prompt.py`, `schemas/chat.py`, `routers/chat.py`
   (function-scoped claim of the message and run; P2-F2 already includes the router and added
@@ -567,9 +576,16 @@ API:
   `services/notes_markdown.py` (T4's: a keyword-only `heading_offset`, and "From your notes" ends
   at the next heading of its level), `tests/test_mcp.py` (M1's tool list) and the MCP section and
   module map of `apps/api/README.md`.
-- [ ] **M4-T12. Eval harness.** M. Depends on: T3, T8.
+- [x] **M4-T12. Eval harness.** M. Depends on: T3, T8.
   Owns `evals/notes_eval.py` (package), `apps/api/evals/notes/cases/synthetic_standup.json`. P2-F3
-  already added the `.gitignore` lines and the `eval-notes` and `eval-notes-fixes` targets.
+  already added the `.gitignore` lines and the `eval-notes` and `eval-notes-fixes` targets. As
+  built: the package is `roger_api/evals/` (`python -m roger_api.evals.notes_eval run|export|fixes`;
+  the how-to is its module docstring and `--help`); `export --meeting ID` writes a case to
+  `cases/local/` with empty labels; the scoring rules (headings left out of note coverage, the
+  flagged rate out of kept cited lines, action items counted wherever they landed, a fuzzy match at
+  60% of content words, an owner before a colon only from a short list of names) are product calls
+  in `evals/notes_score.py` for the owner to confirm. No real-model run yet: it needs the owner's
+  `OPENROUTER_API_KEY`.
 
 Desktop:
 
@@ -590,7 +606,7 @@ Desktop:
 - [x] **M4-T15. SSE client and stream registry.** M. Depends on: T13.
   Owns `main/api/sse.ts` (parser), `main/api/streamRequest.ts` (uses T13's exported helpers; no
   edit to `ApiClient.ts`), `main/notes/LlmStreams.ts`.
-- [ ] **M4-T16. Notes and chat IPC in main, quit flush.** M. Depends on: S2, T14, T15, T22, T23.
+- [x] **M4-T16. Notes and chat IPC in main, quit flush.** M. Depends on: S2, T14, T15, T22, T23.
   Owns `main/notes/notes-ipc.ts` (a dropped chat stream polls its run, then reloads the thread),
   `main/notes/notes-ipc-validation.ts`, `main/notes/notesQuitGuard.ts` (the trusted-sender check
   comes from P2-F1's `main/ipc/trust.ts`), the three `[slot M4-T16 …]` blocks in `main/index.ts`
@@ -601,7 +617,13 @@ Desktop:
   before `[slot M2-T4 quit]`). Other tasks edit other slots of `index.ts`; nobody adds a
   `before-quit` listener of their own (`main/lifecycle.ts` holds the quit). Also the save's base
   revision that T17 needs (build order, section 10, "From wave 2"), if the controller assigns it
-  here before wave 4.
+  here before wave 4. As built (it was assigned): `SaveNoteRequest.base` is required, and the
+  editor sends the note whose doc it last put on screen (`useNoteDocument`'s `editorShows`); a save
+  built on a doc main has replaced since becomes the conflict copy and the doc stays main's, and
+  one that finds the copy holding other typing is kept on disk (`held_saves`) until the user picks.
+  Stop's save fails on a window that does not answer in 1 s, which keeps a silent meeting (every
+  page until T20 calls `notesFlushResponder()`); `KeptSilentMeetings` (`notesQuitGuard.ts`) drops
+  its pending generate once the uploader discards it. Each chat message gets one terminal event.
 - [x] **M4-T17. Notes editor.** M. Depends on: T13, T4 (fixture), T21a (contract commit).
   Owns `renderer/src/notes/NoteEditor.tsx`, `citationNode.ts`, `CitationChip.tsx`,
   `useNoteDocument.ts`, `debouncedSaver.ts` (blur, unmount, `pagehide`, `beforeunload`, flush

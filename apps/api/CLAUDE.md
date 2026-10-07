@@ -49,3 +49,11 @@ Extends the root `CLAUDE.md`, whose house rules and repo-wide failure log apply 
 - A notes doc with `content: []` fails ProseMirror's `doc.check()` (a `doc` needs a block): an
   empty AI doc is TipTap's `{"type": "doc", "content": [{"type": "paragraph"}]}`
   (`notes_generation.build_ai_doc`, M4-T8).
+- mypy strict refuses `@computed_field` stacked on `@property` (`prop-decorator`): put a derived
+  value into a model's JSON with `@model_serializer(mode="wrap")` (`evals/notes_score.Share`).
+  `ruff check --fix` (SIM905) rewrites `"""a b c""".split()` as a one-line list literal, which then
+  fails E501: split a named string constant instead (`citations.py`, `evals/notes_score.py`)
+  (M4-T12).
+- A CLI that calls `configure_logging` inside the function its tests call leaves the root handler
+  on pytest's captured stderr after that test ends, and later tests log into a closed stream.
+  Configure logging only on the `__main__` path (`evals/notes_eval._cli`) (M4-T12).

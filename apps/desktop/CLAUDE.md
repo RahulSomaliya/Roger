@@ -85,7 +85,7 @@ Extends the root `CLAUDE.md`, whose house rules and repo-wide failure log apply 
 - Test traps: importing a constant from a `*.test.ts` file registers its tests again (shared
   constants go in a non-test helper); `toEqual` tells -0 from 0; `expect.*` matchers are `any`, so
   typed lint refuses them in a `toEqual` literal; a `ReadableStream` that errors drops chunks not
-  yet read (M3-T12, M4-T15).
+  yet read (M3-T12, M4-T15); `vitest run --root /` crawls the whole disk and hangs (M5-T5).
 - `node:sqlite`'s `prepare()` compiles only the first statement and ignores the rest: a SQL file
   run through it holds exactly one (`PromptLog.test.ts` checks `calendar-streak.sql`, M5-T9a).
 - QA (M3-T7, M3-T8, M4-T17): an `import()` inside `page.evaluate` in an `e2e/` file throws in the
@@ -105,7 +105,9 @@ Extends the root `CLAUDE.md`, whose house rules and repo-wide failure log apply 
   export of a `vi.mock('electron', factory)` only when code reads it, never at import, so each
   branch was green alone. A test that builds the capture runtime copies the stand-ins of
   `createCaptureRuntime.test.ts`'s mock, and a slot that reads another Electron field adds it to
-  every test that builds the runtime (`git grep -l createCaptureRuntime -- '*.test.ts'`).
+  every test that builds the runtime (`git grep -l createCaptureRuntime -- '*.test.ts'`). That mock
+  has a focused `BrowserWindow` since M2-T6, so a loud warning there posts nothing: a test that
+  needs a post mocks `Notification` and an unfocused window, as `Notifier.test.ts` does.
 - A jitter test whose first chunk has no jitter passes on code that ignores jitter: M1 dated a
   stream from its first chunk only, so delays of `(i * 137) % 401` (zero at i = 0) proved nothing.
   Start such a pattern off zero, and see the test fail on the old code first (M2-T5).
@@ -113,7 +115,11 @@ Extends the root `CLAUDE.md`, whose house rules and repo-wide failure log apply 
   two `toCapturedAtMs` calls: a vendor almost never stamps an edge exactly on a run boundary, and
   an end 10 ms past one lands on the far side of the gap. A 20 s mic stall made a 2-word line 20 s
   long and slipped the echo filter (M2-T5 review, 2026-10-07). Keep a final's span widened over its
-  words (`CaptureSession.lineSpan`): `EchoFilter` reaches call-audio lines by span.
+  words (`CaptureSession.lineSpan`): `EchoFilter` reaches call-audio lines by span. `LatencyMeter`
+  too: give it the event as the transcript dates it (`CaptureSession.measureLatency`); a clock on
+  `toCapturedAtMs` timed a word ended 10 ms past a 20 s stall at 390 ms. One meter per vendor
+  stream, pooled per source: one meter across a reopen counts the old stream's late line as
+  repeated (M3-T6b).
 - Inside `describe.concurrent`, Vitest's global `onTestFinished` is not tied to the running test:
   it ran another test's cleanup and stopped its helpers (0 frames). Use the test context's hook,
   `async (context) => { context.onTestFinished(...) }` (M2-T10).
@@ -143,3 +149,35 @@ Extends the root `CLAUDE.md`, whose house rules and repo-wide failure log apply 
 - `prettier --check .` in `apps/desktop` (`make check`'s `format:check`) reads this file: a code
   span split across two lines is de-indented and fails the check. Break a line before or after a
   code span, never inside one (M3-T13).
+- `ws` answers pings by itself (`autoPong`): a fake vendor that must go silent is built with
+  `autoPong: false` and pongs by hand (`answersPings`, `stt/testing/fakeVendorServer.ts`), or a
+  dead-socket test passes on a socket that never stopped answering. `CaptureSession.close()` waits
+  for every reopen still connecting: a test whose fake STT never answers one
+  (`ControlledSpeechToText`) hangs at Stop until its timeout unless it calls `stt.succeed(label)`
+  first (M2-T6).
+- On macOS Chromium's audio service sandbox cannot read a WAV in the temp folder:
+  `--use-file-for-fake-audio-capture=<tmp>.wav` logs "Failed to read ... as input to the fake
+  device" and the fake mic sends silence (a dead-mic warning). `e2e/harness.ts` passes
+  `--disable-features=AudioServiceSandbox`; the page keeps its own sandbox (M2-T13).
+- Playwright on Electron (M2-T13): `page.waitForFunction` resolves at once when its predicate
+  returns a promise (a promise is truthy): poll from Node with
+  `expect.poll(() => page.evaluate(...))`. It emulates `prefers-color-scheme: light` on every page
+  it drives, whatever `nativeTheme` says: force it with `page.emulateMedia({ colorScheme })`.
+  `_electron.launch` with `executablePath` adds none of its Chromium switches (mock keychain,
+  `password-store=basic`), and main's lines logged before the launch resolves never reach a
+  `process().stderr` listener: read startup state with `app.evaluate`.
+- A test that pushes chunks through `CaptureService.pushAudio` with no `capturedAtMs`, all in one
+  instant, splits the audio timeline about every 250 ms: the fan-out dates each chunk at its
+  arrival minus its length, so the times run backwards, and the backup wrote 4 files for 1 s. Pass
+  capture times (`backup/backupSlot.test.ts`). A status contributor that returns `warnings: []`
+  puts an empty list into every status: leave the key out when it has none (M2-T15).
+- A notes save names its base (`SaveNoteRequest.base`), which moves only when the editor puts a
+  doc on screen (`editorShows`, `notes/useNoteDocument.ts`). Moved when a doc merely arrives,
+  typing flushed at that moment goes out on a doc it never saw and main stores it over the
+  server's version. A revision counts as the editor's own only when the answer's doc is the doc it
+  sent: the answer to a stale save holds main's doc (M4-T16).
+- SQLite uses a partial index on an expression only when the query repeats the index's `WHERE`:
+  `MEETING_IDS_BY_EVENT_IDS` spells out `calendar_event_json IS NOT NULL`, or the plan is
+  `SCAN meetings` (its test reads `EXPLAIN QUERY PLAN`). An index on `json_extract(column)` makes
+  SQLite refuse a write of malformed JSON, yet it takes JSON5, which `JSON.parse` refuses: keep the
+  read's parse guard (M5-T5).
