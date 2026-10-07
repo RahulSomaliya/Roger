@@ -4,7 +4,8 @@ import type { AudioSource, TranscriptSegment } from '../../../shared/transcript'
 import type { MeetingDto, UploadApi } from '../../api/ApiClient';
 import { createLogger } from '../../logger';
 import { InMemoryTranscriptStore } from '../../store/InMemoryTranscriptStore';
-import type { SegmentOrigin } from '../../store/TranscriptStore';
+import { SqliteTranscriptStore } from '../../store/SqliteTranscriptStore';
+import type { SegmentOrigin, TranscriptStore } from '../../store/TranscriptStore';
 import { TranscriptUploader } from '../../upload/TranscriptUploader';
 import type { SourceWatermark, WatermarkListener } from '../CaptureSession';
 import { ECHO_MATCH_WINDOW_MS } from './EchoFilter';
@@ -110,7 +111,7 @@ class FakeCapture implements EchoCapture {
   }
 
   /** As CaptureSession does it: the line is stored, then it goes out. */
-  final(store: InMemoryTranscriptStore, segment: TranscriptSegment): void {
+  final(store: TranscriptStore, segment: TranscriptSegment): void {
     store.appendSegment(segment);
     for (const listener of this.segmentListeners) listener(segment);
   }
@@ -152,9 +153,16 @@ function fakeApi(): FakeApi {
   };
 }
 
-function harness(options: { enabled?: boolean; store?: InMemoryTranscriptStore } = {}) {
+interface HarnessOptions {
+  enabled?: boolean;
+  /** The store, on the harness's clock (it decides whether a hold's cap has passed). */
+  makeStore?: (clock: () => Date) => TranscriptStore;
+}
+
+function harness(options: HarnessOptions = {}) {
   let now = T0;
-  const store = options.store ?? new InMemoryTranscriptStore(() => new Date(now));
+  const clock = (): Date => new Date(now);
+  const store = options.makeStore?.(clock) ?? new InMemoryTranscriptStore(clock);
   store.createMeeting({ id: MEETING, title: 'Weekly sync', startedAt: new Date(T0).toISOString() });
   const changes: TranscriptSegmentChange[] = [];
   const logs: Record<string, unknown>[] = [];
@@ -180,7 +188,7 @@ function harness(options: { enabled?: boolean; store?: InMemoryTranscriptStore }
     store,
     api,
     logger: quiet,
-    clock: () => new Date(now),
+    clock,
   });
   return {
     store,
@@ -490,7 +498,7 @@ describe('EchoSink: lines from the live recording', () => {
         throw new Error('disk I/O error');
       }
     }
-    const h = harness({ store: new FailingHolds(() => new Date(T0)) });
+    const h = harness({ makeStore: (clock) => new FailingHolds(clock) });
     const seen: string[] = [];
     h.capture.on('segment', (segment) => seen.push(segment.id));
     h.record();
@@ -529,6 +537,39 @@ describe('EchoSink: counts', () => {
     // A resume of the same meeting starts from what the store holds.
     h.capture.start(MEETING, new FakeSession());
     expect(h.sink.liveStatus(MEETING)).toEqual({ hidden: 1, trimmed: 1, held: 0 });
+  });
+});
+
+describe('EchoSink on the SQLite store', () => {
+  // The in-memory store is the SQL's twin, but holds are compared as text in SQL and the counts
+  // list a whole meeting's lines with the widest offsets a number can carry.
+  it('hides, trims, holds, releases and counts as it does in memory', async () => {
+    const h = harness({ makeStore: (clock) => new SqliteTranscriptStore(':memory:', clock) });
+    h.record();
+    h.callAudioUpTo(h.say('them-1', 'system', SAID, 10_000).endMs);
+    h.say('me-1', 'mic', SAID, 10_120); // hidden
+    h.callAudioUpTo(h.say('them-2', 'system', 'so the plan is to', 20_900).endMs);
+    h.say('me-2', 'mic', MIXED, 20_000); // trimmed, held
+    h.say('me-3', 'mic', 'I think we should wait a week', 40_000); // held
+
+    expect(h.sink.report(MEETING)).toEqual({ hidden: 1, trimmed: 1, held: 2 });
+    await h.uploader.flush();
+    expect(h.uploaded()).toEqual(['them-1', 'them-2']);
+
+    h.advance(ECHO_HOLD_CAP_MS - 1);
+    await h.uploader.flush();
+    expect(h.uploaded()).toEqual(['them-1', 'them-2']);
+    h.advance(1);
+    expect(h.sink.report(MEETING).held).toBe(0);
+    await h.uploader.flush();
+    expect(h.uploaded()).toEqual(['them-1', 'them-2', 'me-2', 'me-3']);
+    expect(h.store.getSegment('me-2')).toMatchObject({
+      text: 'yes I agree ship on Friday',
+      originalText: MIXED,
+    });
+
+    h.sink.unhide(h.store.getSegment('me-1')!);
+    expect(h.sink.report(MEETING)).toEqual({ hidden: 0, trimmed: 1, held: 0 });
   });
 });
 
