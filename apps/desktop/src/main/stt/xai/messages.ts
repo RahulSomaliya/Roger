@@ -16,9 +16,9 @@ import { firstString, isFiniteNumber, isRecord } from '../json';
  */
 
 /**
- * Client to server control messages. `Finalize` is spelt with a capital F in xAI's docs (its other
- * client message, `audio.done`, is lower case): a lower-case `finalize` is a different message
- * and may be ignored or refused.
+ * Client to server control messages. xAI's API reference accepts `Finalize` and `finalize` alike;
+ * Roger sends the capital F its speech-to-text page spells. The other client message, `audio.done`,
+ * is lower case.
  */
 export const XAI_FINALIZE = JSON.stringify({ type: 'Finalize' });
 export const XAI_AUDIO_DONE = JSON.stringify({ type: 'audio.done' });
@@ -131,10 +131,11 @@ function secondsToMs(seconds: number): number {
  * so saving it as one would save its words twice. Until the utterance ends a locked chunk is kept
  * in front of the next interim, so the live text never drops three seconds of speech.
  *
- * UNCONFIRMED against the real vendor, for the live-key check (the vendor log in
- * docs/research/stt-benchmark.md): that the stitched text repeats the locked chunks and that an
- * interim after a chunk carries only the new words. If either is the other way round, a line
- * repeats or loses a chunk here, and this assembler is the one place to fix it.
+ * UNCONFIRMED (an open point in the vendor log, docs/research/stt-benchmark.md): that the stitched
+ * text repeats the locked chunks and that an interim after a chunk carries only the new words. The
+ * live canary's 9.4% WER on one synthetic clip fits no repeated words but does not prove it. If
+ * either is the other way round, a line repeats or loses a chunk here, and this assembler is the
+ * one place to fix it.
  */
 export class XaiLineAssembler {
   private chunks: XaiPartial[] = [];

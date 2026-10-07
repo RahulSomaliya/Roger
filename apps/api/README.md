@@ -108,10 +108,9 @@ AssemblyAI on the same audio (`make bench`). The issuer mints a client secret
 (`POST https://api.x.ai/v1/realtime/client_secrets`, `Authorization: Bearer <key>`, body
 `{"expires_after": {"seconds": <STT_TOKEN_TTL_SECONDS>}}`, answering `{"value", "expires_at"}`) and
 the desktop sends it as `Authorization: Bearer` on the websocket handshake. That `wss://api.x.ai/v1/stt`
-accepts a client secret is UNCONFIRMED: xAI documents the secrets for its voice-agent socket only.
-It is checked with a live key before xAI is relied on (the vendor log in
-`docs/research/stt-benchmark.md`). xAI does not say whether it bills open time or audio sent, so
-the price assumes open time. Its API requests are kept 30 days for abuse audit; zero data
+accepts a client secret was confirmed with a live key on 2026-10-07 (the vendor log in
+`docs/research/stt-benchmark.md`), though xAI documents the secrets for its voice-agent socket
+only. xAI does not say whether it bills open time or audio sent, so the price assumes open time. Its API requests are kept 30 days for abuse audit; zero data
 retention is a team-level setting (same log).
 
 Two vendor rules to know before testing (read 2026-10-06):

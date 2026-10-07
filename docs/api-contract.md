@@ -223,7 +223,7 @@ fails on the Mac with "Unsupported speech-to-text provider".
 | `assemblyai` | AssemblyAI temporary streaming token; the desktop sends it as the `token` query parameter | Seconds left to open the stream (1..600). One token opens both streams; a session then runs up to 3 hours, a cap the API asks for explicitly on every token (`max_session_duration_seconds=10800`), after which AssemblyAI closes it with 3008. |
 | `deepgram` | Deepgram grant (JWT); the desktop sends it as `Authorization: Bearer` | Seconds the grant is valid |
 | `soniox` | Soniox temporary API key; the desktop sends it as `Authorization: Bearer` | Seconds left to open a stream (1..3600). One key opens both streams (never `single_use`); a stream then runs up to 5 hours, a cap the API asks for explicitly on every key (`max_session_duration_seconds=18000`), after which Soniox ends it with a `temp_api_key_session_expired` error. |
-| `xai` | xAI client secret (`xai-client-secret.` prefix), minted by `POST /v1/realtime/client_secrets`; the desktop sends it as `Authorization: Bearer` on the websocket handshake. UNCONFIRMED: that `/v1/stt` accepts it (xAI documents it for the voice-agent socket only). | Seconds left to open a stream (1..3600). xAI documents no session cap, so the API asks for none. |
+| `xai` | xAI client secret (`xai-client-secret.` prefix), minted by `POST /v1/realtime/client_secrets`; the desktop sends it as `Authorization: Bearer` on the websocket handshake. `/v1/stt` accepts it (live check 2026-10-07), though xAI documents it for the voice-agent socket only. | Seconds left to open a stream (1..3600). xAI documents no session cap, so the API asks for none. |
 | `fake` | `""` | `0` |
 
 Response:

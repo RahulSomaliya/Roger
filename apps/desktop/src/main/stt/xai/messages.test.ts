@@ -119,7 +119,7 @@ describe('parseXaiMessage', () => {
 });
 
 describe('the client messages', () => {
-  it('spells Finalize with a capital F, as xAI documents it, and audio.done in lower case', () => {
+  it('sends Finalize with a capital F (xAI accepts either spelling) and audio.done in lower case', () => {
     expect(XAI_FINALIZE).toBe('{"type":"Finalize"}');
     expect(XAI_AUDIO_DONE).toBe('{"type":"audio.done"}');
   });

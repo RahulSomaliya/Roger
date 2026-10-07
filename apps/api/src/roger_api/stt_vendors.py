@@ -153,7 +153,7 @@ STT_VENDORS: Mapping[SttProvider, SttVendor] = MappingProxyType(
         ),
         # Added so Grok can be compared with AssemblyAI on the same audio (the vendor log in
         # docs/research/stt-benchmark.md). Its token is a client secret minted for the voice-agent
-        # socket: that it also opens /v1/stt is UNCONFIRMED (XaiSttTokenIssuer).
+        # socket; /v1/stt accepts it too (live check 2026-10-07, XaiSttTokenIssuer).
         # `max_token_ttl_seconds` is client_secrets' `expires_after.seconds` maximum.
         "xai": SttVendor(
             provider="xai",

@@ -25,13 +25,13 @@ xAI client secrets, per https://docs.x.ai/developers/rest-api-reference/inferenc
 (read 2026-10-07): `Authorization: Bearer <key>` and a JSON body `{"expires_after": {"seconds": N}}`
 (N at most 3600, default 600), answering `{"value", "expires_at"}`; `value` is "the ephemeral token
 ... Use as a Bearer token in the WebSocket `Authorization` header". The optional `session` block
-configures the voice-agent socket and is never sent. UNCONFIRMED: xAI documents these secrets for
-the `/v1/realtime` voice-agent socket only, and its speech-to-text page (`/v1/stt`) mentions
-neither them nor any token other than the API key ("proxy WebSocket connections through your
-backend"). The vendor log in docs/research/stt-benchmark.md carries the same flag: the controller
-tries a minted secret against `wss://api.x.ai/v1/stt` with a live key. If xAI refuses it there, this
-issuer cannot serve `STT_PROVIDER=xai` and a relay (which house rule 3 allows) is the next step;
-do not hand the raw key to the desktop. xAI documents no session-length cap for a secret or for
+configures the voice-agent socket and is never sent. xAI documents these secrets for the
+`/v1/realtime` voice-agent socket only, and its speech-to-text page (`/v1/stt`) mentions neither
+them nor any token other than the API key ("proxy WebSocket connections through your backend"),
+but a minted secret sent as `Authorization: Bearer` on the `wss://api.x.ai/v1/stt` handshake is
+accepted (live check 2026-10-07, docs/research/stt-benchmark.md), so no relay is needed. If xAI
+ever refuses it there, a relay (which house rule 3 allows) is the next step; do not hand the raw
+key to the desktop. xAI documents no session-length cap for a secret or for
 `/v1/stt`, so nothing here asks for one: the desktop's own guards (stall close, idle timeout,
 4-hour auto-stop in apps/desktop/src/main/costGuards.ts) are the only net.
 """
@@ -229,9 +229,9 @@ class _XaiClientSecret(BaseModel):
 class XaiSttTokenIssuer:
     """Mints an xAI client secret for the speech-to-text websocket (see the module docstring).
 
-    UNCONFIRMED: that `/v1/stt` accepts a client secret. Until the live-key check passes, treat a
-    refusal of the minted secret at the desktop's handshake as this issuer's problem, not the
-    desktop's.
+    `/v1/stt` accepts the client secret (live check 2026-10-07), though xAI documents it for the
+    voice-agent socket only: treat a refusal of the minted secret at the desktop's handshake as
+    this issuer's problem, not the desktop's.
     """
 
     def __init__(self, http: httpx.AsyncClient, *, api_key: str, ttl_seconds: int) -> None:

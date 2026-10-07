@@ -3,9 +3,9 @@ the `xai` preset. The desktop adapter lands in the next commit (`AWAITING_A_DESK
 tests/test_stt_providers.py covers the gap). Nothing here calls xAI: every request goes to a
 MockTransport.
 
-UNCONFIRMED against the real vendor: that a client secret authenticates `wss://api.x.ai/v1/stt`
-(xAI documents it for the `/v1/realtime` voice-agent socket only). The controller checks it with a
-live key; see the issuer's docstring."""
+A client secret authenticates `wss://api.x.ai/v1/stt` against the real vendor (live check
+2026-10-07), though xAI documents it for the `/v1/realtime` voice-agent socket only; see the
+issuer's docstring."""
 
 import json
 from collections.abc import AsyncIterator, Callable
