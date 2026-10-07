@@ -1,54 +1,48 @@
-import { useCallback, useEffect, useId, useState } from 'react';
+import { useEffect, useId } from 'react';
 import { parseInstant, type TimedCalendarEvent } from '../../../shared/calendar';
-import { LOGIN_ITEMS_SETTINGS_PATH } from '../../../shared/ipc/loginItem';
-import { describeError } from '../app/describeError';
 import { meetingPhase } from '../app/captureMeeting';
 import { useShell } from '../app/ShellContext';
-import { eventTitle, attendeeSummary, timeRange } from '../prompt/promptFormat';
-import { createCalendarFormat } from './calendarFormat';
+import { Icon } from '../components/ui/icons';
+import { eventTitle } from '../prompt/promptFormat';
+import { calendarProblem, createCalendarFormat } from './calendarFormat';
 import type { CalendarState } from './calendarStore';
 import { ConnectCalendarCard } from './ConnectCalendarCard';
-import {
-  MeetingAction,
-  NextMeetingCard,
-  type MeetingActions,
-  type TimedEntry,
-} from './NextMeetingCard';
 import { startRequestForEvent } from './startRequest';
-import { todayGroups } from './todayGroups';
-import { useCalendar, useCalendarSettings, useNow } from './useCalendar';
+import { heroMeeting, todayGroups, type TimedEntry } from './todayGroups';
+import { useCalendar, useNow } from './useCalendar';
 import './today.css';
 
-/** The line after the first connect, by what it says (OpenAtLoginLine). */
-export type OpenAtLoginPhase = 'on' | 'approval' | 'undone';
+/** What a row's button does: the events it starts notes for, and the notes it opens. */
+export interface MeetingActions {
+  /** A note is being taken or starting: no row offers Start notes until it ends. */
+  startBlocked: boolean;
+  onStart: (event: TimedCalendarEvent) => void;
+  onOpen: (meetingId: string) => void;
+}
 
 export interface TodaySectionViewProps extends MeetingActions {
   state: CalendarState;
   nowMs: number;
-  /** Why the last Start notes failed before main could answer, or null. */
-  startError: string | null;
-  /** The line after the first connect, or null when there is none to show. */
-  openAtLogin: { phase: OpenAtLoginPhase; error: string | null } | null;
+  /**
+   * The event Home's hero has Start notes for (HomePage): its row shows no button of its own, so
+   * one meeting never has two Starts on screen.
+   */
+  heroEventId: string | null;
   onConnect: () => void;
   onReload: () => void;
-  onUndoOpenAtLogin: () => void;
-  onDismissOpenAtLogin: () => void;
 }
 
 /**
- * Home's "Today" (M5-T12; M5-T13 mounts it in the shell's `home` slot): the connect card while no
- * calendar is connected, otherwise today's meetings with the next one first among them, a button
- * per meeting (Start notes, or Open note once a local meeting has the event) and the day's
- * all-day events in a strip. The status banner (stale, reconnect) is its own component in the
- * banner slot, above every page.
+ * Home's "Today" (M5-T12; the hero above it has the one Start notes): the connect line while no
+ * calendar is connected, otherwise today's timed meetings, a time and a title each, and a ghost
+ * Start notes (or Open note, once a local meeting has the event) on hover. One quiet line says
+ * what is wrong with the calendar, Reconnect or Try again beside it. The day is absent when it
+ * has nothing to say: no heading, no "Nothing on your calendar today".
  */
 export function TodaySection() {
   const { state, store } = useCalendar();
-  const settings = useCalendarSettings();
-  const { capture, captureMeeting, navigate } = useShell();
+  const { capture, captureMeeting, navigate, startNewNote } = useShell();
   const nowMs = useNow();
-  const [startError, setStartError] = useState<string | null>(null);
-  const [openAtLoginUndone, setOpenAtLoginUndone] = useState(false);
 
   // Open note reads main's lookup, which only knows a meeting once it exists: ask again when the
   // recording's meeting changes, or a note started from this very list shows Start notes again.
@@ -61,44 +55,16 @@ export function TodaySection() {
     void store.refreshLinks(ids);
   }, [store, events, recordingMeetingId]);
 
-  const startBlocked = meetingPhase(captureMeeting, capture.status) !== 'idle' || capture.busy;
-  const { start } = capture;
-  const onStart = useCallback(
-    (event: TimedCalendarEvent) => {
-      setStartError(null);
-      const run = async (): Promise<void> => {
-        await start(startRequestForEvent(event));
-        // start() resolves after the microphone started, or after main refused or the microphone
-        // failed (the banner shows both); only a recording opens the meeting. As the shell's New
-        // note does (ShellContext.startNewNote), which cannot take a request.
-        const now = await window.roger.getCaptureStatus();
-        if (now.phase === 'recording' && now.meetingId !== null) {
-          navigate({ name: 'meeting', meetingId: now.meetingId });
-        }
-      };
-      run().catch((error: unknown) => {
-        setStartError(`Roger could not start notes for this meeting: ${describeError(error)}`);
-      });
-    },
-    [start, navigate],
-  );
-
-  const loginItem = settings.state.loginItem;
-  let phase: OpenAtLoginPhase | null = null;
-  if (state.justConnected) {
-    if (openAtLoginUndone) phase = 'undone';
-    else if (loginItem === 'enabled') phase = 'on';
-    else if (loginItem === 'requires-approval') phase = 'approval';
-  }
-
+  const hero = heroMeeting(todayGroups({ events: state.events, links: state.links, nowMs }), nowMs);
   return (
     <TodaySectionView
       state={state}
       nowMs={nowMs}
-      startError={startError}
-      startBlocked={startBlocked}
-      openAtLogin={phase === null ? null : { phase, error: settings.state.saveError }}
-      onStart={onStart}
+      startBlocked={meetingPhase(captureMeeting, capture.status) !== 'idle' || capture.busy}
+      heroEventId={hero?.event.id ?? null}
+      onStart={(event) => {
+        startNewNote(startRequestForEvent(event));
+      }}
       onOpen={(meetingId) => {
         navigate({ name: 'meeting', meetingId });
       }}
@@ -107,16 +73,6 @@ export function TodaySection() {
       }}
       onReload={() => {
         store.reload();
-      }}
-      onUndoOpenAtLogin={() => {
-        void settings.store.choose('app.openAtLogin', 'off').then(() => {
-          // choose() never rejects: a refused save leaves the preference, and the line, as they were.
-          if (settings.store.getState().saveError === null) setOpenAtLoginUndone(true);
-        });
-      }}
-      onDismissOpenAtLogin={() => {
-        setOpenAtLoginUndone(false);
-        store.dismissConnectedLine();
       }}
     />
   );
@@ -136,22 +92,11 @@ export function TodaySectionView(props: TodaySectionViewProps) {
   if (state.connection === null && state.events.length === 0) {
     if (state.connectionStatus === 'failed') {
       return (
-        <section className="card calendar-connect" aria-label="Google Calendar">
-          <div className="error" role="alert">
-            Roger could not reach your Google Calendar connection: {state.connectionError}
-          </div>
-          <div className="calendar-connect-actions">
-            <button
-              type="button"
-              className="btn"
-              data-variant="secondary"
-              data-size="sm"
-              onClick={props.onReload}
-            >
-              Try again
-            </button>
-          </div>
-        </section>
+        <ProblemLine
+          text={`Roger could not reach your Google Calendar connection: ${state.connectionError ?? 'no reason given'}`}
+          action={{ label: 'Try again', onPress: props.onReload }}
+          role="alert"
+        />
       );
     }
     return (
@@ -168,185 +113,158 @@ export function TodaySectionView(props: TodaySectionViewProps) {
 function TodayDay({
   state,
   nowMs,
-  startError,
+  heroEventId: heroId,
   startBlocked,
-  openAtLogin,
   onStart,
   onOpen,
   onReload,
-  onUndoOpenAtLogin,
-  onDismissOpenAtLogin,
+  onConnect,
 }: TodaySectionViewProps) {
   const headingId = useId();
   // Per render, not at import: createCalendarFormat says why.
   const format = createCalendarFormat();
-  const groups = todayGroups({ events: state.events, links: state.links, nowMs });
-  const actions = { startBlocked, onStart, onOpen };
-  const nothing = groups.allDay.length === 0 && groups.timed.length === 0;
+  const { timed } = todayGroups({ events: state.events, links: state.links, nowMs });
+  const problem = calendarProblem({ state, nowMs, format });
+  // The day is absent when it has nothing to show or say.
+  if (timed.length === 0 && problem === null) return null;
   return (
-    <section className="calendar-today" aria-labelledby={headingId}>
-      <div className="calendar-today-head">
-        <h2 id={headingId} className="calendar-today-title">
-          Today
-        </h2>
-        <p className="calendar-today-date">{format.date(nowMs)}</p>
-      </div>
-      {openAtLogin === null ? null : (
-        <OpenAtLoginLine
-          phase={openAtLogin.phase}
-          error={openAtLogin.error}
-          onUndo={onUndoOpenAtLogin}
-          onDismiss={onDismissOpenAtLogin}
+    <section className="today" aria-labelledby={headingId}>
+      <h2 id={headingId} className="overline">
+        Today
+      </h2>
+      {problem === null ? null : (
+        <ProblemLine
+          text={problem.text}
+          action={
+            problem.action === null
+              ? null
+              : {
+                  label: problem.action === 'reconnect' ? 'Reconnect' : 'Try again',
+                  onPress: problem.action === 'reconnect' ? onConnect : onReload,
+                }
+          }
+          role="status"
         />
       )}
-      {state.connectionStatus === 'failed' ? (
-        <div className="error calendar-problem" role="alert">
-          <span>
-            Roger could not check your Google Calendar connection: {state.connectionError}. The
-            meetings below are the last it saved.
-          </span>
-          <button
-            type="button"
-            className="btn"
-            data-variant="secondary"
-            data-size="sm"
-            onClick={onReload}
-          >
-            Try again
-          </button>
-        </div>
-      ) : null}
-      {state.copyError === null ? null : (
-        <div className="error calendar-problem" role="alert">
-          <span>Roger could not read your calendar: {state.copyError}</span>
-          <button
-            type="button"
-            className="btn"
-            data-variant="secondary"
-            data-size="sm"
-            onClick={onReload}
-          >
-            Try again
-          </button>
-        </div>
-      )}
-      {startError === null ? null : (
-        <div className="error calendar-problem" role="alert">
-          {startError}
-        </div>
-      )}
-      {state.linksError === null ? null : (
+      {state.connecting ? (
         <p className="calendar-status" role="status">
-          Roger could not check which meetings already have notes: {state.linksError}
+          Finish signing in in your browser. Roger waits up to 3 minutes.
         </p>
-      )}
-      {groups.allDay.length === 0 ? null : (
-        <ul className="calendar-allday" aria-label="All-day events">
-          {groups.allDay.map((entry) => (
-            <li
-              key={entry.event.id}
-              className={entry.declined ? 'calendar-chip calendar-declined' : 'calendar-chip'}
-            >
-              {eventTitle(entry.event)}
-              {entry.declined ? ' (declined)' : ''}
-            </li>
-          ))}
-        </ul>
-      )}
-      {nothing && state.loaded ? (
-        <div className="empty-state">
-          <p className="empty-state-title">Nothing on your calendar today</p>
-          <p className="empty-state-text">Press New note when a call starts.</p>
-        </div>
       ) : null}
-      {groups.timed.length === 0 ? null : (
-        <ul className="calendar-list" aria-label="Today’s meetings">
-          {groups.timed.map((entry) =>
-            entry === groups.next ? (
-              <NextMeetingCard key={entry.event.id} entry={entry} nowMs={nowMs} {...actions} />
-            ) : (
-              <TodayRow key={entry.event.id} entry={entry} nowMs={nowMs} {...actions} />
-            ),
-          )}
+      {state.connectError === null ? null : (
+        <ProblemLine
+          text={`Roger could not connect Google Calendar: ${state.connectError}`}
+          action={null}
+          role="alert"
+        />
+      )}
+      {timed.length === 0 ? null : (
+        <ul className="today-list" aria-label="Today’s meetings">
+          {timed.map((entry) => (
+            <TodayRow
+              key={entry.event.id}
+              entry={entry}
+              nowMs={nowMs}
+              showAction={entry.event.id !== heroId}
+              startBlocked={startBlocked}
+              onStart={onStart}
+              onOpen={onOpen}
+            />
+          ))}
         </ul>
       )}
     </section>
   );
 }
 
-function TodayRow({
-  entry,
-  nowMs,
-  ...actions
-}: { entry: TimedEntry; nowMs: number } & MeetingActions) {
-  const { event } = entry;
-  const over = parseInstant(event.end) <= nowMs;
-  const who = attendeeSummary(event);
-  const meta = [entry.declined ? 'Declined' : null, who]
-    .filter((part) => part !== null)
-    .join(' · ');
-  const classes = ['calendar-row'];
-  if (entry.declined) classes.push('calendar-declined');
-  else if (over) classes.push('calendar-over');
+interface ProblemLineProps {
+  text: string;
+  action: { label: string; onPress: () => void } | null;
+  /** `alert` for what the user just did and it failed; `status` for the calendar's own state. */
+  role: 'alert' | 'status';
+}
+
+/** The problem line (styles.css .problem) with at most one secondary button. */
+function ProblemLine({ text, action, role }: ProblemLineProps) {
   return (
-    <li className={classes.join(' ')}>
-      <span className="calendar-when">{timeRange(event.start, event.end)}</span>
-      <div className="calendar-what">
-        <p className="calendar-title">{eventTitle(event)}</p>
-        {meta === '' ? null : <p className="calendar-meta">{meta}</p>}
-      </div>
-      <MeetingAction entry={entry} {...actions} />
+    <div className="problem today-problem" role={role}>
+      <Icon name="circle-alert" />
+      <span className="problem-text">{text}</span>
+      {action === null ? null : (
+        <button type="button" className="btn" data-size="sm" onClick={action.onPress}>
+          {action.label}
+        </button>
+      )}
+    </div>
+  );
+}
+
+interface TodayRowProps extends MeetingActions {
+  entry: TimedEntry;
+  nowMs: number;
+  /** False for the hero's meeting. */
+  showAction: boolean;
+}
+
+/** A time and a title; the button is in a fixed right column, so showing it moves nothing. */
+function TodayRow({ entry, nowMs, showAction, ...actions }: TodayRowProps) {
+  const { event } = entry;
+  const format = createCalendarFormat();
+  const title = eventTitle(event);
+  return (
+    <li className="today-row" data-over={parseInstant(event.end) <= nowMs ? 'true' : undefined}>
+      <span className="today-time">{format.time(parseInstant(event.start))}</span>
+      <span className="today-title" title={title}>
+        {title}
+      </span>
+      {showAction ? <MeetingAction entry={entry} {...actions} /> : null}
     </li>
   );
 }
 
-export interface OpenAtLoginLineProps {
-  phase: OpenAtLoginPhase;
-  /** Why Undo could not be saved, or null. */
-  error: string | null;
-  onUndo: () => void;
-  onDismiss: () => void;
-}
-
 /**
- * The line after the first connect: Roger turned open at login on (main does, for a packaged
- * build) and says so, with Undo, because a menu bar app that starts itself should not surprise
- * anyone. When macOS waits for the user's approval it says where to give it instead, since a login
- * item nobody allowed misses the first call of every day.
+ * A row's one button: Open note when a local meeting already has the event (the newest one), else
+ * Start notes from 15 minutes before the start to the end (todayGroups), else none. Open note
+ * wins over Start notes: a second Start for an event that has its note would make a second
+ * meeting for it. While a note is being taken there is no Start at all (one recording at a time:
+ * the hero shows Stop), not a disabled one with a reason beside every row.
  */
-export function OpenAtLoginLine({ phase, error, onUndo, onDismiss }: OpenAtLoginLineProps) {
-  return (
-    <div className="notice calendar-login" role="status">
-      <span className="calendar-login-text">
-        {phase === 'on' ? 'Roger will open at login so it can remind you.' : null}
-        {phase === 'approval'
-          ? `Roger needs your OK to open at login. Allow it in ${LOGIN_ITEMS_SETTINGS_PATH}.`
-          : null}
-        {phase === 'undone'
-          ? 'Roger will not open at login. You can change this in Settings.'
-          : null}
-        {error === null ? null : ` Roger could not undo it: ${error}`}
-      </span>
-      {phase === 'on' ? (
-        <button
-          type="button"
-          className="btn"
-          data-variant="secondary"
-          data-size="sm"
-          onClick={onUndo}
-        >
-          Undo
-        </button>
-      ) : null}
+export function MeetingAction({
+  entry,
+  startBlocked,
+  onStart,
+  onOpen,
+}: { entry: TimedEntry } & MeetingActions) {
+  const { event, meetingId, startNotes } = entry;
+  if (meetingId !== null) {
+    return (
       <button
         type="button"
-        className="btn"
-        data-variant="secondary"
+        className="btn today-action"
+        data-variant="ghost"
         data-size="sm"
-        onClick={onDismiss}
+        aria-label={`Open note for ${eventTitle(event)}`}
+        onClick={() => {
+          onOpen(meetingId);
+        }}
       >
-        Dismiss
+        Open note
       </button>
-    </div>
+    );
+  }
+  if (!startNotes || startBlocked) return null;
+  return (
+    <button
+      type="button"
+      className="btn today-action"
+      data-variant="ghost"
+      data-size="sm"
+      aria-label={`Start notes for ${eventTitle(event)}`}
+      onClick={() => {
+        onStart(event);
+      }}
+    >
+      Start notes
+    </button>
   );
 }

@@ -32,6 +32,12 @@ describe('formatClock', () => {
     expect(formatClock(at(9, 14).getTime())).toBe('9:14 am');
   });
 
+  it('can write another zone, for the calendar helper whose tests pin one', () => {
+    const instant = Date.UTC(2026, 9, 6, 3, 42);
+    expect(formatClock(instant, 'Asia/Kolkata')).toBe('9:12 am');
+    expect(formatClock(instant, 'UTC')).toBe('3:42 am');
+  });
+
   it('follows the Mac when its time zone changes, because each call builds its own formatter', () => {
     const instant = Date.UTC(2026, 9, 7, 14, 30);
 

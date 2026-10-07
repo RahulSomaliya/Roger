@@ -1,129 +1,82 @@
 /*
- * The app shell: sidebar, banner slot, pages. Colours come only from the theme tokens
- * (theme/tokens.css, light and dark); theme/noLiteralColours.test.ts fails on a literal colour
- * here. Below 680px the sidebar becomes a bar across the top: the window opens 520 wide.
+ * The app shell: the header, the banner slot, the pages, and Home (docs/design.md is the spec).
+ * Colours come only from the theme tokens (theme/tokens.css, light and dark);
+ * theme/noLiteralColours.test.ts fails on a literal colour here. Type, space and radius read the
+ * ladders in styles.css.
+ *
+ * The rules under "Shared page rules" are still read by other screens (Settings, Set up Roger,
+ * the meeting page, the notes panel, the kept-audio card): each goes when its last user does, not
+ * before.
  */
 
 .shell {
-  /* The banner and every page share one column, so a warning lines up with the page below. */
-  --shell-content-width: 820px;
-  --shell-gutter: 24px;
-  display: grid;
-  grid-template-columns: 232px minmax(0, 1fr);
-  grid-template-rows: minmax(0, 1fr);
+  /* The header, the banner and every page share one column, so a warning lines up with the page
+     below. Home and Settings are 720 px; the meeting page is 760 px (68ch of 16 px text plus its
+     gutters), set by the data-route rule below. One breakpoint: 720 px. */
+  --shell-content-width: 720px;
+  --shell-gutter: var(--space-8);
+  display: flex;
+  flex-direction: column;
   height: 100vh;
 }
 
-.shell-full-window {
-  grid-template-columns: minmax(0, 1fr);
+.shell[data-route='meeting'] {
+  --shell-content-width: 760px;
 }
 
-/* Sidebar */
-
-.sidebar {
-  display: flex;
-  flex-direction: column;
-  gap: 18px;
-  min-height: 0;
-  padding: 16px 10px;
-  overflow-y: auto;
-  background: var(--fill);
-  border-right: 1px solid var(--line);
+@media (max-width: 719px) {
+  .shell {
+    --shell-gutter: var(--space-4);
+  }
 }
 
-.sidebar-head {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
+/* Header: Roger (Home), the recording chip when a call records, Settings. No fill, no border:
+   the page starts under it. */
+
+.app-header {
+  flex: none;
+  padding: var(--space-2) var(--shell-gutter);
 }
 
-.sidebar-brand {
-  padding: 0 8px;
-  font-size: 15px;
-  font-weight: 700;
-  letter-spacing: -0.01em;
-}
-
-/* Both sidebar buttons are .btn (styles.css); here they fill the sidebar's width. */
-.sidebar .sidebar-action {
-  width: 100%;
-  min-width: 0;
-}
-
-.sidebar-section {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  min-width: 0;
-}
-
-.sidebar-heading {
-  margin: 0;
-  padding: 0 8px;
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--ink-muted);
-}
-
-.sidebar-empty {
-  margin: 0;
-  padding: 0 8px;
-  font-size: 13px;
-  color: var(--ink-muted);
-}
-
-.sidebar-list {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.sidebar-foot {
-  margin-top: auto;
-}
-
-.sidebar-link {
+.app-header-inner {
   display: flex;
   align-items: center;
-  gap: 8px;
-  width: 100%;
-  min-width: 0;
-  padding: 6px 8px;
-  border: none;
-  border-radius: 6px;
-  background: none;
+  gap: var(--space-2);
+  max-width: var(--shell-content-width);
+  margin: 0 auto;
+}
+
+/* The wordmark is a ghost button (Home), a little heavier than a button label. */
+.app-brand {
+  margin-left: calc(-1 * var(--space-3));
   color: var(--ink);
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
-}
-
-.sidebar-link:hover,
-.sidebar-link[aria-current='page'] {
-  background: var(--fill);
-}
-
-.sidebar-link[aria-current='page'] {
   font-weight: 600;
 }
 
-.sidebar-link-text {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.app-header-end {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-left: auto;
 }
 
-.sidebar-link-meta {
-  flex-shrink: 0;
-  font-size: 12px;
+.app-header .icon-button {
+  width: 32px;
+  padding: 0;
+}
+
+.app-header [aria-current='page'] {
+  color: var(--ink);
+}
+
+/* The recording chip: the secondary look in a pill, the static dot, the word and the minutes. No
+   transition on the dot or the time: a screenshot would catch it mid-change. */
+.recording-chip {
+  border-radius: var(--radius-full);
   font-variant-numeric: tabular-nums;
+}
+
+.recording-chip-time {
   color: var(--ink-muted);
 }
 
@@ -131,6 +84,7 @@
 
 .shell-main {
   display: flex;
+  flex: 1;
   flex-direction: column;
   min-width: 0;
   min-height: 0;
@@ -139,19 +93,145 @@
 .banner-slot {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-2);
   width: 100%;
   max-width: calc(var(--shell-content-width) + 2 * var(--shell-gutter));
   margin: 0 auto;
-  padding: 12px var(--shell-gutter) 0;
+  padding: var(--space-2) var(--shell-gutter) 0;
 }
 
 .shell-page {
   flex: 1;
   min-height: 0;
-  padding: 24px var(--shell-gutter) 32px;
+  padding: var(--space-4) var(--shell-gutter) var(--space-8);
   overflow-y: auto;
 }
+
+/* Home: three groups (the hero, Today, Earlier) with more space between them than inside them. */
+
+.home {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-12);
+  /* The fixed left column of Today's times and Earlier's days, so the titles line up. */
+  --home-when-width: 104px;
+  max-width: var(--shell-content-width);
+  margin: 0 auto;
+}
+
+.home-hero {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-4);
+  padding-top: var(--space-6);
+}
+
+.home-hero-kicker {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0;
+}
+
+.home-hero-title {
+  margin: 0;
+  max-width: 100%;
+  font-size: var(--text-2xl);
+  line-height: var(--leading-2xl);
+  font-weight: 600;
+  letter-spacing: var(--tracking-2xl);
+  overflow-wrap: anywhere;
+}
+
+/* The live meeting's title opens it: a link that reads as the heading it is. */
+.home-hero-link {
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: none;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.home-hero-link:hover {
+  text-decoration: underline;
+}
+
+.home-hero-meta {
+  margin: calc(-1 * var(--space-2)) 0 0;
+  color: var(--ink-subtle);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Earlier: the past meetings, titles and the day. */
+
+.earlier {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.earlier-list {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.earlier-row {
+  display: grid;
+  grid-template-columns: var(--home-when-width) minmax(0, 1fr);
+  align-items: center;
+  gap: var(--space-3);
+  width: 100%;
+  min-height: 40px;
+  padding: 0 var(--space-3);
+  border: 0;
+  border-radius: var(--radius-md);
+  background: none;
+  color: var(--ink);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.earlier-row:hover {
+  background: var(--fill);
+}
+
+.earlier-when {
+  color: var(--ink-subtle);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.earlier-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Show more: the one way to the meetings past the first ten. */
+.earlier-more {
+  align-self: flex-start;
+}
+
+.earlier-problem {
+  align-items: center;
+}
+
+.earlier-problem > svg {
+  margin-top: 0;
+}
+
+/* Shared page rules */
 
 .page {
   display: flex;
@@ -206,12 +286,6 @@
   background: var(--surface);
 }
 
-.live-card {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
 .card-text {
   flex: 1;
   min-width: 0;
@@ -259,70 +333,4 @@
 
 .slot-failure {
   font-size: 13px;
-}
-
-/* Narrow window: the sidebar is a bar across the top, its items in a wrapping row. */
-@media (max-width: 679px) {
-  .shell {
-    grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: auto minmax(0, 1fr);
-  }
-
-  .sidebar {
-    flex-direction: row;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 6px 4px;
-    padding: 10px 12px;
-    overflow: visible;
-    border-right: none;
-    border-bottom: 1px solid var(--line);
-  }
-
-  .sidebar-head {
-    flex: 1 1 100%;
-    flex-direction: row;
-    align-items: center;
-    justify-content: space-between;
-  }
-
-  .sidebar .sidebar-action {
-    width: auto;
-  }
-
-  .sidebar-section {
-    flex-direction: row;
-    align-items: center;
-  }
-
-  .sidebar-heading,
-  .sidebar-empty {
-    display: none;
-  }
-
-  .sidebar-list {
-    flex-direction: row;
-  }
-
-  .sidebar-foot {
-    margin-top: 0;
-    margin-left: auto;
-  }
-
-  .sidebar-link {
-    width: auto;
-  }
-
-  .shell {
-    --shell-gutter: 16px;
-  }
-
-  .banner-slot {
-    padding-top: 10px;
-  }
-
-  .shell-page {
-    padding-top: 16px;
-    padding-bottom: 24px;
-  }
 }
