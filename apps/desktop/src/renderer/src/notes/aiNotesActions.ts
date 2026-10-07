@@ -126,8 +126,12 @@ export interface AiNotesLayout {
   restorable: NoteDoc | null;
   /** "Removed lines": the streaming run's, else the run that wrote the notes on show. */
   removed: DroppedLine[];
-  /** Lines of the notes on show marked "check this". */
-  flagged: number;
+  /**
+   * What the bar says the notes are: the template of the run streaming now, or of the run that
+   * wrote the notes on show and its lines marked "check this". Null while neither describes what
+   * is on show: notes edited since their run, or restored from an earlier one.
+   */
+  about: { templateId: string | null; flagged: number } | null;
   /** Why the run behind the notes on show could not be read (its removed lines are unknown). */
   runProblem: string | null;
   /** `stop` a running run, or `cancel` a waiting generate; null when there is nothing to stop. */
@@ -191,7 +195,9 @@ function waitingForNotes(cause: NotesWaitCause): string {
 export function describeRunError(error: RunError): { title: string; detail: string | null } {
   const title = RUN_ERROR_TITLES[error.code] ?? 'Roger could not generate the notes.';
   const said = error.message.trim();
-  const detail = said === '' || said === title || said.startsWith(title) ? null : said;
+  // A cancel is the user's own doing: whatever main says of it adds nothing.
+  const adds = error.code !== 'cancelled' && said !== '' && !said.startsWith(title);
+  const detail = adds ? said : null;
   return { title, detail };
 }
 
@@ -227,6 +233,14 @@ export function layoutAiNotes(state: AiNotesState): AiNotesLayout {
   const replaced = runOfNote?.replacedDoc ?? null;
   const restorable =
     canRegenerate && replaced !== null && !sameDoc(replaced, note.doc) ? replaced : null;
+  // The run's template and "check this" count describe the doc it wrote, and stop doing so once
+  // the user edits it or restores an earlier one. While a run starts, neither doc is settled.
+  const about =
+    stream !== null && live
+      ? { templateId: stream.templateId, flagged: 0 }
+      : note !== null && phase !== 'running' && !editedSinceRun(note)
+        ? { templateId: note.templateId, flagged: runOfNote?.flaggedCount ?? 0 }
+        : null;
   return {
     prompt: describePending(pending),
     failure: failureOf(pending, stream),
@@ -237,7 +251,7 @@ export function layoutAiNotes(state: AiNotesState): AiNotesLayout {
     canRegenerate,
     restorable,
     removed: shown !== null && stream !== null ? stream.dropped : (runOfNote?.dropped ?? []),
-    flagged: shown === null ? (runOfNote?.flaggedCount ?? 0) : 0,
+    about,
     runProblem:
       lastRun.status === 'failed' && note?.lastRunId === lastRun.runId ? lastRun.error : null,
     stop:

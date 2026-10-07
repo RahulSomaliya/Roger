@@ -375,8 +375,33 @@ describe('the session', () => {
     expect(layout.editor).toBe('shown');
     expect(layout.readOnly).toBe(false);
     expect(layout.removed).toEqual([{ text: 'Everyone agreed it went well', reason: 'no_refs' }]);
-    expect(layout.flagged).toBe(2);
+    expect(layout.about).toEqual({ templateId: 'client_call', flagged: 2 });
     expect(layout.empty).toBe(false);
+  });
+
+  it('describes notes only as their run wrote them, or the run streaming now', async () => {
+    const main = new FakeMain();
+    main.ai = aiNote();
+    const session = await opened(main);
+    expect(layoutAiNotes(session.getState()).about).toEqual({
+      templateId: 'client_call',
+      flagged: 2,
+    });
+
+    // A regeneration as General streams over the hidden notes: the bar names the new template.
+    main.pendingChanged(pendingGenerate({ phase: 'running' }, { templateId: 'general' }));
+    expect(layoutAiNotes(session.getState()).about).toBeNull();
+    main.event({ type: 'run', runId: NEXT_RUN, model: 'm', templateId: 'general', lineCount: 9 });
+    expect(layoutAiNotes(session.getState()).about).toEqual({ templateId: 'general', flagged: 0 });
+    main.event({ type: 'error', code: 'cancelled', message: 'Notes generation was cancelled.' });
+    main.pendingChanged(null);
+
+    // Restored earlier notes, or notes the user edited: the run's template and count no longer
+    // describe the doc on show.
+    main.noteChanged(aiNote({ dirty: true, revisionId: 'r-2' }));
+    expect(layoutAiNotes(session.getState()).about).toBeNull();
+    main.noteChanged(aiNote({ baseVersion: 5 }));
+    expect(layoutAiNotes(session.getState()).about).toBeNull();
   });
 
   it('shows the empty state with nothing written and nothing pending', async () => {
@@ -587,6 +612,8 @@ describe('describeRunError', () => {
       title: 'Notes generation was cancelled.',
       detail: null,
     });
+    // A cancel is the user's own doing: whatever main says, there is nothing to add.
+    expect(describeRunError({ code: 'cancelled', message: 'Cancelled.' }).detail).toBeNull();
     expect(
       describeRunError({
         code: 'empty_meeting',

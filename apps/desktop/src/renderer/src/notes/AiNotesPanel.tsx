@@ -268,10 +268,13 @@ interface AiNotesBarProps {
 /** The notes' template and lines to check, and Regenerate, Restore and Stop. */
 function AiNotesBar({ state, layout, actions, onRegenerate }: AiNotesBarProps) {
   const busy = state.busy !== null;
-  const name = templateName(state.templates, state.note?.templateId ?? null);
+  const { about } = layout;
+  const name = about === null ? null : templateName(state.templates, about.templateId);
   const meta = [
     name === null ? null : `${name} template`,
-    layout.flagged === 0 ? null : `${layout.flagged} ${plural(layout.flagged, 'line')} to check`,
+    about === null || about.flagged === 0
+      ? null
+      : `${about.flagged} ${plural(about.flagged, 'line')} to check`,
   ].filter((part) => part !== null);
   return (
     <div className="ai-notes-bar">
