@@ -820,11 +820,22 @@ describe('CaptureService metering', () => {
       audioSentMs,
       // Six minutes open at the API's $0.15 an hour, silent or not.
       estimatedCostUsd: 0.015,
+      // No chunk at all is a stall (G2), never silence: the gate kept nothing closed.
+      gatedMs: 0,
+      estimatedSavedUsd: 0,
     });
     expect(meter).toEqual({
       vendorName: 'Scripted',
-      total: { sessionsOpened: 2, connectedMs: 720_000, audioSentMs: 100, estimatedCostUsd: 0.03 },
+      total: {
+        sessionsOpened: 2,
+        connectedMs: 720_000,
+        audioSentMs: 100,
+        estimatedCostUsd: 0.03,
+        gatedMs: 0,
+        estimatedSavedUsd: 0,
+      },
       sources: { mic: source(100), system: source(0) },
+      silenceGate: 'on',
     });
 
     h.advance(60_000);
@@ -993,7 +1004,9 @@ describe('CaptureService reopen budget', () => {
     vi.useRealTimers();
   });
 
-  const chunk = () => new Uint8Array(3200);
+  // A voice, not digital silence: a minute of silence would let the silence gate (M3-T20) close
+  // the sessions these tests fail and reopen by hand.
+  const chunk = () => new Uint8Array(3200).fill(64);
   const bothTalk = (h: Harness) => () => {
     h.service.pushAudio('mic', chunk());
     h.service.pushAudio('system', chunk());
@@ -1620,6 +1633,8 @@ describe('CaptureService resume', () => {
         connectedMs: 720_000,
         audioSentMs: 500_000,
         estimatedCostUsd: 0.03,
+        gatedMs: 0,
+        estimatedSavedUsd: 0,
       },
       sources: {
         mic: {
@@ -1627,14 +1642,19 @@ describe('CaptureService resume', () => {
           connectedMs: 360_000,
           audioSentMs: 250_000,
           estimatedCostUsd: 0.015,
+          gatedMs: 0,
+          estimatedSavedUsd: 0,
         },
         system: {
           sessionsOpened: 16,
           connectedMs: 360_000,
           audioSentMs: 250_000,
           estimatedCostUsd: 0.015,
+          gatedMs: 0,
+          estimatedSavedUsd: 0,
         },
       },
+      silenceGate: 'on',
     });
 
     await h.service.stop();
@@ -1644,6 +1664,33 @@ describe('CaptureService resume', () => {
       stopReason: 'user',
     });
     expect(h.service.getStatus().meter?.total.sessionsOpened).toBe(32); // kept after Stop
+  });
+
+  it("carries the saved row's time closed for silence forward, so a resume never zeroes it", async () => {
+    const h = harness();
+    const meetingId = leftOpen(h);
+    const row = h.store.getSttUsage(meetingId);
+    if (row === null) throw new Error('no saved row');
+    h.store.saveSttUsage({
+      ...row,
+      gatedMs: 50_000,
+      bySource: {
+        mic: { ...row.bySource.mic, gatedMs: 20_000 },
+        system: { ...row.bySource.system, gatedMs: 30_000 },
+      },
+    });
+    await h.service.start({ resume: { meetingId } });
+    h.advance(MINUTE);
+    // Priced at this run's $0.15 an hour: the saved row keeps no price of its own.
+    const meter = h.service.getStatus().meter;
+    expect(meter?.total).toMatchObject({ gatedMs: 50_000, estimatedSavedUsd: 0.0021 });
+    expect(meter?.sources.mic).toMatchObject({ gatedMs: 20_000, estimatedSavedUsd: 0.0008 });
+
+    await h.service.stop();
+    expect(h.store.getSttUsage(meetingId)).toMatchObject({
+      gatedMs: 50_000,
+      bySource: { mic: { gatedMs: 20_000 }, system: { gatedMs: 30_000 } },
+    });
   });
 
   it("starts the meeting's open allowance afresh, whatever the saved row counted", async () => {
@@ -2340,5 +2387,110 @@ describe('CaptureService start requests (M5)', () => {
         meetingId: recording.meetingId,
       }),
     ]);
+  });
+});
+
+describe('CaptureService silence gate (M3-T20)', () => {
+  function infoLog() {
+    const lines: Record<string, unknown>[] = [];
+    const infoLogger = createLogger({
+      level: 'info',
+      format: 'json',
+      sink: (line) => lines.push(JSON.parse(line) as Record<string, unknown>),
+    });
+    return { lines, logger: infoLogger };
+  }
+
+  /** Lets the token fetches and closes in flight settle. */
+  const settle = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
+
+  /**
+   * `ms` of a call where the mic talks and the call audio is digital silence (nobody else has
+   * joined), in 100 ms chunks on the harness clock. Both send chunks, so neither stalls.
+   */
+  function talkOverSilence(h: Harness, ms: number): void {
+    for (let passed = 0; passed < ms; passed += 100) {
+      h.advance(100);
+      h.service.pushAudio('mic', new Uint8Array(3200).fill(64), h.now() - 100);
+      h.service.pushAudio('system', new Uint8Array(3200), h.now() - 100);
+    }
+  }
+
+  it('closes call audio that only hears silence, and its closed time reaches the status, the log and stt_usage', async () => {
+    const log = infoLog();
+    const h = harness({ logger: log.logger });
+    const { meetingId } = await h.service.start();
+    talkOverSilence(h, 60_000); // a session lives a minute at least
+    await settle();
+    expect(h.stt.streams.get('system')?.closed).toBe(true);
+    expect(h.stt.streams.get('mic')?.closed).toBe(false);
+    const gated = h.service.getStatus();
+    expect(gated.streams.system).toBe('paused');
+    expect(gated.streamMessages.system).toMatch(/^silent for \d+ s; reopens when someone speaks$/);
+    // The close was metered like any mid-meeting close.
+    expect(log.lines.find((line) => line.message === 'stt meter')).toMatchObject({
+      closedSource: 'system',
+      silenceGate: 'on',
+    });
+
+    talkOverSilence(h, 10_000);
+    const meter = h.service.getStatus().meter;
+    // 10 s closed at the API's $0.15 an hour.
+    expect(meter?.sources.system).toMatchObject({ gatedMs: 10_000, estimatedSavedUsd: 0.0004 });
+    expect(meter?.sources.mic).toMatchObject({ gatedMs: 0, estimatedSavedUsd: 0 });
+    expect(meter?.total).toMatchObject({ gatedMs: 10_000, estimatedSavedUsd: 0.0004 });
+    expect(meter?.silenceGate).toBe('on');
+
+    await h.service.stop();
+    expect(h.service.getStatus().meter?.total.gatedMs).toBe(10_000); // kept after Stop
+    expect(log.lines.find((line) => line.message === 'stt meter at stop')).toMatchObject({
+      total: { gatedMs: 10_000, estimatedSavedUsd: 0.0004 },
+      system: { gatedMs: 10_000 },
+      silenceGate: 'on',
+      gateReopens: 1,
+    });
+    expect(h.store.getSttUsage(meetingId!)).toMatchObject({
+      gatedMs: 10_000,
+      bySource: { mic: { gatedMs: 0 }, system: { gatedMs: 10_000 } },
+    });
+  });
+
+  it('hands the session each token with its expiry, so the prefetched one is refreshed in time', async () => {
+    const h = harness();
+    await h.service.start();
+    talkOverSilence(h, 60_000);
+    await settle();
+    // Start's token, then the one prefetched at the close: good for 30 s (expires_in).
+    expect(h.api.getSttToken).toHaveBeenCalledTimes(2);
+    talkOverSilence(h, 19_900);
+    await settle();
+    expect(h.api.getSttToken).toHaveBeenCalledTimes(2);
+    talkOverSilence(h, 100); // 10 s before it expires
+    await settle();
+    expect(h.api.getSttToken).toHaveBeenCalledTimes(3);
+    await h.service.stop();
+  });
+
+  it('is off with sttSilenceCloseMs 0: a silent source keeps its session, and the meter says so', async () => {
+    const h = harness({ guards: { sttSilenceCloseMs: 0 } });
+    await h.service.start();
+    talkOverSilence(h, 120_000);
+    await settle();
+    expect(h.stt.streams.get('system')?.closed).toBe(false);
+    expect(h.service.getStatus().meter).toMatchObject({
+      silenceGate: 'off',
+      total: { gatedMs: 0 },
+    });
+    await h.service.stop();
+  });
+
+  it('says the gate is spent once its own reopens are used', async () => {
+    const h = harness({ guards: { sttSilenceReopensPerMeeting: 1 } });
+    await h.service.start();
+    talkOverSilence(h, 60_000);
+    await settle();
+    expect(h.service.getStatus().meter?.silenceGate).toBe('spent');
+    await h.service.stop();
+    expect(h.service.getStatus().meter?.silenceGate).toBe('spent');
   });
 });

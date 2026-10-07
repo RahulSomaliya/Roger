@@ -11,6 +11,7 @@ import {
   type CapturePhase,
   type CaptureStatus,
   type CaptureWarning,
+  type SilenceGateState,
   type SourceStatus,
   type StartCaptureRequest,
   type SttMeter,
@@ -34,13 +35,13 @@ import type { MicrophoneAccess } from '../permissions';
 import type { MeetingSttUsage, TranscriptStore } from '../store/TranscriptStore';
 import type { SpeechToTextFactory } from '../stt/createSpeechToText';
 import type { SpeechToText, SttStreamSettings } from '../stt/SpeechToText';
-import type { SttUsage } from '../stt/usage';
+import { estimateCostUsd, type SttUsage } from '../stt/usage';
 import { streamSettingsMismatch } from '../stt/streamSettings';
 import type { TranscriptUploader } from '../upload/TranscriptUploader';
 import { Emitter } from '../util/emitter';
 import { withTimeout } from '../util/time';
 import { AudioFanout, type AudioSink } from './AudioFanout';
-import { CaptureSession, type StreamCredentials } from './CaptureSession';
+import { CaptureSession, type SilenceGateSettings, type StreamCredentials } from './CaptureSession';
 import { SttOpenBudget } from './SttOpenBudget';
 import { type StopReason, stopNotice } from './stopReasons';
 
@@ -280,6 +281,12 @@ interface ResolvedStt extends StreamCredentials {
   pricePerHourUsdWithoutKeyterms: number | null;
 }
 
+/** What the silence gate kept closed (M3-T20), as the meter shows it. */
+interface GateFigures {
+  gatedMs: number;
+  estimatedSavedUsd: number | null;
+}
+
 interface StreamRetry {
   reason: string;
   /** Clock time the source may reopen, with its next chunk. */
@@ -320,6 +327,11 @@ export class CaptureService {
   /** The last meeting's meter, shown after Stop until the next Start. */
   private lastMeter: SttMeterStatus | null = null;
   private sttProvider: string | null = null;
+  /**
+   * Start's token's price per stream-hour: a resumed meeting's saved time closed for silence is
+   * priced at it, since stt_usage keeps the time and not the price (M3-T20).
+   */
+  private pricePerHourUsd: number | null = null;
   private startedAt: string | null = null;
   /** The recording meeting's title, from the moment its meeting is made or resumed. */
   private title: string | null = null;
@@ -713,6 +725,7 @@ export class CaptureService {
       const stt = this.options.createSpeechToText(provider);
       this.stt = stt;
       this.sttProvider = provider;
+      this.pricePerHourUsd = settings.pricePerHourUsd;
       this.startedAt = new Date(startedAtMs).toISOString();
       if (resume === undefined) {
         // Kept as the API stores it (storedMeetingText), and blank as the API and the start check
@@ -742,6 +755,7 @@ export class CaptureService {
         budget: this.budget,
         reopenBackoffMs: this.guards.sttReopenBackoffMs,
         reopenBackoffMaxMs: this.guards.sttReopenBackoffMaxMs,
+        silenceGate: this.silenceGateSettings(),
         store,
         logger: logger.child({ meetingId }),
         clock: this.clock,
@@ -1052,12 +1066,20 @@ export class CaptureService {
         accessToken: '',
         settings: FAKE_STREAM_SETTINGS,
         pricePerHourUsdWithoutKeyterms: FAKE_STREAM_SETTINGS.pricePerHourUsd,
+        // The fake's empty token never expires.
+        expiresAtMs: null,
       };
     }
     const token = await this.options.api.getSttToken();
     return {
       provider: token.provider,
       accessToken: token.access_token,
+      // From when it arrived: the silence gate's prefetched token is refreshed before this, and a
+      // gate reopen fetches anew when it has under 5 s left (CaptureSession, M3-T20). An API that
+      // names no lifetime (the response is cast, not validated) gives no known expiry.
+      expiresAtMs: Number.isFinite(token.expires_in)
+        ? this.clock() + token.expires_in * 1000
+        : null,
       settings: {
         model: token.stream.model,
         language: token.stream.language,
@@ -1106,6 +1128,7 @@ export class CaptureService {
     this.stt = null;
     this.savedUsage = null;
     this.sttProvider = null;
+    this.pricePerHourUsd = null;
     this.startedAt = null;
     this.title = null;
     this.recordingSinceMs = null;
@@ -1243,22 +1266,35 @@ export class CaptureService {
     if (stt === null || provider === null) return;
     const total = this.usage(stt);
     const bySource = { mic: this.usage(stt, 'mic'), system: this.usage(stt, 'system') };
+    // What the silence gate kept closed (M3-T20): in the log line beside each figure, and its time
+    // in the saved row (stt_usage.gated_ms), which SttUsageUploader sends up.
+    const gated = {
+      total: this.gateFigures(),
+      mic: this.gateFigures('mic'),
+      system: this.gateFigures('system'),
+    };
     const { logger, store } = this.options;
     logger.info(stopReason === null ? 'stt meter' : 'stt meter at stop', {
       meetingId,
       provider,
       closedSource,
       stopReason,
-      total,
-      mic: bySource.mic,
-      system: bySource.system,
+      total: { ...total, ...gated.total },
+      mic: { ...bySource.mic, ...gated.mic },
+      system: { ...bySource.system, ...gated.system },
+      silenceGate: this.silenceGateState(),
+      gateReopens: this.session?.gateReopens ?? 0,
     });
     try {
       store.saveSttUsage({
         meetingId,
         provider,
         total,
-        bySource,
+        bySource: {
+          mic: { ...bySource.mic, gatedMs: gated.mic.gatedMs },
+          system: { ...bySource.system, gatedMs: gated.system.gatedMs },
+        },
+        gatedMs: gated.total.gatedMs,
         stopReason,
         updatedAt: new Date(this.clock()).toISOString(),
       });
@@ -1279,11 +1315,51 @@ export class CaptureService {
     return addUsage(source === undefined ? saved.total : saved.bySource[source], live);
   }
 
+  /**
+   * What the silence gate kept closed this meeting (M3-T20), one source or both: the session's,
+   * plus a resumed meeting's saved time (savedUsage, priced at this run's Start price). Read while
+   * the session lives: Stop computes the last meter before it lets the session go.
+   */
+  private gateFigures(source?: AudioSource): GateFigures {
+    const live = this.session?.gateUsage(source) ?? { gatedMs: 0, estimatedSavedUsd: 0 };
+    const saved = this.savedUsage;
+    const savedMs = (source === undefined ? saved?.gatedMs : saved?.bySource[source].gatedMs) ?? 0;
+    if (savedMs === 0) return live;
+    const savedUsd = estimateCostUsd(savedMs, this.pricePerHourUsd);
+    return {
+      gatedMs: savedMs + live.gatedMs,
+      estimatedSavedUsd:
+        savedUsd === null || live.estimatedSavedUsd === null
+          ? null
+          : Math.round((savedUsd + live.estimatedSavedUsd) * 10_000) / 10_000,
+    };
+  }
+
+  /** The gate's settings for a session, or null when sttSilenceCloseMs 0 turns it off. */
+  private silenceGateSettings(): SilenceGateSettings | null {
+    const { sttSilenceCloseMs, sttSilencePreRollMs, sttSilenceReopensPerMeeting } = this.guards;
+    if (sttSilenceCloseMs <= 0) return null;
+    return {
+      closeAfterMs: sttSilenceCloseMs,
+      preRollMs: sttSilencePreRollMs,
+      reopensPerMeeting: sttSilenceReopensPerMeeting,
+    };
+  }
+
+  /** The session's gate state; before its session exists, what the settings make it. */
+  private silenceGateState(): SilenceGateState {
+    return this.session?.silenceGateState ?? (this.silenceGateSettings() === null ? 'off' : 'on');
+  }
+
   private meterStatus(stt: SpeechToText): SttMeterStatus {
     return {
       vendorName: stt.vendorName,
-      total: toMeter(this.usage(stt)),
-      sources: { mic: toMeter(this.usage(stt, 'mic')), system: toMeter(this.usage(stt, 'system')) },
+      total: toMeter(this.usage(stt), this.gateFigures()),
+      sources: {
+        mic: toMeter(this.usage(stt, 'mic'), this.gateFigures('mic')),
+        system: toMeter(this.usage(stt, 'system'), this.gateFigures('system')),
+      },
+      silenceGate: this.silenceGateState(),
     };
   }
 
@@ -1315,13 +1391,11 @@ function addUsage(saved: SttUsage, live: SttUsage): SttUsage {
   };
 }
 
-function toMeter({
-  sessionsOpened,
-  connectedMs,
-  audioSentMs,
-  estimatedCostUsd,
-}: SttUsage): SttMeter {
-  return { sessionsOpened, connectedMs, audioSentMs, estimatedCostUsd };
+function toMeter(
+  { sessionsOpened, connectedMs, audioSentMs, estimatedCostUsd }: SttUsage,
+  { gatedMs, estimatedSavedUsd }: GateFigures,
+): SttMeter {
+  return { sessionsOpened, connectedMs, audioSentMs, estimatedCostUsd, gatedMs, estimatedSavedUsd };
 }
 
 /**
