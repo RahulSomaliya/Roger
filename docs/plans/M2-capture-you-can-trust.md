@@ -504,7 +504,7 @@ plus one slot block. Every task is TDD: the failing test first,
 - [x] **M2-T14a Echo filter, pure** · S · desktop · depends on: none (wave 0).
   Owns `src/main/capture/echo/EchoFilter.ts` (+ test): hide, trim runs of 3 or more words, no
   Electron imports, so M3-T11's bench can load it.
-- [ ] **M2-T14b Echo sink** · M · desktop · depends on: T3, T3b, T4, T5, T6, T14a.
+- [x] **M2-T14b Echo sink** · M · desktop · depends on: T3, T3b, T4, T5, T6, T14a.
   Owns the rest of `src/main/capture/echo/*` and the T14b runtime slot. A
   session sink: suppress, trim, emit "segment changed", hold mic lines until the call-audio
   watermark or stream close (cap 120 s), release on Stop, `settleAll(launchedAt)` at startup
@@ -526,7 +526,7 @@ plus one slot block. Every task is TDD: the failing test first,
   at once when it steps back; the live `bytes` is the meeting's audio on disk (an encoded file at
   its m4a size, a resumed meeting's earlier audio included); a recording that kept no audio leaves
   no folder. No call lists the meetings whose audio is kept for a re-run: T16 adds it (wave 6).
-- [ ] **M2-T16 Gap re-run** · M · desktop · depends on: T6, T14b, T15.
+- [x] **M2-T16 Gap re-run** · M · desktop · depends on: T6, T14b, T15.
   Owns `src/main/rerun/*`. Reads WAV or decodes m4a with `afconvert -f WAVE -d LEI16@16000`,
   streams at real time through a fresh `SttStream`, drops overlapping words, runs mic lines
   through `EchoSink.filterStored`, saves lines with `origin = 'rerun'`, marks gaps recovered or
@@ -541,7 +541,12 @@ plus one slot block. Every task is TDD: the failing test first,
   T20b's Home card, with its channel in `shared/ipc/capture.ts` (bridge, preview fake, the stub in
   `AudioCaptureController.test.ts`), its request in `main/ipc.ts` and `createCaptureRequests`, and
   its handler filled from the T16 slot (build order, section 10, "From wave 4").
-- [ ] **M2-T17a Call app monitor** · S · desktop · depends on: T8, T10, T14b.
+  As built: gap reasons are `stt_failed`, `offline`, `asleep` (M2-T18), `budget` and `crash`, and
+  the re-run treats every reason alike. The meetings kept for a re-run are read with
+  `listMeetingsKeptForRerun()`, which has no change event: ask again after `rerunGaps` or
+  `deleteMeetingAudio`. The echo doubling known gap (a gap on the call-audio side only) is open
+  for the owner: build order, "Open items after Phase 2".
+- [x] **M2-T17a Call app monitor** · S · desktop · depends on: T8, T10, T14b.
   Owns `src/main/detect/MeetingAppMonitor.ts`, `src/main/detect/callApps.ts`. Runs the monitor
   helper through `HelperProcess` while Roger runs, sends `recording on` and `recording off`,
   resolves call apps (FaceTime daemons included), feeds the echo filter's `RouteProvider`. Roger's
@@ -550,7 +555,7 @@ plus one slot block. Every task is TDD: the failing test first,
   `route` event its slot calls `signalMonitor.setMicBluetooth(route.input?.transport ===
   'bluetooth')` (D4), and a status contributor sets `sources.mic.device` from `route.input.name`,
   which T11's `SignalMonitor` turns into the "Switched to <device>" notice and capture event.
-- [ ] **M2-T17b Offer and auto-stop** · M · desktop · depends on: T11, T12, T17a, M5-T5,
+- [x] **M2-T17b Offer and auto-stop** · M · desktop · depends on: T11, T12, T17a, M5-T5,
   M5-T9b (`PromptService.offer`). M5-T11 (close hides) is needed for the exit check, not to build.
   Owns `src/main/detect/CallDetector.ts` (pure), `src/main/detect/CallOffer.ts`, the T17b runtime
   slot. `CallOffer` passes detections (after the 10-minute dismiss cooldown) to
@@ -559,7 +564,7 @@ plus one slot block. Every task is TDD: the failing test first,
   through the normal stop with a new `call-ended` `StopReason` (`capture/stopReasons.ts` and its
   notice, wave 7), the "Stopped: the call in Zoom ended" notification through T11's `Notifier`,
   the 60 s wake grace, `callDetection` off switch.
-- [ ] **M2-T18 Sleep and wake** · S · desktop · depends on: T6, T10, T12.
+- [x] **M2-T18 Sleep and wake** · S · desktop · depends on: T6, T10, T12.
   Owns `src/main/power/PowerCoordinator.ts` and, in wave 5, the `suspend` handling in
   `src/main/lifecycle.ts` (with its test). Suspend and resume as designed (a delta on G4:
   `watchApp` no longer stops on `suspend`; `PowerCoordinator` calls T6's
@@ -570,7 +575,11 @@ plus one slot block. Every task is TDD: the failing test first,
   had closed stays closed until speech (T20 keeps it so in `CaptureSession`). The reason is
   required and lifts only `asleep`: an `offline` suspend still in force stays until T6's network
   poll lifts it.
-- [ ] **M2-T19 Permission setup screen** · M · desktop · depends on: T1, T2, T7b, T9, T10, T11,
+  As built: adds the gap reason `asleep` (the audio held since `suspend`, for a sleep of
+  `noSpeechStopMs` or more). Open: G5's wall-clock check can run before Electron delivers
+  `resume`, so such a stop may read `no-speech` instead of `system-sleep`; a G5 that skips paused
+  `asleep` time in `CaptureService` would fix it (build order, "Open items after Phase 2").
+- [x] **M2-T19 Permission setup screen** · M · desktop · depends on: T1, T2, T7b, T9, T10, T11,
   T13, M4-S1 (setup route), M4-S3 (preview harness).
   Owns `src/main/setup/*`, `src/renderer/src/components/setup/*`, `e2e/setup.shots.e2e.ts`,
   `renderer/src/app/slots/m2-setup.ts`, the T19 runtime slot. Rows:
@@ -582,7 +591,10 @@ plus one slot block. Every task is TDD: the failing test first,
   session: every open is billed and spends the per-minute budget). Shown on first run, when Start
   fails for a permission reason, and from a menu item. Every error names the pane and the switch to
   flip, and offers "Relaunch Roger" where macOS needs it.
-- [ ] **M2-T20a Capture status UI** · S · desktop · depends on: T2, T11, T13, M4-S1 (banner
+  As built: the Electron shots `e2e/setup.shots.e2e.ts` became browser QA, `e2e/m2-t19.qa.e2e.ts`
+  (no Electron was launched). The real probe, the test notification, the System Audio pane anchor
+  and the relaunch were not run on a Mac: they are part of the exit check.
+- [x] **M2-T20a Capture status UI** · S · desktop · depends on: T2, T11, T13, M4-S1 (banner
   slot), M4-S4 (meeting-page regions).
   Owns `src/renderer/src/components/capture/{WarningBanner,StreamStatus,LevelMeter,Notices}.tsx`
   (+ tests), `e2e/capture-status.shots.e2e.ts`, `renderer/src/app/slots/m2-capture-status.ts`
@@ -596,7 +608,12 @@ plus one slot block. Every task is TDD: the failing test first,
   `streamMessages`, and the stop notice (`CaptureStatus.notice`, also shown by M4-S1's frame):
   replacing the panel must not drop the cost the owner asked to see. Mounted in the shell's banner
   slot and the meeting page's capture status region.
-- [ ] **M2-T20b Capture details UI** · M · desktop · depends on: T14b, T15, T16, T17b, T20a,
+  As built: the Electron shots `e2e/capture-status.shots.e2e.ts` became browser QA,
+  `e2e/m2-t20a.qa.e2e.ts`. A stream row says "Reconnecting" with no countdown of its own, because
+  `CaptureStatus` carries no retry time per stream; the banner shows the countdown. With a dead
+  mic the stream chip still reads "Transcribing" (the level meter and the banner carry the
+  warning): an owner call.
+- [x] **M2-T20b Capture details UI** · M · desktop · depends on: T14b, T15, T16, T17b, T20a,
   T23, M4-S4.
   Owns the other files in `src/renderer/src/components/capture/` (`EchoLines`, `AudioKept`,
   `RerunProgress`, `CaptureReport`, `ResumedNotice`), `e2e/capture-details.shots.e2e.ts`,
@@ -605,7 +622,11 @@ plus one slot block. Every task is TDD: the failing test first,
   trimmed echo text, with Unhide on hidden lines only (main refuses a trimmed one), "audio kept until ..." with delete and "kept for a re-run",
   re-run progress, capture report, "Roger restarted and kept taking notes" with Stop. The Home
   card's list of meetings kept for a re-run comes from T16's call (assigned after wave 4).
-- [ ] **M2-T21 Docs** · S · docs · depends on: all others.
+  As built: no component for "Stopped because the call ended": main's `CaptureStatus.notice`
+  already shows in the shell banner. `EchoLines` lists only the lines it saw change while the page
+  was open, and says how many more changed that it cannot list, because `StoredMeeting.segments`
+  has no hidden flag (an owner call, build order "Open items after Phase 2").
+- [x] **M2-T21 Docs** · S · docs · depends on: all others.
   CLAUDE.md repo map (`apps/desktop/native`), commands (`make native`, `make e2e-desktop`,
   `make test-native-route`), failure log lines found during M2 (each in the file its trap belongs
   in, section 3.1 of the build order); `apps/desktop/README.md` (helper, permissions, audio folder,
@@ -621,7 +642,7 @@ plus one slot block. Every task is TDD: the failing test first,
   default once wave 6 is installed; with it on, the gated time and gate reopens from the same
   line). A first word missed after a silence counts against "no lost or doubled text". The "Done
   when" procedure, recorded below.
-- [ ] **M2-T23 Crash resume** · M · desktop · depends on: T3b, T4, T5, T8, T10, T12, T14b, T16,
+- [x] **M2-T23 Crash resume** · M · desktop · depends on: T3b, T4, T5, T8, T10, T12, T14b, T16,
   T17a.
   Owns `src/main/recovery/CrashRecovery.ts` (+ test) and `[slot M2-T23]` in `index.ts`, which
   replaces M1's startup `endMeetingsLeftOpen` call (it also ends meetings a quit left open after

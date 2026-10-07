@@ -98,8 +98,8 @@ AssemblyAI, the TTL is only the window to open a stream, one key opens both stre
 session cap (5 hours, the vendor's maximum) is asked for explicitly. Soniox bills tokens: the audio
 sent, silence included (about $0.06 an hour), and the text returned (about $0.06 an hour of
 continuous speech), so its $0.12 errs high. The jargon list costs a few input tokens per stream
-opened (under $0.001 for the longest list), so the price is the same with a list. Until the
-desktop's Soniox adapter lands (M3-T15), Start on the Mac refuses `soniox`.
+opened (under $0.001 for the longest list), so the price is the same with a list. The desktop's
+Soniox adapter is M3-T15's; before it, Start on the Mac refused `soniox`.
 
 Two vendor rules to know before testing (read 2026-10-06):
 

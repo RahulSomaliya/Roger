@@ -42,10 +42,25 @@ error when it leaves Roger without an API token. The keys:
 | `ROGER_STT_PROVIDER`      | `sttProvider`   | Set to `fake` to run without the API choosing a vendor (development). |
 | `ROGER_LOG_LEVEL`         | `logLevel`      | `debug`, `info`, `warn` or `error`.                                   |
 
-The cost guards below take their keys and variables the same way.
+The cost guards below take their keys and variables the same way. The capture settings are
+`config.json` keys only, with no environment variable. A value of the wrong type or out of range
+keeps its default and blocks Start with an error naming the key, as a cost guard does:
 
-The local safety copy lives at `roger.sqlite` in the same app data folder. On launch, any meeting a
-crash or force-quit left open is ended at its last line, and the uploader resumes where it stopped.
+| config.json key      | Default       | Meaning                                                                                                                                                                                               |
+| -------------------- | ------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `systemAudioCapture` | `"auto"`      | How call audio is captured. `"auto"`: the helper's tap when its binary exists, else Electron's desktop capture. `"tap"`: the helper only, and Start fails without it. `"electron"`: never the helper. |
+| `audioBackup`        | `true`        | Keep each call's audio on this Mac (see Audio backup). `false`, or a retention of 0, keeps none.                                                                                                      |
+| `audioRetentionDays` | `7` (0 to 30) | Days a call's audio is kept. 0 turns the backup off.                                                                                                                                                  |
+| `callDetection`      | `true`        | Offer to take notes when a call app uses the mic, and stop the recording when the call ends. `false` turns off both.                                                                                  |
+| `echoFilter`         | `true`        | Hide mic lines that repeat call audio (laptop speakers). Known headphones turn it off for the lines said while they played.                                                                           |
+
+No key names the helper binary, here or anywhere in `config.json`: a config file must never choose
+the program that hears every call. Roger runs the helper bundled in the app, or, unpackaged, the
+dev build.
+
+The local safety copy lives at `roger.sqlite` in the same app data folder. On launch, a meeting
+Roger was recording under 10 minutes ago may resume (see Crash resume); any other meeting a crash
+or force-quit left open is ended at its last line, and the uploader resumes where it stopped.
 A meeting reaches Postgres with its first line; one stopped before anyone spoke leaves no trace
 there. Each meeting's speech-to-text use is kept in its `stt_usage` table (see Cost guards).
 
@@ -84,13 +99,17 @@ of range blocks Start with an error naming it: a typo never loosens a guard.
 
 Fixed behaviour, not settings:
 
-| Guard                     | What happens                                                                                                                                                                                                                                                                                                                                    |
-| ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Failed or ended source    | Its session closes at once ("not connected"); the other source keeps going. It does not reopen: a dead track never comes back.                                                                                                                                                                                                                  |
-| Keep-alive                | Deepgram's KeepAlive and Soniox's keepalive are sent only while the stream is open and its source sent audio within the stall window, so a stalled stream is never kept alive.                                                                                                                                                                  |
-| Vendor session cap        | The API asks AssemblyAI for `max_session_duration_seconds=10800` on every token and Soniox for `18000` (each vendor's maximum, explicit). At it AssemblyAI closes with 3008, Soniox sends `temp_api_key_session_expired`, and Roger reopens a fresh session.                                                                                    |
-| Quit, sleep, close, crash | Quit (Cmd+Q included), the Mac going to sleep, the window closing, the renderer crashing or reloading all stop the recording through the normal stop, logged and kept as the meeting's `stt_usage.stop_reason`. Sleep, a crash or a reload leave a notice saying why; quit and a closed window (which quits Roger) leave no window to show one. |
-| Connect and close         | A connect times out after 10 s; Stop terminates any socket the vendor has not closed 5 s after the finish sequence (`SttConnection`).                                                                                                                                                                                                           |
+| Guard                  | What happens                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Failed or ended source | Its session closes at once ("not connected"); the other source keeps going. It does not reopen: a dead track never comes back.                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| Keep-alive             | Deepgram's KeepAlive and Soniox's keepalive are sent only while the stream is open and its source sent audio within the stall window, so a stalled stream is never kept alive.                                                                                                                                                                                                                                                                                                                                                                          |
+| Vendor session cap     | The API asks AssemblyAI for `max_session_duration_seconds=10800` on every token and Soniox for `18000` (each vendor's maximum, explicit). At it AssemblyAI closes with 3008, Soniox sends `temp_api_key_session_expired`, and Roger reopens a fresh session.                                                                                                                                                                                                                                                                                            |
+| Quit, close, reload    | Quit (Cmd+Q included) stops the recording through the normal stop, logged and kept as the meeting's `stt_usage.stop_reason`; it leaves no window to show a notice. Closing the window only hides it, and the recording goes on. A renderer crash or a reload does not stop: the page reloads and reopens the mic, and until it does the stall close shuts the mic's session after 30 s. A page that cannot be brought back, or crashes 3 times in 60 s, stops the recording (`renderer-gone`) with a notice.                                            |
+| Sleep                  | Both sessions close at once when the Mac sleeps, so no socket is left half-open and billing. At wake each source reopens with its next audio, through the open budget, and the call audio helper restarts. A sleep of the no-speech stop (15 min) or longer is not a pause in a meeting: the recording stops at wake (`system-sleep`, with a notice), and the audio held since the suspend becomes a gap re-run from the backup. While recording, Roger holds a power save blocker so an idle Mac does not sleep mid-call (closing the lid still does). |
+| Offline                | Both sources show `offline` within about 1 s of the network dropping. Their sockets are terminated (no finish sequence), the audio is held, and nothing reopens or fetches a token until the network is back; each source then reopens with its next audio, without a backoff wait. The window with no transcript is a gap, re-run from the backup after Stop. The no-speech stop still ends a recording after 15 minutes offline.                                                                                                                      |
+| Call ended             | With `callDetection` on, a recording in which a call app was seen on the mic stops (`call-ended`, a notification) once no call app has held it for 15 s (30 s for a browser). The no-speech and 4-hour stops stay as the backstop for a recording that never saw a call app.                                                                                                                                                                                                                                                                            |
+| Crash                  | A crash or `kill -9` leaves the meeting open; see Crash resume.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| Connect and close      | A connect times out after 10 s; Stop terminates any socket the vendor has not closed 5 s after the finish sequence. A socket that sends a ping every 1 s while audio flows and gets neither a pong nor a message for 4 s is declared dead, and the reopen path takes over (`SttConnection`).                                                                                                                                                                                                                                                            |
 
 What it cost shows in the status panel ("AssemblyAI · 25m 00s connected · about $0.06" for a
 12½-minute call: the time sums both sources' sessions, since each bills; then what the silence gate
@@ -104,6 +123,63 @@ Each row goes up to the API after it changes (every 30 s while the API answers, 
 most 5 min after failures, and at once after Stop), where `GET /v1/stt-usage/summary` sums the
 cost per meeting hour (docs/api-contract.md, "STT usage").
 
+## Call audio and permissions
+
+Call audio ("Them") comes from `roger-audio`, a small Swift helper (`native/roger-audio`) that taps
+the system's output with Core Audio and writes PCM to Roger. `make native` builds it for this
+Mac's CPU (`make check` does too, on a Mac). In a packaged app it is
+`Roger.app/Contents/Resources/bin/roger-audio`, signed by `make install-desktop` as
+`ai.linkt.roger.audio` with the app's identity; `make install-desktop` fails if it is missing. The
+helper also runs in monitor mode from launch to quit: it reports which apps hold the mic (for call
+detection) and which output device plays, and it relaunches Roger once if Roger is killed while
+recording (see Crash resume). A hung helper is killed after 3 s and restarted.
+
+Which permissions Roger needs depends on the path:
+
+| Path                                                                     | macOS permissions                                    |
+| ------------------------------------------------------------------------ | ---------------------------------------------------- |
+| With the helper (the default once it is built)                           | Microphone, and System Audio Recording only          |
+| Electron's fallback (no helper, or `systemAudioCapture` is `"electron"`) | Microphone, System Audio Recording, Screen Recording |
+| `systemAudioCapture` is `"tap"` and there is no helper                   | Start fails and says so                              |
+
+Roger's setup screen (the app menu, and on first run or a Start refused for a permission) checks
+each one: the microphone, call audio (it plays a short sound and listens for it), notifications (a
+test one), the signing identity, and the API and the speech-to-text token (it fetches a token and
+opens no vendor session). Every failure names the pane and the switch to flip.
+
+In `make dev-desktop` the helper is the dev build when it exists (run `make native` first on a
+fresh clone), and macOS attributes its tap to the terminal, so call audio is silent there just as
+with Electron's path (see macOS notes): test it from the installed app.
+
+## Audio backup and gap re-run
+
+Every call's audio is kept on this Mac, never uploaded, so a stretch that was not transcribed can be
+re-run. It lives under the app data folder in `audio/<meeting>/` (folders mode 0700, files 0600),
+one file per source: written as WAV in pieces of at most 60 s and compressed to 48 kbps AAC by
+`afconvert` once a piece is closed. It is kept 7 days (`audioRetentionDays`, 0 to 30), swept at
+launch and hourly. Audio with a gap that has not been re-run yet is kept up to 30 days. The backup
+pauses below 2 GiB of free disk (a loud warning; the text goes on) and resumes by itself. A meeting
+page can delete its audio.
+
+A gap is any stretch where a source's audio reached Roger but not the vendor: a failed or budget-
+refused reopen, the network down, a sleep, or the audio a crash cut off. After Stop, and at launch
+for crash tails, Roger re-transcribes each gap from the backup through a fresh session at real time,
+drops words that overlap lines already saved, and saves the rest as ordinary lines. It starts only
+while nothing records, takes slots from the same per-minute open budget as a live reopen, and its
+connected time is added to the meeting's `stt_usage` (the vendor bills it). A gap with no audio left
+stays unrecovered.
+
+## Crash resume
+
+The monitor helper notices when Roger dies while recording and relaunches it once (`--relaunched`).
+At launch Roger resumes the same meeting, instead of ending it, when it was last seen recording
+under 10 minutes ago and either this launch is that relaunch or a call app holds the mic. A resume
+keeps the meeting's cost record (the `stt_usage` row carries on) and starts a fresh open allowance;
+the time Roger was down has no audio, so it shows as a `resumed_after_crash` event, not as a gap, and
+the window says "Roger restarted and kept taking notes", with Stop. A resume that is refused (no
+microphone, no token, the vendor) ends the meeting as a crash, and Roger relaunches itself once per meeting,
+so a Roger that dies on every start does not loop.
+
 ## Layout
 
 ```
@@ -112,6 +188,8 @@ src/preload    the contextBridge that exposes window.roger (nothing else reaches
 src/main       Electron main: capture state machine, STT adapters, SQLite store, uploader, API client,
                the window and what its page may do (page-policy.ts)
 src/renderer   React UI and audio capture (getUserMedia, desktop capture, AudioWorklet)
+native         roger-audio, the Swift audio helper (`make native`)
+e2e, qa        the Electron smoke test and the browser QA scripts (qa/README.md)
 ```
 
 Data flow: renderer worklet → `audio:chunk` IPC → `CaptureService` → one `SttStream` per source →
@@ -224,15 +302,18 @@ bills for a silent stream, and whether it can be asked to close an idle session 
 ## macOS notes
 
 - The main process asks for microphone access before the renderer calls `getUserMedia`.
-- System audio uses Chromium's desktop capture, which on macOS 14.2+ is a Core Audio tap gated by
-  the "System Audio Recording" permission. `NSAudioCaptureUsageDescription` is set in
+- Call audio comes from the Swift helper's Core Audio tap, gated by the "System Audio Recording"
+  permission only. Without a helper Roger falls back to Chromium's desktop capture, which is the
+  same kind of tap and also needs Screen Recording. `NSAudioCaptureUsageDescription` is set in
   `electron-builder.yml`; without it macOS hands over a dead track and no error.
 - In dev mode (`make dev-desktop`) the process macOS checks is the terminal, not Roger. cmux,
   iTerm2 and Terminal.app have no `NSAudioCaptureUsageDescription`, so the system audio ("Them")
-  stream is dead with no error from macOS. Its row may well keep counting "s captured": the
-  "no audio for over 5 s" warning (and, after 30 s, closing its session) fires only when no audio
-  arrives at all (the renderer, its worklet or IPC stopped), not for a live stream of silence,
-  which is M2's silence warning; the 15-minute no-speech stop bounds that one.
+  stream is dead with no error from macOS, and the helper's tap is attributed to the terminal in
+  the same way. Its row may well keep counting "s captured": the "no audio for over 5 s" warning
+  (and, after 30 s, closing its session) fires only when no audio arrives at all (the renderer, its
+  worklet or IPC stopped), not for a live stream of silence. That is the call-audio silence warning:
+  on screen after 8 s of digital silence, a macOS notification after 60 s while the mic hears
+  speech or 180 s whatever it hears, and the 15-minute no-speech stop bounds it.
   Test call audio with `make install-desktop`: the packaged app carries the key.
 - Verified on 2026-10-05: the packaged Roger.app on macOS 26.6.2 (Apple Silicon)
   captured both streams, with the API on `STT_PROVIDER=fake`.
@@ -245,12 +326,12 @@ bills for a silent stream, and whether it can be asked to close an idle session 
   after a rebuild macOS silently denied call audio ("No screen source is available for system
   audio") while System Settings still showed Roger switched on (2026-10-06). When the identity
   changes, `install:mac` clears Roger's old grants with `tccutil reset` so macOS asks again once.
-- Call audio uses Chromium's desktop capture, so macOS needs both **Screen & System Audio
-  Recording** and **Microphone** for Roger. macOS applies a new Screen Recording grant only after
-  Roger restarts.
+- With the helper, macOS needs **Microphone** and **System Audio Recording** for Roger, and no
+  Screen Recording. Only Electron's fallback also needs **Screen & System Audio Recording**, and
+  macOS applies a new Screen Recording grant only after Roger restarts.
 - Which prompts macOS shows (Microphone, System Audio Recording, Screen Recording) is recorded in
-  `docs/plans/M1-walking-skeleton.md` once the exit check runs. A Swift helper is the fallback if
-  the built-in path proves unreliable; it would replace `openSystemAudioStream` only.
+  `docs/plans/M1-walking-skeleton.md` once the exit check runs. M2's setup screen checks each one
+  and opens its System Settings pane.
 
 ## Checks
 
@@ -262,4 +343,16 @@ pnpm test        # vitest
 pnpm build       # electron-vite build into out/
 pnpm package:mac # unsigned .dmg/.zip in dist/ (signing is M11)
 pnpm install:mac # build, sign with the local identity, replace /Applications/Roger.app
+pnpm test:mac    # the *.mac.test.ts suite: real afconvert and the real helper (macOS only)
+pnpm test:e2e    # the Electron smoke test, `make e2e-desktop` from the repo root
 ```
+
+From the repo root, `make check` on a Mac also builds the helper, runs `roger-audio selftest` (no
+tap, no device, no privacy prompt) and `pnpm test:mac`. `make test-native-route` is not part of it:
+it plays a tone and switches this Mac's default output device to prove the tap follows the switch.
+
+`make e2e-desktop` builds the app and launches the unpackaged Electron with a temporary data
+folder, a fake helper, fake audio and the fake speech-to-text vendor, and checks lines reach the
+window. Each checkout fetches the Electron binary once
+(`node node_modules/electron/install.js` in `apps/desktop`, when pnpm's install scripts are off).
+The `*.qa.e2e.ts` files beside it are browser QA, not Electron (`qa/README.md`).

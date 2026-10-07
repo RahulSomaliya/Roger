@@ -1966,3 +1966,79 @@ hand-offs, wave 5 first:
   M4-T16's 1 s Stop wait per window until M4-T20. The first real-model eval is yours:
   `NOTES_PROVIDER=openrouter` with `OPENROUTER_API_KEY`, then `make eval-notes` (optionally
   `ARGS="--reasoning on"`, `--model ...` or `--judge-model ...`).
+
+## Open items after Phase 2
+
+Written when waves 0 to 9 were merged and the integration gate was green (2026-10-07). Nothing
+below is built or checked yet; the milestone plans' unticked boxes are the same list.
+
+**Code that is still unwired (no task owns it; do these first, they are why nothing shows up on
+screen for calendar and call offers):**
+
+1. `PromptWindow` is never constructed. In `index.ts`, build `new PromptWindow({ prompts, page:
+   resolveAppPage(), preloadPath: join(__dirname, '../preload/prompt.js'), logger })` after
+   `promptService.start()`, stop it in the quit sequence, and call `registerPromptIpc({ ipcMain,
+   getWindow: () => promptWindow.panel, prompts: calendar.prompts, logger })` (the panel as
+   `getWindow`, never the main window). Until then reminders and call offers reach `PromptService`
+   and no card is drawn. It needs `screen` and a `BrowserWindow` constructor in
+   `src/main/testing/electronRuntimeMock.ts`, and the hidden panel stays in
+   `BrowserWindow.getAllWindows()`, so any `activate` or `window-all-closed` logic must count the main
+   window only (`isPromptPageUrl` can also refuse the main window navigating to `prompt.html`).
+2. `startKeepRunning({ calendar: null })` in `index.ts` should get `{ account, sync, cache }` from
+   the calendar runtime (M5-T11's hand-off). Until then the menu bar names no meetings and a
+   calendar connect turns no login item on.
+3. G5's no-speech check can win the wake race: after a sleep of 15 minutes or more the stop may read
+   `no-speech` instead of `system-sleep`. A G5 that skips paused `asleep` time in `CaptureService`
+   (`checkForgottenStop`) fixes it (M2-T18).
+4. Cleanup: `mergeTranscriptLines` and its test (`shared/meetings.ts`), the `.health-*` rules in
+   `styles.css`, and the `.transcript`, `.line` and `.empty` rules the live transcript replaced.
+
+**Owner decisions still open:**
+
+- **Echo doubling (raised by M2-T16).** A gap on the call-audio side only (`stt_failed`, `budget`)
+  while the mic stays up leaves the mic lines said in it uploaded, and the re-run later brings their
+  call-audio twins: the same words under Me and Them. (a) `EchoSink` keeps holds past Stop until
+  the re-run has decided them, or (b) accept it and rely on the capture report. See
+  `EchoSink.filterStored`'s doc.
+- **A hidden flag on stored lines.** `StoredMeeting.segments` (`shared/meetings.ts`) carries none,
+  so `EchoLines` can only list lines it saw change while the page was open and says how many it
+  cannot list. A flag would give the full list.
+- A dead mic shows the stream chip as "Transcribing" in the ok colour (the meter and the banner
+  carry the warning); the prompt panel follows macOS light or dark, not the theme preference; the
+  calendar runtime starts its account and sync with no API token, so it fails and backs off (the
+  stale card tells the truth); the copy of a notice uses `navigator.clipboard` in the page, with a
+  clipboard channel in main as the fallback (M2-T20a, M5-T10, M5-T9c, M5-T12).
+- Each builder's "calls to confirm or reverse" in section 10 and in the task hand-offs (M2-T16's
+  six, M3-T19b's backoff and batch sizes, M4-T18 and T19's product calls, M5-T9b's outcome window
+  and card lifetimes, M5-T12's declined-meeting rule). None is blocking.
+
+**Checks only a person can run (on the Mac, on the installed app):**
+
+- The exit checks with real calls: M2-T22 (10 calls, the three timed cuts, `kill -9`, the lid, AirPods,
+  two from the offer, the 2-hour soak), M3-T16 and T17 (the test set and the bake-off), M4 (5 calls
+  with a stopwatch, `make eval-notes` on exported calls), M5 (the 20-call streak). Each call records
+  its `stt meter at stop` log line.
+- The phase gate on the Mac: `make check` with the helper selftest and `pnpm test:mac`, the full
+  `make e2e-desktop` (builders ran only their own e2e files; if a window misses only in the full
+  run, set `fileParallelism: false` in `vitest.e2e.config.ts`), and `make test-native-route` once
+  (audible: it plays a tone and switches the default output).
+- M2-T1's settings-pane links: that the System Audio Recording link opens the right list, and the
+  other panes (M2-T19's setup screen uses them), plus the real test notification (does Electron emit
+  `show` on the self-signed build) and the real probe through the signed helper.
+- The Electron clipboard write behind "Copy notice" (M5-T12; M5-T13 checked a stand-in only).
+- M5's six real-Mac checks (login item, reboot to prompt to one click, the panel over a full-screen
+  call with `skipTransformProcessType` and one-click `acceptFirstMouse`, a hidden window for an hour,
+  closing the window mid-call, dev and installed app together) and its three real-key checks.
+- Which WebKit process holds the mic in a real Safari call (M2-T17a), AirPods "Switched to" from a
+  real route, and the menu bar icon tint.
+- Publish the QA galleries as Artifacts (M2-T19, M2-T20a, M2-T20b, M3-T9, M4-T20, M5-T13; the
+  shots are in the scratchpad's `p2/qa-*` and `qa-out` folders), then Rahul merges `phase-2` into
+  `main` (human-only).
+
+**Keys and accounts needed:**
+
+- `OPENROUTER_API_KEY` with `NOTES_PROVIDER=openrouter` (M4's real notes, chat and `make eval-notes`).
+- A Google Cloud project with a Desktop OAuth client (`GOOGLE_OAUTH_CLIENT_ID`,
+  `GOOGLE_OAUTH_CLIENT_SECRET`) and `CALENDAR_TOKEN_KEY` (M5; the steps are in the M5 plan).
+- `ASSEMBLYAI_API_KEY` with the training opt-out done, `DEEPGRAM_API_KEY` and `SONIOX_API_KEY` for the
+  M3 bake-off, and the Deepgram opted-out price read in its console.

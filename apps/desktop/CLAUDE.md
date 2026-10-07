@@ -22,10 +22,17 @@ Extends the root `CLAUDE.md`, whose house rules and repo-wide failure log apply 
   `useState` initializer. Keep the latest callback in a plain variable on the once-made object and
   update it from a layout effect. `renderToString` runs no effects: test effect-based registration
   through the registry, not through server rendering (M4-T21a). It also puts `<!-- -->` between
-  adjacent text pieces (`2<!-- --> of <!-- -->100`): strip it before matching text (M3-T8).
-- A vitest test can switch time zones with `process.env.TZ`, but assert
+  adjacent text pieces (`2<!-- --> of <!-- -->100`): strip it before matching text (M3-T8). A
+  render-phase `setState` also re-runs under `renderToString`, so a latch set while rendering shows
+  only if the test asserts something the page renders from the second shell (`MeetingPage.test.ts`,
+  M3-T9). `renderToStaticMarkup` writes `checked` before `value`, whatever the JSX order (M4-T18).
+  A component using `useId` cannot be called as a plain function in a node test: mock `useId`
+  through `vi.mock('react', ...)` or test a hook-free child (M5-T12).
+- A vitest test can switch time zones with `process.env.TZ` (in `src/renderer` and `src/shared`,
+  where `process` has no types: `vi.stubEnv('TZ', zone)` and `vi.unstubAllEnvs()` after), but assert
   `new Date(...).getTimezoneOffset()` inside the switch, or a TZ test passes when the switch did
-  nothing (M5-T8).
+  nothing (M5-T8, M5-T12). An `Intl.DateTimeFormat` keeps the zone it was made in: build one per
+  render, never at module level, or it writes the old zone's clock after a macOS zone change.
 - `vi.setSystemTime(later)` moves `Date.now` and shifts every fake timer with it: each keeps its
   remaining wait and none fires, as Node timers behave over a Mac sleep (their clock stops; libuv
   source, not yet seen on a sleeping Mac). Recheck a deadline that must hold across sleep from the
@@ -130,7 +137,9 @@ Extends the root `CLAUDE.md`, whose house rules and repo-wide failure log apply 
   `make check` on a Mac, `native/bin/roger-audio` exists, `auto` picks it, and a Start builds a
   real tap (a privacy prompt for whatever runs the tests). Use an `e2e-fake` location or a temp app
   folder holding only the fake (`createSystemAudio.test.ts`), and mock `app.getAppPath()` to a
-  folder with no helper (`createCaptureRuntime.test.ts`) (M2-T10).
+  folder with no helper (`createCaptureRuntime.test.ts`) (M2-T10). The call app monitor starts at
+  launch and runs the same helper: a test that builds the runtime on the real `apps/desktop` sets
+  `ROGER_E2E=1` for the fake (`monitorSlot.test.ts`) (M2-T17a).
 - Node's `child_process.spawn` throws at once for every errno but EACCES, EAGAIN, EMFILE, ENFILE
   and ENOENT (ENOEXEC for a half-written binary, EBADARCH for an x64 app carrying an arm64 helper);
   those five arrive as `error`, then `close` (code -2), never `exit`. A child's stdin emits EPIPE
@@ -184,3 +193,103 @@ Extends the root `CLAUDE.md`, whose house rules and repo-wide failure log apply 
   `SCAN meetings` (its test reads `EXPLAIN QUERY PLAN`). An index on `json_extract(column)` makes
   SQLite refuse a write of malformed JSON, yet it takes JSON5, which `JSON.parse` refuses: keep the
   read's parse guard (M5-T5).
+- `util/emitter.ts`'s `Emitter` stops at the first listener that throws, and the throw surfaces in
+  whatever emitted: a throwing `segment` listener skips `ipc.ts`'s send of the line to the window
+  and breaks `CaptureSession.handleEvent` before the line's watermark. Guard every listener, as
+  `EchoSink.guard` and `PromptService.guarded` do (M2-T14b, M5-T9b).
+- `SttConnection.test.ts`'s "declares the socket dead when nothing came for 4 s" (real ws server,
+  3 s `waitFor`) timed out under a loaded parallel gate and passed 5 of 5 alone: rerun it alone
+  before blaming a change, and lengthen the wait if it recurs (M2-T6, M5-T11).
+- At wake, `CaptureService`'s 500 ms monitor tick (G5, wall clock) can run before Electron's
+  `powerMonitor` `resume`: after a sleep of `noSpeechStopMs` or more the stop reads `no-speech`,
+  not `system-sleep`. `PowerCoordinator` leaves a stop under way alone; only a G5 that skips paused
+  `asleep` time would fix the reason (M2-T18; open, see the build order's "Open items").
+- A feature that calls `capture.refreshStatus()` and also listens to `capture.on('status')`
+  re-enters its own listener synchronously: start a worker only after its handle is set
+  (`GapRetranscriber.kick`), and make a test double's `refreshStatus` emit a status as
+  `CaptureService` does, or the recursion shows only in the real runtime (M2-T16).
+- `afconvert` writes `WAVE_FORMAT_EXTENSIBLE` (tag 0xFFFE, the real format in the sub-format GUID
+  at +24) even for mono PCM16: a WAV reader that checks the plain tag refuses every decoded m4a,
+  and only the real-tool test (`gapAudio.mac.test.ts`) catches it (M2-T16).
+- Never map a Bluetooth output to `headphones` from its transport alone (`outputRouteOf`): it may
+  be a speaker, and headphones turn the echo filter off, so every echo uploads. Unknown is the safe
+  reading (M2-T17a).
+- `MeetingAppMonitor` reports an EMPTY call-app list when its helper is lost, which read as everyone
+  letting go stops a live call 15 s later: a reader of `onCallApps` checks `monitor.running` first
+  (`CallDetector.lose`). `recording on` goes out once per meeting, never again in one a
+  `--relaunched` launch resumed, or a Roger that crashes on every resume relaunches forever
+  (`MeetingAppMonitor.attach`) (M2-T17a, M2-T17b).
+- `app.relaunch()` with no `args` passes argv on, `--relaunched` included: filter it
+  (`setup/electronSetupPorts.ts` `relaunchArgs`) or the next launch reads as the crash monitor's
+  relaunch (M2-T19).
+- `CallOffer`'s PromptService is late-bound: `index.ts` calls `callOffer.bindPrompts` after
+  `createCalendarRuntime`, and an offer due before it is logged and dropped. `powerMonitor`
+  suspend and resume have two listeners on purpose: `PowerCoordinator` acts, `CallOffer` only
+  holds `CallDetector`'s release across a sleep (M2-T17b).
+- `[slot M2-T23]` in `index.ts` runs before the capture runtime but resumes through `capture`: it
+  defers with `setImmediate` and its closure reads `capture` before that line. An `await` between
+  that slot and `createCaptureRuntime(` puts the closure in the TDZ (a ReferenceError in main);
+  `CrashRecovery.test.ts` reads `index.ts` as text and fails on one. A meeting kept open for a
+  resume is ended per meeting (`setMeetingStopReason` plus `markMeetingEnded`), never with
+  `store.endMeetingsLeftOpen` after launch, which ends one a Start of this run just made (M2-T23).
+- A silence-gate test (M3-T20, on by default) that pushes exact zeros for a minute or more meets the
+  gate: sessions close after 60 s and a "reopen" test reopens on nothing. Push a voice level
+  (`new Uint8Array(3200).fill(64)`) or set `sttSilenceCloseMs: 0`; a `fill(1)` chunk is not silence
+  either, since any chunk 9 dB over a zeros floor reads as speech. A flow test that builds
+  `CaptureService` also needs its speech-to-text double to implement `usage()`, or Start fails with
+  "stt.usage is not a function" and capture stays idle with no other symptom (M3-T20, M5-T9c).
+- A memory test after a forced `gc` leaves out V8's `code_space` and `trusted_space` (V8 flushes
+  unused bytecode on its own schedule, about 1 MB between two measurements). Get `gc` in a Vitest
+  worker with `v8.setFlagsFromString('--expose-gc')` then `vm.runInNewContext('gc')`, and wait a
+  real `setImmediate`: backing stores are freed a tick after (`CaptureService.soak.test.ts`,
+  M3-T4b).
+- Vitest fake timers give a `setTimeout(0)` set while a tick runs a 1 ms delay, so
+  `advanceTimersByTimeAsync(0)` never runs a 0 ms timer chained inside a pass: assert a bound.
+  Start and Stop on `FakeSpeechToText` resolve through microtasks only, so a 0 ms timer set when
+  the runtime is built fires after both: wait for the launch pass first (`sttUsageSlot.test.ts`).
+  A pass with nothing to send finishes in the turn it started but its promise is still pending:
+  check a "send again" flag in the `finally`, or a `sendNow` in that turn is lost (M3-T19b).
+- `react-hooks/immutability` (v7) refuses a write to `someProp.current` unless the prop's name ends
+  in `Ref`: pass a ref down as `fooRef`. `FormEvent` is deprecated in `@types/react` 19 and lint
+  fails on it: let an `onSubmit` handler's event type be inferred (M4-T19).
+- electron-vite builds both preloads in ONE pass: a module `preload/index.ts` and `preload/prompt.ts`
+  both import becomes `chunks/<name>.js`, which a sandboxed preload cannot `require()`, so
+  `window.roger` or `window.rogerPrompt` is missing with no build error. `prompt.ts` writes its own
+  invoke and subscribe; `preload/prompt.test.ts` fails on a shared import (M5-T10).
+- `page-policy`: the prompt page counts as the app for navigation (`isAppPageUrl`) but must stay
+  out of `isPermissionAllowed`. Any new page in that folder inherits media from `isAppPageUrl`
+  unless it is excluded as `isPromptPageUrl` is. A `BrowserWindow` created `show: false` with the
+  default `backgroundThrottling` never paints, so a height reported from its page never arrives:
+  the prompt panel sets `backgroundThrottling: false` (M5-T10).
+- `RecordingLifecycle` reads its `quitHooks` at quit, but `index.ts` builds it before the feature
+  slots that follow: a later slot joins through one late-bound entry (`let stopCalendar`,
+  `run: () => stopCalendar?.()`), and a hook that awaits the account runs before the cache closes.
+  The main window's `focus` is unreachable before `createMainWindow`: use
+  `app.on('browser-window-focus', ...)`, so the never-focusable prompt panel is not "the user
+  looking" (M5-T9c).
+- Closing the main window only hides it (M5-T11). `watchWindow` stops the recording on `closed`,
+  never `close`, which fires for a hide too, and `hideOnClose` (`app/windowLifecycle.ts`) must let a
+  close through while `RecordingLifecycle.quitting` is true, or Cmd+Q never exits
+  (`windowLifecycle.test.ts` runs the real quit sequence). A dev build's data folder is "Roger Dev"
+  (`app/userDataPath.ts`, set before `requestSingleInstanceLock`): productName is "Roger" in dev
+  too, so both shared one userData, one lock and one `roger.sqlite`. Never register a login item
+  unpackaged or under `ROGER_E2E` (`loginItemPolicy.decideLoginItem`); `openAsHidden` is gone on
+  macOS 13+, use `wasOpenedAtLogin`. Tray icons are `build/tray*Template.png` plus `@2x` (the
+  `Template` suffix makes macOS tint them), reach a packaged app only through `electron-builder.yml`
+  `extraResources`, and `createFromPath` of a missing file returns an EMPTY image with no error.
+- A meeting-page region that is a grid row must scroll inside itself: `.meeting-notes-panel` had no
+  overflow, so a tall AI panel painted over the chat and took its clicks, and only `expectVisible`
+  (`elementFromPoint`) caught it (M4-T20). A component mounted in a slot file that reads
+  `window.roger` breaks every Node test that renders the real slots: mock the slot file
+  (`vi.mock('../app/slots/m4-notes', () => ({ contributions: {} }))`, likewise `m5-calendar`),
+  never stub `window` (`MeetingPage.test.ts`, `AppLayout.test.ts`; M4-T20, M5-T13).
+- QA traps. A check on what the page does as it loads cannot seed the preview fake (scenarios start
+  after the app subscribes): wrap `window.roger` in `context.addInitScript` (`m2-t19.qa.e2e.ts`
+  `openFirstRun`). `qa.expectVisible` uses `document.querySelector`, so `:text-is()` throws: give a
+  control a data attribute (M2-T19). A `dl`'s `textContent` joins label and value ("Saved
+  locally120 lines"): match per row (M2-T20a). Ask is disabled while the chat box is empty: type
+  first (M4-T19). The AI panel's streamed lines reuse `.note-editor-content` and come before the
+  editor: select `.ai-notes-editor .note-editor-content` (M4-T18), and assert Regenerate, not the
+  template name, which waits for the picker (M4-T20). The preview names a started meeting by the
+  clock: read `getCaptureStatus().title`, not the `h1`. `no-unnecessary-condition` applies inside
+  `page.evaluate`, where `textContent` is `string` and `?? ""` fails (M5-T13).

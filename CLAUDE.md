@@ -12,6 +12,7 @@ This file applies to every person and every coding agent working in this repo. `
 | Path | What it is |
 | --- | --- |
 | `apps/desktop` | Electron + React + TypeScript Mac app. Captures audio, streams it to speech-to-text, shows the live transcript. |
+| `apps/desktop/native` | `roger-audio`, the Swift audio helper: call audio through a Core Audio tap, the mic and call-app monitor, the permission probe. `make native` builds it (macOS). |
 | `apps/api` | FastAPI + Postgres. Source of truth for meetings and transcripts. Hosts the MCP server at `/mcp`. |
 | `docs/` | Spec, roadmap, milestone plans (`docs/plans/`), research notes (`docs/research/`), the API contract (`docs/api-contract.md`). |
 | `scripts/` | Small helper scripts. Anything longer than a screen belongs in an app. |
@@ -29,10 +30,18 @@ make dev-desktop
 make install-desktop  # build Roger.app for this Mac's CPU, sign with a local identity, install it
 make bench ARGS="run" # STT benchmark: clip, run, draft, check, score, report, forget, canary
 make stt-canary       # synthetic jargon clip through the vendor the local API serves (make dev-api)
+make native           # build the Swift audio helper into apps/desktop/native/bin (macOS; make check does it on a Mac)
+make test-native-route  # opt-in, audible: plays a tone and switches the default output; the helper's tap must follow
+make e2e-desktop      # Electron smoke test: builds, then runs with a fake helper, audio and speech-to-text
+make eval-notes       # notes eval over apps/api/evals/notes/cases (ARGS="--judge-model ...")
+make eval-notes-fixes # edit size between each meeting's generated notes and the current ones
 ```
 
 The benchmark's method, results and vendor log are in `docs/research/stt-benchmark.md`, which
-also says how to run each command.
+also says how to run each command. How to run the notes eval: the module docstring of
+`apps/api/src/roger_api/evals/notes_eval.py`. `make e2e-desktop` needs the Electron binary once per
+checkout (see the failure log). On a Mac `make check` also runs the helper's selftest and the
+`*.mac.test.ts` suite; it never creates a real tap or raises a privacy prompt.
 
 `make help` lists everything. Per-app commands live in `apps/api/pyproject.toml` and
 `apps/desktop/package.json`; the Makefile only delegates.
@@ -71,8 +80,28 @@ milestone plan.
    `createCaptureRuntime.ts` shares with `CaptureService`) and the bench's (its own budget). The
    budget's doc comment lists these callers; a new caller is added there and here in one change.
    A source with no audio never holds an open vendor session: a failed or ended source closes its
-   session at once, a silent one after the stall window, and it reopens only with audio. The
-   numbers live in `apps/desktop/src/main/costGuards.ts`.
+   session at once, a stalled one after the stall window and one whose chunks hold no speech after
+   the silence gate's hang-over (`sttSilenceCloseSeconds`), and it reopens only with audio, a gated
+   one only with speech. The numbers live in `apps/desktop/src/main/costGuards.ts`.
+
+## Where things are (desktop)
+
+| To find | Look in `apps/desktop/src/main/` |
+| --- | --- |
+| Start, Stop, the status the window reads | `capture/CaptureService.ts`; per-source sessions and reopens: `capture/CaptureSession.ts` |
+| Vendor sockets, the open budget, the cost numbers | `stt/core/SttConnection.ts`, `capture/SttOpenBudget.ts`, `costGuards.ts` |
+| Loud warnings and notifications | `capture/SignalMonitor.ts`, `capture/warnings.ts`, `notify/Notifier.ts` |
+| Mic lines that repeat call audio | `capture/echo/` (`EchoFilter` pure, `EchoSink` stores, hides and holds) |
+| Call audio, the monitor, the helper's place | `native/HelperProcess.ts`, `native/helperPath.ts`, `detect/MeetingAppMonitor.ts` |
+| Offer to take notes, stop when the call ends | `detect/CallDetector.ts` (rules), `detect/CallOffer.ts` |
+| Audio backup, gap re-run, crash resume | `backup/`, `rerun/`, `recovery/CrashRecovery.ts` |
+| Sleep and wake, quit, window close | `power/PowerCoordinator.ts`, `lifecycle.ts`, `app/windowLifecycle.ts` |
+| Permission setup screen's checks | `setup/` (`PermissionService`, the signing and audio probes) |
+| Local safety copy and its upload | `store/SqliteTranscriptStore.ts`, `upload/TranscriptUploader.ts`, `upload/SttUsageUploader.ts` |
+| Calendar, reminders, the prompt panel | `calendar/createCalendarRuntime.ts`, `prompt/PromptService.ts`, `prompt/PromptWindow.ts` |
+| Notes and chat in main | `notes/` (`NotesGenerator`, the IPC in `notes-ipc.ts`) |
+| Every feature's wiring, in order | `index.ts` and `capture/createCaptureRuntime.ts`, one `[slot <task>]` marker each |
+| The IPC contract | `src/shared/ipc.ts` and `src/shared/ipc/<feature>.ts` |
 
 ## Code rules
 
@@ -134,8 +163,10 @@ before you start.
 - Ruff `RUF001` rejects lookalike Unicode (en dash, curly quotes, `‹`) in Python string literals:
   write `\u2013`, `\u2019`, `\u2039`. An agent's Write and Edit tools both turn the escapes back
   into literal characters, in tests too (M4-T5, M3-T2, M5-T2), and in TypeScript strings and regexes
-  (a BOM in a regex failed `no-irregular-whitespace`; curly quotes passed silently, M3-T10): grep
-  `[^\x00-\x7F]` after every write or edit, and fix a hit with a script that emits the escape.
+  (a BOM in a regex failed `no-irregular-whitespace`; curly quotes passed silently, M3-T10): search
+  for non-ASCII after every write or edit and fix a hit with a script that emits the escape. On
+  this Mac use `perl -ne 'print if /[^\x00-\x7F]/'`: BSD grep has no `-P` and reads no `\x`
+  escapes, so a `grep` for it finds nothing (M3-T19b).
 - pnpm 10.28 here does NOT enforce the global `minimum-release-age=10080`: `@tiptap/core@^3.31.0`
   resolved to a 6-day-old 3.31.4 (P2-F3, 2026-10-06). After any `pnpm add`, check each new
   lockfile version's publish date (`npm view <pkg> time`). `@tiptap/react` pulls its bubble and
@@ -162,7 +193,9 @@ before you start.
   name the row id (`SqliteTranscriptStore` `parseWords`, `rowToSegment`) (M4-T7, M5-T3, M4-T15,
   P2-C1, M4-S4b).
 - The Mac's disk ignores case: two files in one folder whose names differ only in case break in
-  silence (an import resolved to the other file, TS1261; a write overwrote it) (M3-T7).
+  silence (an import resolved to the other file, TS1261; a write overwrote it, and a vitest run
+  still passed on the wrong content: `echoLines.ts` against `EchoLines.tsx` and their tests). Name
+  helpers distinctly and `ls` after creating a pair (M3-T7, M2-T20b).
 - A millisecond value the desktop computes can be fractional (a renderer capture time,
   `pcmBytesToMs`), and an API int field refuses it with a 422 (`int_from_float`): the uploaders
   then set the row aside for good. Round where the desktop makes the value
@@ -175,3 +208,8 @@ before you start.
   rename or move a symbol another file imports, grep its importers on `phase-2` and on the branches
   in flight (`git grep -n <name> $(git for-each-ref --format='%(refname:short)' refs/heads/p2/)`),
   and name the rename in your hand-off.
+- BSD `sed -i -E ...` reads `-E` as the backup suffix and leaves a stray `<file>-E` (found in
+  `git status`): edit with `perl -pi -e` or a script (M2-T17b). A relative path is read from the
+  wrong folder twice over: `git -C <worktree> commit -F <file>` resolves it in the worktree, and
+  `pnpm exec vitest ... > ../../x.log` from `apps/desktop` lands in the repo root. Use absolute
+  paths for message and log files (M2-T20b).

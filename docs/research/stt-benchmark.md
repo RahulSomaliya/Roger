@@ -80,8 +80,11 @@ A whole bake-off is about 4 stream hours, under $3 even at a doubled Deepgram pr
 
 Run F replays the winner with each stream going through the app's `SilenceGate`, closing and
 reopening the vendor session as `CaptureSession` does, at the desktop's settings (a 30 s hang-over
-and a 1 s pre-roll by default) and with a prefetched token. `run --gate` is parsed today and
-refused by the replay until M3-T20 (wave 6) builds it, with the report columns below.
+and a 1 s pre-roll by default) and with a prefetched token, as `run --gate`. The report reads a
+gated run's latency against the latest finished run on the same provider, model and keyterms
+without the gate (`baselineFor` in `bench/run/report.ts`), and a first-word miss is one of the
+first 5 words of a reference line that starts within [reopen item offset - 1 s, + 3 s). The report
+columns are below.
 
 - **Latency, split in two.** The same per-word display latency as every run, once for the words
   carried by sessions the gate reopened and once for all the others. The added lag is the reopened

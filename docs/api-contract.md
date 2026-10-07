@@ -206,7 +206,7 @@ model is one config line on the API: `STT_PROVIDER` names a preset, a vendor and
 `provider` is always the vendor id, `"assemblyai" | "deepgram" | "soniox" | "fake"`, never the
 preset. Both sides keep a vendor registry with the same provider ids (`STT_VENDORS` in
 `stt_vendors.py`, `apps/desktop/src/main/stt/registry.ts`); the desktop never sees presets. The
-API may list a vendor before the desktop has its adapter (`soniox` until M3-T15): Start then
+API may list a vendor before the desktop has its adapter (`soniox` did until M3-T15): Start then
 fails on the Mac with "Unsupported speech-to-text provider".
 
 | `STT_PROVIDER` (preset) | `provider` | `stream.model` | `stream.price_per_hour_usd_without_keyterms`, and `price_per_hour_usd` with no jargon list | `stream.price_per_hour_usd` with a jargon list |

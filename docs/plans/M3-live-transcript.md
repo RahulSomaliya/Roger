@@ -447,10 +447,13 @@ Ordering for the controller: merge T4a before any call or bench run that goes to
 the two-vendor draft), or that audio goes to Deepgram without `mip_opt_out`. M2's exit-check calls
 run on AssemblyAI, opted out in its dashboard, so they no longer wait for T4a.
 
-- [x] M3-T1 · [x] M3-T2 · [x] M3-T3 · [x] M3-T4a · [ ] M3-T4b · [x] M3-T5 · [x] M3-T6a · [x] M3-T6b
-- [x] M3-T7 · [x] M3-T8 · [ ] M3-T9
-- [x] M3-T10 · [x] M3-T11 · [x] M3-T12 · [x] M3-T13 · [x] M3-T14 · [ ] M3-T15 · [ ] M3-T16 · [ ] M3-T17 · [x] M3-T18
-- [x] M3-T19a · [ ] M3-T19b · [ ] M3-T20
+- [x] M3-T1 · [x] M3-T2 · [x] M3-T3 · [x] M3-T4a · [x] M3-T4b · [x] M3-T5 · [x] M3-T6a · [x] M3-T6b
+- [x] M3-T7 · [x] M3-T8 · [x] M3-T9
+- [x] M3-T10 · [x] M3-T11 · [x] M3-T12 · [x] M3-T13 · [x] M3-T14 · [x] M3-T15 · [ ] M3-T16 · [ ] M3-T17 · [x] M3-T18
+- [x] M3-T19a · [x] M3-T19b · [x] M3-T20
+As built: M3-T4b's warning kind is `keyterms-rejected` (kebab-case, like every
+`CaptureWarningKind`), not the `keyterms_rejected` the plan writes. M3-T16 and M3-T17 need
+recorded calls and stay open.
 
 Notes for the builders:
 

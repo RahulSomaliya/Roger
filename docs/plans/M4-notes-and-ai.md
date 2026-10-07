@@ -40,7 +40,7 @@ theme tokens and preferences. M2, M3 and M5 mount their screens into it.
 
 Supporting checks, run before the real calls:
 
-- [ ] `make check` green, including the eval harness on the synthetic case with the fake model.
+- [x] `make check` green, including the eval harness on the synthetic case with the fake model.
 - [ ] `make eval-notes` with the real model on the recorded calls (cases exported from Postgres),
   report saved next to the exit check log. Targets, not gates: dropped lines under 5%, flagged
   lines under 10%, lines the judge model calls unsupported under 5%, action items found at least
@@ -628,15 +628,15 @@ Desktop:
   Owns `renderer/src/notes/NoteEditor.tsx`, `citationNode.ts`, `CitationChip.tsx`,
   `useNoteDocument.ts`, `debouncedSaver.ts` (blur, unmount, `pagehide`, `beforeunload`, flush
   request from main), `saveStatus.ts`, `ConflictBanner.tsx`, `notes.css`.
-- [ ] **M4-T18. AI notes panel.** M. Depends on: T16, T17, T21a (contract commit), T23.
+- [x] **M4-T18. AI notes panel.** M. Depends on: T16, T17, T21a (contract commit), T23.
   Owns `renderer/src/notes/AiNotesPanel.tsx`, `TemplatePicker.tsx`, `aiNotesStream.ts` (events to
   view state, including the "From your notes" list), `aiNotesActions.ts` (regenerate with
   confirmation when edited since its run, "Restore previous notes", the waiting and ask states),
   `NotesSettings.tsx` (the auto-generate and "when Roger cannot tell" preferences, for the
   Settings slot).
-- [ ] **M4-T19. Meeting chat panel.** M. Depends on: T16, T17, T21a (contract commit).
+- [x] **M4-T19. Meeting chat panel.** M. Depends on: T16, T17, T21a (contract commit).
   Owns `renderer/src/chat/MeetingChat.tsx`, `useMeetingChat.ts`, `chatStream.ts`, `chat.css`.
-- [ ] **M4-T20. Mount on the meeting page, browser QA.** S. Depends on: S1, S3, S4, S4b, T18, T19,
+- [x] **M4-T20. Mount on the meeting page, browser QA.** S. Depends on: S1, S3, S4, S4b, T18, T19,
   T21b, M3-T9.
   Owns `renderer/src/app/slots/m4-notes.ts` (the notes and chat regions and the notes Settings
   section), and a QA script on `qa/driver.ts` with its gallery: both themes, 1440 and 390 wide, a long call's notes,

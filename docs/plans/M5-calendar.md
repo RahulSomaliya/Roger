@@ -72,7 +72,7 @@ call and copies a ready message for the meeting chat.
   streak as before. (b) Connect, then remove Roger's access on that Google page: within 5 minutes
   Home shows "Reconnect Google Calendar" and the API log shows `calendar_reconnect_required`.
   (c) Connect again works. Run them between calls.
-- [ ] `make check` green, including the end-to-end test with the fake calendar
+- [x] `make check` green, including the end-to-end test with the fake calendar
   (`apps/desktop/src/main/calendar/calendarFlow.test.ts`): fake event → prompt → one click → local
   meeting with title, attendees and `start_source = notification` → uploader create payload.
 
@@ -535,7 +535,7 @@ T11 in wave 6; T12 in wave 7; T13 in wave 8.
   and only logs that its request was not applied, so T9b stops a recording note first. A title
   blank as the API reads it (U+001C to U+001F included) gets the default title. No channel serves
   `findMeetingIdsByEventIds` yet: T6 adds it (assigned after wave 4).
-- [ ] **M5-T6** Owns `src/main/calendar/oauthLoopback.ts`, `src/main/calendar/CalendarAccount.ts`,
+- [x] **M5-T6** Owns `src/main/calendar/oauthLoopback.ts`, `src/main/calendar/CalendarAccount.ts`,
   `src/main/api/calendarClient.ts` (implementing T8's `CalendarApiPort` on P2-F1's `http.ts`,
   DELETE included), `src/shared/ipc/calendar.ts` (account status, connect, disconnect, events, sync
   state including stale and `expires_hint`) with its bridge and preview fake,
@@ -567,14 +567,14 @@ T11 in wave 6; T12 in wave 7; T13 in wave 8.
   `registerCalendarPreferences(store)` (built in `main/calendar/calendarPreferences.ts`) for M4-S2's
   `PreferencesStore` (called from T9c's slot; the
   `PreferenceValues` types and the preview fake's calendar keys are already done by M4-S2).
-- [ ] **M5-T9b** Owns `src/main/prompt/PromptService.ts` (cards; `offer` with the D5 rules; actions
+- [x] **M5-T9b** Owns `src/main/prompt/PromptService.ts` (cards; `offer` with the D5 rules; actions
   start, join and start, copy notice, dismiss, expire; `app:navigate` plus a `revealWindow` port
   that calls `showInactive()` only when the window is hidden and never `show()` or `focus()`; the
   outcome from `CaptureStatus` within 20 s; a "Calendar not updated since …" card once per stale
   spell), `src/main/calendar/consentNotice.ts`, `src/shared/ipc/prompt.ts` (P2-F1's stub; not
   part of `RogerApi`),
   `src/main/prompt/promptIpc.ts` (accepts the prompt window as sender, nothing else).
-- [ ] **M5-T9c** Owns `src/main/calendar/createCalendarRuntime.ts`, `[slot M5-T9c]` in
+- [x] **M5-T9c** Owns `src/main/calendar/createCalendarRuntime.ts`, `[slot M5-T9c]` in
   `src/main/index.ts`, the `StartRequestEnricher` it injects into `CaptureService`
   (one clear match), and `src/main/calendar/calendarFlow.test.ts`. Also passes M4's template rule
   the invite's attendees: the optional `attendees` getter on the `new NotesGenerator` call in
@@ -582,14 +582,19 @@ T11 in wave 6; T12 in wave 7; T13 in wave 8.
   section 10, "From wave 3"). And T6's event-to-meeting port: pass it the transcript store's
   `findMeetingIdsByEventIds`, and reword that method's doc in `store/TranscriptStore.ts` (which
   says no channel serves it) to name T6's channel ("From wave 4").
-- [ ] **M5-T10** Owns `src/main/prompt/PromptWindow.ts`, `src/main/prompt/promptBounds.ts`,
+- [x] **M5-T10** Owns `src/main/prompt/PromptWindow.ts`, `src/main/prompt/promptBounds.ts`,
   `src/preload/prompt.ts` (exposes only `window.rogerPrompt`), `src/renderer/prompt.html`,
   `src/renderer/src/prompt/*`; adds the second preload and page to `electron.vite.config.ts`;
   in `page-policy.ts` the prompt page counts as the app for navigation but gets no `media`.
   Calendar card: "Starting in 1 min" or "Started 3 min ago", title, time range, "Jane, Ali and 3
   others", Join and take notes (only with a video link), Take notes, Copy notice (when on),
   Dismiss. Call-detected card, stale-calendar card, and the 5 s "Taking notes · Open Roger" state.
-- [ ] **M5-T11** Owns `src/main/app/{tray,trayMenu,loginItem,loginItemPolicy,windowLifecycle,userDataPath}.ts`
+  As built: nothing constructs `PromptWindow` or calls `registerPromptIpc` in `index.ts` yet (no
+  task owned that slot), so no prompt card is drawn: the calendar reminders and the call offers
+  reach `PromptService` and stop there. M5-T11's `startKeepRunning` also still gets `calendar:
+  null`, so the menu names no meetings and a connect turns no login item on. Both are build order
+  "Open items after Phase 2", first on the list.
+- [x] **M5-T11** Owns `src/main/app/{tray,trayMenu,loginItem,loginItemPolicy,windowLifecycle,userDataPath}.ts`
   (named `windowLifecycle.ts`, not `lifecycle.ts`: the landed `src/main/lifecycle.ts` is the
   recording's `RecordingLifecycle`),
   `src/shared/ipc/loginItem.ts` with its bridge and preview fake, `src/main/app/loginItemIpc.ts`,
@@ -617,7 +622,7 @@ T11 in wave 6; T12 in wave 7; T13 in wave 8.
   when needed, Open Roger, Quit Roger. Icon states: idle, recording, warning. Default-on at first
   connect ships only after real-Mac check 1 passes; until then `app.openAtLogin` defaults to `off`.
   Adds the dev-data failure-log line to `apps/desktop/CLAUDE.md`.
-- [ ] **M5-T12** Owns `src/renderer/src/calendar/*`: `TodaySection`, `NextMeetingCard`,
+- [x] **M5-T12** Owns `src/renderer/src/calendar/*`: `TodaySection`, `NextMeetingCard`,
   `ConnectCalendarCard`, `CalendarSettings` (open at login status and toggle, with
   `requires-approval` and its System Settings path), `NoticeBanner`, `CalendarStatusBanner`
   (stale, reconnect, reconnect before <date>), `useCalendar`, `todayGroups.ts`, `calendarFormat.ts`.
@@ -625,10 +630,10 @@ T11 in wave 6; T12 in wave 7; T13 in wave 8.
   Open note when a local meeting already has the event (T6's channel, asked again when the
   recording's meeting changes). After the first connect a line says "Roger
   will open at login so it can remind you" with Undo. Colours from theme tokens only.
-- [ ] **M5-T13** Owns `renderer/src/app/slots/m5-calendar.ts` (Home section, Settings section,
+- [x] **M5-T13** Owns `renderer/src/app/slots/m5-calendar.ts` (Home section, Settings section,
   meeting banner), and the QA script (on M4-S3's `qa/driver.ts`, playwright-core) and gallery for
   the screens below.
-- [ ] Each task proposes the traps it hit as failure-log lines in its hand-off note; the controller
+- [x] Each task proposes the traps it hit as failure-log lines in its hand-off note; the controller
   appends them once per wave, each to the file its trap belongs in (`CLAUDE.md`,
   `apps/desktop/CLAUDE.md` or `apps/api/CLAUDE.md`).
 - [ ] Exit check: 20 calls, logged below.
