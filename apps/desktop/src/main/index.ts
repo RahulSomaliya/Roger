@@ -58,7 +58,8 @@ async function main(): Promise<void> {
 
   // The Electron smoke test only (e2eMode.ts): unpackaged and ROGER_E2E=1, read from the launch's
   // environment, never .env (loadDevEnv runs later). M5-T11's slot leaves userData alone while
-  // `e2e.on`: this folder is the run's, and the harness reads roger.sqlite there.
+  // `e2e.on`: this folder is the run's. The harness (e2e/harness.ts) writes config.json there
+  // before launch, checks main's userData is that folder, and reads lines through `window.roger`.
   const e2e = resolveE2eMode({
     isPackaged: app.isPackaged,
     env: process.env,
