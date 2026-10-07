@@ -1,267 +1,54 @@
 /*
- * M2-T20a's capture status: the level meters, the stream rows, the notices and the warning banner.
- * Colours come only from the theme tokens (theme/tokens.css, light and dark);
- * theme/noLiteralColours.test.ts fails on a literal colour here. Nothing here transitions a colour:
- * a screenshot or a glance mid-fade would read the wrong state (a red row as grey).
+ * The capture problems that reach the page: the loud warnings above every page and the meeting
+ * header's one-line status (docs/design.md: problem lines, no box, no tint, no red). The rules for
+ * `.problem` itself are in styles.css; these only add what capture needs on top. Colours come only
+ * from the theme tokens (theme/tokens.css); theme/noLiteralColours.test.ts fails on a literal one.
+ * Nothing here transitions a colour: a screenshot caught mid-fade reads the wrong state.
  */
 
-/* Level meter */
-
-.level-meter {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-}
-
-.level-meter-track {
-  position: relative;
-  flex: 1 1 auto;
-  min-width: 48px;
-  height: 6px;
-  overflow: hidden;
-  border-radius: 999px;
-  background: var(--line);
-}
-
-.level-meter-fill {
-  position: absolute;
-  inset: 0 auto 0 0;
-  border-radius: inherit;
-  background: var(--ink-muted);
-}
-
-.level-meter[data-signal='dead'] .level-meter-track {
-  background: var(--fill);
-}
-
-.level-meter[data-signal='dead'] .level-meter-fill {
-  background: var(--accent);
-}
-
-.level-meter-text {
-  flex: none;
-  min-width: 9ch;
-  font-size: 12px;
-  font-variant-numeric: tabular-nums;
-  color: var(--ink-muted);
-}
-
-.level-meter[data-signal='dead'] .level-meter-text {
-  color: var(--ink);
-}
-
-/* Notices: what Roger recovered from on its own. Quiet, never a warning's colours. */
-
-.capture-notices {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.capture-notice {
-  padding: 6px 10px;
-  border-radius: 8px;
-  background: var(--fill);
-  font-size: 13px;
-  overflow-wrap: anywhere;
-}
-
-.capture-notice-meta {
-  color: var(--ink-muted);
-  white-space: nowrap;
-}
-
-/*
- * Warning banner (the shell's banner slot, above every page). Loud: the --fill tint, read out
- * at once (role alert). Quiet: the same tint (role status). The messages stay in --ink on it: they
- * are sentences to read. R3 replaces the box with a problem line (docs/design.md).
- */
+/* Above every page (the shell's banner slot): one problem line per stream. */
 
 .capture-warnings {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-2);
 }
 
-.capture-warning {
-  padding: 10px 12px 10px 14px;
-  border-left: 4px solid var(--ink-muted);
-  border-radius: 8px;
-  background: var(--fill);
-  color: var(--ink);
+/* "since 4:59 pm": when the trouble began, after the sentence in `ink-subtle`. It is a time, so it
+   never breaks across lines. In Details it follows a sentence the same way. */
+
+.problem-since {
+  color: var(--ink-subtle);
+  font-weight: 400;
+  white-space: nowrap;
 }
 
-.capture-warning[data-loud='true'] {
-  border-left-color: var(--accent);
-  background: var(--fill);
-}
-
-.capture-warning-heading {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 2px 8px;
-  margin: 0 0 4px;
-  font-size: 13px;
-}
-
-.capture-warning-stream {
-  font-weight: 650;
-}
-
-.capture-warning[data-loud='true'] .capture-warning-stream {
-  color: var(--ink);
-}
-
-.capture-warning-since {
-  /* --ink, not --ink-muted: it is the line's own time, and it must stay readable on the tint. */
-  color: var(--ink);
-}
-
-.capture-warning-messages {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-  overflow-wrap: anywhere;
-}
-
-/*
- * Stream rows (the meeting page's capture status region). The panel sits above the transcript in
- * a window that opens 520 px wide, so a healthy source takes two short lines: its name, state and
- * level, then what it captured. The reason line shows only while its stream is not open.
- */
+/* The meeting header's status line (the meetingCaptureStatus slot). While recording the header
+   reserves exactly this line (meeting.css), so a loud problem takes its place and the editor below
+   never moves: a long headline is cut with an ellipsis, never wrapped (docs/design.md, Traps). */
 
 .capture-status {
-  container: capture-status / inline-size;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.capture-streams {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  margin: 0;
-  padding: 0 0 10px;
-  border-bottom: 1px solid var(--line);
-  list-style: none;
-}
-
-.capture-stream {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
   min-width: 0;
 }
 
-.capture-stream-head {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 4px 10px;
-}
-
-.capture-stream-name {
-  min-width: 9.5em;
-  font-weight: 600;
-}
-
-.capture-stream-head .level-meter {
-  flex: 1 1 160px;
-  max-width: 260px;
-  margin-left: auto;
-}
-
-/* Narrow: the meter takes a line of its own, as wide as the row. */
-@container capture-status (max-width: 420px) {
-  .capture-stream-name {
-    min-width: 0;
-  }
-
-  .capture-stream-head .level-meter {
-    flex-basis: 100%;
-    max-width: none;
-    margin-left: 0;
-  }
-}
-
-.stream-state {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 1px 9px;
-  border: 1px solid transparent;
-  border-radius: 999px;
-  font-size: 12px;
-  font-weight: 600;
-  background: var(--fill);
-  color: var(--ink);
-}
-
-.stream-state::before {
-  content: '';
-  flex: none;
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--accent);
-}
-
-.stream-state[data-tone='ok'] {
-  background: var(--fill);
-}
-
-.stream-state[data-tone='ok']::before {
-  background: var(--ink-muted);
-}
-
-.stream-state[data-tone='warn'] {
-  background: var(--fill);
-}
-
-.stream-state[data-tone='warn']::before {
-  background: var(--ink-muted);
-}
-
-.stream-state[data-tone='error'] {
-  background: var(--fill);
-}
-
-.stream-state[data-tone='error']::before {
-  background: var(--accent);
-}
-
-.stream-state[data-tone='off'] {
-  border-color: var(--line);
-  background: transparent;
-}
-
-.stream-state[data-tone='off']::before {
-  background: var(--ink-muted);
-}
-
-.capture-stream-detail,
-.capture-stream-reason {
+.meeting-status-text {
   margin: 0;
-  font-size: 13px;
-  overflow-wrap: anywhere;
-}
-
-.capture-stream-detail {
   color: var(--ink-muted);
+  font-variant-numeric: tabular-nums;
 }
 
-/* No audio, a dead track or a source error: the call is being lost. */
-.capture-stream[data-health='stalled'] .capture-stream-detail,
-.capture-stream[data-health='ended'] .capture-stream-detail,
-.capture-stream[data-health='error'] .capture-stream-detail {
-  color: var(--ink);
+.meeting-status-problem {
+  align-items: center;
+  min-width: 0;
+  white-space: nowrap;
+}
+
+.meeting-status-problem > svg {
+  margin-top: 0;
+}
+
+.meeting-status-problem .meeting-status-headline {
+  flex: 0 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }

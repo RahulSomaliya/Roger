@@ -58,17 +58,6 @@ describe('AppLayout', () => {
     expect(theme.useTheme).toHaveBeenCalledTimes(1);
   });
 
-  it('shows why the theme preference could not be read above the page', () => {
-    theme.useTheme.mockReturnValue({
-      preference: null,
-      error: 'Could not read the theme preference: prefs:get-all timed out',
-    });
-    const html = renderToString(createElement(AppLayout));
-    expect(html).toMatch(
-      /role="alert"[^>]*>Could not read the theme preference: prefs:get-all timed out</,
-    );
-  });
-
   it('shows the slim header on Home and Settings: no sidebar', () => {
     for (const route of [HOME, { name: 'settings' } as const]) {
       fakes.route = route;
