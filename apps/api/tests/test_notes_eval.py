@@ -314,6 +314,31 @@ async def test_a_late_colon_does_not_make_the_clause_before_it_an_owner() -> Non
     assert counted(scores.action_items) == (3, 7)
 
 
+async def test_an_owner_matches_across_apostrophe_styles_and_unicode_forms() -> None:
+    # Models often write curly apostrophes, and a labeller types straight ones (or the reverse).
+    labels = CaseLabels(
+        action_items=(
+            ActionItemLabel(owner="O'Brien", text="send the deck by Friday"),
+            ActionItemLabel(owner="D\u2019Souza", text="review the contract"),
+            # "José" typed composed; the model's line spells it with a combining accent.
+            ActionItemLabel(owner="Jos\u00e9", text="book the venue"),
+        )
+    )
+    case = inline_case("Line 1.", "Line 2.", "Line 3.", labels=labels)
+    answer = (
+        "- O\u2019Brien: send the deck by Friday [L1]\n"
+        "- D'Souza will review the contract [L2]\n"
+        "- Jose\u0301: book the venue [L3]\n"
+    )
+
+    report = await run_eval([case], scripted(answer), provider="fake", reasoning="off")
+
+    scores = report.cases[0].scores
+    assert scores is not None
+    assert scores.missed_action_items == []
+    assert counted(scores.action_items) == (3, 3)
+
+
 async def test_flagged_lines_and_numbers_are_counted_against_their_cited_lines() -> None:
     case = inline_case(
         "Beta ships on Friday.",

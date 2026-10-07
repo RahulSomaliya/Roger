@@ -10,6 +10,7 @@ averaging rates (a 3-line case would weigh as much as a 60-line one).
 """
 
 import re
+import unicodedata
 from collections.abc import Sequence
 
 from pydantic import BaseModel, ConfigDict, SerializerFunctionWrapHandler, model_serializer
@@ -29,6 +30,8 @@ LABEL_WORD_SHARE = 0.6
 _STEM_CHARS = 5
 _WHOLE_WORD_BELOW = 4
 
+# Letters and digits, joined by inner apostrophes ("o'brien"): straight ones, as `_plain` leaves
+# every apostrophe.
 _TOKEN = re.compile(r"[^\W_]+(?:'[^\W_]+)*")
 _DIGIT = re.compile(r"[0-9]")
 _HEADING_MARKS = re.compile(r"#{1,6} ")
@@ -219,7 +222,7 @@ def _gives_to(line: str, owner: str) -> bool:
 def _owner_names(line: str) -> list[list[str]]:
     """The tokens of each name before the line's first colon, when they are a short list of names
     (`_NAME_TOKENS`); else the whole line as one, which only an owner that opens it matches."""
-    owner_part, *rest = _OWNER_END.split(line, maxsplit=1)
+    owner_part, *rest = _OWNER_END.split(_plain(line), maxsplit=1)
     if rest:
         names = [name for name in map(_tokens, _OWNER_LIST.split(owner_part)) if name]
         if names and all(len(name) <= _NAME_TOKENS for name in names):
@@ -228,7 +231,16 @@ def _owner_names(line: str) -> list[list[str]]:
 
 
 def _tokens(text: str) -> list[str]:
-    return _TOKEN.findall(text.casefold())
+    return _TOKEN.findall(_plain(text).casefold())
+
+
+def _plain(text: str) -> str:
+    """`text` as `citations._tokens` reads it: NFKC makes one name of a composed accent and a
+    combining one, and the curly apostrophes NFKC leaves alone are straightened by hand. Without
+    both, a model's "O'Brien" with a curly apostrophe is the tokens "o" and "brien", and never
+    matches the label owner typed with a straight one.
+    """
+    return unicodedata.normalize("NFKC", text).replace("\u2019", "'").replace("\u2018", "'")
 
 
 def _words(tokens: Sequence[str]) -> list[str]:
