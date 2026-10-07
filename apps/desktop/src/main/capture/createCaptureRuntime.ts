@@ -89,7 +89,7 @@ export function noCaptureFeatures(): CaptureFeatureHandlers {
 /** Until M2-T14b counts them: nothing is hidden, trimmed or held without the echo filter. */
 const NO_ECHO: Readonly<EchoStatus> = Object.freeze({ hidden: 0, trimmed: 0, held: 0 });
 
-/** Until M2-T15 keeps audio: none is kept. */
+/** Without a backup handler (tests through noCaptureFeatures()): none is kept. */
 const NO_BACKUP: Readonly<BackupStatus> = Object.freeze({
   state: 'off',
   bytes: 0,
