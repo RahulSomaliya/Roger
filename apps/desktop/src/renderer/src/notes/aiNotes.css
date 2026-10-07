@@ -1,10 +1,10 @@
 /*
- * The AI notes panel (AiNotesPanel.tsx) and the template picker (TemplatePicker.tsx). They sit
- * beside the editor and reuse notes.css (.note-button, and .note-editor-content for a run's
- * streamed lines, so they read as the doc that replaces them), styles.css (.error, .notice) and
- * app.css (.empty-state). Colours only from theme/tokens.css (noLiteralColours.test.ts fails on a
- * literal one); text reads the ink tokens (--ink, --muted, --danger-ink), never a fill
- * (tokens.test.ts).
+ * The AI notes panel (AiNotesPanel.tsx), the template picker (TemplatePicker.tsx) and the notes
+ * section of Settings (NotesSettings.tsx). They reuse notes.css (.note-button, and
+ * .note-editor-content for a run's streamed lines, so they read as the doc that replaces them),
+ * styles.css (.error, .notice) and app.css (.empty-state, .card). Colours only from
+ * theme/tokens.css (noLiteralColours.test.ts fails on a literal one); text reads the ink tokens
+ * (--ink, --muted, --danger-ink), never a fill (tokens.test.ts).
  */
 
 .ai-notes {
@@ -295,4 +295,75 @@
 .template-picker-actions {
   display: flex;
   justify-content: flex-end;
+}
+
+/* Settings: the notes section. */
+.notes-settings {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+.notes-settings-title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 650;
+}
+
+.notes-settings-intro,
+.notes-settings-hint,
+.notes-settings-status {
+  margin: 0;
+  color: var(--muted);
+}
+
+.notes-settings-hint {
+  font-size: 13px;
+}
+
+.notes-settings-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.notes-settings-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.notes-settings-option input {
+  flex: none;
+  margin: 3px 0 0;
+  accent-color: var(--accent);
+}
+
+.notes-settings-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: none;
+}
+
+.notes-settings-group legend {
+  margin-bottom: 4px;
+  padding: 0;
+  font-weight: 600;
+}
+
+.notes-settings-group:disabled .notes-settings-option {
+  color: var(--muted);
+  cursor: default;
+}
+
+.notes-settings-error {
+  margin: 0;
+  overflow-wrap: anywhere;
 }
