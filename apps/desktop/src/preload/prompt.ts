@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron';
-import { promptChannels, type PromptApi } from '../shared/ipc/prompt';
+import { promptChannels, type PromptApi, type PromptPanelState } from '../shared/ipc/prompt';
 
 /**
  * The prompt panel's preload (M5-T10): exposes `window.rogerPrompt` and nothing else. The panel
@@ -17,10 +17,11 @@ import { promptChannels, type PromptApi } from '../shared/ipc/prompt';
  * prompt.test.ts fails on a shared import.
  */
 const rogerPrompt: PromptApi = {
-  getState: () => ipcRenderer.invoke(promptChannels.PromptGetState) as Promise<never>,
+  getState: () => ipcRenderer.invoke(promptChannels.PromptGetState) as Promise<PromptPanelState>,
   onStateChanged: (listener) => {
-    const handler = (_event: IpcRendererEvent, state: never): void => {
-      listener(state);
+    const handler = (_event: IpcRendererEvent, state: unknown): void => {
+      // Main sends only a PromptPanelState on this channel (promptIpc.ts).
+      listener(state as PromptPanelState);
     };
     ipcRenderer.on(promptChannels.PromptStateChanged, handler);
     return () => {
