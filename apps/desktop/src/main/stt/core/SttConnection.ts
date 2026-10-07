@@ -31,10 +31,12 @@ import type {
  *   connecting ──ready──▶ open ──close()/vendor error──▶ finishing ──socket closed──▶ closed
  *        └──────────── timeout / refused / vendor closed ─────────────────────────────▲
  *
- * - connecting: the handshake plus the vendor's ready signal, under one connect timeout. A failure
- *   terminates the socket and rejects `whenOpen()` only once the socket is closed. A refusal the
- *   protocol blames on the jargon list rejects with `keytermsRejected` set; it is never retried
- *   here (see keytermsRefused). A wire tap that fails here fails the connect too (see tap).
+ * - connecting: the handshake plus the vendor's ready signal, under one connect timeout. The
+ *   protocol's opening messages go on the handshake, ahead of everything else (see
+ *   sendOpeningMessages). A failure terminates the socket and rejects `whenOpen()` only once the
+ *   socket is closed. A refusal the protocol blames on the jargon list rejects with
+ *   `keytermsRejected` set; it is never retried here (see keytermsRefused). A wire tap that fails
+ *   here fails the connect too (see tap).
  * - open: audio flows, paced to real time for a vendor that declares it (see pump). The keep-alive
  *   runs only while audio was sent within keepAliveForMs, and so do the liveness pings: a socket
  *   that stops answering them is dead, one fatal error and a terminate (see checkLiveness). A
@@ -187,6 +189,8 @@ export class SttConnection implements SttStream {
   private readonly keepAliveForMs: number;
   /** The jargon list this stream sent, cut to the shared limits (keyterms.ts). */
   private readonly keyterms: readonly string[];
+  /** What the vendor hears first, on the handshake (SttProtocol.openingMessages). */
+  private readonly openingMessages: readonly string[];
   private connectTimer: NodeJS.Timeout | null;
   private finishTimer: NodeJS.Timeout | null = null;
   private keepAliveTimer: NodeJS.Timeout | null = null;
@@ -253,8 +257,10 @@ export class SttConnection implements SttStream {
     this.wireTap = options.wireTap ?? null;
     const stream = this.withCappedKeyterms(options.stream);
     this.keyterms = stream.settings.keyterms ?? [];
-    // Throws SttConnectError on settings the vendor cannot take, before any socket exists.
+    // Both throw SttConnectError on settings the vendor cannot take, before any socket exists and
+    // before the tap's connect record: a connect that never happened is never recorded.
     const target = this.protocol.target(stream);
+    this.openingMessages = this.protocol.openingMessages?.(stream.settings) ?? [];
     // Before the socket exists, and never the URL: an AssemblyAI URL carries the temporary token.
     // A tap that cannot take this first record (the bench opens its file on it) fails the connect
     // here, with nothing opened or billed: no listener exists yet to hear an error event (tap).
@@ -284,6 +290,7 @@ export class SttConnection implements SttStream {
     // read as the handshake, and a listener added after `await` would miss it.
     this.socket.on('open', () => {
       this.openedAtMs = this.clock();
+      this.sendOpeningMessages();
       if (this.protocol.readyOn === 'socket-open') this.becomeOpen(null);
     });
     this.socket.on('unexpected-response', (_request, response: IncomingMessage) => {
@@ -433,6 +440,21 @@ export class SttConnection implements SttStream {
       audioSentMs: pcmBytesToMs(this.audioSentBytes, this.sampleRate),
       droppedChunks: this.droppedChunks,
     };
+  }
+
+  /**
+   * The vendor's opening messages (SttProtocol.openingMessages), on the handshake and before the
+   * ready signal: under `socket-open` the stream opens right after them, and the audio, keep-alive
+   * and pings it lets through must never reach the vendor first (Soniox refuses a session whose
+   * first message is not its start request: "Start request must be a text message"). Through
+   * transmit, so the wire tap sees them; a tap that fails
+   * on one fails the connect (tap), and nothing after it is sent into the socket being terminated.
+   */
+  private sendOpeningMessages(): void {
+    for (const message of this.openingMessages) {
+      if (this.connectError !== null) return;
+      this.transmit(message);
+    }
   }
 
   private becomeOpen(sessionId: string | null): void {

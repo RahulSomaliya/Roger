@@ -11,6 +11,11 @@ export interface ConformanceVendor {
   provider: string;
   /** What the API hands out for this vendor (/v1/stt/token `stream`). */
   settings: SttStreamSettings;
+  /**
+   * What the vendor must hear first, before any audio, for `settings` (Soniox's start request;
+   * SttProtocol.openingMessages). [] for a vendor that needs nothing first.
+   */
+  openingMessages: string[];
   /** Sent on connect when the ready signal is a message (AssemblyAI Begin); null: the handshake. */
   readyMessage: string | null;
   /** The text messages Stop sends, in order. */
@@ -53,6 +58,8 @@ export const CONFORMANCE_VENDORS: readonly ConformanceVendor[] = [
       encoding: 'linear16',
       pricePerHourUsd: 0.15,
     },
+    // Everything is in the URL's query.
+    openingMessages: [],
     readyMessage: JSON.stringify({ type: 'Begin', id: 'session-1', expires_at: 1772570132 }),
     finishMessages: [JSON.stringify({ type: 'Terminate' })],
     answerFinish: (socket) => {
@@ -105,6 +112,7 @@ export const CONFORMANCE_VENDORS: readonly ConformanceVendor[] = [
       encoding: 'linear16',
       pricePerHourUsd: 0.462,
     },
+    openingMessages: [],
     readyMessage: null,
     finishMessages: [JSON.stringify({ type: 'Finalize' }), JSON.stringify({ type: 'CloseStream' })],
     answerFinish: (socket) => {

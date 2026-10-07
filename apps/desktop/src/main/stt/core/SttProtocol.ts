@@ -72,6 +72,18 @@ export interface SttProtocol {
    * jargon parameter here, and never send one when the list is empty.
    */
   target(options: OpenStreamOptions): SttConnectTarget;
+  /**
+   * Text messages the vendor must hear first (Soniox's start request: model, audio format, jargon
+   * list, before any audio). The core sends them the moment the handshake completes, ahead of the
+   * ready signal, so no audio, keep-alive or ping can go before them; never send one from
+   * `encodeAudio` or a keep-alive instead. Built once per stream from the same settings `target`
+   * gets (keyterms already cut), before any socket exists: throw SttConnectError there for settings
+   * the vendor cannot take, and nothing is opened or tapped. Never put the access token in one: the
+   * wire tap records every text message (SttWireRecord), and only `target`'s URL and headers are
+   * kept from it. Missing: nothing goes first. The conformance suite checks them against the
+   * vendor's fake (conformanceVendors.ts `openingMessages`).
+   */
+  openingMessages?(settings: SttStreamSettings): string[];
   /** `socket-open`: the handshake is the ready signal (Deepgram). Otherwise wait for `ready`. */
   readonly readyOn: 'socket-open' | 'ready-message';
   /**

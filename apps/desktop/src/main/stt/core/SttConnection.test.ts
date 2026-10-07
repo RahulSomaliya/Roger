@@ -207,6 +207,113 @@ describe('SttConnection', () => {
     await connection.close();
   });
 
+  /**
+   * A vendor that needs a message before any audio (Soniox's start request, which configures the
+   * session): the core sends it the moment the handshake completes, ahead of the ready signal, so
+   * no audio, keep-alive or ping can go first.
+   */
+  describe('opening messages', () => {
+    const START = JSON.stringify({ type: 'Start', model: 'toy-1' });
+    const CONFIG = JSON.stringify({ type: 'Config' });
+
+    function opening(
+      messages: (settings: SttStreamSettings) => string[],
+      readyOn: SttProtocol['readyOn'] = 'socket-open',
+    ): SttProtocol {
+      return {
+        ...toyProtocol(vendor.baseUrl, {
+          readyOn,
+          keepAlive: { message: KEEP_ALIVE, intervalMs: 5 },
+        }),
+        openingMessages: messages,
+      };
+    }
+
+    it.each(['socket-open', 'ready-message'] as const)(
+      'sends them first, once, before any audio or keep-alive (ready on %s)',
+      async (readyOn) => {
+        let textsAtFirstFrame: string[] | null = null;
+        vendor.script.onBinary = (connection, frame) => {
+          if (frame === 1) textsAtFirstFrame = [...connection.texts];
+        };
+        if (readyOn === 'socket-open') vendor.script.onConnect = () => undefined;
+        const { connection } = await open({
+          protocol: opening(() => [START, CONFIG], readyOn),
+        });
+
+        connection.send(new Uint8Array(CHUNK_100_MS));
+        await waitFor(() => vendor.last().texts.includes(KEEP_ALIVE));
+        await connection.close();
+
+        expect(textsAtFirstFrame).toEqual([START, CONFIG]);
+        expect(vendor.last().texts.slice(0, 2)).toEqual([START, CONFIG]);
+        expect(vendor.last().texts.filter((text) => text === START)).toHaveLength(1);
+        expect(vendor.last().texts.filter((text) => text === CONFIG)).toHaveLength(1);
+        expect(vendor.last().texts.at(-1)).toBe(FINISH);
+      },
+    );
+
+    it('builds them from the stream settings with the list cut to the shared limits', async () => {
+      vendor.script.onConnect = () => undefined;
+      const seen: SttStreamSettings[] = [];
+      const long = Array.from({ length: 130 }, (_, i) => `Term${i}`);
+      const { connection } = await open({
+        protocol: opening((given) => {
+          seen.push(given);
+          return [JSON.stringify({ terms: given.keyterms })];
+        }),
+        stream: {
+          accessToken: 'secret-token',
+          settings: { ...settings, keyterms: long },
+          label: 'mic',
+        },
+      });
+      await connection.close();
+
+      expect(seen).toHaveLength(1);
+      expect(seen[0]?.keyterms).toEqual(long.slice(0, 100));
+      expect(vendor.last().texts[0]).toBe(JSON.stringify({ terms: long.slice(0, 100) }));
+    });
+
+    it('refuses settings they cannot carry before opening any socket or tapping a connect', () => {
+      const tapped: SttWireRecord[] = [];
+      const protocol = opening(() => {
+        throw new SttConnectError('Toy cannot be sent opus audio');
+      });
+
+      expect(
+        () => new SttConnection(options({ protocol, wireTap: (record) => tapped.push(record) })),
+      ).toThrow('Toy cannot be sent opus audio');
+      expect(vendor.connections).toHaveLength(0);
+      expect(tapped).toEqual([]);
+    });
+
+    it('fails the connect, with the socket closed, when the tap throws on one', async () => {
+      vendor.script.onConnect = () => undefined;
+      const { connection, error } = await connectError({
+        protocol: opening(() => [START, START]),
+        wireTap: (record) => {
+          if (record.kind === 'text') throw new Error('disk full');
+        },
+      });
+
+      expect(error.message).toBe('Toy wire tap failed: disk full');
+      expect(connection.state).toBe('closed');
+      // The tap failed on the first one, already handed to the socket: nothing after it went (and
+      // the terminate may cut even that one off the wire).
+      await waitFor(() => vendor.last().closed);
+      expect(vendor.last().texts.length).toBeLessThanOrEqual(1);
+    });
+
+    it('sends none for a protocol that declares none', async () => {
+      const { connection } = await open();
+      connection.send(new Uint8Array(CHUNK_100_MS));
+      await connection.close();
+
+      expect(vendor.last().texts).toEqual([FINISH]);
+    });
+  });
+
   it('forwards audio while open and sends the finish sequence once on stop', async () => {
     const { connection, events } = await open();
 
