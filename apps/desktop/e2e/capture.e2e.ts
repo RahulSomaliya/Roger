@@ -73,8 +73,9 @@ function useRoger(options: LaunchOptions): () => RogerRun {
 /**
  * A speaker's final lines in the transcript (the fake STT sends no interims). By label and words,
  * not by class: M3-T9's LiveTranscript labels the region "Transcript" and names the speaker "Me"
- * or "Them" in a span of its own. e2e/m3-t9.qa.e2e.ts checks this locator against LiveTranscript
- * in the browser (`smokeTestLines`): keep the two in step.
+ * or "Them" in a span of its own. No browser QA reads this locator any more (the redesign's
+ * `redesign.qa.e2e.ts` reads `[data-segment-id]`): a change to the transcript's labels fails this
+ * smoke test first.
  */
 function linesOf(page: Page, speaker: Speaker): Locator {
   return page
