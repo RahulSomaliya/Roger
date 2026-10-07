@@ -9,8 +9,8 @@ import { TodaySection } from '../../calendar/TodaySection';
  * and the consent notice on the meeting page. Slot names and their props: ../slotRegistry.ts.
  *
  * The components are M5-T12's and read one shared store each (calendar/useCalendar.ts), so the
- * four mounts show one calendar. Orders: Settings keeps M3's jargon list (10) and M4's notes (20)
- * before the calendar; the status banner follows M2's capture warnings (0), so a capture problem
+ * four mounts show one calendar. Orders: Settings keeps M3's jargon list (10) before the
+ * calendar; the status banner follows M2's capture warnings (0), so a capture problem
  * stays the first thing above the page.
  */
 export const contributions: SlotContributions = {

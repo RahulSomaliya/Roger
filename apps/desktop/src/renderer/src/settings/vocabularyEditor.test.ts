@@ -5,8 +5,10 @@ import {
   canSave,
   isChanged,
   listSize,
+  sizeNote,
   textAfterPaste,
   VocabularyEditor,
+  type VocabularyEditing,
   type VocabularyEditorState,
 } from './vocabularyEditor';
 
@@ -24,6 +26,9 @@ function deferred<T>() {
 /** As main's errors reach the page: wrapped by Electron (app/describeError.ts strips it). */
 const ipcError = (channel: string, message: string): Error =>
   new Error(`Error invoking remote method '${channel}': ApiError: ${message}`);
+
+/** Lets the answers the test just settled reach the editor (a save chains a second one). */
+const settle = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
 
 const OFFLINE = 'GET /v1/vocabulary failed: connect ECONNREFUSED 127.0.0.1:8000';
 
@@ -78,7 +83,6 @@ describe('loading the list', () => {
       draft: ['Linkt', 'Roger'],
       saving: false,
       saveError: null,
-      justSaved: false,
     });
     expect(isChanged(state)).toBe(false);
     expect(canSave(state)).toBe(false);
@@ -127,6 +131,7 @@ describe('saving is refused unless the list was read', () => {
     await load;
 
     expect(editor.add('Linkt')).toEqual({ rest: 'Linkt', problem: null });
+    editor.remove('Linkt');
     await editor.save();
 
     expect(api.setVocabulary).not.toHaveBeenCalled();
@@ -157,8 +162,13 @@ describe('adding terms', () => {
     const state = editing(editor);
     expect(state.draft).toEqual(['Linkt', 'Roger', 'AssemblyAI']);
     expect(state.saved).toEqual(['Linkt', 'Roger']);
-    expect(isChanged(state)).toBe(true);
-    expect(canSave(state)).toBe(true);
+  });
+
+  it('saves at once: the new list is on its way before add returns', async () => {
+    const { api, editor } = await loaded();
+    editor.add('AssemblyAI');
+    expect(api.setVocabulary).toHaveBeenCalledWith(['Linkt', 'Roger', 'AssemblyAI']);
+    expect(editing(editor).saving).toBe(true);
   });
 
   it('adds several at once, split at commas, line breaks and tabs', async () => {
@@ -169,12 +179,13 @@ describe('adding terms', () => {
   });
 
   it('does nothing for blank text', async () => {
-    const { editor, seen } = await loaded();
+    const { api, editor, seen } = await loaded();
     const before = seen.length;
     expect(editor.add('   ')).toEqual({ rest: '', problem: null });
     // Blank to the API too: it trims U+0085, which trim() keeps.
     expect(editor.add(String.fromCharCode(0x85))).toEqual({ rest: '', problem: null });
     expect(seen).toHaveLength(before);
+    expect(api.setVocabulary).not.toHaveBeenCalled();
   });
 
   it('adds a term as the API stores it, without a pasted byte order mark', async () => {
@@ -191,6 +202,12 @@ describe('adding terms', () => {
       problem: '"Linkt" is already on the list.',
     });
     expect(editing(editor).draft).toEqual(['Linkt', 'Roger', 'Granola']);
+  });
+
+  it('sends nothing for a term already on the list', async () => {
+    const { api, editor } = await loaded();
+    expect(editor.add('roger').problem).toBe('"Roger" is already on the list.');
+    expect(api.setVocabulary).not.toHaveBeenCalled();
   });
 
   it('keeps a term that is too long in the box to shorten, and adds the rest', async () => {
@@ -294,83 +311,98 @@ describe('textAfterPaste', () => {
   });
 });
 
-describe('removing and discarding', () => {
-  it('removes one term from the draft', async () => {
-    const { editor } = await loaded(['Linkt', 'Roger', 'Granola']);
+describe('removing', () => {
+  it('removes one term and saves the rest at once', async () => {
+    const { api, editor } = await loaded(['Linkt', 'Roger', 'Granola']);
     editor.remove('Roger');
     expect(editing(editor).draft).toEqual(['Linkt', 'Granola']);
+    expect(api.setVocabulary).toHaveBeenCalledWith(['Linkt', 'Granola']);
   });
 
-  it('puts the stored list back on discard', async () => {
-    const { editor } = await loaded();
-    editor.add('Granola');
+  it('removes the last term: an empty list is a list the API stores', async () => {
+    const { api, editor } = await loaded(['Linkt']);
     editor.remove('Linkt');
-    editor.discard();
-    const state = editing(editor);
-    expect(state.draft).toEqual(state.saved);
-    expect(isChanged(state)).toBe(false);
+    expect(api.setVocabulary).toHaveBeenCalledWith([]);
+  });
+});
+
+describe('isChanged', () => {
+  const state = (saved: string[], draft: string[]): VocabularyEditing => ({
+    phase: 'editing',
+    saved,
+    draft,
+    saving: false,
+    saveError: null,
   });
 
-  it('calls the same terms in another order no change: the API sorts them anyway', async () => {
-    const { editor } = await loaded();
-    editor.remove('Linkt');
-    editor.add('Linkt');
-    const state = editing(editor);
-    expect(state.draft).toEqual(['Roger', 'Linkt']);
-    expect(isChanged(state)).toBe(false);
+  it('calls the same terms in another order no change: the API sorts them anyway', () => {
+    expect(isChanged(state(['Linkt', 'Roger'], ['Roger', 'Linkt']))).toBe(false);
   });
 
-  it('calls a new spelling of a term a change', async () => {
-    const { editor } = await loaded();
-    editor.remove('Linkt');
-    editor.add('LinkT');
-    expect(isChanged(editing(editor))).toBe(true);
+  it('calls a new spelling of a term a change', () => {
+    expect(isChanged(state(['Linkt', 'Roger'], ['LinkT', 'Roger']))).toBe(true);
+  });
+
+  it('calls a different count a change', () => {
+    expect(isChanged(state(['Linkt'], ['Linkt', 'Roger']))).toBe(true);
   });
 });
 
 describe('saving', () => {
-  it('sends the whole draft and then shows the list as the API stored it', async () => {
+  it('sends the whole list and then shows it as the API stored it', async () => {
     const { api, editor, saves } = await loaded();
     editor.add('granola, AssemblyAI');
-    const save = editor.save();
-
     expect(api.setVocabulary).toHaveBeenCalledWith(['Linkt', 'Roger', 'granola', 'AssemblyAI']);
     expect(editing(editor)).toMatchObject({ saving: true, saveError: null });
-    expect(canSave(editor.getSnapshot())).toBe(false);
-    // No edits while the list is on its way: the answer replaces the draft.
-    expect(editor.add('Deepgram')).toEqual({ rest: 'Deepgram', problem: null });
-    editor.remove('Linkt');
 
     saves[0]!.resolve(['AssemblyAI', 'granola', 'Linkt', 'Roger']);
-    await save;
+    await settle();
     expect(editing(editor)).toEqual({
       phase: 'editing',
       saved: ['AssemblyAI', 'granola', 'Linkt', 'Roger'],
       draft: ['AssemblyAI', 'granola', 'Linkt', 'Roger'],
       saving: false,
       saveError: null,
-      justSaved: true,
     });
   });
 
-  it('says "saved" only until the next edit', async () => {
-    const { editor, saves } = await loaded();
-    editor.add('Granola');
-    const save = editor.save();
-    saves[0]!.resolve(['Granola', 'Linkt', 'Roger']);
-    await save;
-    editor.remove('Granola');
-    expect(editing(editor).justSaved).toBe(false);
-  });
-
-  it('keeps the draft and shows why when the save fails, and saves on retry', async () => {
+  // The box stays usable while a save is out (a disabled box loses the caret), so an edit made
+  // meanwhile is shown at once and goes out in a second save once the first answers.
+  it('takes an edit made while a save is out, and sends it after the first answer', async () => {
     const { api, editor, saves } = await loaded();
     editor.add('Granola');
-    const first = editor.save();
+    expect(editor.add('Deepgram')).toEqual({ rest: '', problem: null });
+    editor.remove('Linkt');
+    expect(editing(editor).draft).toEqual(['Roger', 'Granola', 'Deepgram']);
+    expect(api.setVocabulary).toHaveBeenCalledTimes(1);
+
+    saves[0]!.resolve(['Granola', 'Linkt', 'Roger']);
+    await settle();
+    expect(api.setVocabulary).toHaveBeenCalledTimes(2);
+    expect(api.setVocabulary).toHaveBeenLastCalledWith(['Roger', 'Granola', 'Deepgram']);
+    // The first answer must not wipe the newer edits from the page.
+    expect(editing(editor)).toMatchObject({
+      saved: ['Granola', 'Linkt', 'Roger'],
+      draft: ['Roger', 'Granola', 'Deepgram'],
+      saving: true,
+    });
+
+    saves[1]!.resolve(['Deepgram', 'Granola', 'Roger']);
+    await settle();
+    expect(editing(editor)).toMatchObject({
+      saved: ['Deepgram', 'Granola', 'Roger'],
+      draft: ['Deepgram', 'Granola', 'Roger'],
+      saving: false,
+    });
+  });
+
+  it('keeps the draft and shows why when the save fails, and saves again on retry', async () => {
+    const { api, editor, saves } = await loaded();
+    editor.add('Granola');
     saves[0]!.reject(
       ipcError('vocabulary:set', 'PUT /v1/vocabulary failed: connect ECONNREFUSED 127.0.0.1:8000'),
     );
-    await first;
+    await settle();
     expect(editing(editor)).toMatchObject({
       draft: ['Linkt', 'Roger', 'Granola'],
       saved: ['Linkt', 'Roger'],
@@ -378,6 +410,8 @@ describe('saving', () => {
       saveError: 'PUT /v1/vocabulary failed: connect ECONNREFUSED 127.0.0.1:8000',
     });
     expect(canSave(editor.getSnapshot())).toBe(true);
+    // A failed save is not retried by itself: the page says so and offers Try again.
+    expect(api.setVocabulary).toHaveBeenCalledTimes(1);
 
     const retry = editor.save();
     expect(editing(editor).saveError).toBeNull();
@@ -386,16 +420,58 @@ describe('saving', () => {
     expect(api.setVocabulary).toHaveBeenCalledTimes(2);
     expect(editing(editor)).toMatchObject({
       saved: ['Granola', 'Linkt', 'Roger'],
-      justSaved: true,
+      saveError: null,
+    });
+  });
+
+  it('keeps an edit made while a save is out when that save fails', async () => {
+    const { editor, saves } = await loaded();
+    editor.add('Granola');
+    editor.add('Deepgram');
+    saves[0]!.reject(ipcError('vocabulary:set', 'PUT /v1/vocabulary failed: offline'));
+    await settle();
+    expect(editing(editor)).toMatchObject({
+      draft: ['Linkt', 'Roger', 'Granola', 'Deepgram'],
+      saveError: 'PUT /v1/vocabulary failed: offline',
     });
   });
 
   it('sends one save at a time', async () => {
     const { api, editor } = await loaded();
     editor.add('Granola');
-    void editor.save();
     await editor.save();
     expect(api.setVocabulary).toHaveBeenCalledTimes(1);
+  });
+
+  it('drops the answer of a save made before a newer read', async () => {
+    const { editor, reads, saves } = await loaded();
+    editor.add('Granola');
+    const reload = editor.load();
+    reads[1]!.resolve(['Newer']);
+    await reload;
+    saves[0]!.resolve(['Granola', 'Linkt', 'Roger']);
+    await settle();
+    expect(editing(editor).saved).toEqual(['Newer']);
+  });
+});
+
+describe('sizeNote', () => {
+  const names = (count: number, length = 1): string[] =>
+    Array.from({ length: count }, (_, i) => `${i}`.padEnd(length, 'x'));
+
+  it('says nothing while the list is far from its limits', () => {
+    expect(sizeNote(names(2))).toBeNull();
+    expect(sizeNote(names(79))).toBeNull();
+  });
+
+  it('shows the count near 100 terms', () => {
+    // "0".."9" are one character, "10".."79" two: 150 in all.
+    expect(sizeNote(names(80))).toBe('80 of 100 terms · 150 of 800 characters');
+  });
+
+  it('shows it near 800 characters, with few terms', () => {
+    const terms = names(13, 50);
+    expect(sizeNote(terms)).toBe('13 of 100 terms · 650 of 800 characters');
   });
 });
 

@@ -5,7 +5,6 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { MeetingChat } from '../../chat/MeetingChat';
 import { AiNotesPanel } from '../../notes/AiNotesPanel';
 import type { NoteEditorProps } from '../../notes/NoteEditor';
-import { NotesSettings } from '../../notes/NotesSettings';
 import type { SlotEntry } from '../slotRegistry';
 import { contributions } from './m4-notes';
 
@@ -70,15 +69,8 @@ describe("M4-T20's meeting regions", () => {
     expect(only(contributions.meetingChat, 'meetingChat').component).toBe(MeetingChat);
   });
 
-  it('mounts the notes preferences as a Settings section', () => {
-    expect(only(contributions.settings, 'settings').component).toBe(NotesSettings);
-  });
-
-  // Ids and orders keep M3's jargon list (order 10) before the notes section in Settings.
-  it('keeps its slot ids unique to M4 and Settings after the jargon list', () => {
-    const settings = only(contributions.settings, 'settings');
-    expect(settings.id.startsWith('m4-')).toBe(true);
-    expect(settings.order).toBeGreaterThan(10);
+  it('mounts no Settings section: the notes have nothing left to set', () => {
+    expect(contributions.settings).toBeUndefined();
   });
 });
 

@@ -44,11 +44,18 @@ function tag(html: string, pattern: RegExp): string {
   return found[0];
 }
 
+/** How many accent-filled buttons the markup has: the view's one primary (docs/design.md). */
+function primaries(html: string): number {
+  return html.split('data-variant="primary"').length - 1;
+}
+
 describe('the Calendar section of Settings', () => {
-  it('is a titled section', () => {
+  it('is a titled section: space and a hairline, not a card', () => {
     const html = render();
     expect(html).toMatch(/<section[^>]*aria-labelledby="([^"]+)"/);
     expect(html).toContain('Calendar</h2>');
+    expect(html).toMatch(/<section class="settings-section /);
+    expect(html).not.toContain('class="card');
   });
 
   describe('the account', () => {
@@ -57,6 +64,25 @@ describe('the Calendar section of Settings', () => {
       expect(html).toContain('Connected as <strong>you@example.com</strong>');
       expect(html).toContain('Disconnect</button>');
       expect(html).not.toContain('Reconnect');
+    });
+
+    // docs/design.md, the one primary: Connect while no calendar is connected, otherwise none.
+    it('has no primary button once connected, and Disconnect is a ghost', () => {
+      const html = render();
+      expect(primaries(html)).toBe(0);
+      expect(html).toMatch(/data-variant="ghost"[^>]*>Disconnect</);
+    });
+
+    it('has Connect as the one primary while none is connected', () => {
+      const html = render(calendarState({ connection: null }));
+      expect(primaries(html)).toBe(1);
+      expect(html).toMatch(/data-variant="primary"[^>]*>Connect Google Calendar</);
+    });
+
+    it('shows a Disconnect that is busy, not disabled: full colour, aria-disabled, its words changed', () => {
+      const html = render(calendarState({ disconnecting: true }));
+      expect(html).toMatch(/<button[^>]*aria-disabled="true"[^>]*>Disconnecting…</);
+      expect(html).not.toMatch(/<button[^>]*disabled=""[^>]*>Disconnecting…</);
     });
 
     it('offers Connect while none is connected', () => {
@@ -71,6 +97,16 @@ describe('the Calendar section of Settings', () => {
         calendarState({ connection: { ...CONNECTION, status: 'reconnect_required' } }),
       );
       expect(html).toContain('Reconnect Google Calendar</button>');
+      // The refused grant is the one thing to do here, so it takes the one primary.
+      expect(primaries(html)).toBe(1);
+      expect(html).toMatch(/data-variant="primary"[^>]*>Reconnect Google Calendar</);
+    });
+
+    it('says Connect Google Calendar, not "Open Google again", while it waits for the browser', () => {
+      const html = render(calendarState({ connection: null, connecting: true }));
+      expect(html).toContain('Connect Google Calendar</button>');
+      expect(html).not.toContain('Open Google again');
+      expect(html).toContain('Finish signing in in your browser.');
     });
 
     it('says why a connect or a disconnect failed, and that a failed disconnect left it connected', () => {
@@ -84,6 +120,12 @@ describe('the Calendar section of Settings', () => {
       expect(html).toContain(
         'Roger could not disconnect Google Calendar: Google did not answer. Your calendar is still connected.',
       );
+    });
+
+    it('draws a problem as an icon and a sentence: the alert role, no box, no red', () => {
+      const html = render(calendarState({ connectError: 'Tick the calendar box' }));
+      expect(html).toMatch(/<div class="problem" role="alert"><svg[^>]*aria-hidden="true"/);
+      expect(html).not.toContain('class="error');
     });
 
     it('says it cannot read the connection, with Try again, instead of "no calendar connected"', () => {
@@ -103,43 +145,49 @@ describe('the Calendar section of Settings', () => {
       expect(html).toMatch(/<option value="5" selected="">5 minutes before<\/option>/);
     });
 
-    it('waits while a save is out', () => {
-      expect(
-        tag(
-          render(calendarState(), settingsState({ saving: 'notice.text' })),
-          /<select|class="calendar-select"/,
-        ),
-      ).toContain('disabled');
+    // The notice box saves on blur, and a blur comes before the click that caused it: a control
+    // that went disabled while that save was out would swallow the click (the next switch, Use
+    // the default text).
+    it('never waits on a save: no control goes disabled, so no click is lost', () => {
+      const html = render();
+      expect(tag(html, /class="settings-input calendar-select"/)).not.toContain('disabled');
+      expect(tag(html, /type="checkbox"/)).not.toContain('disabled');
     });
   });
 
   describe('the notice', () => {
-    it('shows the text and its buttons while the notice is on', () => {
+    it('shows the text while the notice is on, with no Save button: it saves on blur', () => {
       const html = render(calendarState(), settingsState({ noticeText: 'Recording this call.' }));
       expect(html).toContain('Recording this call.</textarea>');
-      expect(html).toContain('Save notice</button>');
       expect(tag(html, /type="checkbox"[^>]*checked/)).toContain('checked');
+      expect(html).not.toContain('Save notice');
+    });
+
+    it('describes only the Copy notice button the meeting page has', () => {
+      const html = render();
+      expect(html).toContain('The meeting page gets a Copy notice button');
+      expect(html).not.toContain('The reminder and the meeting page');
     });
 
     it('hides the text with the notice off', () => {
       const html = render(calendarState(), settingsState({ noticeEnabled: false }));
       expect(html).not.toContain('<textarea');
-      expect(html).not.toContain('Save notice');
+      expect(html).not.toContain('Use the default text');
     });
 
-    it('has Save notice off until the text changes: the stored text is the draft', () => {
-      expect(render()).toMatch(/<button[^>]*disabled=""[^>]*>Save notice<\/button>/);
+    it('limits the text to what the preference accepts', () => {
+      const html = render(calendarState(), settingsState({ noticeText: 'Mine' }));
+      expect(html).toContain('maxLength="1000"');
     });
 
-    it('limits the text to what the preference accepts, and can go back to the default', () => {
+    it('offers the default text, as a ghost, only when the text differs from it', () => {
       const custom = render(calendarState(), settingsState({ noticeText: 'Mine' }));
-      expect(custom).toContain('maxLength="1000"');
       expect(custom).toMatch(
-        /<button type="button" class="btn" data-variant="secondary" data-size="sm">Use the default text</,
+        /<button type="button" class="btn" data-variant="ghost" data-size="sm">Use the default text</,
       );
-      // The default text already in the box leaves nothing to reset.
+      // The default text already in the box leaves nothing to reset: the button is not there.
       const stock = render(calendarState(), settingsState({ noticeText: DEFAULT_NOTICE_TEXT }));
-      expect(stock).toMatch(/<button[^>]*disabled=""[^>]*>Use the default text</);
+      expect(stock).not.toContain('Use the default text');
     });
   });
 
@@ -164,6 +212,16 @@ describe('the Calendar section of Settings', () => {
       );
       expect(html).toContain(LOGIN_ITEMS_SETTINGS_PATH.replace('&', '&amp;'));
       expect(html).toContain('data-login-item="requires-approval"');
+    });
+
+    // The long helper is for the one case that needs it (redesign R6): macOS waiting on a click.
+    it('says nothing under the switch when macOS has nothing to ask', () => {
+      for (const loginItem of ['enabled', 'disabled', null] as const) {
+        const html = render(calendarState(), settingsState({ openAtLogin: 'on', loginItem }));
+        expect(html).not.toContain('data-login-item');
+        expect(html).not.toContain('Roger opens when you log in');
+        expect(html).not.toContain('Roger opens only when you open it');
+      }
     });
 
     it('is switched off, with the reason, in a build that never registers a login item', () => {

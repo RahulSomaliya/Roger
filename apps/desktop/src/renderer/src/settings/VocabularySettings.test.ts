@@ -11,7 +11,6 @@ function actions(): VocabularyEditorActions {
     load: vi.fn(() => Promise.resolve()),
     add: vi.fn(() => ({ rest: '', problem: null })),
     remove: vi.fn(),
-    discard: vi.fn(),
     save: vi.fn(() => Promise.resolve()),
   };
 }
@@ -34,16 +33,8 @@ function editing(fields: Partial<VocabularyEditing> = {}): VocabularyEditing {
     draft: ['Linkt', 'Roger'],
     saving: false,
     saveError: null,
-    justSaved: false,
     ...fields,
   };
-}
-
-/** The Save button's tag, to read its state. */
-function saveButton(html: string): string {
-  const tag = /<button[^>]*vocabulary-save[^>]*>/.exec(html)?.[0];
-  if (tag === undefined) throw new Error('no Save button');
-  return tag;
 }
 
 describe('the jargon list section', () => {
@@ -65,51 +56,56 @@ describe('the jargon list section', () => {
     const html = render({ phase: 'loading' });
     expect(html).toMatch(/role="status"[^>]*>Loading the jargon list…</);
     expect(html).not.toContain('<input');
-    expect(html).not.toContain('vocabulary-save');
   });
 
-  it('shows why a read failed and offers only Try again: no box, no Save', () => {
+  it('shows why a read failed and offers only Try again: no box to add into', () => {
     const html = render({ phase: 'load-failed', error: OFFLINE });
     expect(html).toMatch(/role="alert"/);
     expect(html).toContain(`Couldn’t load the jargon list: ${OFFLINE}`);
     expect(html).toContain('>Try again</button>');
     expect(html).not.toContain('<input');
-    expect(html).not.toContain('vocabulary-save');
   });
 
-  it('lists each term with its own Remove button, and the list size against the limits', () => {
+  it('lists each term with its own Remove button', () => {
     const html = render(editing());
     expect(html).toMatch(/<li[^>]*>.*Linkt.*aria-label="Remove Linkt".*<\/li>/);
     expect(html).toMatch(/aria-label="Remove Roger"/);
-    expect(html).toContain('2 of 100 terms · 10 of 800 characters');
     expect(html).toMatch(/<label[^>]*for="([^"]+)"[^>]*>Add terms<\/label>/);
   });
 
-  it('says so when the list is empty', () => {
+  it('has no Save, no Discard and no unsaved state: every change saves at once', () => {
+    const html = render(editing({ draft: ['Linkt', 'Roger', 'Granola'] }));
+    expect(html).not.toContain('Save');
+    expect(html).not.toContain('Discard');
+    expect(html).not.toContain('Unsaved');
+    expect(html).not.toContain('Saved');
+  });
+
+  it('shows no empty-state panel for an empty list: the box says what goes there', () => {
     const html = render(editing({ saved: [], draft: [] }));
-    expect(html).toContain('No terms yet.');
+    expect(html).not.toContain('No terms yet');
     expect(html).not.toContain('<ul');
+    expect(html).toMatch(/<input[^>]*placeholder="Add names/);
   });
 
-  it('offers Save only for a changed list, with Discard beside it', () => {
-    expect(saveButton(render(editing()))).toContain('disabled');
-    const changed = render(editing({ draft: ['Linkt', 'Roger', 'Granola'] }));
-    expect(saveButton(changed)).not.toContain('disabled');
-    expect(changed).toContain('Unsaved changes');
-    expect(changed).toContain('>Discard changes</button>');
+  it('names the limits only near one', () => {
+    const quiet = render(editing());
+    expect(quiet).not.toContain(' of 100 terms');
+    expect(quiet).not.toContain(' of 800 characters');
+    const full = Array.from({ length: 85 }, (_, i) => `t${i}`);
+    const near = render(editing({ saved: full, draft: full }));
+    expect(near).toContain('85 of 100 terms · ');
+    expect(near).toContain(' of 800 characters');
   });
 
-  it('locks the box and the list while a save is out', () => {
+  // A disabled box drops the caret: adding several terms in a row must keep typing.
+  it('keeps the box and the Remove buttons usable while a save is out', () => {
     const html = render(editing({ draft: ['Linkt', 'Roger', 'Granola'], saving: true }));
-    expect(saveButton(html)).toContain('disabled');
-    expect(html).toMatch(/<input[^>]*disabled/);
-    expect(html).toMatch(
-      /aria-label="Remove Linkt"[^>]*disabled|disabled[^>]*aria-label="Remove Linkt"/,
-    );
-    expect(html).toContain('Saving…');
+    expect(html).not.toMatch(/<input[^>]*disabled/);
+    expect(html).not.toMatch(/aria-label="Remove Linkt"[^>]*disabled/);
   });
 
-  it('shows why a save failed and keeps the changes to save again', () => {
+  it('says Not saved with the reason, and offers Try again, when a save failed', () => {
     const html = render(
       editing({
         draft: ['Linkt', 'Roger', 'Granola'],
@@ -118,13 +114,14 @@ describe('the jargon list section', () => {
     );
     expect(html).toMatch(/role="alert"/);
     expect(html).toContain(
-      'Couldn’t save the jargon list: PUT /v1/vocabulary failed: connect ECONNREFUSED 127.0.0.1:8000',
+      'Not saved: PUT /v1/vocabulary failed: connect ECONNREFUSED 127.0.0.1:8000',
     );
-    expect(saveButton(html)).not.toContain('disabled');
+    expect(html).toContain('>Try again</button>');
+    // The term stays on the page, so the person sees what was not saved.
+    expect(html).toContain('Granola');
   });
 
-  it('confirms a save until the next edit', () => {
-    const html = render(editing({ justSaved: true }));
-    expect(html).toContain('Saved. New recordings use this list.');
+  it('has no problem line while nothing is wrong', () => {
+    expect(render(editing())).not.toContain('role="alert"');
   });
 });

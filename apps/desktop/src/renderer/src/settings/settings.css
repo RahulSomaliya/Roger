@@ -1,0 +1,77 @@
+/*
+ * What every Settings section shares (docs/design.md): sections are space and a hairline, never a
+ * card; the section title is the Settings title step; a control is 40 px on `surface` with a 1 px
+ * `line` border. VocabularySettings.tsx and calendar/CalendarSettings.tsx both import this sheet,
+ * and each adds only its own rules. `.problem` itself is styles.css's. Colours only from
+ * theme/tokens.css (noLiteralColours.test.ts fails on a literal one).
+ *
+ * The container is `.settings-list`, not app.css's older `.settings-sections`, which this page no
+ * longer uses.
+ */
+
+.settings-list {
+  display: flex;
+  flex-direction: column;
+}
+
+/* A section is the slot's own element, a direct child of the list: the hairline sits between
+   neighbours, so a section that fails to show leaves no stray rule. */
+.settings-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  min-width: 0;
+  padding: var(--space-6) 0;
+  border-top: 1px solid var(--line);
+}
+
+.settings-section:first-child {
+  padding-top: 0;
+  border-top: 0;
+}
+
+.settings-section-title {
+  margin: 0;
+  font-size: var(--text-lg);
+  line-height: var(--leading-lg);
+  font-weight: 600;
+}
+
+/* Helper text: say a limit once, where it bites. */
+.settings-help {
+  margin: 0;
+  color: var(--ink-muted);
+  overflow-wrap: anywhere;
+}
+
+.settings-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.settings-label {
+  font-weight: 600;
+}
+
+/* Input, select and textarea: 40 px, `surface` on `canvas` plus its own border. Focus is the
+   global ring (styles.css :focus-visible). */
+.settings-input {
+  min-height: 40px;
+  max-width: 100%;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+}
+
+.settings-input::placeholder {
+  color: var(--ink-muted);
+}
+
+.settings-input:disabled {
+  opacity: 0.5;
+}
