@@ -222,7 +222,7 @@ describe('CalendarStore retain', () => {
 describe('CalendarStore connect and disconnect', () => {
   const notConnected = { getCalendarConnection: () => Promise.resolve(null) };
 
-  it('stores the connection and remembers it was the first connect', async () => {
+  it('stores the connection once connected', async () => {
     const store = new CalendarStore(fakeCalendar(notConnected).api);
     store.retain();
     await settle();
@@ -231,22 +231,7 @@ describe('CalendarStore connect and disconnect', () => {
       connection,
       connecting: false,
       connectError: null,
-      justConnected: true,
     });
-    store.dismissConnectedLine();
-    expect(store.getState().justConnected).toBe(false);
-  });
-
-  it('does not call a reconnect the first connect: the line about opening at login is for that', async () => {
-    const refused = { ...connection, status: 'reconnect_required' as const };
-    const store = new CalendarStore(
-      fakeCalendar({ getCalendarConnection: () => Promise.resolve(refused) }).api,
-    );
-    store.retain();
-    await settle();
-    await store.connect();
-    expect(store.getState().connection).toEqual(connection);
-    expect(store.getState().justConnected).toBe(false);
   });
 
   it('shows why a connect failed, and stays unconnected', async () => {
@@ -263,7 +248,6 @@ describe('CalendarStore connect and disconnect', () => {
       connection: null,
       connecting: false,
       connectError: 'Tick the calendar box and try again',
-      justConnected: false,
     });
   });
 
@@ -300,7 +284,6 @@ describe('CalendarStore connect and disconnect', () => {
       connection: null,
       events: [],
       disconnecting: false,
-      justConnected: false,
     });
     expect(store.getState().links.size).toBe(0);
   });
