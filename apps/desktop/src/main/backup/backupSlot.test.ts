@@ -21,6 +21,9 @@ import { meetingAudioDir } from './audioPaths';
 vi.mock('electron', () => ({
   desktopCapturer: { getSources: vi.fn() },
   app: { isPackaged: false, getAppPath: () => '/nonexistent/roger-app', on: vi.fn() },
+  // createCaptureRuntime's M2-T6 slot asks this every second while a recording runs. Left out,
+  // each poll logs "network check failed" (the mock has no `net`) and the test still passes.
+  net: { isOnline: () => true },
 }));
 
 const logger = createLogger({ level: 'error', format: 'json', sink: () => undefined });

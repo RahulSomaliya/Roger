@@ -105,9 +105,11 @@ Extends the root `CLAUDE.md`, whose house rules and repo-wide failure log apply 
   export of a `vi.mock('electron', factory)` only when code reads it, never at import, so each
   branch was green alone. A test that builds the capture runtime copies the stand-ins of
   `createCaptureRuntime.test.ts`'s mock, and a slot that reads another Electron field adds it to
-  every test that builds the runtime (`git grep -l createCaptureRuntime -- '*.test.ts'`). That mock
-  has a focused `BrowserWindow` since M2-T6, so a loud warning there posts nothing: a test that
-  needs a post mocks `Notification` and an unfocused window, as `Notifier.test.ts` does.
+  every test that builds the runtime (`git grep -l createCaptureRuntime -- '*.test.ts'`). A read
+  inside a guarded timer fails silently: M2-T6's network poll catches the throw, so
+  `backupSlot.test.ts` without `net` passed while logging "network check failed" every second.
+  That mock has a focused `BrowserWindow` since M2-T6, so a loud warning there posts nothing: a
+  test that needs a post mocks `Notification` and an unfocused window, as `Notifier.test.ts` does.
 - A jitter test whose first chunk has no jitter passes on code that ignores jitter: M1 dated a
   stream from its first chunk only, so delays of `(i * 137) % 401` (zero at i = 0) proved nothing.
   Start such a pattern off zero, and see the test fail on the old code first (M2-T5).
