@@ -17,12 +17,20 @@ export function formatOffset(ms: number): string {
   return [hours, minutes, seconds].map((n) => String(n).padStart(2, '0')).join(':');
 }
 
+/**
+ * Every chunk is 100 ms of audio, from the renderer (`CHUNK_SAMPLES` in
+ * audio/AudioCaptureController.ts) and from the helper's tap (`TAP_CHUNK_MS` in
+ * main/audio/system/TapSystemAudio.ts). Change the three together.
+ */
+const CHUNK_MS = 100;
+
 export function describeHealth(health: SourceHealth, chunks: number): string {
   switch (health) {
     case 'pending':
       return 'waiting for audio';
     case 'active':
-      return chunks === 0 ? 'open, no audio yet' : `${(chunks / 10).toFixed(0)}s captured`;
+      // As formatDuration, like the connected time beside it: "39m 52s", never "2392s".
+      return chunks === 0 ? 'open, no audio yet' : `${formatDuration(chunks * CHUNK_MS)} captured`;
     case 'stalled':
       return `no audio for over ${NO_AUDIO_WARNING_MS / 1000} s`;
     case 'ended':

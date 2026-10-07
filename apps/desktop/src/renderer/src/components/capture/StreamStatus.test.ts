@@ -81,7 +81,7 @@ describe('StreamStatus while recording', () => {
     expect(mic).toMatch(/class="stream-state" data-tone="ok"[^>]*>Transcribing</);
     expect(mic).toContain('aria-label="Mic (me) level"');
     expect(mic).toContain('aria-valuetext="-18 dB"');
-    expect(text(mic)).toContain('375s captured');
+    expect(text(mic)).toContain('6m 15s captured');
     expect(text(mic)).toContain('6m 15s connected');
     expect(row(html, 'system')).toContain('aria-valuetext="-28 dB"');
   });

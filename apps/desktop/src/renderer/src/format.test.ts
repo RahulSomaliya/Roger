@@ -38,8 +38,15 @@ describe('formatOffset', () => {
 describe('describeHealth', () => {
   it('says how long a stalled source has been without audio', () => {
     expect(describeHealth('stalled', 12)).toBe('no audio for over 5 s');
-    expect(describeHealth('active', 25)).toBe('3s captured');
     expect(describeHealth('ended', 25)).toBe('stopped');
+  });
+
+  it('gives what a source captured as the connected time beside it reads, not in seconds', () => {
+    // 100 ms chunks: 25 are 2.5 s, floored as formatDuration floors.
+    expect(describeHealth('active', 25)).toBe('2s captured');
+    // A 40-minute call read "2392s captured".
+    expect(describeHealth('active', 23_920)).toBe('39m 52s captured');
+    expect(describeHealth('active', 0)).toBe('open, no audio yet');
   });
 });
 
