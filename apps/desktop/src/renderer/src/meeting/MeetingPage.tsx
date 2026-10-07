@@ -24,7 +24,7 @@ const NO_LINES: readonly TranscriptSegment[] = [];
 /**
  * One meeting stored on this Mac (`meeting/<id>`): its header (title, time, the one primary, the
  * capture status line and the Details dialog), the notices under it (app/slotRegistry.ts: the
- * calendar notice and the audio note), then one tab row over the notes, the AI notes, the
+ * calendar notice and the gap line), then one tab row over the notes, the AI notes, the
  * transcript and chat, all inside the citation navigator so a chip in the notes or chat can reveal
  * its lines in the transcript.
  *
@@ -121,10 +121,12 @@ export function MeetingPage({ meetingId }: { meetingId: string }) {
     notes: notesState,
   });
   const write = (): void => {
-    void notes.generate(templateForWriting(meeting?.title ?? '', meeting?.attendees)).then((took) => {
-      // Show the notes arrive: the AI notes tab exists once main reports the pending generate.
-      if (took) setChosenTab('ai');
-    });
+    void notes
+      .generate(templateForWriting(meeting?.title ?? '', meeting?.attendees))
+      .then((took) => {
+        // Show the notes arrive: the AI notes tab exists once main reports the pending generate.
+        if (took) setChosenTab('ai');
+      });
   };
 
   return (
