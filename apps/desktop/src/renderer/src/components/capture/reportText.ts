@@ -1,5 +1,4 @@
 import {
-  AUDIO_SOURCE_LABEL,
   type BackupStatus,
   type CaptureEventValue,
   type CaptureGapReason,
@@ -8,7 +7,7 @@ import {
   type CaptureWarningKind,
 } from '../../../../shared/capture';
 import { formatClockTime } from '../../app/labels';
-import { formatDuration, formatOffset } from '../../format';
+import { formatDuration, formatOffset, SOURCE_NAME } from '../../format';
 
 /*
  * The words of M2-T20b's audio note and capture report, pure so each rule is tested under Node.
@@ -42,10 +41,8 @@ export function formatKeepDate(iso: string, now: Date): string {
 }
 
 export interface AudioNoteView {
-  /** `warn`: the backup is not keeping audio it should; `quiet`: nothing to act on but the delete. */
-  tone: 'quiet' | 'warn';
   text: string;
-  /** Re-run needs audio kept for it; main refuses while any recording runs (the UI says so). */
+  /** Transcribing again needs audio kept for it; main refuses while any recording runs (the UI says so). */
   canRerun: boolean;
   /** Main refuses a delete for the meeting being recorded, so none is offered while it writes. */
   canDelete: boolean;
@@ -54,9 +51,9 @@ export interface AudioNoteView {
 const plural = (count: number, word: string): string => `${count} ${word}${count === 1 ? '' : 's'}`;
 
 /**
- * The note about a meeting's kept audio (BackupStatus, `window.roger.getCaptureReport` after Stop
- * or the live status while recording): until when it stays, that it waits for a re-run, or that it
- * is gone. `unfilledGaps` is the report's gaps with no `recoveredAt`. Null when no audio is kept
+ * The words about a meeting's kept audio, in Details (BackupStatus, `window.roger.getCaptureReport`
+ * after Stop or the live status while recording): until when it stays, how many parts are not
+ * transcribed yet, or that it is gone. `unfilledGaps` is the report's gaps with no `recoveredAt`. Null when no audio is kept
  * at all (`off`: the backup is turned off in config.json).
  */
 export function audioNote(
@@ -71,14 +68,12 @@ export function audioNote(
       return null;
     case 'writing':
       return {
-        tone: 'quiet',
         text: 'Roger is keeping this meeting’s audio on this Mac as it records.',
         canRerun: false,
         canDelete: false,
       };
     case 'paused':
       return {
-        tone: 'warn',
         text:
           backup.message ??
           'The audio backup is paused because the disk is nearly full. The transcript goes on.',
@@ -87,7 +82,6 @@ export function audioNote(
       };
     case 'error':
       return {
-        tone: 'warn',
         text: backup.message ?? 'Roger could not keep this meeting’s audio.',
         canRerun: false,
         canDelete: backup.bytes > 0,
@@ -96,13 +90,11 @@ export function audioNote(
       const where = until === null ? '' : ` until ${until}`;
       return backup.keptForRerun
         ? {
-            tone: 'quiet',
-            text: `Audio kept for a re-run${where} (${size}): ${plural(unfilledGaps, 'gap')} ${unfilledGaps === 1 ? 'is' : 'are'} not filled yet.`,
+            text: `Audio kept on this Mac${where} (${size}). ${plural(unfilledGaps, 'part')} ${unfilledGaps === 1 ? 'is' : 'are'} not transcribed yet.`,
             canRerun: true,
             canDelete: true,
           }
         : {
-            tone: 'quiet',
             text: `Audio kept on this Mac${where} (${size}).`,
             canRerun: false,
             canDelete: true,
@@ -110,10 +102,9 @@ export function audioNote(
     }
     case 'deleted':
       return {
-        tone: 'quiet',
         text:
           unfilledGaps > 0
-            ? `This meeting’s audio is deleted. Its lines stay, and its ${unfilledGaps} unfilled ${unfilledGaps === 1 ? 'gap' : 'gaps'} cannot be re-run.`
+            ? `This meeting’s audio is deleted. Its lines stay, and its ${plural(unfilledGaps, 'untranscribed part')} cannot be transcribed again.`
             : 'This meeting’s audio is deleted. Its lines stay.',
         canRerun: false,
         canDelete: false,
@@ -174,32 +165,36 @@ export interface GapView {
 export function describeGap(gap: CaptureReportGap): GapView {
   const base = {
     span: `${formatOffset(gap.startMs)} to ${formatOffset(gap.endMs)}`,
-    source: AUDIO_SOURCE_LABEL[gap.source],
+    source: SOURCE_NAME[gap.source],
     reason: GAP_REASON[gap.reason],
   };
   if (gap.recoveredAt !== null) {
     return {
       ...base,
       status: 'recovered',
-      statusText: `Filled by a re-run at ${formatClockTime(gap.recoveredAt)}`,
+      statusText: `Transcribed again at ${formatClockTime(gap.recoveredAt)}`,
     };
   }
   if (gap.recoverError !== null) {
-    return { ...base, status: 'failed', statusText: `Re-run failed: ${gap.recoverError}` };
+    return {
+      ...base,
+      status: 'failed',
+      statusText: `Transcribing again failed: ${gap.recoverError}`,
+    };
   }
-  return { ...base, status: 'waiting', statusText: 'Waiting for a re-run' };
+  return { ...base, status: 'waiting', statusText: 'Waiting to be transcribed again' };
 }
 
-/** "2 gaps, 1 filled by a re-run." for the report's gap line. */
+/** "2 gaps, 1 transcribed again." for the report's gap line. */
 export function summarizeGaps(gaps: readonly CaptureReportGap[]): string {
   if (gaps.length === 0) return 'No gaps: Roger recorded no audio it failed to transcribe.';
   const filled = gaps.filter((gap) => gap.recoveredAt !== null).length;
   const count = plural(gaps.length, 'gap');
-  if (filled === 0) return `${count}, none filled yet.`;
+  if (filled === 0) return `${count}, none transcribed again yet.`;
   if (filled === gaps.length) {
-    return `${count}, ${gaps.length === 1 ? '' : 'all '}filled by a re-run.`;
+    return `${count}, ${gaps.length === 1 ? '' : 'all '}transcribed again.`;
   }
-  return `${count}, ${filled} filled by a re-run.`;
+  return `${count}, ${filled} transcribed again.`;
 }
 
 /**

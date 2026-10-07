@@ -542,61 +542,13 @@ button.chip:hover {
 
 /* Rules below are the M1 base that screens still read until their tasks move them. */
 
+/* Only chat/MeetingChat.tsx (`meeting-chat-read-error`) still reads `.error`: it moves to the
+   problem line with the chat's own redesign task, and this rule goes with its last reader. */
 .error {
   padding: 10px 12px;
   border-radius: 8px;
   background: var(--fill);
   color: var(--ink);
-}
-
-/* Roger stopped a recording on its own (no speech, the length cap, sleep, quit). */
-.notice {
-  padding: 10px 12px;
-  border-radius: 8px;
-  background: var(--fill);
-  color: var(--ink);
-}
-
-.panel {
-  padding: 10px 12px;
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  background: var(--surface);
-}
-
-.status-grid {
-  display: grid;
-  grid-template-columns: max-content 1fr;
-  gap: 4px 12px;
-  margin: 0;
-}
-
-.status-row {
-  display: contents;
-}
-
-.status-row dt {
-  color: var(--ink-muted);
-}
-
-.status-row dd {
-  margin: 0;
-}
-
-/* No audio, a dead track, a source error or a line not saved: the call is being lost. */
-.health-stalled dd,
-.health-ended dd,
-.health-error dd,
-.save-failed dd {
-  color: var(--ink);
-}
-
-.upload-backoff dd {
-  color: var(--ink-muted);
-}
-
-.health-active dd {
-  color: var(--ink-muted);
 }
 
 .muted {

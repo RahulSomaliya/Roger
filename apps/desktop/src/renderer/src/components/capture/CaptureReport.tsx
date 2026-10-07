@@ -4,17 +4,18 @@ import { describeEvent, describeGap, describeStopReason, summarizeGaps } from '.
 import './captureDetails.css';
 
 /**
- * What happened to a meeting's capture (the `meetingCaptureReport` region, after Stop): why it
- * ended, the gaps with where each re-run stands, and the timeline of everything capture did or saw.
- * The gaps are the part a person acts on (Re-run is on the audio note); the timeline is for
- * understanding a bad call, so it stays closed until asked for. Never transcript text: a capture
+ * What happened to a meeting's capture (Details, the `meetingCaptureReport` region, after Stop): why
+ * it ended, the gaps with where transcribing each again stands, and the timeline of everything
+ * capture did or saw. The gaps are the part a person acts on (Transcribe again is on the gap line
+ * and in the audio section); the timeline is for understanding a bad call, so it stays closed until
+ * asked for. Never transcript text: a capture
  * event holds codes, counts and timings only.
  */
 export function CaptureReport({ report }: { report: Report }) {
   const stop = describeStopReason(report.stopReason);
   return (
-    <section className="panel capture-report" aria-label="Capture report">
-      <h2 className="capture-report-title">Capture report</h2>
+    <section className="details-section capture-report" aria-label="Capture report">
+      <h3 className="details-heading">Capture report</h3>
       {stop === null ? null : <p className="report-stop">{stop}</p>}
       <p className="report-gap-summary">{summarizeGaps(report.gaps)}</p>
       {report.gaps.length === 0 ? null : (

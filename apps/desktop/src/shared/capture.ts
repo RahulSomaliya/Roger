@@ -132,8 +132,8 @@ export interface SourceStatus {
  *   until it is back online; then its next chunk reopens it with no backoff wait
  * - error: ended and will not reopen this meeting; `streamMessages` says why
  *
- * renderer/src/format.ts `describeStream` and `streamTone` switch over every state with no default
- * case: a state added here without its case in both fails the type check (TS2366).
+ * renderer/src/format.ts `describeStream` switches over every state with no default case: a state
+ * added here without its case fails the type check (TS2366).
  */
 export type SttStreamState =
   'closed' | 'connecting' | 'open' | 'paused' | 'retrying' | 'offline' | 'error';
