@@ -32,30 +32,66 @@ export function describeHealth(health: SourceHealth, chunks: number): string {
   }
 }
 
-/** A session's state as people read it: "transcribing" only while its source sends audio. */
+/**
+ * A source's speech-to-text session as its row's label says it (components/capture/StreamStatus):
+ * short, because the row shows why beside it (`streamMessages`). "Transcribing" only while its
+ * source sends audio; "Reconnecting" only while the audio a reopen waits for flows, because a
+ * source reopens with its next chunk, never on a timer (CaptureSession.pushAudio).
+ *
+ * No default case, here or in streamTone: a new SttStreamState fails the type check (TS2366) until
+ * both say how it reads (section 3.1 of docs/plans/phase-2-build-order.md).
+ */
 export function describeStream(state: SttStreamState, health: SourceHealth): string {
   switch (state) {
     case 'closed':
       // No vendor session: before Start, after Stop, or the source failed or ended.
-      return 'not connected';
+      return 'Not connected';
     case 'connecting':
-      return 'connecting';
+      return 'Connecting';
     case 'open':
       // Open but fed nothing: billed, not transcribing. It closes after the stall window.
-      if (health === 'pending') return 'connected, no audio yet';
-      if (health === 'stalled') return 'connected, no audio';
-      return 'transcribing';
+      if (health === 'active') return 'Transcribing';
+      return health === 'pending' ? 'Connected, no audio yet' : 'Connected, no audio';
     case 'paused':
-      return 'paused, no audio';
+      // Closed until its audio returns: a stall, or the Mac asleep. The message says which.
+      return 'Paused';
     case 'retrying':
-      // A reopen starts only with the source's next chunk: with none arriving, none is attempted.
-      if (health === 'pending' || health === 'stalled')
-        return 'not connected, reconnects with audio';
-      return 'reconnecting';
+      if (health === 'active') return 'Reconnecting';
+      // A stopped source never sends the chunk a reopen needs (G1 closes it at once).
+      if (health === 'ended' || health === 'error') return 'Not connected';
+      // The wait may be over, but with no chunk arriving no reopen is attempted.
+      return 'Reconnects with audio';
     case 'offline':
-      // Not the vendor's fault, and no reopen is tried until the network is back, so it never
-      // reads as "reconnecting" (M2-T20a rewords the stream text in wave 5).
-      return 'offline, reconnects when the network returns';
+      // Not the vendor's fault, and nothing reopens until the network is back, so never
+      // "Reconnecting"; the message and the banner's offline warning say so.
+      return 'Offline';
+    case 'error':
+      // Ended for this meeting; the message says why (a refused open, a fatal vendor error).
+      return 'Failed';
+  }
+}
+
+/**
+ * How a source's row colours its label: `ok` only while its words reach the vendor, `warn` while
+ * they do not but will once audio or the network returns, `error` once they never will this
+ * meeting, `pending` while a session starts, `off` with none.
+ */
+export type StreamTone = 'ok' | 'pending' | 'warn' | 'error' | 'off';
+
+export function streamTone(state: SttStreamState, health: SourceHealth): StreamTone {
+  switch (state) {
+    case 'closed':
+      return 'off';
+    case 'connecting':
+      return 'pending';
+    case 'open':
+      // Every Start passes through "connected, no audio yet" for a moment: not a warning.
+      if (health === 'active') return 'ok';
+      return health === 'pending' ? 'pending' : 'warn';
+    case 'paused':
+    case 'retrying':
+    case 'offline':
+      return 'warn';
     case 'error':
       return 'error';
   }

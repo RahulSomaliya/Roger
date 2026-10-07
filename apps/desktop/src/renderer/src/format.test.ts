@@ -11,6 +11,7 @@ import {
   describeStream,
   describeUpload,
   formatOffset,
+  streamTone,
 } from './format';
 
 const upload = (overrides: Partial<UploadStatus>): UploadStatus => ({
@@ -43,30 +44,60 @@ describe('describeHealth', () => {
 });
 
 describe('describeStream', () => {
-  it('says transcribing only for an open session, and not connected for a closed one', () => {
-    expect(describeStream('open', 'active')).toBe('transcribing');
-    expect(describeStream('closed', 'error')).toBe('not connected');
-    expect(describeStream('connecting', 'active')).toBe('connecting');
+  // The row's label (StreamStatus): short, because the row shows why beside it (streamMessages).
+  it('says Transcribing only for an open session, and Not connected for a closed one', () => {
+    expect(describeStream('open', 'active')).toBe('Transcribing');
+    expect(describeStream('closed', 'error')).toBe('Not connected');
+    expect(describeStream('connecting', 'active')).toBe('Connecting');
   });
 
-  it('never says transcribing while its source sends no audio', () => {
-    expect(describeStream('open', 'pending')).toBe('connected, no audio yet');
-    expect(describeStream('open', 'stalled')).toBe('connected, no audio');
+  it('never says Transcribing while its source sends no audio', () => {
+    expect(describeStream('open', 'pending')).toBe('Connected, no audio yet');
+    expect(describeStream('open', 'stalled')).toBe('Connected, no audio');
+    // A dead track sends nothing either; G1 closes its session at once.
+    expect(describeStream('open', 'ended')).toBe('Connected, no audio');
+    expect(describeStream('open', 'error')).toBe('Connected, no audio');
   });
 
-  it('says reconnecting only while the source sends the audio a reopen waits for', () => {
-    expect(describeStream('retrying', 'active')).toBe('reconnecting');
-    expect(describeStream('retrying', 'stalled')).toBe('not connected, reconnects with audio');
-    expect(describeStream('retrying', 'pending')).toBe('not connected, reconnects with audio');
+  it('says Reconnecting only while the source sends the audio a reopen waits for', () => {
+    expect(describeStream('retrying', 'active')).toBe('Reconnecting');
+    expect(describeStream('retrying', 'stalled')).toBe('Reconnects with audio');
+    expect(describeStream('retrying', 'pending')).toBe('Reconnects with audio');
+    // A stopped source never sends the chunk a reopen needs.
+    expect(describeStream('retrying', 'ended')).toBe('Not connected');
+    expect(describeStream('retrying', 'error')).toBe('Not connected');
   });
 
-  it('says offline apart from a vendor failure, whatever its source sends', () => {
-    expect(describeStream('offline', 'active')).toBe(
-      'offline, reconnects when the network returns',
-    );
-    expect(describeStream('offline', 'stalled')).toBe(
-      'offline, reconnects when the network returns',
-    );
+  it('says Offline apart from a vendor failure, whatever its source sends', () => {
+    expect(describeStream('offline', 'active')).toBe('Offline');
+    expect(describeStream('offline', 'stalled')).toBe('Offline');
+  });
+
+  it('says Paused for a closed session that reopens with audio, and Failed for one that never will', () => {
+    expect(describeStream('paused', 'stalled')).toBe('Paused');
+    expect(describeStream('error', 'active')).toBe('Failed');
+  });
+});
+
+describe('streamTone', () => {
+  it('is ok only while a session transcribes audio', () => {
+    expect(streamTone('open', 'active')).toBe('ok');
+    expect(streamTone('open', 'stalled')).toBe('warn');
+    expect(streamTone('open', 'ended')).toBe('warn');
+  });
+
+  it('waits quietly while a session starts, and stays off when there is none', () => {
+    expect(streamTone('connecting', 'pending')).toBe('pending');
+    // Connected a moment before the first chunk: every Start passes through it.
+    expect(streamTone('open', 'pending')).toBe('pending');
+    expect(streamTone('closed', 'pending')).toBe('off');
+  });
+
+  it('warns while the words are not reaching the vendor, and errs once they never will', () => {
+    expect(streamTone('paused', 'stalled')).toBe('warn');
+    expect(streamTone('retrying', 'active')).toBe('warn');
+    expect(streamTone('offline', 'active')).toBe('warn');
+    expect(streamTone('error', 'active')).toBe('error');
   });
 });
 
