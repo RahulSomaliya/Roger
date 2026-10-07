@@ -12,6 +12,7 @@ import type {
   NotesStreamEvent,
   PendingGenerateState,
 } from '../../src/shared/notes';
+import { PreviewHub } from '../control';
 import { FakeHub } from './hub';
 import { createNotesFake } from './notes';
 
@@ -393,5 +394,28 @@ describe('the notes fake', () => {
 
     expect(requests).toEqual([{ requestId: 'flush-1' }]);
     expect(acks).toEqual([{ requestId: 'flush-1' }]);
+  });
+
+  // The seam with M4-T20's QA: notes work offline from notes.sqlite, but the template list and a
+  // run's stored docs live only in the API, so unmarked the api-offline preview shows a filled
+  // template picker and "Restore previous notes" instead of main's ApiError.
+  it("fails the template list and a run's read while the API is offline, and nothing else", async () => {
+    const hub = new PreviewHub();
+    const notes = createNotesFake(hub);
+    const started = await notes.generateNotes({ meetingId: MEETING, templateId: 'general' });
+    hub.setApiOffline(true);
+
+    await expect(notes.listNoteTemplates()).rejects.toThrow(
+      "Error invoking remote method 'notes:list-templates': ApiError: GET /v1/note-templates failed: connect ECONNREFUSED 127.0.0.1:8000",
+    );
+    await expect(notes.getNotesRun({ meetingId: MEETING, runId: started.runId })).rejects.toThrow(
+      'ApiError: GET /v1/meetings/{id}/runs/{run_id} failed: connect ECONNREFUSED 127.0.0.1:8000',
+    );
+    await expect(notes.getNotes(MEETING)).resolves.toMatchObject({ meetingId: MEETING });
+    hub.setApiOffline(false);
+    await expect(notes.listNoteTemplates()).resolves.toHaveLength(4);
+    await expect(
+      notes.getNotesRun({ meetingId: MEETING, runId: started.runId }),
+    ).resolves.toMatchObject({ id: started.runId });
   });
 });
