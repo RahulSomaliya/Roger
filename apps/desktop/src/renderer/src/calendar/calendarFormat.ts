@@ -5,13 +5,15 @@ import {
 } from '../../../shared/calendar';
 import type { OpenAtLogin } from '../../../shared/calendarPrefs';
 import { LOGIN_ITEMS_SETTINGS_PATH, type LoginItemStatus } from '../../../shared/ipc/loginItem';
+import { formatClock } from '../clock';
+import type { CalendarState } from './calendarStore';
 
 /**
- * The words the calendar's banners and Settings use for times and for the calendar's health: pure,
+ * The words Home's calendar line and Settings use for times and for the calendar's health: pure,
  * so the exact strings are tested.
  *
  * Trap: src/main/app/trayMenu.ts words the same states for the menu bar ("Calendar not updated
- * since 09:12", "Reconnect Google Calendar (before Wed 14 Oct)") with the same rules: stale from
+ * since 9:12 am", "Reconnect Google Calendar (before Wed 14 Oct)") with the same rules: stale from
  * `staleSince`, the reconnect line from 24 h before `expiresHint`. The renderer cannot import main,
  * so the rules live twice; change one and change the other, or the menu bar and the window tell
  * the user different things about one calendar.
@@ -21,17 +23,17 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 
 /** How times and days read, in the Mac's time zone (injected in tests). */
 export interface CalendarFormat {
-  /** "09:12". */
+  /** "9:12 am". */
   time(ms: number): string;
   /** "Wed 14 Oct". */
   date(ms: number): string;
-  /** "Wed 09:30" for another day than `nowMs`'s, "09:30" for the same day. */
+  /** "Wed 9:30 am" for another day than `nowMs`'s, "9:30 am" for the same day. */
   when(ms: number, nowMs: number): string;
 }
 
 /**
- * The format in `timeZone` (an IANA name), or in this Mac's zone when omitted. English and 24 h
- * clock, as the plan words them ("since 09:12", "before Wed 14 Oct"); Roger has no other language.
+ * The format in `timeZone` (an IANA name), or in this Mac's zone when omitted. English and the
+ * 12 h clock of docs/design.md ("since 9:12 am", "on Wed 14 Oct"); Roger has no other language.
  *
  * Trap: call it per render, never once at import. An Intl formatter keeps the time zone it was made
  * in, so one built at import goes on writing the old zone's clock after a macOS zone change, while
@@ -41,12 +43,11 @@ export function createCalendarFormat(timeZone?: string): CalendarFormat {
   const zone = timeZone === undefined ? {} : { timeZone };
   const parts = (options: Intl.DateTimeFormatOptions) =>
     new Intl.DateTimeFormat('en-GB', { ...zone, ...options });
-  const clock = parts({ hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
   const weekday = parts({ weekday: 'short' });
   const day = parts({ day: 'numeric' });
   const month = parts({ month: 'short' });
   const dayKey = parts({ year: 'numeric', month: '2-digit', day: '2-digit' });
-  const time = (ms: number): string => clock.format(ms);
+  const time = (ms: number): string => formatClock(ms, timeZone);
   return {
     time,
     date: (ms) => `${weekday.format(ms)} ${day.format(ms)} ${month.format(ms)}`,
@@ -55,7 +56,7 @@ export function createCalendarFormat(timeZone?: string): CalendarFormat {
   };
 }
 
-/** "Calendar not updated since 09:12" ("since Sat 21:05" for an earlier day). */
+/** "Calendar not updated since 9:12 am" ("since Sat 9:05 pm" for an earlier day). */
 export function staleText(sync: CalendarSyncState, nowMs: number, format: CalendarFormat): string {
   return sync.lastSuccessAt === null
     ? 'Calendar not updated'
@@ -126,10 +127,12 @@ export function calendarNotices({
     ];
   }
   const notices: CalendarNotice[] = [];
-  if (label !== null) {
+  if (label !== null && connection.expiresHint !== null) {
+    // The date is in the sentence, so Home's button can just say Reconnect.
+    const on = format.date(parseInstant(connection.expiresHint));
     notices.push({
       kind: 'reconnect-soon',
-      text: 'Google will end Roger’s access to your calendar soon. Sign in again to keep your reminders.',
+      text: `Google ends Roger’s access to your calendar on ${on}. Reconnect to keep your reminders.`,
       action: label,
     });
   }
@@ -137,6 +140,63 @@ export function calendarNotices({
     notices.push({ kind: 'stale', text: staleText(sync, nowMs, format), action: null });
   }
   return notices;
+}
+
+/** Home's one quiet calendar line: what is wrong, and the one thing to press about it, if any. */
+export interface CalendarProblem {
+  text: string;
+  /** `reconnect` signs in again; `reload` reads again (Try again); null: nothing to press. */
+  action: 'reconnect' | 'reload' | null;
+}
+
+export interface CalendarProblemInputs {
+  state: Pick<
+    CalendarState,
+    'connection' | 'connectionStatus' | 'connectionError' | 'copyError' | 'sync' | 'linksError'
+  >;
+  nowMs: number;
+  format: CalendarFormat;
+}
+
+/**
+ * The one problem Home's Today shows, most urgent first, or null. One line, not a stack
+ * (docs/plans/redesign.md): a refused grant explains every other symptom (polling stops until the
+ * next connect), a failed read hides meetings that may exist, a stale copy or a coming expiry is
+ * a warning, and a failed notes lookup only costs an Open note button.
+ */
+export function calendarProblem({
+  state,
+  nowMs,
+  format,
+}: CalendarProblemInputs): CalendarProblem | null {
+  const notices = calendarNotices({
+    connection: state.connection,
+    sync: state.sync,
+    nowMs,
+    format,
+  });
+  const refused = notices.find((notice) => notice.kind === 'reconnect-required');
+  if (refused !== undefined) return { text: refused.text, action: 'reconnect' };
+  if (state.connectionStatus === 'failed') {
+    return {
+      text: `Roger could not check your Google Calendar connection: ${state.connectionError ?? 'no reason given'}`,
+      action: 'reload',
+    };
+  }
+  if (state.copyError !== null) {
+    return { text: `Roger could not read your calendar: ${state.copyError}`, action: 'reload' };
+  }
+  const [warning] = notices;
+  if (warning !== undefined) {
+    return { text: warning.text, action: warning.action === null ? null : 'reconnect' };
+  }
+  if (state.linksError !== null) {
+    return {
+      text: `Roger could not check which meetings already have notes: ${state.linksError}`,
+      action: null,
+    };
+  }
+  return null;
 }
 
 /**

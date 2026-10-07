@@ -8,11 +8,13 @@
  * zone change. And the pieces are joined by hand: newer ICU puts a narrow no-break space before
  * "AM" in en-US, which a test, a copied line or a screen reader's pause would carry along.
  */
-export function formatClock(at: Date | number): string {
+export function formatClock(at: Date | number, timeZone?: string): string {
   const parts = new Intl.DateTimeFormat('en-US', {
     hour: 'numeric',
     minute: '2-digit',
     hourCycle: 'h12',
+    // Only calendarFormat's tests pass one (an IANA name); the app always writes the Mac's zone.
+    ...(timeZone === undefined ? {} : { timeZone }),
   }).formatToParts(at);
   const part = (type: Intl.DateTimeFormatPartTypes): string =>
     parts.find((candidate) => candidate.type === type)?.value ?? '';
