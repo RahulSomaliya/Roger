@@ -447,8 +447,8 @@ export class SttConnection implements SttStream {
    * ready signal: under `socket-open` the stream opens right after them, and the audio, keep-alive
    * and pings it lets through must never reach the vendor first (Soniox refuses a session whose
    * first message is not its start request: "Start request must be a text message"). Through
-   * transmit, so the wire tap sees them; a tap that fails
-   * on one fails the connect (tap), and nothing after it is sent into the socket being terminated.
+   * transmit, so the wire tap sees them; a tap that fails on one fails the connect (tap), and
+   * nothing after it is sent into the socket being terminated.
    */
   private sendOpeningMessages(): void {
     for (const message of this.openingMessages) {
