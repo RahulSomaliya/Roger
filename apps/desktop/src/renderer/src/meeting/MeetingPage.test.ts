@@ -27,6 +27,10 @@ const fakes = vi.hoisted(() => ({
   /** What each render passed to useMeeting: the meeting and the key that makes it read again. */
   reads: [] as { meetingId: string; refreshKey: string }[],
 }));
+// M4-T20's notes and chat need `window.roger`, which Node lacks, and the page's frame is what is
+// checked here: with nothing mounted in the notes and chat regions the page shows the transcript
+// alone. The real regions are checked in the browser (e2e/m4-t20.qa.e2e.ts).
+vi.mock('../app/slots/m4-notes', () => ({ contributions: {} }));
 vi.mock('../app/ShellContext', () => ({
   useShell: () => {
     if (fakes.shell === null) throw new Error('set fakes.shell first');
