@@ -121,6 +121,55 @@ describe('setupRows', () => {
     });
   });
 
+  it('flags a check main could not run when it says why, such as a missing helper', () => {
+    // PermissionService's `unknown` checks that carry a message (main/setup/PermissionService.ts).
+    const helperMissing: SetupStatus = {
+      ...readyMac(),
+      systemAudio: {
+        state: 'unknown',
+        message:
+          "Roger's call audio helper is missing from this copy of Roger, so it cannot record call audio. Reinstall Roger with make install-desktop.",
+        relaunchNeeded: false,
+      },
+    };
+    expect(row(helperMissing, 'callAudio')).toMatchObject({
+      tone: 'attention',
+      stateLabel: 'Not tested',
+    });
+    const unread: SetupStatus = {
+      ...readyMac(),
+      microphone: {
+        state: 'unknown',
+        message:
+          'macOS did not say whether Roger may use the microphone. Check that Roger is on under System Settings > Privacy & Security > Microphone.',
+        relaunchNeeded: false,
+      },
+      signing: {
+        state: 'unknown',
+        message:
+          'Roger could not read its own signature, so it cannot tell whether macOS will keep its permissions.',
+        relaunchNeeded: false,
+      },
+    };
+    expect(row(unread, 'microphone').tone).toBe('attention');
+    expect(row(unread, 'signing').tone).toBe('attention');
+    // Not tested with nothing to say is still just not tested.
+    expect(row(readyMac(), 'notifications').tone).toBe('neutral');
+  });
+
+  it('keeps speech-to-text grey when it was not checked because the server row is already red', () => {
+    expect(row(refusedMac(), 'speechToText')).toMatchObject({
+      tone: 'neutral',
+      stateLabel: 'Not checked',
+      message: "Not checked: Roger can't reach its server.",
+    });
+    const serverUp: SetupStatus = {
+      ...readyMac(),
+      stt: { state: 'unknown', message: 'Not checked: something else.', relaunchNeeded: false },
+    };
+    expect(row(serverUp, 'speechToText').tone).toBe('attention');
+  });
+
   it('offers Check again for a server that did not answer, and a failed notification test again', () => {
     expect(row(refusedMac(), 'server').actions).toEqual([
       { kind: 'recheck', label: 'Check again' },
@@ -146,5 +195,18 @@ describe('setupSummary', () => {
     expect(setupSummary(setupRows(readyMac()))).toBe('Roger has what it needs on this Mac.');
     expect(setupSummary(setupRows(firstRunMac()))).toBe('1 check needs you.');
     expect(setupSummary(setupRows(refusedMac()))).toBe('4 checks need you.');
+  });
+
+  it('never says Roger has what it needs above a row that says it cannot record', () => {
+    const helperMissing: SetupStatus = {
+      ...readyMac(),
+      systemAudio: {
+        state: 'unknown',
+        message:
+          "Roger's call audio helper is missing from this copy of Roger, so it cannot record call audio. Reinstall Roger with make install-desktop.",
+        relaunchNeeded: false,
+      },
+    };
+    expect(setupSummary(setupRows(helperMissing))).toBe('1 check needs you.');
   });
 });

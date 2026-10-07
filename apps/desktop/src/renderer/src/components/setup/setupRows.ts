@@ -108,8 +108,12 @@ function fromCheck<State extends string>(
   looks: Record<State, StateLook>,
 ): Pick<SetupRowView, 'stateLabel' | 'tone' | 'message'> {
   const look = looks[check.state];
-  // A good state that still says something (a development build) needs a look, not a green dot.
-  const tone = look.tone === 'ok' && check.message !== null ? 'attention' : look.tone;
+  // A good or not-yet-known state that still says something needs a look, not a green or grey
+  // dot: a development build, a missing helper, codesign or macOS giving no answer. setupSummary
+  // counts only attention and problem rows, so a grey row with a message would sit under "Roger
+  // has what it needs" while saying Roger cannot record call audio.
+  const quiet = look.tone === 'ok' || look.tone === 'neutral';
+  const tone = quiet && check.message !== null ? 'attention' : look.tone;
   return { stateLabel: look.label, tone, message: check.message };
 }
 
@@ -193,9 +197,15 @@ function signingRow(check: SetupCheck<SigningSetupState>): SetupRowView {
   };
 }
 
+/**
+ * `serverFailed`: the server row is red. connectionChecks.ts then leaves speech-to-text unchecked
+ * with a message ("Not checked: Roger can't reach its server"), which stays grey: one cause, one
+ * flagged row, counted once by setupSummary.
+ */
 function connectionRow(
   id: 'server' | 'speechToText',
   check: SetupCheck<ConnectionSetupState>,
+  serverFailed = false,
 ): SetupRowView {
   const text =
     id === 'server'
@@ -210,11 +220,14 @@ function connectionRow(
             'Turns the call into text as it happens. The check opens no session: sessions are billed.',
           looks: SPEECH_TO_TEXT,
         };
+  const read = fromCheck(check, text.looks);
+  const waitsOnServer = serverFailed && check.state === 'unknown';
   return {
     id,
     title: text.title,
     description: text.description,
-    ...fromCheck(check, text.looks),
+    ...read,
+    tone: waitsOnServer ? 'neutral' : read.tone,
     actions: withRelaunch(check, check.state === 'ok' ? [] : [RECHECK]),
   };
 }
@@ -227,7 +240,7 @@ export function setupRows(status: SetupStatus): SetupRowView[] {
     notificationsRow(status.notifications),
     signingRow(status.signing),
     connectionRow('server', status.api),
-    connectionRow('speechToText', status.stt),
+    connectionRow('speechToText', status.stt, status.api.state === 'failed'),
   ];
 }
 

@@ -63,7 +63,9 @@ export async function checkConnections(
     health.status === 'rejected' &&
     isUnreachable(health.reason)
   ) {
-    // One cause, one red row: the server row already says nothing answers.
+    // One cause, one red row: the server row already says nothing answers. The renderer keeps this
+    // `unknown` grey only because the server row failed (setupRows.ts, connectionRow); an
+    // `unknown` with a message anywhere else reads as needing the person.
     logFailure(options, 'stt token', token.reason);
     stt = {
       state: 'unknown',
