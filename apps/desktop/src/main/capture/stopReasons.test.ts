@@ -29,6 +29,8 @@ describe('stopNotice', () => {
       'Stopped at 14:32 because the Roger window could not reload.',
     );
     expect(notice('system-sleep')).toBe('Stopped at 14:32 because the Mac went to sleep.');
+    expect(notice('call-ended', 'Zoom')).toBe('Stopped at 14:32: the call in Zoom ended.');
+    expect(notice('call-ended')).toBe('Stopped at 14:32: the call ended.');
   });
 
   it('has no notice for a stop that leaves no window to show it: quit and a closed window', () => {
