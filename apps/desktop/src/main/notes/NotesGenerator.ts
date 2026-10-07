@@ -182,8 +182,10 @@ export class NotesGenerator {
   }
 
   /**
-   * Write notes, Write again as, or Retry (`notes:generate`). A pending generate that has not failed takes this template and keeps its
-   * run id and reason; a failed one, or none, gets a new run id with reason `button`. The pick is
+   * Write notes, Write again as, or Retry (`notes:generate`). A pending generate that has not
+   * failed takes this template and keeps its run id, and is `button` from now on (a row left by
+   * Stop in an earlier build is dropped by `check`, unless the person asked for it here); a failed
+   * one, or none, gets a new run id with reason `button`. The pick is
    * remembered under the meeting's title. Throws while an attempt runs, and for another template
    * on a run the API may hold.
    */
@@ -209,7 +211,7 @@ export class NotesGenerator {
     const row: StoredPendingGenerate =
       current !== null && current.lastError === null
         ? // An attempt may already have reached the API: a new id would start a second paid run.
-          { ...current, templateId }
+          { ...current, templateId, reason: 'button' }
         : this.newRow(meetingId, templateId, 'button');
     this.rememberPick(meetingId, templateId);
     store.putPendingGenerate(row);
@@ -321,10 +323,10 @@ export class NotesGenerator {
   }
 
   /**
-   * Trap: NotesSync writes the sync state on every attempt at a note (`syncing`, then `synced`,
-   * `offline` or `refused`), this generator's own flush included, and each write is a note
-   * change. A re-check on those flushes again, which writes again: see the trap on
-   * `NotesSync.flushMeeting`. Two rules keep this listener off that loop. Only a generate that
+   * Trap: NotesSync writes the sync state on an attempt at a note (`syncing` on a first one, then
+   * `synced`, `offline` or `refused`; a retry of a failed note writes only its answer), this
+   * generator's own flush included, and each write is a note change. A re-check on those flushes
+   * again, which writes again: see the trap on `NotesSync.flushMeeting`. Two rules keep this listener off that loop. Only a generate that
    * waits for its notes re-checks, and while an attempt runs (its flush and pull included)
    * nothing waits and `check` starts no second attempt, so the flush's own changes do nothing.
    * And only a change that can unblock a run re-checks: a stored note (`synced`), or
@@ -363,9 +365,19 @@ export class NotesGenerator {
     if (!this.running || this.attempts.has(meetingId)) return;
     try {
       const row = this.options.store.getPendingGenerate(meetingId);
-      if (row !== null && row.templateId === null) {
-        // An earlier build left this row asking "Which kind of call was this?" (redesign call 6
-        // deleted the question). Nothing answers it any more, and it never ran: drop it.
+      if (row !== null && (row.reason === 'after_stop' || row.templateId === null)) {
+        // Rows an earlier build left, from before the redesign. `after_stop` was the automatic
+        // write-up after Stop (call 5 deleted it): nobody asked for these notes in this build, and
+        // running the row spends the person's LLM budget on them. A null template was "Which kind
+        // of call was this?" (call 6 deleted the question): nothing answers it any more. Neither
+        // ran; drop it. `generate` gives a row the person takes over the reason `button`, so a
+        // Write notes pressed over a leftover is kept.
+        this.options.logger.info('pending generate from an earlier build dropped', {
+          meetingId,
+          runId: row.runId,
+          reason: row.reason,
+          hadTemplate: row.templateId !== null,
+        });
         this.drop(meetingId);
         return;
       }
