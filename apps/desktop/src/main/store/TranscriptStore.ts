@@ -52,7 +52,9 @@ export interface MeetingSttUsage {
   bySource: Record<AudioSource, SourceSttUsage>;
   /**
    * Stream time the silence gate kept closed, both sources summed (M3-T20; migration 6). A save
-   * that leaves it out stores 0, and every read sets it.
+   * that leaves it out stores 0, and every read sets it. So a resumed meeting's saves must carry
+   * the saved row's gated time forward (with each source's), as CaptureService's `usage()` adds
+   * the saved totals, or the first save after a resume zeroes it.
    */
   gatedMs?: number;
   /** Why the recording stopped (stopReasons.ts, or `start-failed`); null while it still runs. */
