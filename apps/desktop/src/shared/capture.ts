@@ -390,9 +390,33 @@ export const MAX_MEETING_TITLE_LENGTH = 500;
  * Trap: never JavaScript's trim() for this. It also trims U+FEFF, which the API keeps and counts,
  * and keeps U+0085, which the API trims: 500 characters and a byte order mark would pass a trim()
  * measure and draw the API's 422, which keeps the meeting and its transcript off the server.
+ * Nor is its '' the API's blank: that is isApiBlank.
  */
 export function storedMeetingText(value: string): string {
   return trimTerm(value.replaceAll('\u0000', ''));
+}
+
+/**
+ * Blank as the API reads a title or an optional calendar text before it stores one: nothing left
+ * once U+0000 is dropped and Python's `str.strip()` has trimmed (`_title_or_default` and
+ * `_blank_is_none` in apps/api/src/roger_api/schemas/meetings.py). The API names a blank title
+ * "Untitled meeting" and stores a blank optional text as null, at any length.
+ *
+ * Trap: never `storedMeetingText(value) === ''` for this. Python's `strip()` also trims U+001C to
+ * U+001F, which pydantic's `strip_whitespace` (and so storedMeetingText) keeps: a title of only
+ * those was an invisible title here and "Untitled meeting" on the server, for good, since nothing
+ * reads the server's title back. Checked against Python 3.12's `str.isspace()`.
+ */
+export function isApiBlank(value: string): boolean {
+  for (const character of value) {
+    const code = character.charCodeAt(0);
+    // U+0000 is dropped; U+001C to U+001F are whitespace to Python alone.
+    if (code === 0 || (code >= 0x1c && code <= 0x1f)) continue;
+    // Anything else is whitespace to Python exactly when it is White_Space, all of which trimTerm
+    // trims: of one character, it leaves nothing only for that.
+    if (trimTerm(character) !== '') return false;
+  }
+  return true;
 }
 
 /**
@@ -425,9 +449,9 @@ export interface StartCaptureRequest {
   /**
    * At most MAX_MEETING_TITLE_LENGTH characters of its storedMeetingText, or the window's start is
    * refused. A calendar event's title has no such limit: main cuts the title of its own requests to
-   * fit (fitMeetingTitle), and a page that builds a request from an event cuts it first. Blank or
-   * left out, main names the meeting after its start, "Meeting 6 Oct 2026 09:30"
-   * (defaultMeetingTitle in main/capture/CaptureService.ts).
+   * fit (fitMeetingTitle), and a page that builds a request from an event cuts it first. Blank as
+   * the API reads it (isApiBlank, at any length) or left out, main names the meeting after its
+   * start, "Meeting 6 Oct 2026 09:30" (defaultMeetingTitle in main/capture/CaptureService.ts).
    */
   title?: string;
   /**

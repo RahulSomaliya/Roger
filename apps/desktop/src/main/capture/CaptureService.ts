@@ -4,6 +4,7 @@ import {
   emptySourceStatus,
   fitMeetingTitle,
   idleCaptureStatus,
+  isApiBlank,
   NO_AUDIO_WARNING_MS,
   storedMeetingText,
   type AudioSourceState,
@@ -331,7 +332,8 @@ export class CaptureService {
   private error: string | null = null;
   private notice: string | null = null;
   private segmentsUnsaved = 0;
-  private transition: Promise<CaptureStatus> | null = null;
+  /** The start or stop under way: a stop waits for either, a Start waits out a stop (start()). */
+  private transition: { kind: 'start' | 'stop'; done: Promise<CaptureStatus> } | null = null;
   private monitorTimer: NodeJS.Timeout | null = null;
   /** Clock time the session started recording; the no-audio check counts from it until a chunk. */
   private recordingSinceMs: number | null = null;
@@ -480,23 +482,58 @@ export class CaptureService {
    * Starts a recording, or resumes one. Never rejects: a refusal (no microphone access, a request
    * that does not check, the open budget, the vendor) comes back as the status's `error`, which is
    * how a requested start's outcome reaches whoever asked (M5-T9b reads the status).
+   *
+   * A Start while a stop is under way starts once that stop is done, as stop() waits out a start:
+   * a stop drains uploads for up to 15 s, and answered with its idle status, a prompt's Take notes
+   * on the next meeting lost its title and event with no error and no log line. A Start while a
+   * recording starts or runs joins it instead (join()).
    */
   start(options: StartOptions = {}): Promise<CaptureStatus> {
-    if (this.transition) return this.transition;
-    if (this.currentPhase !== 'idle') return Promise.resolve(this.getStatus());
-    this.transition = this.doStart(options).finally(() => {
+    if (this.transition?.kind === 'stop') {
+      return this.transition.done.then(() => this.start(options));
+    }
+    if (this.transition !== null) return this.join(options, this.transition.done);
+    if (this.currentPhase !== 'idle') return this.join(options, Promise.resolve(this.getStatus()));
+    const done = this.doStart(options).finally(() => {
       this.transition = null;
     });
-    return this.transition;
+    this.transition = { kind: 'start', done };
+    return done;
   }
 
   stop(options: StopOptions = {}): Promise<CaptureStatus> {
-    if (this.transition) return this.transition.then(() => this.stop(options));
+    if (this.transition) return this.transition.done.then(() => this.stop(options));
     if (this.currentPhase !== 'recording') return Promise.resolve(this.getStatus());
-    this.transition = this.doStop(options).finally(() => {
+    const done = this.doStop(options).finally(() => {
       this.transition = null;
     });
-    return this.transition;
+    this.transition = { kind: 'stop', done };
+    return done;
+  }
+
+  /**
+   * A Start while a recording starts or runs: a second click, or a window's Start racing another.
+   * It answers that recording's status, `status`, with no error, so a request of its own (a
+   * source, a title, an event, a resume) goes nowhere: logged here, since nothing else says so.
+   * M5-T9b stops a recording note before it asks for a start (requestStart).
+   */
+  private join(options: StartOptions, status: Promise<CaptureStatus>): Promise<CaptureStatus> {
+    const { resume, source, title, calendarEvent } = options;
+    if (
+      resume !== undefined ||
+      source !== undefined ||
+      title !== undefined ||
+      calendarEvent !== undefined
+    ) {
+      this.options.logger.warn('start request not applied: a recording is starting or running', {
+        source: source ?? 'manual',
+        linked: calendarEvent !== undefined,
+        resume: resume !== undefined,
+        phase: this.currentPhase,
+        meetingId: this.session?.meetingId ?? null,
+      });
+    }
+    return status;
   }
 
   /**
@@ -516,6 +553,10 @@ export class CaptureService {
    * through start() and the open budget like any Start. A later request replaces a waiting one.
    * Its title is cut to fit (fitMeetingTitle), so a caller may pass an event's title as it is;
    * throws, naming the field, on anything else the window's start would refuse.
+   *
+   * Trap: stop a recording note first (await stop(), then this). start() waits out a stop under
+   * way, but joins a recording that starts or runs: the answer is that note's status with no
+   * error, and this request's title and event go nowhere but a warning in the log (join()).
    */
   requestStart(request: StartCaptureRequest): void {
     const checked = parseStartCaptureRequest(withTitleCutToFit(request));
@@ -654,11 +695,12 @@ export class CaptureService {
       this.sttProvider = provider;
       this.startedAt = new Date(startedAtMs).toISOString();
       if (resume === undefined) {
-        // Kept as the API stores it, and blank as the start check reads it: U+0000 dropped before
-        // the trim. With JavaScript's trim() a title of U+0000 and spaces stayed an invisible
-        // title here while the server named the meeting "Untitled meeting".
+        // Kept as the API stores it (storedMeetingText), and blank as the API and the start check
+        // read it (isApiBlank), never as `=== ''`: a title of U+0000 and spaces (with trim()), or
+        // of U+001C to U+001F (which the stored text keeps and Python's strip() trims), stayed an
+        // invisible title here while the server named the meeting "Untitled meeting".
         const title = storedMeetingText(request.title ?? '');
-        this.title = title === '' ? defaultMeetingTitle(new Date(startedAtMs)) : title;
+        this.title = isApiBlank(title) ? defaultMeetingTitle(new Date(startedAtMs)) : title;
         store.createMeeting({
           id: meetingId,
           title: this.title,
