@@ -27,6 +27,7 @@ from roger_api.services.stt_tokens import (
     DeepgramSttTokenIssuer,
     FakeSttTokenIssuer,
     SttTokenIssuer,
+    XaiSttTokenIssuer,
 )
 from roger_api.stt_vendors import (
     STT_PRESETS,
@@ -68,6 +69,7 @@ def presets_with_a_vendor() -> list[SttPresetId]:
         ("assemblyai", "assemblyai", "universal-streaming-english", 0.15),
         ("assemblyai-pro", "assemblyai", "universal-3-6-pro", 0.45),
         ("deepgram", "deepgram", "nova-3", 0.462),
+        ("xai", "xai", "grok-voice-transcribe-2.0", 0.2),
     ],
 )
 def test_stt_provider_alone_picks_the_preset_vendor_and_model(
@@ -174,8 +176,8 @@ def desktop_stt_provider_ids() -> set[str]:
 # (apps/desktop/README.md) lands a vendor's issuer and preset first and lists it here, since an
 # exact match would turn every gate red in between; meanwhile STT_PROVIDER=<vendor> fails Start on
 # the Mac (UnsupportedSttProviderError). The commit that adds the vendor to registry.ts deletes it
-# here. Empty since M3-T15 added Soniox's adapter (M3-T14 had landed its issuer and preset).
-AWAITING_A_DESKTOP_ADAPTER: frozenset[str] = frozenset()
+# here. xAI sits here until the desktop commit that adds its adapter (it deletes the line).
+AWAITING_A_DESKTOP_ADAPTER: frozenset[str] = frozenset({"xai"})
 
 
 def test_every_preset_names_a_registered_vendor() -> None:
@@ -212,6 +214,8 @@ def vendor_answer(request: httpx.Request) -> httpx.Response:
             return httpx.Response(200, json={"token": "aai-temp-token", "expires_in_seconds": 30})
         case "api.deepgram.com":
             return httpx.Response(200, json={"access_token": "eyJ.jwt", "expires_in": 30})
+        case "api.x.ai":
+            return httpx.Response(200, json={"value": "xai-client-secret.x", "expires_at": 1})
     raise AssertionError(f"unexpected token request to {request.url.host}")
 
 
@@ -243,7 +247,7 @@ async def token_response(database_url: str, preset: str) -> Any:
 async def test_switching_stt_provider_changes_the_token_response(
     database_url: str, clean_database: None
 ) -> None:
-    presets = ["assemblyai", "assemblyai-pro", "deepgram", "fake"]
+    presets = ["assemblyai", "assemblyai-pro", "deepgram", "xai", "fake"]
     responses = {preset: await token_response(database_url, preset) for preset in presets}
 
     # `provider` stays the vendor: both AssemblyAI presets answer `assemblyai`.
@@ -254,6 +258,7 @@ async def test_switching_stt_provider_changes_the_token_response(
         "assemblyai": ("assemblyai", "universal-streaming-english", 0.15),
         "assemblyai-pro": ("assemblyai", "universal-3-6-pro", 0.45),
         "deepgram": ("deepgram", "nova-3", 0.462),
+        "xai": ("xai", "grok-voice-transcribe-2.0", 0.2),
         "fake": ("fake", "fake", 0.0),
     }
     assert VENDOR_KEY not in str(responses)
@@ -267,6 +272,7 @@ async def test_switching_stt_provider_changes_the_token_response(
         # Looked up by the preset id instead of its vendor, this was a KeyError at startup.
         ("assemblyai-pro", AssemblyAiSttTokenIssuer),
         ("deepgram", DeepgramSttTokenIssuer),
+        ("xai", XaiSttTokenIssuer),
     ],
 )
 async def test_issuer_opens_for_every_preset(preset: str, issuer_type: type[object]) -> None:

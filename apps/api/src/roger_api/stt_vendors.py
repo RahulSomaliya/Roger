@@ -41,6 +41,13 @@ which the token also carries (`stream.price_per_hour_usd_without_keyterms`).
   stream opened, not per hour: Roger's longest list (800 characters, schemas/vocabulary.py) is
   about 240 tokens, under $0.001. Its surcharge is therefore 0.0, which that margin covers.
   stt-rt-v5 is the current real-time model (https://soniox.com/docs/stt/models, same date).
+- xAI, https://docs.x.ai/developers/models (read 2026-10-07): grok-voice-transcribe-2.0, "Speech to
+  Text | $0.10 / hr (REST), $0.20 / hr (Streaming)"; the live price, $0.20/hr, is the one used.
+  Whether xAI bills a stream's open time or the audio sent is NOT documented (the speech-to-text
+  page, https://docs.x.ai/developers/model-capabilities/audio/speech-to-text, and the pricing table
+  say nothing). The conservative reading is assumed: open time, silent or not, like AssemblyAI, so
+  a meeting hour costs twice the price. The pricing table lists no keyterm surcharge (the
+  handoff's research of the same date says keyterms and diarization are free), so it is 0.0.
 """
 
 from collections.abc import AsyncIterator, Mapping
@@ -59,6 +66,7 @@ from roger_api.services.stt_tokens import (
     FakeSttTokenIssuer,
     SonioxSttTokenIssuer,
     SttTokenIssuer,
+    XaiSttTokenIssuer,
 )
 
 if TYPE_CHECKING:
@@ -143,12 +151,23 @@ STT_VENDORS: Mapping[SttProvider, SttVendor] = MappingProxyType(
             keyterm_surcharge_per_hour_usd={"stt-rt-v5": 0.0},
             issuer=SonioxSttTokenIssuer,
         ),
+        # Added so Grok can be compared with AssemblyAI on the same audio (the vendor log in
+        # docs/research/stt-benchmark.md). Its token is a client secret minted for the voice-agent
+        # socket: that it also opens /v1/stt is UNCONFIRMED (XaiSttTokenIssuer).
+        # `max_token_ttl_seconds` is client_secrets' `expires_after.seconds` maximum.
+        "xai": SttVendor(
+            provider="xai",
+            max_token_ttl_seconds=3600,
+            price_per_hour_usd={"grok-voice-transcribe-2.0": 0.20},
+            keyterm_surcharge_per_hour_usd={"grok-voice-transcribe-2.0": 0.0},
+            issuer=XaiSttTokenIssuer,
+        ),
     }
 )
 
 
 # What STT_PROVIDER may name. A test keeps it equal to the keys of STT_PRESETS.
-type SttPresetId = Literal["fake", "assemblyai", "assemblyai-pro", "deepgram", "soniox"]
+type SttPresetId = Literal["fake", "assemblyai", "assemblyai-pro", "deepgram", "soniox", "xai"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -174,6 +193,8 @@ STT_PRESETS: Mapping[SttPresetId, SttPreset] = MappingProxyType(
         "deepgram": SttPreset(vendor="deepgram", model="nova-3"),
         # Run D of the M3 bake-off. The desktop adapter is M3-T15's (`stt/soniox/`).
         "soniox": SttPreset(vendor="soniox", model="stt-rt-v5"),
+        # Grok Voice Transcribe 2.0, the model's default name on xAI's speech-to-text page.
+        "xai": SttPreset(vendor="xai", model="grok-voice-transcribe-2.0"),
     }
 )
 
