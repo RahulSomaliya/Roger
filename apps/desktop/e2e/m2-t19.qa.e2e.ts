@@ -226,6 +226,38 @@ async function expectInkText(page: Page): Promise<void> {
   expect(mismatches).toEqual([]);
 }
 
+/**
+ * Makes the preview's Start answer as main's CaptureService does when macOS refuses the
+ * microphone: the `starting` status (error null) and the idle one carrying the refusal, back to
+ * back in one task (doStart's setPhase calls around a check that fails at once), then the idle
+ * status as Start's answer. React draws both statuses in one render, so the page never sees the
+ * error turn null between two refusals in the same words.
+ */
+async function refuseEveryStart(page: Page): Promise<void> {
+  await page.evaluate(
+    ({ channel, refusal }) => {
+      const control = window.__rogerPreview;
+      if (control === undefined) throw new Error('No window.__rogerPreview: not the preview page');
+      window.roger.startCapture = () =>
+        window.roger.getCaptureStatus().then((now) => {
+          const refused = { ...now, phase: 'idle' as const, error: refusal };
+          control.emit(channel, { ...now, phase: 'starting' as const, error: null });
+          control.emit(channel, refused);
+          return refused;
+        });
+    },
+    { channel: IpcChannel.CaptureStatusChanged, refusal: MIC_REFUSED_AT_START },
+  );
+}
+
+/** Presses the shell's New note, as a person starts a recording. */
+async function pressNewNote(page: Page): Promise<void> {
+  const newNote = page.getByRole('button', { name: 'New note', disabled: false });
+  await newNote.waitFor();
+  await newNote.click();
+  await qa.settle(page);
+}
+
 /** The checks every shot shares, then the shot. */
 async function shoot(
   preview: qa.PreviewPage,
@@ -375,12 +407,8 @@ it(
       const preview = await run.open({ scenario: 'empty-mac', theme, width });
       const { page } = preview;
       await qa.emitEvent(page, IpcChannel.SetupGetStatus, REFUSED);
-      // Main's answer to a Start it refused: the idle status, carrying why.
-      const idle = await page.evaluate(() => window.roger.getCaptureStatus());
-      await qa.emitEvent(page, IpcChannel.CaptureStatusChanged, {
-        ...idle,
-        error: MIC_REFUSED_AT_START,
-      });
+      await refuseEveryStart(page);
+      await pressNewNote(page);
       await waitForSetup(page);
       expect(await tone(page, 'microphone')).toBe('problem');
       expect(await textOf(page, `${row('microphone')} .setup-row-message`)).toBe(
@@ -406,7 +434,7 @@ it(
         'Refused Mac (failure path)',
         `refused-${theme}-${width}`,
         `Opened by itself after a refused Start (${theme}, ${width})`,
-        'The capture error turned non-null while main said the microphone is denied, so the banner sent the page here. Each refused row names its pane and switch and offers its fix; Relaunch Roger where macOS needs it. The server row is how main puts "POST /v1/stt/token failed: connect ECONNREFUSED" in plain words; speech-to-text is not double-flagged.',
+        'New note was pressed and main refused the Start while it said the microphone is denied, so the banner sent the page here (a second refusal in the same words, after Done, opens it again). Each refused row names its pane and switch and offers its fix; Relaunch Roger where macOS needs it. The server row is how main puts "POST /v1/stt/token failed: connect ECONNREFUSED" in plain words; speech-to-text is not double-flagged.',
       );
 
       // An action that fails says why on its own row.
@@ -427,6 +455,15 @@ it(
         `A fix that failed, on its own row (${theme}, ${width})`,
         'Main refused to open the pane: its sentence shows on the microphone row only, without the IPC wrapper Electron adds.',
       );
+
+      // Done, then New note again with the microphone still refused: main refuses in the same
+      // words, and the page must open setup again, not stay Home with the banner alone.
+      await page.getByRole('button', { name: 'Done', exact: true }).click();
+      await qa.settle(page);
+      expect(await page.locator('.setup-list').count()).toBe(0);
+      await pressNewNote(page);
+      await waitForSetup(page);
+      expect(await tone(page, 'microphone')).toBe('problem');
       await preview.close();
     }
   },

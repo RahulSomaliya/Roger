@@ -22,10 +22,16 @@ function pageSetupRedirect(): SetupRedirect {
  * microphone (components/setup/setupRedirect.ts says when). Mounted in the banner, which every
  * page shows and keeps across routes, and draws nothing unless main could not say: then the
  * banner shows why, rather than the redirect failing unseen.
+ *
+ * Trap: the watch reads `busy` too, not the error alone. A second Start refused in the same words
+ * leaves the error string unchanged across renders (setupRedirect.ts, captureChanged), so an
+ * effect keyed on the error never runs again and the person stays Home.
  */
 function OpenSetupWhenNeeded() {
   const { capture, navigate } = useShell();
   const error = capture.status?.error ?? null;
+  const phase = capture.status?.phase ?? null;
+  const { busy } = capture;
   const [failure, setFailure] = useState<string | null>(null);
   useEffect(() => {
     pageSetupRedirect()
@@ -40,13 +46,13 @@ function OpenSetupWhenNeeded() {
   }, [navigate]);
   useEffect(() => {
     pageSetupRedirect()
-      .captureError(error, () => {
+      .captureChanged({ error, busy, phase }, () => {
         navigate(SETUP);
       })
       .catch((reason: unknown) => {
         setFailure(`Roger could not check why recording failed: ${describeError(reason)}`);
       });
-  }, [error, navigate]);
+  }, [error, busy, phase, navigate]);
   return failure === null
     ? null
     : createElement('div', { role: 'alert', className: 'error' }, failure);
