@@ -82,7 +82,13 @@ describe('describeStream', () => {
 
   it('says Paused for a closed session that reopens with audio, and Failed for one that never will', () => {
     expect(describeStream('paused', 'stalled')).toBe('Paused');
+    expect(describeStream('paused', 'pending')).toBe('Paused');
     expect(describeStream('error', 'active')).toBe('Failed');
+  });
+
+  it("tells the silence gate's pause from a stall by the audio still arriving", () => {
+    // Chunks keep coming and none is speech: the gate closed it (M3-T20), not a broken path.
+    expect(describeStream('paused', 'active')).toBe('Closed while silent, reopens on speech');
   });
 });
 
@@ -100,8 +106,13 @@ describe('streamTone', () => {
     expect(streamTone('closed', 'pending')).toBe('off');
   });
 
+  it('stays off while the silence gate keeps a session closed: nothing is being said', () => {
+    expect(streamTone('paused', 'active')).toBe('off');
+  });
+
   it('warns while the words are not reaching the vendor, and errs once they never will', () => {
     expect(streamTone('paused', 'stalled')).toBe('warn');
+    expect(streamTone('paused', 'pending')).toBe('warn');
     expect(streamTone('retrying', 'active')).toBe('warn');
     expect(streamTone('offline', 'active')).toBe('warn');
     expect(streamTone('error', 'active')).toBe('error');
@@ -188,5 +199,55 @@ describe('describeMeter', () => {
       '3 sessions opened · 12m 25s of audio sent. Mic (me): 6m 15s connected, about $0.02. ' +
         'Call audio (them): 6m 15s connected, about $0.02.',
     );
+  });
+
+  describe('with the silence gate (M3-T20)', () => {
+    const gated: SttMeterStatus = {
+      ...status,
+      total: { ...status.total, gatedMs: 720_000, estimatedSavedUsd: 0.03 },
+      sources: {
+        mic: { ...status.sources.mic, gatedMs: 720_000, estimatedSavedUsd: 0.03 },
+        system: { ...status.sources.system, gatedMs: 0, estimatedSavedUsd: 0 },
+      },
+      silenceGate: 'on',
+    };
+
+    it('adds what the gate saved to the line', () => {
+      expect(describeMeter(gated)).toBe(
+        'AssemblyAI · 12m 30s connected · about $0.03 · saved about $0.03 in silence',
+      );
+      const small = { ...gated, total: { ...gated.total, estimatedSavedUsd: 0.001 } };
+      expect(describeMeter(small)).toMatch(/ · saved under \$0\.01 in silence$/);
+    });
+
+    it('says the time closed when the price is unknown, missing or nothing', () => {
+      const { estimatedSavedUsd: _saved, ...withoutSaved } = gated.total;
+      for (const total of [
+        { ...gated.total, estimatedSavedUsd: null },
+        withoutSaved,
+        { ...gated.total, estimatedSavedUsd: 0 },
+      ] satisfies SttMeter[]) {
+        expect(describeMeter({ ...gated, total })).toBe(
+          'AssemblyAI · 12m 30s connected · about $0.03 · 12m 00s closed in silence',
+        );
+      }
+    });
+
+    it('reads a meter without the gate fields, as other tasks build it, as before', () => {
+      // M2-T20a's tests and shots and M4-S3's fixtures build SttMeter values without them.
+      expect(describeMeter({ ...status, silenceGate: 'off' })).toBe(describeMeter(status));
+      expect(meterDetails({ ...status, silenceGate: 'on' })).toBe(meterDetails(status));
+    });
+
+    it("gives each source's closed time in the details, and says when the gate is spent", () => {
+      expect(meterDetails(gated)).toBe(
+        '3 sessions opened · 12m 25s of audio sent · 12m 00s closed in silence. ' +
+          'Mic (me): 6m 15s connected, about $0.02, 12m 00s closed in silence. ' +
+          'Call audio (them): 6m 15s connected, about $0.02.',
+      );
+      expect(meterDetails({ ...gated, silenceGate: 'spent' })).toBe(
+        `${meterDetails(gated)} Silence gate off for this meeting: its reopens are spent.`,
+      );
+    });
   });
 });

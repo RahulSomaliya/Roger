@@ -122,15 +122,18 @@ export interface SourceStatus {
 /**
  * A source's speech-to-text session. Only `connecting` and `open` hold a socket the vendor bills.
  * - closed: none (before Start, after Stop, or the source failed or ended)
- * - paused: closed because the source sent no audio for the stall window; its next chunk reopens it
+ * - paused: closed while the source needs none: it sent no audio for the stall window, and its next
+ *   chunk reopens it; or its chunks held no speech for the silence gate's hang-over (M3-T20), and
+ *   only its next speech chunk reopens it; or the Mac sleeps (M2-T18). `streamMessages` says which,
+ *   and the source's health tells the gate (chunks still `active`) from a stall
  * - retrying: the vendor ended it, or the open budget is full; reopens with audio after a wait
  * - offline: the Mac lost the network (main polls `net.isOnline()`, M2-T6): the socket was
  *   terminated at once, audio is held as for `paused`, and no token is fetched and nothing reopens
  *   until it is back online; then its next chunk reopens it with no backoff wait
  * - error: ended and will not reopen this meeting; `streamMessages` says why
  *
- * renderer/src/format.ts `describeStream` switches over every state with no default case: a state
- * added here without its case there fails the type check (TS2366).
+ * renderer/src/format.ts `describeStream` and `streamTone` switch over every state with no default
+ * case: a state added here without its case in both fails the type check (TS2366).
  */
 export type SttStreamState =
   'closed' | 'connecting' | 'open' | 'paused' | 'retrying' | 'offline' | 'error';
@@ -153,13 +156,33 @@ export interface SttMeter {
   audioSentMs: number;
   /** Open time at the API's price per stream-hour; null when the price is unknown. */
   estimatedCostUsd: number | null;
+  /**
+   * Time the silence gate kept the session closed (M3-T20), summed over sources in `total`.
+   * Optional, and missing reads as 0: the meters other tasks' tests, shots and fixtures build
+   * (M2-T20a, M4-S3) predate the gate and must stay valid.
+   */
+  gatedMs?: number;
+  /**
+   * `gatedMs` at the price of the session the gate closed: what it saved. Null when that price is
+   * unknown; missing reads as 0, as `gatedMs` does.
+   */
+  estimatedSavedUsd?: number | null;
 }
+
+/**
+ * The silence gate in this meeting (M3-T20): `on`, `off` (sttSilenceCloseSeconds 0), or `spent`:
+ * its own reopens (sttSilenceReopensPerMeeting) are used, so it is off until Stop and sessions stay
+ * open through silence.
+ */
+export type SilenceGateState = 'on' | 'off' | 'spent';
 
 export interface SttMeterStatus {
   /** For people, e.g. "AssemblyAI". */
   vendorName: string;
   total: SttMeter;
   sources: Record<AudioSource, SttMeter>;
+  /** Optional, as SttMeter's gate fields are: a meter without it says nothing of the gate. */
+  silenceGate?: SilenceGateState;
 }
 
 /**
