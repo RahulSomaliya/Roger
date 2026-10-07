@@ -5,7 +5,9 @@ Three parts, top to bottom:
 - `generate_notes`, the DB-free core the API and the eval (M4-T12) share. It builds the prompt from
   a meeting's sources (`notes_prompt.py`), streams the model, parses each finished line
   (`notes_protocol.py`), checks its citations (`citations.py`) and emits the run's events as each
-  line is checked. `GeneratedNotes` is what it made.
+  line is checked. `GeneratedNotes` is what it made. A meeting whose prompt is over the input
+  budget (NOTES_MAX_INPUT_TOKENS) is written in windows, then merged (`notes_long.py`), through
+  the same `NotesWriter` and `write_notes`.
 - `build_ai_doc`, the AI doc builder: TipTap JSON with an inline `citation` node per chip and the
   closing "From your notes" list (M4 D7). The desktop's editor schema
   (apps/desktop/src/renderer/src/notes/citationNode.ts) reads the same shape, and
@@ -44,6 +46,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import defer
 
 from roger_api.auth import Principal
+from roger_api.config_notes import NotesSettings
 from roger_api.db.engine import Database
 from roger_api.db.models import TranscriptSegment
 from roger_api.db.models_notes import LlmRun, MeetingNote
@@ -53,6 +56,7 @@ from roger_api.log import get_logger
 from roger_api.schemas.note_templates import NoteTemplate
 from roger_api.schemas.notes import NoteOut, note_doc_problem, storable_doc
 from roger_api.services.citations import (
+    CheckedLine,
     Citation,
     CitedLine,
     DroppedLine,
@@ -79,7 +83,7 @@ from roger_api.services.notes_markdown import (
 )
 from roger_api.services.notes_model import ModelEvent, ModelRequest, TextDelta, notes_request
 from roger_api.services.notes_prompt import PROMPT_VERSION, NotesPrompt, build_notes_prompt
-from roger_api.services.notes_protocol import Heading, LineProtocolParser, ProtocolLine
+from roger_api.services.notes_protocol import Bullet, Heading, LineProtocolParser, ProtocolLine
 
 # The transcript's one order (start, then "me" before "them", then id), so `L1..Ln` run as the
 # transcript reads. Imported, never copied: two orders would number the prompt one way and show
@@ -93,6 +97,13 @@ type Json = dict[str, Any]
 type ModelStream = Callable[[ModelRequest], AbstractAsyncContextManager[AsyncIterator[ModelEvent]]]
 # Where the core sends each event: a run's `RunContext.emit`, or a list in the eval.
 type Emit = Callable[[RunEvent], None]
+# Keeps, moves to "From your notes" or drops one parsed bullet: `check_line` against the run's ref
+# map, or, in a long call's passes, against the lines that pass was shown (`notes_long.py`).
+type LineCheck = Callable[[Bullet], CheckedLine]
+
+# NOTES_MAX_INPUT_TOKENS' default, for a caller with no settings at hand. The API passes the
+# configured one (routers/notes_runs.py); so should the eval (M4-T12), from its own settings.
+DEFAULT_MAX_INPUT_TOKENS = NotesSettings().notes_max_input_tokens
 
 # The AI doc's names. `citation` is `CITATION_NODE_TYPE` in the desktop's shared/notes.ts, and its
 # attrs are `CitationAttrs` there; `NOT_SAID_ON_THE_CALL` is the constant of the same name.
@@ -120,9 +131,12 @@ class NotesSources:
         return not self.lines and not self.note_blocks
 
     def prompt(self) -> NotesPrompt:
-        """The blocks as Markdown, as the user structured them (see the module's first trap)."""
-        shown = tuple(block.markdown for block in self.note_blocks)
-        return build_notes_prompt(self.template, RefMap(self.lines, shown))
+        return build_notes_prompt(self.template, self.shown_refs())
+
+    def shown_refs(self) -> RefMap:
+        """The map a prompt numbers: the blocks as Markdown, as the user structured them (see the
+        module's first trap)."""
+        return RefMap(self.lines, tuple(block.markdown for block in self.note_blocks))
 
     def refs(self) -> RefMap:
         """The map every line is checked against: the blocks' words alone (first trap)."""
@@ -170,37 +184,47 @@ class GeneratedNotes:
 # --- The DB-free core --------------------------------------------------------------------------
 
 
-async def generate_notes(sources: NotesSources, stream: ModelStream, emit: Emit) -> GeneratedNotes:
+async def generate_notes(
+    sources: NotesSources,
+    stream: ModelStream,
+    emit: Emit,
+    *,
+    max_input_tokens: int = DEFAULT_MAX_INPUT_TOKENS,
+) -> GeneratedNotes:
     """Writes the notes for `sources` through `stream`, emitting `section`, `item`, `from_notes`
     and `dropped` events as each finished line is checked.
+
+    The budget switch: one pass while the prompt is within `max_input_tokens`
+    (NOTES_MAX_INPUT_TOKENS, estimated as characters / 4); over it, map then reduce
+    (`notes_long.py`), where only the reduce's lines are emitted and returned. `_claim` asks
+    `notes_long.plan_windows` the same question to store the run's prompt version, so the two
+    always agree.
 
     Raises what the stream raises (`notes_model.py`): `LlmProviderError` when the vendor refuses
     or fails, `ModelCutOffError` when the answer stopped at its limit. Then nothing is returned,
     and a run keeps the AI notes it had.
     """
-    writer = _NotesWriter(sources, emit)
-    parser = LineProtocolParser()
-    pieces: list[str] = []
-    async with stream(notes_request(sources.prompt())) as events:
-        async for event in events:
-            if not isinstance(event, TextDelta):
-                continue
-            text = _storable_text(event.text)
-            pieces.append(text)
-            for line in parser.feed(text):
-                writer.take(line)
-    for line in parser.finish():
-        writer.take(line)
-    return writer.result("".join(pieces))
+    # Imported here, not at the top: notes_long builds on this module (`NotesWriter`,
+    # `write_notes`), so a top-level import is a cycle that fails with "partially initialized
+    # module". `_claim` imports it the same way.
+    from roger_api.services import notes_long
+
+    windows = notes_long.plan_windows(sources, max_input_tokens)
+    if windows:
+        return await notes_long.generate_long_notes(sources, windows, stream, emit)
+    refs = sources.refs()
+    writer = NotesWriter(sources.template, lambda bullet: check_line(bullet, refs), emit)
+    return await write_notes(notes_request(sources.prompt()), stream, writer)
 
 
-class _NotesWriter:
-    """Files each parsed line under its section, "From your notes" or the removed lines."""
+class NotesWriter:
+    """Files each parsed line under its section, "From your notes" or the removed lines, as `check`
+    decides, and emits each one's event."""
 
-    def __init__(self, sources: NotesSources, emit: Emit) -> None:
-        self._refs = sources.refs()
+    def __init__(self, template: NoteTemplate, check: LineCheck, emit: Emit) -> None:
+        self._check = check
         self._emit = emit
-        sections = sources.template.sections
+        sections = template.sections
         # Headings by `_heading_key`: the template's first, then each one the model adds.
         self._headings = {
             _heading_key(section.heading): (index, section.heading)
@@ -218,7 +242,7 @@ class _NotesWriter:
         if isinstance(line, Heading):
             self._start_section(line.text)
             return
-        match check_line(line, self._refs):
+        match self._check(line):
             case CitedLine() as cited:
                 self._keep(cited)
             case FromNotesLine() as moved:
@@ -263,6 +287,26 @@ class _NotesWriter:
             self._emit(RunEvent("section", {"index": index, "heading": heading}))
         self._kept[index][1].append(line)
         self._emit(item_event(index, line))
+
+
+async def write_notes(
+    request: ModelRequest, stream: ModelStream, writer: NotesWriter
+) -> GeneratedNotes:
+    """Streams the answer to `request` into `writer`, one finished line at a time, and returns
+    what `writer` filed, with the answer as `output_text`. Raises what the stream raises."""
+    parser = LineProtocolParser()
+    pieces: list[str] = []
+    async with stream(request) as events:
+        async for event in events:
+            if not isinstance(event, TextDelta):
+                continue
+            text = _storable_text(event.text)
+            pieces.append(text)
+            for line in parser.feed(text):
+                writer.take(line)
+    for line in parser.finish():
+        writer.take(line)
+    return writer.result("".join(pieces))
 
 
 def _heading_key(heading: str) -> str:
@@ -461,8 +505,12 @@ async def start_notes_run(
     template: NoteTemplate,
     user_notes_version: int,
     ai_base_version: int,
+    max_input_tokens: int,
 ) -> NotesRunStream:
     """Claims notes run `run_id` and starts it, or answers a re-send of it.
+
+    `max_input_tokens` is NOTES_MAX_INPUT_TOKENS: over it, the run maps then reduces
+    (`generate_notes`).
 
     Everything that can refuse the request is checked here, before the route's SSE `200`: after
     it, a refusal could only be an `error` event. Raises `NotFoundError` for a meeting outside the
@@ -491,6 +539,7 @@ async def start_notes_run(
             template=template,
             user_notes_version=user_notes_version,
             ai_base_version=ai_base_version,
+            max_input_tokens=max_input_tokens,
         )
         await session.commit()
     logger.info(
@@ -502,7 +551,7 @@ async def start_notes_run(
         note_block_count=len(sources.note_blocks),
     )
     # Outside the session: the claim's transaction is over before the vendor is called (traps).
-    live = await runtime.start(run, _notes_work(principal, run, sources))
+    live = await runtime.start(run, _notes_work(principal, run, sources, max_input_tokens))
     return NotesRunStream(replayed=(), live=live)
 
 
@@ -592,8 +641,12 @@ async def _claim(
     template: NoteTemplate,
     user_notes_version: int,
     ai_base_version: int,
+    max_input_tokens: int,
 ) -> tuple[NotesSources, LlmRun]:
     """Checks the request against what is stored and inserts the running run; does not commit."""
+    # Imported here, as in `generate_notes` (a top-level import is a cycle).
+    from roger_api.services.notes_long import LONG_PROMPT_VERSION, plan_windows
+
     notes = await get_notes(session, principal, meeting_id)
     _require_version("user", notes.user, user_notes_version, meeting_id)
     _require_version("ai", notes.ai, ai_base_version, meeting_id)
@@ -613,7 +666,11 @@ async def _claim(
         kind="notes",
         status="running",
         model=runtime.notes_model.model_id("notes"),
-        prompt_version=PROMPT_VERSION,
+        # The question `generate_notes` asks of the same sources, so the version names the prompts
+        # the run sends: a long run's are not PROMPT_VERSION's.
+        prompt_version=(
+            LONG_PROMPT_VERSION if plan_windows(sources, max_input_tokens) else PROMPT_VERSION
+        ),
         template_id=template.id,
         line_count=len(sources.lines),
         user_notes_version=user_notes_version,
@@ -671,7 +728,9 @@ async def _source_lines(
     )
 
 
-def _notes_work(principal: Principal, run: LlmRun, sources: NotesSources) -> RunWork:
+def _notes_work(
+    principal: Principal, run: LlmRun, sources: NotesSources, max_input_tokens: int
+) -> RunWork:
     run_id, model, template_id = run.id, run.model, sources.template.id
     meeting_id = run.meeting_id
 
@@ -679,7 +738,9 @@ def _notes_work(principal: Principal, run: LlmRun, sources: NotesSources) -> Run
         context.emit(
             run_event(run_id, model=model, template_id=template_id, line_count=len(sources.lines))
         )
-        notes = await generate_notes(sources, context.stream, context.emit)
+        notes = await generate_notes(
+            sources, context.stream, context.emit, max_input_tokens=max_input_tokens
+        )
         return _ai_notes_save(principal, meeting_id, run_id, template_id, notes)
 
     return work

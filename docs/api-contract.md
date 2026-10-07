@@ -635,6 +635,23 @@ that ends with neither `done` nor `error` (a dropped connection, or a re-send th
 cannot follow) means the run may still finish: poll `GET .../runs/{run_id}` until it ends or its
 `heartbeat_at` is 2 minutes old, then read the notes.
 
+Long calls: when the prompt (the rules, the template, the user's notes and every transcript line,
+estimated as characters / 4) is over `NOTES_MAX_INPUT_TOKENS` (default 200,000 tokens, about 10
+hours of talk), the run first drafts notes for overlapping windows of whole lines, then merges the
+drafts in one last pass. Only that last pass sends `section`, `item`, `from_notes` and `dropped`
+events, so after `run` the stream may carry nothing but `: ping` comments for minutes. Citations
+still name lines of the whole transcript. The run's `prompt_version` ends in `+long-v1`, and its
+tokens and cost add up every pass. The one exception: when every line fits one window, the prompt
+is long because of the user's notes, and the run is one pass as below the budget, with the plain
+`prompt_version` and its events sent as each line is checked.
+
+Each window's prompt repeats the rules, the template and the user's notes, and holds as many lines
+as keep it within the budget, at most 60,000 tokens of them. It is over the budget only when it
+holds one line longer than that room, or when the rest of its prompt takes over three quarters of
+the budget: its lines still get a quarter, so the run never becomes one paid call per line. The
+last pass's prompt (the template, the notes, every draft and the lines the drafts cite) is not
+measured against the budget.
+
 The AI notes doc (`done`'s `note.doc`, and the run's `output_doc`): for each section that kept a
 line, in the order the model wrote them, a level-2 heading and a bullet list. A template section's
 heading is written as the template has it, whatever case the model used; a heading the template

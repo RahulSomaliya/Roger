@@ -36,6 +36,7 @@ from roger_api.schemas.notes import note_doc_problem
 from roger_api.services.citations import SourceLine
 from roger_api.services.llm_runs import LlmRuntime, RunEvent
 from roger_api.services.notes_generation import (
+    DEFAULT_MAX_INPUT_TOKENS,
     NOT_SAID_ON_THE_CALL,
     GeneratedNotes,
     NotesSources,
@@ -481,6 +482,7 @@ async def start(
         template=general,
         user_notes_version=user_notes_version,
         ai_base_version=ai_base_version,
+        max_input_tokens=DEFAULT_MAX_INPUT_TOKENS,
     )
     async with aclosing(stream.events()) as events:
         return [event async for event in events]
