@@ -10,6 +10,7 @@ import {
   type AudioSourceState,
   type CapturePhase,
   type CaptureStatus,
+  type CaptureWarning,
   type SourceStatus,
   type StartCaptureRequest,
   type SttMeter,
@@ -273,6 +274,12 @@ const OPEN_NOTES_SAVE_TIMEOUT_MS = 1_000;
 
 const SPEAKER_TITLE: Record<AudioSource, string> = { mic: 'Me', system: 'Them' };
 
+/** A token as the session takes it, and the vendor it is for (resolveStt). */
+interface ResolvedStt extends StreamCredentials {
+  provider: string;
+  pricePerHourUsdWithoutKeyterms: number | null;
+}
+
 interface StreamRetry {
   reason: string;
   /** Clock time the source may reopen, with its next chunk. */
@@ -329,6 +336,8 @@ export class CaptureService {
   private streamErrors: Record<AudioSource, string | null> = { mic: null, system: null };
   /** Each source's failure while it waits to reconnect, so the monitor can count the wait down. */
   private streamRetries: Record<AudioSource, StreamRetry | null> = { mic: null, system: null };
+  /** What the session warned about each source (onWarning), shown until Stop. */
+  private sessionWarnings: Record<AudioSource, CaptureWarning | null> = { mic: null, system: null };
   private error: string | null = null;
   private notice: string | null = null;
   private segmentsUnsaved = 0;
@@ -437,7 +446,17 @@ export class CaptureService {
       error: this.error,
       meter: this.stt === null ? this.lastMeter : this.meterStatus(this.stt),
       notice: this.notice,
+      ...this.sessionWarningsPart(),
     };
+  }
+
+  /**
+   * The session's warnings in source order, joined with the contributors' (withContributions).
+   * Left out when there are none: an empty list would go into every status.
+   */
+  private sessionWarningsPart(): Pick<CaptureStatus, 'warnings'> {
+    const warnings = AUDIO_SOURCES.flatMap((source) => this.sessionWarnings[source] ?? []);
+    return warnings.length === 0 ? {} : { warnings };
   }
 
   /** Adds every contributor's part to `status`; one that throws is logged and left out. */
@@ -686,7 +705,8 @@ export class CaptureService {
           'Microphone access is denied. Allow Roger under System Settings → Privacy & Security → Microphone.',
         );
       }
-      const { provider, accessToken, settings } = await this.resolveStt();
+      const { provider, accessToken, settings, pricePerHourUsdWithoutKeyterms } =
+        await this.resolveStt();
       // Checked before the meeting exists: a session on the wrong format would store nonsense lines.
       const mismatch = streamSettingsMismatch(settings);
       if (mismatch !== null) throw new Error(mismatch);
@@ -716,6 +736,7 @@ export class CaptureService {
         stt,
         accessToken,
         settings,
+        pricePerHourUsdWithoutKeyterms,
         refreshCredentials: () => this.freshCredentials(provider),
         reopenBufferMs: this.guards.sttReopenBufferMs,
         budget: this.budget,
@@ -761,6 +782,19 @@ export class CaptureService {
           },
           onStreamClosed: (source) => {
             this.recordMeter(meetingId, null, source);
+          },
+          onWarning: (source, warning) => {
+            // Quiet: on screen only, as the Notifier posts loud warnings alone. The call goes on,
+            // without the list on that source until Stop (CaptureSession.connect), so the warning
+            // holds until then; the session logged it.
+            this.sessionWarnings[source] ??= {
+              kind: warning.kind,
+              source,
+              since: new Date(this.clock()).toISOString(),
+              message: warning.message,
+              loud: false,
+            };
+            this.emitStatus();
           },
           onSaveFailure: (source, reason) => {
             // Recording goes on. The likely causes (disk full, the file locked past SQLite's 5 s
@@ -1008,13 +1042,14 @@ export class CaptureService {
     }
   }
 
-  private async resolveStt(): Promise<{
-    provider: string;
-    accessToken: string;
-    settings: SttStreamSettings;
-  }> {
+  private async resolveStt(): Promise<ResolvedStt> {
     if (this.options.sttProviderOverride === 'fake') {
-      return { provider: 'fake', accessToken: '', settings: FAKE_STREAM_SETTINGS };
+      return {
+        provider: 'fake',
+        accessToken: '',
+        settings: FAKE_STREAM_SETTINGS,
+        pricePerHourUsdWithoutKeyterms: FAKE_STREAM_SETTINGS.pricePerHourUsd,
+      };
     }
     const token = await this.options.api.getSttToken();
     return {
@@ -1030,6 +1065,10 @@ export class CaptureService {
         // Read per token, never cached: a reopen's fresh token carries the list as edited since.
         keyterms: token.stream.keyterms,
       },
+      // A stream opened with no list once the vendor refused it (CaptureSession.streamSettings).
+      // Missing from an older API, mapped as the price above: the session then meters such a
+      // stream at the price with the list, which errs high.
+      pricePerHourUsdWithoutKeyterms: token.stream.price_per_hour_usd_without_keyterms ?? null,
     };
   }
 
@@ -1039,15 +1078,15 @@ export class CaptureService {
    * transcribed as garbage with no error.
    */
   private async freshCredentials(provider: string): Promise<StreamCredentials> {
-    const { provider: issued, accessToken, settings } = await this.resolveStt();
+    const { provider: issued, ...credentials } = await this.resolveStt();
     if (issued !== provider) {
       throw new Error(
         `the API now names speech-to-text provider "${issued}", not "${provider}"; press Stop, then Start to switch`,
       );
     }
-    const mismatch = streamSettingsMismatch(settings);
+    const mismatch = streamSettingsMismatch(credentials.settings);
     if (mismatch !== null) throw new Error(mismatch);
-    return { accessToken, settings };
+    return credentials;
   }
 
   private resetSessionState(): void {
@@ -1060,6 +1099,7 @@ export class CaptureService {
     this.streamMessages = { mic: null, system: null };
     this.streamErrors = { mic: null, system: null };
     this.streamRetries = { mic: null, system: null };
+    this.sessionWarnings = { mic: null, system: null };
     this.stt = null;
     this.savedUsage = null;
     this.sttProvider = null;

@@ -94,6 +94,8 @@ class ScriptedSpeechToText implements SpeechToText {
   private readonly all: ScriptedStream[] = [];
   readonly opened: OpenStreamOptions[] = [];
   failWith: Error | null = null;
+  /** Decides each open after `failWith`: the error it is refused with, or null to open it. */
+  refuse: ((options: OpenStreamOptions) => Error | null) | null = null;
   /** Applied to every stream this double opens. */
   finalOnClose: string | null = null;
   constructor(private readonly clock: () => number) {}
@@ -119,6 +121,8 @@ class ScriptedSpeechToText implements SpeechToText {
   openStream(options: OpenStreamOptions): Promise<SttStream> {
     this.opened.push(options);
     if (this.failWith) return Promise.reject(this.failWith);
+    const refusal = this.refuse?.(options) ?? null;
+    if (refusal !== null) return Promise.reject(refusal);
     const stream = new ScriptedStream(options, this.clock(), this.clock);
     this.all.push(stream);
     stream.finalOnClose = this.finalOnClose;
@@ -597,6 +601,124 @@ describe('CaptureService audio flow', () => {
     await h.elapse(6_000);
     expect(h.service.getStatus().sources.system.health).toBe('ended');
     await h.service.stop();
+  });
+});
+
+describe('CaptureService with a jargon list the vendor rejects (M3-T4b)', () => {
+  /** The token as an API with a jargon list issues it: priced with and without the list. */
+  function listedToken(h: Harness): void {
+    h.api.getSttToken.mockResolvedValue({
+      provider: 'scripted',
+      access_token: 'tok',
+      expires_in: 30,
+      stream: {
+        model: 'm',
+        language: 'en',
+        sample_rate: 16000,
+        encoding: 'linear16',
+        price_per_hour_usd: 0.19,
+        price_per_hour_usd_without_keyterms: 0.15,
+        keyterms: ['Linkt', 'Roger'],
+      },
+    });
+  }
+  /** The core's error for a connect refused over the list (SttConnection.keytermsRefused). */
+  const listRefused = () =>
+    new SttConnectError(
+      'Scripted: rejected with HTTP 400; the jargon list (2 terms) was rejected',
+      400,
+      {
+        keytermsRejected: true,
+      },
+    );
+  /** A vendor that refuses every open carrying a list. */
+  const refusesLists = (options: OpenStreamOptions) =>
+    (options.settings.keyterms?.length ?? 0) > 0 ? listRefused() : null;
+  const opened = (h: Harness) =>
+    h.stt.opened.map(({ label, settings }) => [label, settings.keyterms, settings.pricePerHourUsd]);
+  const message =
+    'Jargon list rejected by Scripted, transcribing without it. Check the list in Settings.';
+
+  it('records with each refused stream opened again without the list, as a quiet warning on it', async () => {
+    const h = harness();
+    listedToken(h);
+    h.stt.refuse = refusesLists;
+    const since = new Date(h.now()).toISOString();
+    const status = await h.service.start();
+
+    expect(status).toMatchObject({
+      phase: 'recording',
+      streams: { mic: 'open', system: 'open' },
+      error: null,
+    });
+    // Opened again on the same token, with no list, at the price of a stream with no list.
+    expect(opened(h)).toEqual([
+      ['mic', ['Linkt', 'Roger'], 0.19],
+      ['system', ['Linkt', 'Roger'], 0.19],
+      ['mic', [], 0.15],
+      ['system', [], 0.15],
+    ]);
+    expect(h.api.getSttToken).toHaveBeenCalledTimes(1);
+    // Quiet: on screen, never a notification. It holds as long as the list stays off, until Stop.
+    expect(status.warnings).toEqual([
+      { kind: 'keyterms-rejected', source: 'mic', since, message, loud: false },
+      { kind: 'keyterms-rejected', source: 'system', since, message, loud: false },
+    ]);
+    h.advance(60 * 60_000);
+    expect(h.service.getStatus().warnings).toHaveLength(2);
+    // Two streams for an hour at the price without the list.
+    expect(h.service.getStatus().meter?.total.estimatedCostUsd).toBe(0.3);
+
+    const stopped = await h.service.stop();
+    expect(stopped).not.toHaveProperty('warnings');
+  });
+
+  it('opens the refused source without the list on every later reopen, at its price', async () => {
+    // Five opens inside a minute: Start's two, the one without the list and both reopens.
+    const h = harness({ guards: { sttOpensPerMinute: 5 } });
+    listedToken(h);
+    h.stt.refuse = (options) => (options.label === 'system' ? refusesLists(options) : null);
+    await h.service.start();
+    expect(h.service.getStatus().warnings?.map((warning) => warning.source)).toEqual(['system']);
+
+    h.stt.streams.get('mic')!.emitter.emit({ type: 'closed', code: 1011, reason: 'timeout' });
+    h.stt.streams.get('system')!.emitter.emit({ type: 'closed', code: 1011, reason: 'timeout' });
+    h.advance(2_000); // the first backoff
+    h.service.pushAudio('mic', new Uint8Array(3200));
+    h.service.pushAudio('system', new Uint8Array(3200));
+    await new Promise((resolve) => setImmediate(resolve));
+    // A fresh token each, both carrying the list: only the refused source goes without it.
+    expect(h.api.getSttToken).toHaveBeenCalledTimes(3);
+    expect(opened(h).slice(3)).toEqual([
+      ['mic', ['Linkt', 'Roger'], 0.19],
+      ['system', [], 0.15],
+    ]);
+    expect(h.service.getStatus().streams).toEqual({ mic: 'open', system: 'open' });
+    await h.service.stop();
+  });
+
+  it('fails Start with both reasons when the open without the list fails too', async () => {
+    const h = harness();
+    listedToken(h);
+    h.stt.refuse = (options) =>
+      refusesLists(options) ?? new SttConnectError('Scripted: rejected with HTTP 401', 401);
+    const status = await h.service.start();
+    expect(status.phase).toBe('idle');
+    expect(status.error).toContain('the jargon list (2 terms) was rejected');
+    expect(status.error).toContain(
+      '; and without the jargon list: Scripted: rejected with HTTP 401',
+    );
+    expect(status).not.toHaveProperty('warnings');
+    expect(h.store.meetings.size).toBe(0);
+  });
+
+  it('never opens again when the API sends no list', async () => {
+    const h = harness();
+    h.stt.refuse = () => listRefused(); // flagged with no list sent: only a broken adapter could
+    const status = await h.service.start();
+    expect(status.phase).toBe('idle');
+    expect(h.stt.opened).toHaveLength(2);
+    expect(status).not.toHaveProperty('warnings');
   });
 });
 
