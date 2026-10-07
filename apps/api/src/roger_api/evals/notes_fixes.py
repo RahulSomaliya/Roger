@@ -24,7 +24,9 @@ from roger_api.auth import Principal
 from roger_api.db.engine import Database
 from roger_api.db.models import Meeting
 from roger_api.db.models_notes import LlmRun, MeetingNote
+from roger_api.errors import NotFoundError
 from roger_api.schemas.common import UtcDatetime
+from roger_api.services.meetings import require_meeting
 from roger_api.services.notes_markdown import render_markdown
 from roger_api.services.transcript_render import format_instant
 
@@ -95,7 +97,11 @@ async def measure_fixes(
     database: Database, principal: Principal, *, meeting_id: UUID | None = None, limit: int
 ) -> list[FixSize]:
     """The newest `limit` meetings of the workspace whose AI notes a run wrote, or just
-    `meeting_id`: each with the edit size between that run's doc and the AI notes now."""
+    `meeting_id`: each with the edit size between that run's doc and the AI notes now.
+
+    Raises `NotFoundError` when `meeting_id` is not a meeting of the workspace, or is one whose AI
+    notes no run wrote.
+    """
     workspace_id = principal.workspace_id
     query = (
         select(
@@ -136,6 +142,11 @@ async def measure_fixes(
         query = query.where(Meeting.id == meeting_id)
     async with database.session() as session:
         rows = (await session.execute(query)).all()
+        if meeting_id is not None and not rows:
+            # Never an empty report for a named meeting: it would say no meeting has AI notes and
+            # exit 0 for a mistyped id or another workspace's meeting. Asked only on this path.
+            await require_meeting(session, principal, meeting_id)
+            raise NotFoundError(f"Meeting {meeting_id} has no AI notes written by a run")
     return [_fix_size(*row) for row in rows]
 
 

@@ -781,6 +781,36 @@ async def test_fix_report_measures_edits_between_run_output_and_current_notes(
     assert f"+0 / -{len(chr(10) + '- Pricing stays at 50k')}" in markdown
 
 
+async def test_fixes_for_one_meeting_refuses_one_it_cannot_measure(
+    database: Database, principal: Principal
+) -> None:
+    # An empty report would say "no meeting has AI notes" about a mistyped id, and exit 0.
+    generated = bullets_doc("Beta ships Friday", heading="Decisions")
+    failed = await add_meeting(database, principal.workspace_id)
+    await add_generated_notes(
+        database, principal.workspace_id, failed, generated=None, current=generated, edited=False
+    )
+    without_notes = await add_meeting(database, principal.workspace_id)
+    other = Workspace(id=uuid4(), name="Someone else")
+    async with database.session() as session:
+        session.add(other)
+        await session.commit()
+    foreign = await add_meeting(database, other.id)
+    await add_generated_notes(
+        database, other.id, foreign, generated=generated, current=generated, edited=False
+    )
+    unknown = uuid4()
+
+    for meeting_id, problem in [
+        (unknown, "not found"),
+        (foreign, "not found"),
+        (failed, "has no AI notes written by a run"),
+        (without_notes, "has no AI notes written by a run"),
+    ]:
+        with pytest.raises(NotFoundError, match=f"Meeting {meeting_id} {problem}"):
+            await measure_fixes(database, principal, meeting_id=meeting_id, limit=10)
+
+
 async def test_export_writes_a_case_from_a_meeting_and_its_notes(
     database: Database, principal: Principal, tmp_path: Path
 ) -> None:
@@ -981,6 +1011,25 @@ async def test_export_and_fixes_commands_read_the_default_workspace(
     fixes = json.loads((tmp_path / "fixes" / "fixes.json").read_text(encoding="utf-8"))
     assert [fix["meeting_id"] for fix in fixes["fixes"]] == [str(meeting_id)]
     assert "Acme renewal" in (tmp_path / "fixes" / "fixes.md").read_text(encoding="utf-8")
+
+
+async def test_fixes_command_names_a_meeting_it_cannot_measure_and_writes_nothing(
+    database: Database, database_url: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    settings = make_settings(database_url)
+    async with database.session() as session:
+        session.add(Workspace(id=settings.default_workspace_id, name="Linkt"))
+        await session.commit()
+    mistyped = uuid4()
+    out = tmp_path / "fixes"
+
+    code = await asyncio.to_thread(
+        main, ["fixes", "--meeting", str(mistyped), "--out", str(out)], settings=settings
+    )
+
+    assert code == 1
+    assert f"Meeting {mistyped} not found" in capsys.readouterr().err
+    assert not out.exists()
 
 
 def test_fixes_refuses_a_limit_below_one(capsys: pytest.CaptureFixture[str]) -> None:
