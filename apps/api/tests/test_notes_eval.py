@@ -19,6 +19,7 @@ from uuid import UUID, uuid4
 import pytest
 
 from roger_api.auth import Principal
+from roger_api.config_notes import NotesSettings
 from roger_api.db.engine import Database
 from roger_api.db.models import Meeting, TranscriptSegment, Workspace
 from roger_api.db.models_notes import LlmRun, MeetingNote
@@ -41,8 +42,10 @@ from roger_api.evals.notes_fixes import measure_fixes, render_fixes
 from roger_api.evals.notes_judge import JUDGE_PROMPT_VERSION, read_verdicts
 from roger_api.evals.notes_report import EvalReport, render_report, render_summary, write_report
 from roger_api.evals.notes_score import Share
+from roger_api.services.notes_long import LONG_PROMPT_VERSION, plan_windows
 from roger_api.services.notes_model import ModelCutOffError, ModelDone, ModelUsage
 from roger_api.services.notes_model_fake import FakeNotesModel, ModelScript, ScriptedNotesModel
+from roger_api.services.notes_prompt import PROMPT_VERSION
 from tests.conftest import make_settings
 
 type Json = dict[str, Any]
@@ -56,6 +59,12 @@ USAGE = ModelUsage(
 )
 # `run` never opens the database: a URL to a database nobody created proves it.
 UNUSED_DATABASE_URL = "postgresql+asyncpg://postgres:postgres@localhost:5432/roger_test_unused"
+# NOTES_MAX_INPUT_TOKENS as an unset environment leaves it: every case here but the long ones is
+# far under it, so they run one pass. Long calls themselves are tests/test_notes_long.py.
+MAX_INPUT_TOKENS = NotesSettings().notes_max_input_tokens
+# NOTES_MAX_INPUT_TOKENS' floor, and the lines of a case that is over it (`long_lines`).
+SMALL_BUDGET = 1_000
+LONG_CASE_LINES = 200
 
 
 def bullets_doc(*items: str, heading: str | None = None) -> Json:
@@ -120,6 +129,14 @@ def counted(share: Share) -> tuple[int, int]:
     return share.count, share.total
 
 
+def long_lines() -> list[str]:
+    """`LONG_CASE_LINES` lines that each say something of their own, over `SMALL_BUDGET`."""
+    return [
+        f"Point {number} is about the launch plan for the beta."
+        for number in range(1, LONG_CASE_LINES + 1)
+    ]
+
+
 # --- The harness on the synthetic case and on scripted answers ----------------------------------
 
 
@@ -129,7 +146,9 @@ async def test_harness_scores_the_synthetic_case_with_the_fake_model(tmp_path: P
     # of the five note blocks as a bullet citing only that block.
     cases = load_cases(CASES_ROOT, only=["synthetic_standup"])
 
-    report = await run_eval(cases, FakeNotesModel(), provider="fake", reasoning="off")
+    report = await run_eval(
+        cases, FakeNotesModel(), provider="fake", reasoning="off", max_input_tokens=MAX_INPUT_TOKENS
+    )
 
     [case] = report.cases
     assert case.case_id == "synthetic_standup"
@@ -185,7 +204,13 @@ async def test_report_counts_the_from_notes_share(tmp_path: Path) -> None:
         "- A line that cites nothing\n"
     )
 
-    report = await run_eval([case], scripted(answer), provider="fake", reasoning="off")
+    report = await run_eval(
+        [case],
+        scripted(answer),
+        provider="fake",
+        reasoning="off",
+        max_input_tokens=MAX_INPUT_TOKENS,
+    )
 
     [scored] = report.cases
     assert scored.scores is not None
@@ -225,7 +250,13 @@ async def test_action_items_and_facts_match_by_owner_numbers_and_words() -> None
         "- The pilot stays at fifty thousand [L3]\n"
     )
 
-    report = await run_eval([case], scripted(answer), provider="fake", reasoning="off")
+    report = await run_eval(
+        [case],
+        scripted(answer),
+        provider="fake",
+        reasoning="off",
+        max_input_tokens=MAX_INPUT_TOKENS,
+    )
 
     scores = report.cases[0].scores
     assert scores is not None
@@ -261,7 +292,13 @@ async def test_an_action_item_counts_only_under_the_owner_the_line_gives_it_to()
         "- Dev will fix the webhook retries by noon [L6]\n"
     )
 
-    report = await run_eval([case], scripted(answer), provider="fake", reasoning="off")
+    report = await run_eval(
+        [case],
+        scripted(answer),
+        provider="fake",
+        reasoning="off",
+        max_input_tokens=MAX_INPUT_TOKENS,
+    )
 
     scores = report.cases[0].scores
     assert scores is not None
@@ -301,7 +338,13 @@ async def test_a_late_colon_does_not_make_the_clause_before_it_an_owner() -> Non
         "- Priya Shah (PM): share the migration runbook [L7]\n"
     )
 
-    report = await run_eval([case], scripted(answer), provider="fake", reasoning="off")
+    report = await run_eval(
+        [case],
+        scripted(answer),
+        provider="fake",
+        reasoning="off",
+        max_input_tokens=MAX_INPUT_TOKENS,
+    )
 
     scores = report.cases[0].scores
     assert scores is not None
@@ -331,7 +374,13 @@ async def test_an_owner_matches_across_apostrophe_styles_and_unicode_forms() -> 
         "- Jose\u0301: book the venue [L3]\n"
     )
 
-    report = await run_eval([case], scripted(answer), provider="fake", reasoning="off")
+    report = await run_eval(
+        [case],
+        scripted(answer),
+        provider="fake",
+        reasoning="off",
+        max_input_tokens=MAX_INPUT_TOKENS,
+    )
 
     scores = report.cases[0].scores
     assert scores is not None
@@ -352,7 +401,13 @@ async def test_flagged_lines_and_numbers_are_counted_against_their_cited_lines()
         "- Ask about Q3 [N2]\n"
     )
 
-    report = await run_eval([case], scripted(answer), provider="fake", reasoning="off")
+    report = await run_eval(
+        [case],
+        scripted(answer),
+        provider="fake",
+        reasoning="off",
+        max_input_tokens=MAX_INPUT_TOKENS,
+    )
 
     scores = report.cases[0].scores
     assert scores is not None
@@ -389,6 +444,7 @@ async def test_a_note_paragraph_that_opens_with_a_hash_is_a_point_not_a_heading(
         scripted("- The vendor contract is the top risk [N2]\n"),
         provider="fake",
         reasoning="off",
+        max_input_tokens=MAX_INPUT_TOKENS,
     )
 
     scores = report.cases[0].scores
@@ -408,7 +464,14 @@ async def test_judge_counts_the_lines_it_calls_unsupported() -> None:
         ModelScript(steps=("J1: yes\n", "**J2:** no\n"), end=ModelDone(USAGE)), model_id="judge"
     )
 
-    report = await run_eval([case], notes, provider="openrouter", reasoning="off", judge=judge)
+    report = await run_eval(
+        [case],
+        notes,
+        provider="openrouter",
+        reasoning="off",
+        max_input_tokens=MAX_INPUT_TOKENS,
+        judge=judge,
+    )
 
     [scored] = report.cases
     assert scored.judge is not None
@@ -465,7 +528,14 @@ async def test_lines_the_judge_left_without_a_verdict_leave_the_run_incomplete()
         ModelScript(steps=("J1: yes\nClaim 2: supported\nJ3: yes\n",)), model_id="judge"
     )
 
-    report = await run_eval([case], notes, provider="openrouter", reasoning="off", judge=judge)
+    report = await run_eval(
+        [case],
+        notes,
+        provider="openrouter",
+        reasoning="off",
+        max_input_tokens=MAX_INPUT_TOKENS,
+        judge=judge,
+    )
 
     [scored] = report.cases
     assert scored.judge is not None
@@ -490,6 +560,7 @@ async def test_a_named_judge_with_no_scored_case_is_not_asked_for_again() -> Non
         refused,
         provider="openrouter",
         reasoning="off",
+        max_input_tokens=MAX_INPUT_TOKENS,
         judge=ScriptedNotesModel(model_id="judge"),
     )
 
@@ -509,6 +580,7 @@ async def test_the_judge_is_not_called_when_no_line_was_kept() -> None:
         scripted("- A line that cites nothing\n"),
         provider="openrouter",
         reasoning="off",
+        max_input_tokens=MAX_INPUT_TOKENS,
         judge=judge,
     )
 
@@ -533,7 +605,13 @@ async def test_a_failed_case_is_reported_and_the_next_case_still_runs() -> None:
         ModelScript(steps=("- Beta ships Friday [L1]\n",), end=ModelDone(USAGE)),
     )
 
-    report = await run_eval([cut_off, refused, scored], model, provider="fake", reasoning="off")
+    report = await run_eval(
+        [cut_off, refused, scored],
+        model,
+        provider="fake",
+        reasoning="off",
+        max_input_tokens=MAX_INPUT_TOKENS,
+    )
 
     by_id = {case.case_id: case for case in report.cases}
     assert by_id["cut_off"].error is not None
@@ -555,6 +633,30 @@ async def test_a_failed_case_is_reported_and_the_next_case_still_runs() -> None:
     markdown = render_report(report)
     assert "$0.0042, and 1 call with no usage reported" in markdown
     assert "| cut_off | general | 1 | failed: cut_off |" in markdown
+
+
+async def test_a_case_over_the_budget_reports_the_long_prompt_version() -> None:
+    # Over NOTES_MAX_INPUT_TOKENS the notes map then reduce (services/notes_long.py), and the
+    # report names the prompts each case ran, as a run through the route stores them
+    # (`llm_runs.prompt_version`): a long case is never compared with a one-pass one unawares.
+    short = inline_case("Beta ships on Friday.", case_id="short")
+    long = inline_case(*long_lines(), case_id="long")
+    assert plan_windows(long.sources(), SMALL_BUDGET)
+    model = FakeNotesModel()
+
+    report = await run_eval(
+        [short, long], model, provider="fake", reasoning="off", max_input_tokens=SMALL_BUDGET
+    )
+
+    assert [(case.case_id, case.error) for case in report.cases] == [
+        ("short", None),
+        ("long", None),
+    ]
+    assert [case.prompt_version for case in report.cases] == [PROMPT_VERSION, LONG_PROMPT_VERSION]
+    assert report.max_input_tokens == SMALL_BUDGET
+    run_line = render_summary(report).splitlines()[2]
+    assert f"prompts {PROMPT_VERSION}, {LONG_PROMPT_VERSION}" in run_line
+    assert f"budget {SMALL_BUDGET:,} tokens" in run_line
 
 
 # --- Cases -------------------------------------------------------------------------------------
@@ -942,6 +1044,28 @@ def test_run_on_the_local_folder_leaves_the_committed_cases_out_of_the_targets(
     report = EvalReport.model_validate_json((out / "report.json").read_text(encoding="utf-8"))
     assert [case.case_id for case in report.cases] == ["client-call"]
     assert "synthetic_standup" not in capsys.readouterr().out
+
+
+def test_run_command_splits_a_case_at_the_configured_budget(tmp_path: Path) -> None:
+    # NOTES_MAX_INPUT_TOKENS reaches `generate_notes`: left out, every case would run one pass at
+    # the 200,000 default whatever the setting says, and a 32,000-token model would be sent it all.
+    lines = [
+        {"speaker": "them", "start_ms": 5_000 * number, "text": text}
+        for number, text in enumerate(long_lines())
+    ]
+    cases = tmp_path / "cases"
+    write_json(cases / "long-call.json", case_json(lines=lines))
+    out = tmp_path / "report"
+
+    code = main(
+        ["run", "--cases", str(cases), "--out", str(out)],
+        settings=make_settings(UNUSED_DATABASE_URL, notes_max_input_tokens=SMALL_BUDGET),
+    )
+
+    assert code == 0
+    report = EvalReport.model_validate_json((out / "report.json").read_text(encoding="utf-8"))
+    assert report.max_input_tokens == SMALL_BUDGET
+    assert [case.prompt_version for case in report.cases] == [LONG_PROMPT_VERSION]
 
 
 @pytest.mark.parametrize(

@@ -668,7 +668,8 @@ async def _claim(
         status="running",
         model=runtime.notes_model.model_id("notes"),
         # The question `generate_notes` asks of the same sources, so the version names the prompts
-        # the run sends: a long run's are not PROMPT_VERSION's.
+        # the run sends: a long run's are not PROMPT_VERSION's. `evals/notes_eval.eval_case` picks
+        # each case's version by the same rule: change one, change both.
         prompt_version=(
             LONG_PROMPT_VERSION if plan_windows(sources, max_input_tokens) else PROMPT_VERSION
         ),

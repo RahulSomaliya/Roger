@@ -64,6 +64,10 @@ class CaseReport(BaseModel):
     template_id: str
     line_count: int
     note_block_count: int
+    # The prompts the case's notes ran, as `llm_runs.prompt_version` names a run's:
+    # LONG_PROMPT_VERSION when the case was over `EvalReport.max_input_tokens` and mapped then
+    # reduced.
+    prompt_version: str
     # Set when generation failed; then there are no scores.
     error: CaseFailure | None = None
     scores: CaseScores | None = None
@@ -137,7 +141,8 @@ class EvalReport(BaseModel):
     provider: NotesProvider
     model: str
     reasoning: NotesReasoning
-    prompt_version: str
+    # NOTES_MAX_INPUT_TOKENS: a case over it maps then reduces (its `prompt_version` says so).
+    max_input_tokens: int
     judge_model: str | None
     cases: list[CaseReport]
     totals: Totals
@@ -151,6 +156,11 @@ class EvalReport(BaseModel):
             or (case.judge is not None and (case.judge.error is not None or case.judge.unjudged))
             for case in self.cases
         )
+
+    @property
+    def prompt_versions(self) -> list[str]:
+        """The prompt versions the cases ran, each once, in case order."""
+        return list(dict.fromkeys(case.prompt_version for case in self.cases))
 
 
 def add_usage(usages: Sequence[ModelUsage | None]) -> ModelUsage | None:
@@ -193,12 +203,14 @@ def render_summary(report: EvalReport) -> str:
     """The run, the targets and one row per case. It quotes no line of any case."""
     totals = report.totals
     judge = f"`{report.judge_model}`" if report.judge_model else "none"
+    versions = report.prompt_versions
+    prompts = f"{_plural(len(versions), 'prompt')} {', '.join(versions) or 'none'}"
     lines = [
         "# Notes eval",
         "",
         f"{format_instant(report.started_at)} · model `{report.model}` (provider "
-        f"{report.provider}, reasoning {report.reasoning}) · prompt {report.prompt_version} · "
-        f"judge {judge}",
+        f"{report.provider}, reasoning {report.reasoning}) · {prompts} · budget "
+        f"{report.max_input_tokens:,} tokens · judge {judge}",
         "",
         f"{totals.scored} {_plural(totals.scored, 'case')} scored, {totals.failed} failed.",
         "",

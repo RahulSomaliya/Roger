@@ -10,10 +10,12 @@ Run from apps/api, as `make eval-notes` and `make eval-notes-fixes` do:
         [--out DIR]
 
 - `run` writes each case's notes through `generate_notes`, the DB-free core every API notes run
-  uses (services/notes_generation.py), and scores them (notes_score.py; with `--judge-model`, a
-  second model's verdicts too, notes_judge.py). It writes `report.json` and `report.md` to
-  `evals/notes/reports/<UTC time>/` (git-ignored) and prints the summary. `--model` and
-  `--reasoning` compare models and M4 D2's two reasoning settings on the same cases.
+  uses (services/notes_generation.py), at NOTES_MAX_INPUT_TOKENS as a run does: a case over it
+  maps then reduces, and the report names the prompts each case ran. It scores them
+  (notes_score.py; with `--judge-model`, a second model's verdicts too, notes_judge.py). It
+  writes `report.json` and `report.md` to `evals/notes/reports/<UTC time>/` (git-ignored) and
+  prints the summary. `--model` and `--reasoning` compare models and M4 D2's two reasoning
+  settings on the same cases.
   It reads every case in `--cases` and in its `local/` folder and pools their counts in the
   targets, so by default the committed synthetic case is in them too. For the exit check, which
   is about the recorded calls alone, name the local folder:
@@ -80,6 +82,7 @@ from roger_api.services.citations import CitedLine
 # copied: a copy keeps the old rule after the registry's rule changes, with every test still green.
 from roger_api.services.llm_runs import RunEvent, _metered, _StreamUsage
 from roger_api.services.notes_generation import GeneratedNotes, NotesSources, generate_notes
+from roger_api.services.notes_long import LONG_PROMPT_VERSION, plan_windows
 from roger_api.services.notes_model import (
     ModelCutOffError,
     ModelEvent,
@@ -156,37 +159,53 @@ async def run_eval(
     *,
     provider: NotesProvider,
     reasoning: NotesReasoning,
+    max_input_tokens: int,
     judge: NotesModel | None = None,
 ) -> EvalReport:
     """Writes and scores the notes of every case, one after another.
 
-    A case whose model call fails is reported with its error and the run goes on; a bug raises.
+    `max_input_tokens` is NOTES_MAX_INPUT_TOKENS, with no default for the reason `generate_notes`
+    has none. A case whose model call fails is reported with its error and the run goes on; a bug
+    raises.
     """
     started_at = datetime.now(UTC)
-    reports = [await eval_case(case, model, judge) for case in cases]
+    reports = [
+        await eval_case(case, model, judge, max_input_tokens=max_input_tokens) for case in cases
+    ]
     return EvalReport(
         started_at=started_at,
         provider=provider,
         model=model.model_id("notes"),
         reasoning=reasoning,
-        prompt_version=PROMPT_VERSION,
+        max_input_tokens=max_input_tokens,
         judge_model=None if judge is None else judge.model_id("notes"),
         cases=reports,
         totals=Totals.of(reports),
     )
 
 
-async def eval_case(case: EvalCase, model: NotesModel, judge: NotesModel | None) -> CaseReport:
+async def eval_case(
+    case: EvalCase, model: NotesModel, judge: NotesModel | None, *, max_input_tokens: int
+) -> CaseReport:
     sources = case.sources()
+    # The question `generate_notes` asks of the same sources, as `_claim` (services/
+    # notes_generation.py) stores a run's version: a long case's prompts are not PROMPT_VERSION's,
+    # and a report naming only that one would compare a map-then-reduce case with a one-pass one.
+    prompt_version = (
+        LONG_PROMPT_VERSION if plan_windows(sources, max_input_tokens) else PROMPT_VERSION
+    )
     meter = UsageMeter(model)
     stopwatch = _Stopwatch()
     try:
-        notes = await generate_notes(sources, meter.stream, stopwatch.saw)
+        notes = await generate_notes(
+            sources, meter.stream, stopwatch.saw, max_input_tokens=max_input_tokens
+        )
     except (LlmProviderError, ModelCutOffError) as error:
         logger.warning("notes_eval_case_failed", case_id=case.id, code=error.code)
         return _case_report(
             case,
             sources,
+            prompt_version=prompt_version,
             error=_failure(error),
             usage=meter.usage,
             latency_ms=stopwatch.elapsed_ms(),
@@ -205,6 +224,7 @@ async def eval_case(case: EvalCase, model: NotesModel, judge: NotesModel | None)
     return _case_report(
         case,
         sources,
+        prompt_version=prompt_version,
         scores=scores,
         usage=meter.usage,
         latency_ms=latency_ms,
@@ -218,6 +238,7 @@ def _case_report(
     case: EvalCase,
     sources: NotesSources,
     *,
+    prompt_version: str,
     usage: ModelUsage | None,
     latency_ms: int,
     error: CaseFailure | None = None,
@@ -232,6 +253,7 @@ def _case_report(
         template_id=case.case.template_id,
         line_count=len(sources.lines),
         note_block_count=len(sources.note_blocks),
+        prompt_version=prompt_version,
         error=error,
         scores=scores,
         usage=usage,
@@ -328,6 +350,7 @@ async def _run_cases(
             model,
             provider=settings.notes_provider,
             reasoning=settings.notes_reasoning,
+            max_input_tokens=settings.notes_max_input_tokens,
             judge=judge,
         )
 
