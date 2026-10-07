@@ -1,26 +1,95 @@
 /*
- * M2-T20b's capture details: the audio note, the re-run progress, the capture report, the echo
- * lines and the crash-resume notice. Colours come only from the theme tokens (theme/tokens.css,
- * light and dark); theme/noLiteralColours.test.ts fails on a literal colour here, and text in the
- * accent hue reads --accent-ink, never the --accent fill (theme/tokens.test.ts). Nothing
- * transitions a colour: a screenshot caught mid-fade reads the wrong state.
+ * The content of the Details dialog (the meetingCaptureReport slot) and the lines under the meeting
+ * header that belong with it: what is wrong now, the sources and counts, recoveries, the echo
+ * lines, the capture report, the kept audio and the crash-resume line. A summary is a `sunken`
+ * panel (`.dialog-panel`, styles.css), never `fill`, which vanishes on `raised` in dark. Colours
+ * come only from the theme tokens (theme/tokens.css); theme/noLiteralColours.test.ts fails on a
+ * literal one, and text in the accent hue reads --accent-ink, never the --accent fill. Nothing
+ * transitions a colour.
  */
 
-/* Echo lines */
-
-.echo-lines {
+.details {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-6);
+  min-width: 0;
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+}
+
+.details-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
   min-width: 0;
 }
+
+/* The overline of a section: 12 px caps in `ink-muted` (docs/design.md, Type). */
+.details-heading {
+  margin: 0;
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
+  line-height: var(--leading-xs);
+  font-weight: 600;
+  letter-spacing: var(--tracking-caps);
+  text-transform: uppercase;
+}
+
+.details-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  overflow-wrap: anywhere;
+}
+
+.details-empty {
+  margin: 0;
+  color: var(--ink-muted);
+}
+
+/* Sources and counts: a label column and a value column, in the sunken panel. */
+
+.facts {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: var(--space-2) var(--space-4);
+  margin: 0;
+}
+
+.fact {
+  display: contents;
+}
+
+.fact dt {
+  color: var(--ink-muted);
+}
+
+.fact dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.fact-state,
+.fact-detail {
+  display: block;
+}
+
+.fact-detail {
+  color: var(--ink-muted);
+}
+
+/* Echo lines */
 
 .echo-lines-head {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  gap: 6px 12px;
+  gap: var(--space-2) var(--space-3);
 }
 
 .echo-lines-summary {
@@ -32,7 +101,6 @@
 .echo-lines-list {
   display: flex;
   flex-direction: column;
-  gap: 4px;
   margin: 0;
   padding: 0;
   list-style: none;
@@ -42,21 +110,19 @@
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;
-  gap: 2px 8px;
-  padding: 6px 10px;
-  border-radius: 8px;
-  background: var(--fill);
-  font-size: 13px;
+  gap: 2px var(--space-2);
+  padding: var(--space-2) 0;
+  border-top: 1px solid var(--line);
 }
 
+/* The word "echo" side of the line says what it is: hidden or trimmed, never a colour alone. */
 .echo-line-tag {
-  padding: 0 6px;
-  border-radius: 999px;
-  background: var(--line);
-  font-size: 11px;
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
+  line-height: var(--leading-xs);
   font-weight: 600;
+  letter-spacing: var(--tracking-caps);
   text-transform: uppercase;
-  letter-spacing: 0.04em;
 }
 
 .echo-line-speaker {
@@ -76,149 +142,47 @@
 
 .echo-lines-note {
   margin: 0;
-  font-size: 12px;
   color: var(--ink-muted);
 }
 
-.echo-lines-error {
-  margin: 0;
-  font-size: 13px;
-}
+/* Kept audio, and transcribing it again */
 
-/* Audio note (the meeting page) and the kept-audio card (Home) */
-
-.audio-note,
-.capture-report {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  min-width: 0;
-}
-
-.audio-note[data-tone='warn'] {
-  border-left: 4px solid var(--ink-muted);
-  background: var(--fill);
-}
-
-.audio-note-text,
-.kept-card-intro,
-.report-stop,
-.report-gap-summary {
+.audio-kept-text,
+.rerun-progress,
+.audio-actions-hint {
   margin: 0;
   overflow-wrap: anywhere;
 }
 
-.audio-actions {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px 8px;
+.audio-actions-hint {
+  color: var(--ink-muted);
 }
 
+.audio-actions,
 .audio-confirm {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 6px 8px;
+  gap: var(--space-2);
 }
 
 .audio-confirm-text {
   font-weight: 600;
 }
 
-.audio-actions-hint {
-  margin: 0;
-  font-size: 12px;
-  color: var(--ink-muted);
-}
-
-.audio-error {
-  margin: 0;
-  font-size: 13px;
-  overflow-wrap: anywhere;
-}
-
-.kept-card {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.kept-card-title {
-  margin: 0;
-  font-size: 15px;
-  font-weight: 650;
-}
-
-.kept-card-intro {
-  font-size: 13px;
-  color: var(--ink-muted);
-}
-
-.kept-list {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.kept-meeting {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding-top: 12px;
-  border-top: 1px solid var(--line);
-}
-
-.kept-meeting:first-child {
-  padding-top: 0;
-  border-top: 0;
-}
-
-.kept-meeting-head {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-.kept-meeting-title {
-  overflow-wrap: anywhere;
-}
-
-/* Re-run progress */
-
-.rerun-progress {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.rerun-progress-text {
-  margin: 0;
-  font-size: 13px;
-}
-
-.rerun-progress-bar {
-  width: 100%;
-  height: 8px;
-  accent-color: var(--accent);
-}
-
 /* Capture report */
 
-.capture-report-title {
+.report-stop,
+.report-gap-summary {
   margin: 0;
-  font-size: 15px;
-  font-weight: 650;
+  overflow-wrap: anywhere;
 }
 
 .report-gaps,
 .report-events {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--space-2);
   margin: 0;
   padding: 0;
   list-style: none;
@@ -227,25 +191,8 @@
 .report-gap {
   display: flex;
   flex-wrap: wrap;
-  gap: 2px 10px;
-  padding: 6px 10px 6px 12px;
-  border-left: 4px solid var(--line);
-  border-radius: 8px;
-  background: var(--fill);
-  font-size: 13px;
+  gap: 2px var(--space-3);
   overflow-wrap: anywhere;
-}
-
-.report-gap[data-status='recovered'] {
-  border-left-color: var(--ink-muted);
-}
-
-.report-gap[data-status='failed'] {
-  border-left-color: var(--accent);
-}
-
-.report-gap[data-status='waiting'] {
-  border-left-color: var(--ink-muted);
 }
 
 .report-gap-span {
@@ -258,6 +205,7 @@
   color: var(--ink-muted);
 }
 
+/* A failed one says so in words; ink, not a tint. */
 .report-gap[data-status='failed'] .report-gap-status {
   color: var(--ink);
 }
@@ -268,19 +216,18 @@
 }
 
 .report-events {
-  margin-top: 8px;
-  font-size: 13px;
+  margin-top: var(--space-2);
 }
 
 .report-event {
   display: flex;
-  gap: 10px;
+  gap: var(--space-3);
 }
 
 .report-event-time {
   flex: none;
   min-width: 7ch;
-  color: var(--ink-muted);
+  color: var(--ink-subtle);
   font-variant-numeric: tabular-nums;
 }
 
@@ -289,34 +236,9 @@
   overflow-wrap: anywhere;
 }
 
-.capture-report-error {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px 12px;
-}
+/* The crash-resume line (the meetingBanner slot): quiet, one line under the header. */
 
-/* Crash-resume notice: quiet, like the other recoveries, with the Stop D7 promises. */
-
-.resumed-notice {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px 12px;
-  padding: 8px 12px;
-  border-radius: 8px;
-  background: var(--fill);
-}
-
-.resumed-notice-text {
-  flex: 1 1 24ch;
+.capture-note {
   margin: 0;
-  min-width: 0;
-}
-
-.resumed-notice-meta {
   color: var(--ink-muted);
-  white-space: nowrap;
 }

@@ -40,7 +40,8 @@ describe("M5-T13's mounts", () => {
   it("shows in the merged shell, after M3's Settings section", () => {
     expect(slots.home.map((entry) => entry.id)).toContain('m5-today');
     expect(slots.settings.map((entry) => entry.id)).toEqual(['m3-vocabulary', 'm5-calendar']);
-    expect(slots.meetingBanner.map((entry) => entry.id)).toEqual(['m5-calendar-notice']);
+    // M2's lines under the header (refused lines, the crash resume) share the slot (R3).
+    expect(slots.meetingBanner.map((entry) => entry.id)).toContain('m5-calendar-notice');
     expect(slots.banner.map((entry) => entry.id)).not.toContain('m5-calendar-status');
   });
 });

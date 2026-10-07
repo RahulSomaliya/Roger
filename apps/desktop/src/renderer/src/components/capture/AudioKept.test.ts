@@ -2,24 +2,22 @@ import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
 import type { RerunStatus } from '../../../../shared/capture';
-import type { MeetingKeptForRerun } from '../../../../shared/ipc/capture';
 import {
-  AudioNote,
-  type AudioNoteProps,
-  KeptForRerun,
-  type KeptForRerunProps,
+  GapLine,
+  type GapLineProps,
+  KeptAudio,
+  type KeptAudioProps,
   RERUN_BLOCKED_WHILE_RECORDING,
 } from './AudioKept';
 import type { AudioNoteView } from './reportText';
 
-const NOW = new Date('2026-10-07T12:00:00.000Z');
-
 const KEPT: AudioNoteView = {
-  tone: 'quiet',
-  text: 'Audio kept for a re-run until 4 Nov (12.4 MB): 2 gaps are not filled yet.',
+  text: 'Audio kept on this Mac until 4 Nov (12.4 MB). 2 parts are not transcribed yet.',
   canRerun: true,
   canDelete: true,
 };
+
+const RUNNING: RerunStatus = { meetingId: 'm', state: 'running', gaps: 2, finished: 1 };
 
 const handlers = () => ({
   onRerun: vi.fn(),
@@ -28,9 +26,9 @@ const handlers = () => ({
   onCancelDelete: vi.fn(),
 });
 
-function note(props: Partial<AudioNoteProps> = {}): string {
+function kept(props: Partial<KeptAudioProps> = {}): string {
   return renderToStaticMarkup(
-    createElement(AudioNote, {
+    createElement(KeptAudio, {
       view: KEPT,
       rerunBlockedBy: null,
       busy: null,
@@ -43,132 +41,106 @@ function note(props: Partial<AudioNoteProps> = {}): string {
   );
 }
 
-describe('AudioNote', () => {
-  it('says how long the audio is kept, with a re-run and a delete', () => {
-    const html = note();
-    expect(html).toContain('Audio kept for a re-run until 4 Nov');
-    expect(html).toContain('>Re-run gaps<');
-    expect(html).toContain('>Delete audio<');
-  });
-
-  it('offers no re-run when there is nothing to fill, and nothing at all once the audio is gone', () => {
-    expect(note({ view: { ...KEPT, canRerun: false } })).not.toContain('Re-run gaps');
-    const gone = note({ view: { ...KEPT, canRerun: false, canDelete: false } });
-    expect(gone).not.toContain('<button');
-  });
-
-  it('says why a re-run is refused while a recording runs, and disables it', () => {
-    const html = note({ rerunBlockedBy: RERUN_BLOCKED_WHILE_RECORDING });
-    expect(html).toContain(RERUN_BLOCKED_WHILE_RECORDING);
-    expect(html).toMatch(/<button[^>]*disabled=""[^>]*>Re-run gaps</);
-    // The delete is still allowed: only the meeting being recorded refuses it.
-    expect(html).not.toMatch(/<button[^>]*disabled=""[^>]*>Delete audio</);
-  });
-
-  it('asks before deleting: the audio cannot be brought back', () => {
-    const html = note({ confirming: true });
-    expect(html).toContain('Delete this meeting’s audio? Its lines stay.');
-    expect(html).toContain('>Delete<');
-    expect(html).toContain('>Keep it<');
-    expect(html).not.toContain('>Delete audio<');
-  });
-
-  it('disables both actions while main works, and shows re-run progress', () => {
-    const rerun: RerunStatus = { meetingId: 'm', state: 'running', gaps: 2, finished: 1 };
-    const html = note({ busy: 'rerun', rerun });
-    expect(html).toContain('<progress');
-    expect(html.match(/disabled=""/g)).toHaveLength(2);
-  });
-
-  it('shows why an action failed, as an alert', () => {
-    const html = note({ error: 'Roger is recording: gaps are re-run once the recording stops.' });
-    expect(html).toContain('role="alert"');
-  });
-
-  it('draws a backup that paused or failed as a warning', () => {
-    const html = note({
-      view: {
-        tone: 'warn',
-        text: 'The audio backup is paused.',
-        canRerun: false,
-        canDelete: false,
-      },
-    });
-    expect(html).toContain('data-tone="warn"');
-  });
-});
-
-const MEETINGS: MeetingKeptForRerun[] = [
-  { meetingId: 'a', title: 'Client call', keepUntil: '2026-11-04T10:00:00.000Z' },
-  { meetingId: 'b', title: 'Standup', keepUntil: null },
-];
-
-function card(props: Partial<KeptForRerunProps> = {}): string {
+function gapLine(props: Partial<GapLineProps> = {}): string {
   return renderToStaticMarkup(
-    createElement(KeptForRerun, {
-      meetings: MEETINGS,
-      now: NOW,
+    createElement(GapLine, {
+      parts: 2,
       rerun: null,
+      canRerun: true,
       rerunBlockedBy: null,
-      busy: null,
-      confirming: null,
+      busy: false,
       error: null,
-      listError: null,
-      onOpen: vi.fn(),
       onRerun: vi.fn(),
-      onAskDelete: vi.fn(),
-      onConfirmDelete: vi.fn(),
-      onCancelDelete: vi.fn(),
       ...props,
     }),
   );
 }
 
-describe('KeptForRerun', () => {
-  it('lists each meeting with when its audio goes, and the open one as being recorded', () => {
-    const html = card();
-    expect(html).toContain('Audio kept for a re-run');
-    expect(html).toContain('Client call');
-    expect(html).toContain('kept until');
-    expect(html).toContain('Standup');
-    expect(html).toContain('recording now');
-    expect(html.match(/>Re-run gaps</g)).toHaveLength(2);
+describe('KeptAudio (in Details)', () => {
+  it('says how long the audio is kept, with Transcribe again and Delete audio', () => {
+    const html = kept();
+    expect(html).toContain('Audio kept on this Mac until 4 Nov');
+    expect(html).toMatch(/data-variant="secondary"[^>]*>Transcribe again</);
+    // Delete is ghost: the dialog has no primary, and a destructive step is never the loud one.
+    expect(html).toMatch(/data-variant="ghost"[^>]*>Delete audio</);
+    expect(html).not.toContain('Re-run');
   });
 
-  it('shows nothing when no meeting waits for a re-run', () => {
-    expect(card({ meetings: [] })).toBe('');
+  it('offers nothing to transcribe again when nothing is waiting, and no button once the audio is gone', () => {
+    expect(kept({ view: { ...KEPT, canRerun: false } })).not.toContain('Transcribe again');
+    const gone = kept({ view: { ...KEPT, canRerun: false, canDelete: false } });
+    expect(gone).not.toContain('<button');
   });
 
-  it('shows why the list could not be read, even with none to show', () => {
-    const html = card({ meetings: [], listError: 'Roger could not list the kept audio' });
-    expect(html).toContain('role="alert"');
-    expect(html).toContain('Roger could not list the kept audio');
+  it('says why transcribing again is refused while a recording runs, once, with nothing to click', () => {
+    const html = kept({ rerunBlockedBy: RERUN_BLOCKED_WHILE_RECORDING });
+    expect(html.match(/Transcribe again once the recording stops/g)).toHaveLength(1);
+    expect(html).not.toContain('>Transcribe again<');
+    // The delete is still allowed: only the meeting being recorded refuses it.
+    expect(html).toContain('>Delete audio<');
   });
 
-  it('shows the progress under the meeting being re-run, and only that one', () => {
-    const html = card({ rerun: { meetingId: 'a', state: 'running', gaps: 3, finished: 1 } });
-    expect(html.match(/<progress/g)).toHaveLength(1);
-    expect(html.indexOf('<progress')).toBeGreaterThan(html.indexOf('Client call'));
-    expect(html.indexOf('<progress')).toBeLessThan(html.indexOf('Standup'));
-  });
-
-  it('disables the re-run while a recording runs, naming why once', () => {
-    const html = card({ rerunBlockedBy: RERUN_BLOCKED_WHILE_RECORDING });
-    expect(html.match(/<button[^>]*disabled=""[^>]*>Re-run gaps</g)).toHaveLength(2);
-  });
-
-  it('offers no delete for the meeting still being recorded: main refuses it', () => {
-    // Only "Client call" has an end date; "Standup" is open (keepUntil null).
-    expect(card().match(/>Delete audio</g)).toHaveLength(1);
-  });
-
-  it('asks before deleting one meeting’s audio, and only that one’s', () => {
-    const html = card({ confirming: 'a' });
-    expect(html.match(/Delete this meeting’s audio\?/g)).toHaveLength(1);
+  it('asks before deleting in place: the same button reads Delete, and its lines stay', () => {
+    const html = kept({ confirming: true });
+    expect(html).toContain('Delete audio? Its lines stay.');
+    expect(html).toMatch(/data-variant="secondary"[^>]*>Delete</);
+    expect(html).toContain('>Cancel<');
     expect(html).not.toContain('>Delete audio<');
   });
 
-  it('opens a meeting from its title', () => {
-    expect(card()).toContain('aria-label="Open Client call"');
+  it('is busy, not disabled, while main works: full colour, aria-disabled, and says what it does', () => {
+    const html = kept({ busy: 'rerun', rerun: RUNNING });
+    expect(html).toContain('Transcribing again: 1 of 2 parts done.');
+    expect(html).toMatch(/aria-disabled="true"[^>]*>Transcribing again…</);
+    expect(html).not.toContain('disabled=""');
+  });
+
+  it('shows why an action failed, as an alert problem line', () => {
+    const html = kept({ error: 'Roger is recording: parts are transcribed once it stops.' });
+    expect(html).toMatch(/class="problem"[^>]*role="alert"|role="alert"[^>]*class="problem"/);
+    expect(html).not.toMatch(/class="(?:[^"]* )?error[" ]/);
+  });
+});
+
+describe('GapLine (under the header)', () => {
+  it('says how many parts were not transcribed, with Transcribe again beside it', () => {
+    const html = gapLine();
+    expect(html).toContain('2 parts were not transcribed');
+    expect(html).toMatch(/data-variant="secondary"[^>]*>Transcribe again</);
+    expect(html).toContain('role="status"');
+  });
+
+  it('reads one part in the singular', () => {
+    expect(gapLine({ parts: 1 })).toContain('1 part was not transcribed');
+  });
+
+  it('says nothing when every part is transcribed', () => {
+    expect(gapLine({ parts: 0 })).toBe('');
+  });
+
+  it('offers no button once the audio is gone, but still says the parts are missing', () => {
+    const html = gapLine({ canRerun: false });
+    expect(html).toContain('2 parts were not transcribed');
+    expect(html).not.toContain('<button');
+  });
+
+  it('says it fills them in after Stop while a recording runs, with nothing to click', () => {
+    const html = gapLine({ rerunBlockedBy: RERUN_BLOCKED_WHILE_RECORDING });
+    expect(html).toContain('2 parts were not transcribed');
+    expect(html).toContain('Transcribe again once the recording stops');
+    expect(html).not.toContain('<button');
+  });
+
+  it('shows the progress in the same line while it transcribes again, with no button', () => {
+    const html = gapLine({ rerun: RUNNING, busy: true });
+    expect(html).toContain('Transcribing again: 1 of 2 parts done.');
+    expect(html).not.toContain('<button');
+    expect(html).not.toContain('<progress');
+  });
+
+  it('shows a failure as a loud line, even when no part is left to say', () => {
+    const html = gapLine({ parts: 0, error: 'The audio for it is gone' });
+    expect(html).toContain('role="alert"');
+    expect(html).toContain('The audio for it is gone');
   });
 });

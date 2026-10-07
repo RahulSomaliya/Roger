@@ -2,6 +2,7 @@ import { createElement, type ComponentType } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { type CaptureStatus, idleCaptureStatus } from '../../../../shared/capture';
+import type { CaptureMeeting } from '../captureMeeting';
 import type { Shell } from '../ShellContext';
 import type { MeetingSlotProps } from '../slotRegistry';
 import { contributions } from './m2-capture-details';
@@ -17,6 +18,11 @@ vi.mock('../ShellContext', () => ({
   },
 }));
 
+// The Details container reads the meeting page's view; its echo toggle is all it takes from it.
+vi.mock('../../meeting/useMeeting', () => ({
+  useMeetingView: () => ({ showHidden: false, setShowHidden: vi.fn() }),
+}));
+
 const A = '5c1d7a4e-2f3b-4c8a-9e61-0d2b7f4a9c13';
 const B = '9b2e6f10-7c4d-4a5b-8e3f-61a0c2d9e874';
 const IDLE = idleCaptureStatus({
@@ -27,7 +33,7 @@ const IDLE = idleCaptureStatus({
   nextAttemptAt: null,
 });
 
-function shell(status: CaptureStatus | null): Shell {
+function shell(status: CaptureStatus | null, captureMeeting: CaptureMeeting | null = null): Shell {
   return {
     route: { name: 'home' },
     navigate: vi.fn(),
@@ -39,7 +45,7 @@ function shell(status: CaptureStatus | null): Shell {
       start: vi.fn(),
       stop: vi.fn(),
     },
-    captureMeeting: null,
+    captureMeeting,
     startNewNote: vi.fn(),
     stopRecording: vi.fn(),
     actionError: null,
@@ -73,12 +79,12 @@ beforeEach(() => {
 });
 
 describe('what M2-T20b mounts', () => {
-  it('fills the home card and the three meeting regions, and nothing else', () => {
+  it('fills the three meeting regions, and nothing on Home', () => {
+    // Kept audio is Details' now (re-runs start on their own): no `home` mount.
     expect(Object.keys(contributions).sort()).toEqual([
-      'home',
       'meetingAudioNote',
+      'meetingBanner',
       'meetingCaptureReport',
-      'meetingCaptureStatus',
     ]);
   });
 
@@ -87,21 +93,21 @@ describe('what M2-T20b mounts', () => {
     expect(ids.some((id) => id.includes('call'))).toBe(false);
   });
 
-  it('sits after M2-T20a’s capture status, in the same region', () => {
-    expect(only(contributions.meetingCaptureStatus).id).toBe('m2-resumed-notice');
-    expect(only(contributions.meetingCaptureStatus)).toMatchObject({ order: 10 });
+  it('puts the crash-resume line after the refused-lines line and the consent line', () => {
+    expect(only(contributions.meetingBanner).id).toBe('m2-resumed-notice');
+    expect(only(contributions.meetingBanner)).toMatchObject({ order: 10 });
   });
 });
 
 describe('the crash-resume notice', () => {
-  const entry = only<MeetingSlotProps>(contributions.meetingCaptureStatus);
+  const entry = only<MeetingSlotProps>(contributions.meetingBanner);
   const region = (meetingId: string): string =>
     renderToStaticMarkup(createElement(entry.component, { meetingId }));
 
-  it('shows while the resumed meeting records, with its Stop', () => {
+  it('shows while the resumed meeting records, as a line with no Stop of its own', () => {
     fakes.shell = shell(resumed(A));
     expect(region(A)).toContain('Roger restarted and kept taking notes');
-    expect(region(A)).toContain('Stop recording');
+    expect(region(A)).not.toContain('Stop');
   });
 
   it('never shows on another meeting’s page, before main answers, or once recording ended', () => {
@@ -116,5 +122,50 @@ describe('the crash-resume notice', () => {
   it('shows nothing for a recording that did not resume', () => {
     fakes.shell = shell({ ...resumed(A), notices: [] });
     expect(region(A)).toBe('');
+  });
+});
+
+describe('the Details dialog content', () => {
+  const entry = only<MeetingSlotProps>(contributions.meetingCaptureReport);
+  const details = (meetingId: string): string =>
+    renderToStaticMarkup(createElement(entry.component, { meetingId })).replaceAll('&#x27;', "'");
+  const LIVE = (id: string): CaptureMeeting => ({ id, startedAt: '2026-10-07T09:00:00.000Z' });
+  const recordingWith = (warnings: NonNullable<CaptureStatus['warnings']>): CaptureStatus => ({
+    ...resumed(A),
+    notices: [],
+    streams: { mic: 'open', system: 'open' },
+    sources: {
+      mic: { health: 'active', chunks: 100, lastChunkAt: 1, message: null, device: 'Studio Mic' },
+      system: { health: 'active', chunks: 100, lastChunkAt: 1, message: null },
+    },
+    warnings,
+  });
+
+  it('holds the sources, the counts and what is wrong, which the page no longer shows', () => {
+    fakes.shell = shell(
+      recordingWith([
+        {
+          kind: 'call-audio-silent',
+          source: 'system',
+          since: '2026-10-07T09:20:00.000Z',
+          message: 'Call audio is silent. That is normal in a pause.',
+          loud: false,
+        },
+      ]),
+      LIVE(A),
+    );
+    const html = details(A);
+    expect(html).toContain('Microphone');
+    expect(html).toContain('Studio Mic');
+    expect(html).toContain("Roger's server");
+    // A quiet warning is Details', not a box above the page.
+    expect(html).toContain('Call audio is silent. That is normal in a pause.');
+    expect(html).not.toContain('level');
+  });
+
+  it('keeps the last recording’s cost after Stop, and says so plainly for a meeting with nothing', () => {
+    fakes.shell = shell(IDLE, LIVE(A));
+    expect(details(A)).toContain("Roger's server");
+    expect(details(B)).toContain('Nothing was kept about this meeting');
   });
 });

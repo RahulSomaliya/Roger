@@ -22,13 +22,13 @@ export interface MeetingSlotProps {
 export interface SlotPropsByName {
   /** Above every page, the setup route included: M2's capture warnings. */
   banner: NoProps;
-  /** Home's sections and cards: M2's kept-audio card, M5's Today. */
+  /** Home's sections: M5's Today. */
   home: NoProps;
   /** Settings sections, each with its own heading: M3's jargon list, M4's notes, M5's calendar. */
   settings: NoProps;
   /** The full-window setup route: M2's permission setup. */
   setup: NoProps;
-  /** Meeting page: a notice under the header (M5's consent notice). */
+  /** Meeting page: lines under the header (M5's consent notice, M2's refused lines and resume). */
   meetingBanner: MeetingSlotProps;
   /**
    * Meeting page: the header's status line ("Recording · 12m", or a loud problem in its place).
