@@ -80,6 +80,14 @@ describe('the M2-T17b slot of createCaptureRuntime', () => {
     }).toThrow(/already/);
   });
 
+  it('returns the call app monitor as callApps, for CrashRecovery', () => {
+    vi.stubEnv('ROGER_E2E', '1');
+    const runtime = build({});
+    quitHooks = runtime.quitHooks;
+    expect(runtime.callApps.callApps).toEqual([]);
+    expect(typeof runtime.callApps.onCallApps).toBe('function');
+  });
+
   it('adds nothing to the status with the callDetection switch off', () => {
     vi.stubEnv('ROGER_E2E', '1');
     const runtime = build({ callDetection: false });

@@ -635,4 +635,13 @@ describe('the M2-T23 slot in main/index.ts', () => {
     expect(code.filter((text) => /\bawait\b/.test(text))).toEqual([]);
     expect(code.join('\n')).toContain('new CrashRecovery(');
   });
+
+  // Trap: the getter must reach the monitor createCaptureRuntime returns. `callApps: null` here
+  // splits a call in two when Roger is opened by hand after a kill -9 with Zoom still on the mic.
+  it('hands CrashRecovery the call app monitor the capture runtime returns', () => {
+    const source = readFileSync(new URL('../index.ts', import.meta.url), 'utf8');
+    expect(source).toMatch(/callApps: \(\) => callAppMonitor,/);
+    expect(source).toMatch(/callApps: callAppMonitor,\s*\} = createCaptureRuntime\(/);
+    expect(source).not.toMatch(/callApps: null/);
+  });
 });

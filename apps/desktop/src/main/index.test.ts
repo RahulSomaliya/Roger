@@ -72,4 +72,14 @@ describe('the slots in main/index.ts', () => {
     expect(source).toContain('userDataOverride(');
     expect(source).toMatch(/e2eOn: e2e\.on/);
   });
+
+  // Without the bind a due call offer is logged and dropped (CallOffer has no prompt service).
+  it('binds the call offer to the calendar prompts right after the calendar runtime', () => {
+    const calendar = lineOf('const calendar = createCalendarRuntime(');
+    const bind = lineOf('callOffer.bindPrompts(calendar.prompts)');
+    expect(bind).toBeGreaterThan(calendar);
+    expect(bind).toBeLessThan(lineOf('[slot M5-T11 lifecycle]'));
+    expect(lines.filter((line) => line.includes('callOffer.bindPrompts('))).toHaveLength(1);
+    expect(source).toMatch(/const \{[^}]*\bcallOffer\b[^}]*\} = createCaptureRuntime\(/);
+  });
 });

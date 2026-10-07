@@ -81,6 +81,12 @@ export interface CaptureRuntime {
    * falls due is logged and dropped; auto-stop does not need it.
    */
   callOffer: CallOffer;
+  /**
+   * M2-T23: the call app monitor (`[slot M2-T17a]`), for CrashRecovery's "a call app still holds
+   * the mic" resume. index.ts reads it through a getter in `[slot M2-T23]`, which is built before
+   * this runtime exists, so the getter may only be called from CrashRecovery's deferred `start`.
+   */
+  callApps: MeetingAppMonitor;
 }
 
 /**
@@ -472,7 +478,7 @@ export function createCaptureRuntime(deps: CaptureRuntimeDeps): CaptureRuntime {
     getWindow: deps.getWindow,
     logger: logger.child({ component: 'ipc' }),
   });
-  return { capture, budget, quitHooks, callOffer };
+  return { capture, budget, quitHooks, callOffer, callApps: meetingAppMonitor };
 }
 
 /**

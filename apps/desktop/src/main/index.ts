@@ -158,13 +158,11 @@ async function main(): Promise<void> {
   const crashRecovery = new CrashRecovery({
     store,
     relaunched: process.argv.includes('--relaunched'),
-    // Not wired yet, a hand-off: D7 also resumes a launch nobody relaunched while a call app holds
-    // the mic, but the call app monitor is a local of createCaptureRuntime (`[slot M2-T17a]`), out
-    // of this slot's reach. Until then, Roger opened by hand after a kill -9 with Zoom still on the
-    // mic ends that meeting as a crash, and the call splits in two. To wire it, return the monitor
-    // in CaptureRuntime and pass `callApps: () => meetingAppMonitor` here. It is read only in
-    // `start` (the setImmediate below), so it may name a const the runtime slot declares later.
-    callApps: null,
+    // D7 also resumes a launch nobody relaunched while a call app holds the mic. The monitor is a
+    // local of createCaptureRuntime (`[slot M2-T17a]`), returned as `callApps` and destructured
+    // below, so this names a const the runtime slot declares later. The getter is read
+    // only in `start` (the setImmediate below), after that const exists; never call it earlier.
+    callApps: () => callAppMonitor,
     logger: logger.child({ component: 'crash-recovery' }),
   });
   crashRecovery.endMeetingsLeftOpen();
@@ -226,7 +224,12 @@ async function main(): Promise<void> {
     [missingToken, settingsError].filter((error) => error !== null).join(' ') || null;
   // Capture, the one open budget, the capture IPC and every M2 feature's slot. The cost guards go
   // in with `config`: into CaptureService and its budget there, into the adapters here.
-  const { capture, quitHooks: captureQuitHooks } = createCaptureRuntime({
+  const {
+    capture,
+    quitHooks: captureQuitHooks,
+    callOffer,
+    callApps: callAppMonitor,
+  } = createCaptureRuntime({
     config,
     store,
     api,
@@ -441,6 +444,9 @@ async function main(): Promise<void> {
     logger: logger.child({ component: 'calendar' }),
   });
   stopCalendar = () => calendar.stop();
+  // The call offer was built with the capture runtime, before this PromptService existed: until
+  // this line a due offer is logged and dropped. Once only: bindPrompts throws on a second call.
+  callOffer.bindPrompts(calendar.prompts);
 
   const page = resolveAppPage();
   installPermissionHandlers(
