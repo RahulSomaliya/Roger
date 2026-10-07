@@ -164,7 +164,10 @@ describe.each(CONFORMANCE_VENDORS)('$provider conforms', (vendor) => {
     server.script.onBinary = (connection, frame) => {
       if (frame === 1) connection.socket.send(vendor.finalMessage('hello there'));
     };
-    const { stream, events } = await open();
+    // Room for the paced audio: a `realtime` vendor gets the second chunk 100 ms after ready, so
+    // under the suite's 100 ms deadline its finish raced the cut, and a finish cut short is a
+    // fatal error ("did not finish the stream"): the test failed now and then under load.
+    const { stream, events } = await open(stt({ closeTimeoutMs: 2_000 }));
 
     stream.send(new Uint8Array(CHUNK_100_MS));
     stream.send(new Uint8Array(CHUNK_100_MS));
