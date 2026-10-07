@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { isAppPageUrl, isPermissionAllowed, type AppPage } from './page-policy';
+import { isAppPageUrl, isPermissionAllowed, isPromptPageUrl, type AppPage } from './page-policy';
 
 const RENDERER_DIR = '/Applications/Roger.app/Contents/Resources/app.asar/out/renderer';
 const PAGE_URL = `file://${RENDERER_DIR}/index.html`;
@@ -86,5 +86,43 @@ describe('isPermissionAllowed', () => {
     expect(
       isPermissionAllowed({ permission: 'media', url: PAGE_URL, mediaTypes: ['screen'] }, packaged),
     ).toBe(false);
+  });
+});
+
+describe('the prompt page (M5-T10)', () => {
+  const PROMPT_URL = `file://${RENDERER_DIR}/prompt.html`;
+  const DEV_PROMPT_URL = 'http://localhost:5173/prompt.html';
+
+  it('navigates as the app: it is in the renderer folder and on the dev server origin', () => {
+    expect(isAppPageUrl(PROMPT_URL, packaged)).toBe(true);
+    expect(isAppPageUrl(DEV_PROMPT_URL, dev)).toBe(true);
+  });
+
+  it('is recognised by its file, in both modes, and the main page is not it', () => {
+    expect(isPromptPageUrl(PROMPT_URL, packaged)).toBe(true);
+    expect(isPromptPageUrl(`${PROMPT_URL}#x`, packaged)).toBe(true);
+    expect(isPromptPageUrl(DEV_PROMPT_URL, dev)).toBe(true);
+    expect(isPromptPageUrl(PAGE_URL, packaged)).toBe(false);
+    expect(isPromptPageUrl('http://localhost:5173/', dev)).toBe(false);
+    expect(isPromptPageUrl('http://localhost:5173/src/prompt.html', dev)).toBe(false);
+    expect(isPromptPageUrl(`file://${RENDERER_DIR}/sub/prompt.html`, packaged)).toBe(false);
+  });
+
+  it('is not recognised outside the app, even under its name or by a path trick', () => {
+    expect(isPromptPageUrl('https://evil.example/prompt.html', packaged)).toBe(false);
+    expect(isPromptPageUrl('https://evil.example/prompt.html', dev)).toBe(false);
+    expect(isPromptPageUrl('file:///Users/someone/prompt.html', packaged)).toBe(false);
+    expect(isPromptPageUrl(`file://${RENDERER_DIR}/../prompt.html`, packaged)).toBe(false);
+    expect(isPromptPageUrl('not a url', packaged)).toBe(false);
+  });
+
+  it('gets no media, not even the microphone the main page is granted', () => {
+    const mic = { permission: 'media', mediaTypes: ['audio'] };
+    expect(isPermissionAllowed({ ...mic, url: PAGE_URL }, packaged)).toBe(true);
+    expect(isPermissionAllowed({ ...mic, url: PROMPT_URL }, packaged)).toBe(false);
+    expect(isPermissionAllowed({ ...mic, url: DEV_PROMPT_URL }, dev)).toBe(false);
+    const desktop = { permission: 'media', url: PROMPT_URL, mediaTypes: [] };
+    expect(isPermissionAllowed(desktop, packaged)).toBe(false);
+    expect(isPermissionAllowed({ ...desktop, mediaTypes: ['unknown'] }, packaged)).toBe(false);
   });
 });

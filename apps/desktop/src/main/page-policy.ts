@@ -24,10 +24,33 @@ export function isAppPageUrl(url: string, page: AppPage): boolean {
   }
   if (page.devServerUrl !== null) return parsed.origin === new URL(page.devServerUrl).origin;
   if (parsed.protocol !== 'file:') return false;
-  // Both sides go through the URL parser, so `..` segments are resolved before the prefix check
-  // and the trailing slash keeps a sibling folder like `renderer-evil` out.
-  const folder = new URL(`${pathToFileURL(page.rendererDir).href}/`).pathname;
-  return parsed.pathname.startsWith(folder);
+  return parsed.pathname.startsWith(rendererFolderPath(page));
+}
+
+/**
+ * The bundled renderer folder as a URL path, with its trailing slash. Both sides go through the
+ * URL parser, so `..` segments are resolved before a prefix check, and the slash keeps a sibling
+ * folder like `renderer-evil` out.
+ */
+function rendererFolderPath(page: AppPage): string {
+  return new URL(`${pathToFileURL(page.rendererDir).href}/`).pathname;
+}
+
+/** The prompt panel's page (M5-T10), next to the app's in the renderer folder. */
+export const PROMPT_PAGE_FILE = 'prompt.html';
+
+/**
+ * True when `url` is the prompt panel's page. It is the app's own for navigation (`isAppPageUrl`
+ * is true for it: same origin, same folder, so window.ts' guards let it reload), but it is not the
+ * app for permissions: `isPermissionAllowed` gives it nothing. The panel only draws cards from
+ * main's state and has no business with the microphone or the screen; a page that cannot ask
+ * cannot be tricked into asking.
+ */
+export function isPromptPageUrl(url: string, page: AppPage): boolean {
+  if (!isAppPageUrl(url, page)) return false;
+  const { pathname } = new URL(url); // isAppPageUrl parsed it, so it is a URL
+  if (page.devServerUrl !== null) return pathname === `/${PROMPT_PAGE_FILE}`;
+  return pathname === `${rendererFolderPath(page)}${PROMPT_PAGE_FILE}`;
 }
 
 export interface PermissionQuery {
@@ -49,8 +72,9 @@ export interface PermissionQuery {
 const CAPTURE_MEDIA_TYPES: ReadonlySet<string> = new Set(['audio', 'unknown']);
 
 /**
- * The only permission the app needs is `media`, for its own page. Everything else (notifications,
- * geolocation, display-capture, clipboard, openExternal, ...) is denied, and so is any other origin.
+ * The only permission the app needs is `media`, for its own page (the prompt panel's page, which
+ * is the app for navigation only, gets none). Everything else (notifications, geolocation,
+ * display-capture, clipboard, openExternal, ...) is denied, and so is any other origin.
  * Electron's 45 branch reports desktop capture as `display-capture` with `audio` + `video` instead:
  * moving off 44 without changing this fails every system audio start with "Permission denied".
  */
@@ -58,6 +82,7 @@ export function isPermissionAllowed(query: PermissionQuery, page: AppPage): bool
   return (
     query.permission === 'media' &&
     isAppPageUrl(query.url, page) &&
+    !isPromptPageUrl(query.url, page) &&
     query.mediaTypes.every((type) => CAPTURE_MEDIA_TYPES.has(type))
   );
 }
