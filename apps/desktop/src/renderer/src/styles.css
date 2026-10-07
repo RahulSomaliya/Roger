@@ -13,7 +13,7 @@
 
 body {
   margin: 0;
-  background: var(--bg);
+  background: var(--canvas);
   color: var(--ink);
 }
 
@@ -38,21 +38,21 @@ body {
 }
 
 .button.stop {
-  background: var(--danger);
+  background: var(--accent);
 }
 
 .error {
   padding: 10px 12px;
   border-radius: 8px;
-  background: var(--danger-bg);
-  color: var(--danger-ink);
+  background: var(--fill);
+  color: var(--ink);
 }
 
 /* Roger stopped a recording on its own (no speech, the length cap, sleep, quit). */
 .notice {
   padding: 10px 12px;
   border-radius: 8px;
-  background: var(--warn-bg);
+  background: var(--fill);
   color: var(--ink);
 }
 
@@ -60,7 +60,7 @@ body {
   padding: 10px 12px;
   border: 1px solid var(--line);
   border-radius: 10px;
-  background: var(--panel);
+  background: var(--surface);
 }
 
 .status-grid {
@@ -75,7 +75,7 @@ body {
 }
 
 .status-row dt {
-  color: var(--muted);
+  color: var(--ink-muted);
 }
 
 .status-row dd {
@@ -87,17 +87,17 @@ body {
 .health-ended dd,
 .health-error dd,
 .save-failed dd {
-  color: var(--danger-ink);
+  color: var(--ink);
 }
 
 .upload-backoff dd {
-  color: var(--warn);
+  color: var(--ink-muted);
 }
 
 .health-active dd {
-  color: var(--ok);
+  color: var(--ink-muted);
 }
 
 .muted {
-  color: var(--muted);
+  color: var(--ink-muted);
 }

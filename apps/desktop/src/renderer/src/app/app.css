@@ -19,7 +19,7 @@
 }
 
 .shell button:focus-visible {
-  outline: 2px solid var(--focus-ring);
+  outline: 2px solid var(--ring);
   outline-offset: 2px;
 }
 
@@ -32,7 +32,7 @@
   min-height: 0;
   padding: 16px 10px;
   overflow-y: auto;
-  background: var(--sidebar-bg);
+  background: var(--fill);
   border-right: 1px solid var(--line);
 }
 
@@ -68,7 +68,7 @@
 
 .sidebar-live {
   border: 1px solid var(--line);
-  background: var(--panel);
+  background: var(--surface);
   color: var(--ink);
   cursor: pointer;
 }
@@ -87,14 +87,14 @@
   font-weight: 600;
   letter-spacing: 0.06em;
   text-transform: uppercase;
-  color: var(--muted);
+  color: var(--ink-muted);
 }
 
 .sidebar-empty {
   margin: 0;
   padding: 0 8px;
   font-size: 13px;
-  color: var(--muted);
+  color: var(--ink-muted);
 }
 
 .sidebar-list {
@@ -128,7 +128,7 @@
 
 .sidebar-link:hover,
 .sidebar-link[aria-current='page'] {
-  background: var(--chip-bg);
+  background: var(--fill);
 }
 
 .sidebar-link[aria-current='page'] {
@@ -147,7 +147,7 @@
   flex-shrink: 0;
   font-size: 12px;
   font-variant-numeric: tabular-nums;
-  color: var(--muted);
+  color: var(--ink-muted);
 }
 
 /* No animation: a pulsing dot would make every QA screenshot differ. */
@@ -156,7 +156,7 @@
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: var(--recording);
+  background: var(--accent);
 }
 
 /* Main column */
@@ -236,14 +236,14 @@
 .page-meta {
   margin: 2px 0 0;
   font-size: 13px;
-  color: var(--muted);
+  color: var(--ink-muted);
 }
 
 .shell-button {
   padding: 6px 14px;
   border: 1px solid var(--line);
   border-radius: 8px;
-  background: var(--panel);
+  background: var(--surface);
   color: var(--ink);
   font: inherit;
   font-weight: 600;
@@ -251,14 +251,14 @@
 }
 
 .shell-button:hover {
-  background: var(--chip-bg);
+  background: var(--fill);
 }
 
 .card {
   padding: 14px 16px;
   border: 1px solid var(--line);
   border-radius: 12px;
-  background: var(--panel);
+  background: var(--surface);
 }
 
 .live-card {
@@ -280,7 +280,7 @@
 .card-meta {
   margin: 2px 0 0;
   font-size: 13px;
-  color: var(--muted);
+  color: var(--ink-muted);
 }
 
 .empty-state {
@@ -298,7 +298,7 @@
 
 .empty-state-text {
   margin: 0;
-  color: var(--muted);
+  color: var(--ink-muted);
 }
 
 .empty-state .empty-state-text {

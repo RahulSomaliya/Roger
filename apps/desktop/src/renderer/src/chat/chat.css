@@ -1,6 +1,6 @@
 /*
  * The meeting chat (MeetingChat.tsx). Colours only from theme/tokens.css (noLiteralColours.test.ts
- * fails on a literal one). Text reads ink tokens: --ink, --muted, --danger-ink; --accent is a fill
+ * fails on a literal one). Text reads ink tokens: --ink, --ink-muted; --accent is a fill
  * under --on-accent only (tokens.test.ts). The chips are the notes' (notes/notes.css).
  *
  * The panel fills the region it is given, as the transcript panel does, and its log scrolls
@@ -15,7 +15,7 @@
   min-height: 0;
   border: 1px solid var(--line);
   border-radius: 10px;
-  background: var(--panel);
+  background: var(--surface);
 }
 
 .meeting-chat-title {
@@ -47,13 +47,13 @@
 }
 
 .meeting-chat-log:focus-visible {
-  outline: 2px solid var(--focus-ring);
+  outline: 2px solid var(--ring);
   outline-offset: -2px;
 }
 
 .meeting-chat-message {
   margin: 0;
-  color: var(--muted);
+  color: var(--ink-muted);
 }
 
 .meeting-chat-read-error {
@@ -73,7 +73,7 @@
   margin: 0;
   padding: 6px 10px;
   border-radius: 12px 12px 4px 12px;
-  background: var(--chip-bg);
+  background: var(--fill);
   color: var(--ink);
   white-space: pre-wrap;
 }
@@ -105,7 +105,7 @@
 /* "Reading the meeting...", "Writing...", "You stopped this answer." */
 .meeting-chat-state {
   margin: 0;
-  color: var(--muted);
+  color: var(--ink-muted);
   font-size: 12px;
 }
 
@@ -113,8 +113,8 @@
   margin: 0;
   padding: 6px 10px;
   border-radius: 8px;
-  background: var(--danger-bg);
-  color: var(--danger-ink);
+  background: var(--fill);
+  color: var(--ink);
 }
 
 .meeting-chat-actions {
@@ -127,7 +127,7 @@
   padding: 3px 10px;
   border: 1px solid var(--line);
   border-radius: 7px;
-  background: var(--panel);
+  background: var(--surface);
   color: var(--ink);
   font: inherit;
   font-size: 12px;
@@ -144,7 +144,7 @@
   margin: 0 12px 8px;
   padding: 6px 10px;
   border-radius: 8px;
-  background: var(--warn-bg);
+  background: var(--fill);
   color: var(--ink);
 }
 
@@ -168,7 +168,7 @@
   padding: 6px 10px;
   border: 1px solid var(--line);
   border-radius: 8px;
-  background: var(--bg);
+  background: var(--canvas);
   color: var(--ink);
   font: inherit;
   line-height: 1.45;
@@ -176,7 +176,7 @@
 }
 
 .meeting-chat-input::placeholder {
-  color: var(--muted);
+  color: var(--ink-muted);
 }
 
 .meeting-chat-ask {
@@ -199,19 +199,19 @@
 .meeting-chat-input:focus-visible,
 .meeting-chat-ask:focus-visible,
 .meeting-chat-button:focus-visible {
-  outline: 2px solid var(--focus-ring);
+  outline: 2px solid var(--ring);
   outline-offset: 1px;
 }
 
 .meeting-chat-count {
   flex-basis: 100%;
   margin: 0;
-  color: var(--muted);
+  color: var(--ink-muted);
   font-size: 12px;
   font-variant-numeric: tabular-nums;
 }
 
 .meeting-chat-count-over {
-  color: var(--danger-ink);
+  color: var(--ink);
   font-weight: 600;
 }

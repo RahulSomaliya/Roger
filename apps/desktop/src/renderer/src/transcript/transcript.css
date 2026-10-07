@@ -17,7 +17,7 @@
   min-height: 0;
   border: 1px solid var(--line);
   border-radius: 10px;
-  background: var(--panel);
+  background: var(--surface);
 }
 
 /*
@@ -37,13 +37,13 @@
 }
 
 .live-transcript-lines:focus-visible {
-  outline: 2px solid var(--focus-ring);
+  outline: 2px solid var(--ring);
   outline-offset: -2px;
 }
 
 .live-transcript-empty {
   margin: 0;
-  color: var(--muted);
+  color: var(--ink-muted);
 }
 
 /* Time, speaker, text: fixed columns, so every line's text starts at the same place. */
@@ -56,7 +56,7 @@
 }
 
 .transcript-line-time {
-  color: var(--muted);
+  color: var(--ink-muted);
   font-variant-numeric: tabular-nums;
 }
 
@@ -76,7 +76,7 @@
 /* Words that may still change. */
 .transcript-line[data-interim] .transcript-line-speaker,
 .transcript-line[data-interim] .transcript-line-text {
-  color: var(--interim-ink);
+  color: var(--ink-subtle);
 }
 
 .transcript-line[data-interim] .transcript-line-text {
@@ -86,7 +86,7 @@
 /* A line the echo filter hid, shown because the reader asked to see hidden lines. */
 .transcript-line[data-echo] .transcript-line-speaker,
 .transcript-line[data-echo] .transcript-line-text {
-  color: var(--hidden-ink);
+  color: var(--ink-subtle);
 }
 
 .transcript-line-echo {
@@ -95,7 +95,7 @@
   padding: 0 6px;
   border: 1px solid var(--line);
   border-radius: 999px;
-  color: var(--muted);
+  color: var(--ink-muted);
   font-size: 11px;
   font-style: normal;
   line-height: 16px;
@@ -120,6 +120,6 @@
 }
 
 .jump-to-live:focus-visible {
-  outline: 2px solid var(--focus-ring);
+  outline: 2px solid var(--ring);
   outline-offset: 2px;
 }

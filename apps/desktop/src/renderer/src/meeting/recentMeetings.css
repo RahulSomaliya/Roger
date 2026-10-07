@@ -24,7 +24,7 @@
   gap: 2px 6px;
   padding: 0 8px;
   font-size: 12px;
-  color: var(--danger-ink);
+  color: var(--ink);
 }
 
 .recent-meetings-retry {

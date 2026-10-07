@@ -32,7 +32,7 @@
 .vocabulary-intro,
 .vocabulary-status,
 .vocabulary-empty {
-  color: var(--muted);
+  color: var(--ink-muted);
 }
 
 .vocabulary-failed,
@@ -64,23 +64,23 @@
   padding: 7px 10px;
   border: 1px solid var(--line);
   border-radius: 8px;
-  /* --panel, like the card: in light, --bg on the white card reads as a disabled box. */
-  background: var(--panel);
+  /* --surface, like the card: in light, --canvas on the white card reads as a disabled box. */
+  background: var(--surface);
   color: var(--ink);
   font: inherit;
 }
 
 .vocabulary-input::placeholder {
-  color: var(--muted);
+  color: var(--ink-muted);
 }
 
 .vocabulary-input:focus-visible {
-  outline: 2px solid var(--focus-ring);
+  outline: 2px solid var(--ring);
   outline-offset: 1px;
 }
 
 .vocabulary-input[aria-invalid='true'] {
-  border-color: var(--danger);
+  border-color: var(--accent);
 }
 
 .vocabulary-input:disabled {
@@ -97,7 +97,7 @@
 .vocabulary-size,
 .vocabulary-save-status {
   font-size: 13px;
-  color: var(--muted);
+  color: var(--ink-muted);
 }
 
 .vocabulary-size {
@@ -106,7 +106,7 @@
 
 .vocabulary-problem {
   font-size: 13px;
-  color: var(--danger-ink);
+  color: var(--ink);
   overflow-wrap: anywhere;
 }
 
@@ -129,7 +129,7 @@
   padding: 3px 4px 3px 10px;
   border: 1px solid var(--line);
   border-radius: 999px;
-  background: var(--chip-bg);
+  background: var(--fill);
   color: var(--ink);
 }
 
@@ -149,7 +149,7 @@
   border: none;
   border-radius: 50%;
   background: none;
-  color: var(--muted);
+  color: var(--ink-muted);
   font: inherit;
   font-size: 16px;
   line-height: 1;

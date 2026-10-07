@@ -4,7 +4,7 @@
  * (CalendarSettings.tsx) and the meeting page's notice banner (NoticeBanner.tsx). They reuse
  * app.css (.card, .empty-state, .shell-button) and styles.css (.error, .notice). Colours only from
  * theme/tokens.css (noLiteralColours.test.ts fails on a literal one); text reads the ink tokens
- * (--ink, --muted, --accent-ink, --danger-ink), never a fill (tokens.test.ts).
+ * (--ink, --ink-muted, --accent-ink), never a fill (tokens.test.ts).
  */
 
 /* The primary button: a fill under --on-accent text, as M1's Start. Two classes, so it beats
@@ -30,7 +30,7 @@
 .calendar-status {
   margin: 0;
   font-size: 13px;
-  color: var(--muted);
+  color: var(--ink-muted);
 }
 
 /* An error with the button that retries it, on one row that wraps. */
@@ -65,7 +65,7 @@
 .calendar-connect-text {
   margin: 0;
   max-width: 60ch;
-  color: var(--muted);
+  color: var(--ink-muted);
 }
 
 .calendar-connect-actions {
@@ -103,7 +103,7 @@
 .calendar-today-date {
   margin: 0;
   font-size: 13px;
-  color: var(--muted);
+  color: var(--ink-muted);
 }
 
 .calendar-allday {
@@ -119,7 +119,7 @@
   max-width: 100%;
   padding: 3px 10px;
   border-radius: 999px;
-  background: var(--chip-bg);
+  background: var(--fill);
   color: var(--ink);
   font-size: 13px;
   overflow: hidden;
@@ -145,7 +145,7 @@
   padding: 10px 14px;
   border: 1px solid var(--line);
   border-radius: 10px;
-  background: var(--panel);
+  background: var(--surface);
 }
 
 .calendar-next {
@@ -158,7 +158,7 @@
   min-width: 124px;
   font-size: 13px;
   font-variant-numeric: tabular-nums;
-  color: var(--muted);
+  color: var(--ink-muted);
 }
 
 .calendar-what,
@@ -185,7 +185,7 @@
 .calendar-meta {
   margin: 2px 0 0;
   font-size: 13px;
-  color: var(--muted);
+  color: var(--ink-muted);
   overflow-wrap: anywhere;
 }
 
@@ -197,7 +197,7 @@
 .calendar-over .calendar-title,
 .calendar-declined .calendar-title,
 .calendar-declined.calendar-chip {
-  color: var(--muted);
+  color: var(--ink-muted);
 }
 
 .calendar-declined .calendar-title {
@@ -261,7 +261,7 @@
 
 .calendar-settings-intro {
   margin: 0;
-  color: var(--muted);
+  color: var(--ink-muted);
 }
 
 .calendar-field {
@@ -294,7 +294,7 @@
   padding: 6px 10px;
   border: 1px solid var(--line);
   border-radius: 8px;
-  background: var(--panel);
+  background: var(--surface);
   color: var(--ink);
   font: inherit;
 }
@@ -310,7 +310,7 @@
 
 .calendar-select:focus-visible,
 .calendar-textarea:focus-visible {
-  outline: 2px solid var(--focus-ring);
+  outline: 2px solid var(--ring);
   outline-offset: 2px;
 }
 
@@ -337,14 +337,14 @@
 .calendar-hint {
   margin: 0;
   font-size: 13px;
-  color: var(--muted);
+  color: var(--ink-muted);
   overflow-wrap: anywhere;
 }
 
-/* Waiting on the user in System Settings: ink on a warm rule, never the warn fill as text. */
+/* Waiting on the user in System Settings: ink on a rule, never a fill as text. */
 .calendar-hint-warn {
   padding-left: 8px;
-  border-left: 3px solid var(--warn);
+  border-left: 3px solid var(--ink-muted);
   color: var(--ink);
 }
 
@@ -383,12 +383,12 @@
 .calendar-notice-text {
   margin: 2px 0 0;
   font-size: 13px;
-  color: var(--muted);
+  color: var(--ink-muted);
   overflow-wrap: anywhere;
 }
 
 .calendar-notice-error {
   margin: 4px 0 0;
-  color: var(--danger-ink);
+  color: var(--ink);
   overflow-wrap: anywhere;
 }

@@ -4,7 +4,7 @@
  * .note-editor-content for a run's streamed lines, so they read as the doc that replaces them),
  * styles.css (.error, .notice) and app.css (.empty-state, .card). Colours only from
  * theme/tokens.css (noLiteralColours.test.ts fails on a literal one); text reads the ink tokens
- * (--ink, --muted, --danger-ink), never a fill (tokens.test.ts).
+ * (--ink, --ink-muted), never a fill (tokens.test.ts).
  */
 
 .ai-notes {
@@ -16,7 +16,7 @@
 
 .ai-notes-message {
   margin: 0;
-  color: var(--muted);
+  color: var(--ink-muted);
 }
 
 /* The template of the notes on show, and what can be done with them. */
@@ -32,7 +32,7 @@
 .ai-notes-meta {
   margin: 0;
   font-size: 13px;
-  color: var(--muted);
+  color: var(--ink-muted);
 }
 
 .ai-notes-actions {
@@ -69,7 +69,7 @@
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: var(--warn);
+  background: var(--ink-muted);
 }
 
 .ai-notes-progress-running::before {
@@ -106,7 +106,7 @@
   gap: 8px;
   padding: 12px 14px;
   border-radius: 10px;
-  background: var(--warn-bg);
+  background: var(--fill);
   color: var(--ink);
 }
 
@@ -130,7 +130,7 @@
 .ai-notes-stream-caption {
   margin: 0;
   font-size: 12px;
-  color: var(--muted);
+  color: var(--ink-muted);
 }
 
 .ai-notes-stream-partial .note-editor-content {
@@ -139,7 +139,7 @@
 
 .ai-notes-stream-waiting,
 .ai-notes-stream-muted {
-  color: var(--muted);
+  color: var(--ink-muted);
 }
 
 /* The editor stays mounted under a run's live lines, so its text and save timers survive. */
@@ -157,7 +157,7 @@
 /* Lines the API left out: no transcript line backs them (M4 D4). */
 .ai-notes-removed {
   font-size: 13px;
-  color: var(--muted);
+  color: var(--ink-muted);
 }
 
 .ai-notes-removed summary {
@@ -191,7 +191,7 @@
   gap: 8px;
   margin: 0;
   font-size: 13px;
-  color: var(--muted);
+  color: var(--ink-muted);
 }
 
 /* The template picker. */
@@ -203,7 +203,7 @@
   padding: 14px;
   border: 1px solid var(--line);
   border-radius: 12px;
-  background: var(--panel);
+  background: var(--surface);
 }
 
 .template-picker-question {
@@ -215,7 +215,7 @@
 .template-picker-hint {
   margin: 0;
   font-size: 13px;
-  color: var(--muted);
+  color: var(--ink-muted);
 }
 
 .template-picker-error {
@@ -252,7 +252,7 @@
   padding: 10px 12px;
   border: 1px solid var(--line);
   border-radius: 10px;
-  background: var(--bg);
+  background: var(--canvas);
   color: var(--ink);
   font: inherit;
   text-align: left;
@@ -264,7 +264,7 @@
 }
 
 .template-option:focus-visible {
-  outline: 2px solid var(--focus-ring);
+  outline: 2px solid var(--ring);
   outline-offset: 2px;
 }
 
@@ -275,7 +275,7 @@
 
 .template-option-suggested {
   border-color: var(--accent);
-  background: var(--chip-bg);
+  background: var(--fill);
 }
 
 .template-option-name {
@@ -286,7 +286,7 @@
   padding: 0 7px;
   border: 1px solid var(--line);
   border-radius: 999px;
-  background: var(--panel);
+  background: var(--surface);
   color: var(--ink);
   font-size: 11px;
   font-weight: 600;
@@ -296,7 +296,7 @@
 .template-option-description {
   flex-basis: 100%;
   font-size: 13px;
-  color: var(--muted);
+  color: var(--ink-muted);
   overflow-wrap: anywhere;
 }
 
@@ -323,7 +323,7 @@
 .notes-settings-hint,
 .notes-settings-status {
   margin: 0;
-  color: var(--muted);
+  color: var(--ink-muted);
 }
 
 .notes-settings-hint {
@@ -367,7 +367,7 @@
 }
 
 .notes-settings-group:disabled .notes-settings-option {
-  color: var(--muted);
+  color: var(--ink-muted);
   cursor: default;
 }
 

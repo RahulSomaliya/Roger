@@ -1,7 +1,7 @@
 /*
  * The permission setup screen (SetupScreen.tsx), in the shell's setup route. Colours are tokens
- * only (theme/tokens.css): text reads the ink tokens, and --ok, --warn and --danger colour only
- * the state dot and a row's edge, never text.
+ * only (theme/tokens.css): text reads the ink tokens, and --ink-muted and --accent colour only the
+ * state dot and a row's edge, never text.
  */
 
 .setup {
@@ -14,7 +14,7 @@
 .setup-privacy {
   margin: 0;
   max-width: 68ch;
-  color: var(--muted);
+  color: var(--ink-muted);
 }
 
 .setup-privacy {
@@ -52,16 +52,16 @@
   padding: 14px 16px;
   border: 1px solid var(--line);
   border-radius: 12px;
-  background: var(--panel);
+  background: var(--surface);
 }
 
 /* A row that needs the person carries its colour on its leading edge, not in its text. */
 .setup-row[data-tone='problem'] {
-  box-shadow: inset 3px 0 0 var(--danger);
+  box-shadow: inset 3px 0 0 var(--accent);
 }
 
 .setup-row[data-tone='attention'] {
-  box-shadow: inset 3px 0 0 var(--warn);
+  box-shadow: inset 3px 0 0 var(--ink-muted);
 }
 
 .setup-row-head {
@@ -85,7 +85,7 @@
 .setup-row-description {
   margin: 2px 0 0;
   font-size: 13px;
-  color: var(--muted);
+  color: var(--ink-muted);
 }
 
 .setup-state {
@@ -107,34 +107,34 @@
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: var(--muted);
+  background: var(--ink-muted);
 }
 
 .setup-row[data-tone='ok'] .setup-state {
   border-color: transparent;
-  background: var(--ok-bg);
+  background: var(--fill);
 }
 
 .setup-row[data-tone='ok'] .setup-state::before {
-  background: var(--ok);
+  background: var(--ink-muted);
 }
 
 .setup-row[data-tone='attention'] .setup-state {
   border-color: transparent;
-  background: var(--warn-bg);
+  background: var(--fill);
 }
 
 .setup-row[data-tone='attention'] .setup-state::before {
-  background: var(--warn);
+  background: var(--ink-muted);
 }
 
 .setup-row[data-tone='problem'] .setup-state {
   border-color: transparent;
-  background: var(--danger-bg);
+  background: var(--fill);
 }
 
 .setup-row[data-tone='problem'] .setup-state::before {
-  background: var(--danger);
+  background: var(--accent);
 }
 
 /* Main's words: a long path (System Settings > ... > System Audio Recording Only) must wrap. */
@@ -152,7 +152,7 @@
 .setup-busy {
   margin: 0;
   font-size: 13px;
-  color: var(--muted);
+  color: var(--ink-muted);
 }
 
 .setup-actions {
@@ -178,5 +178,5 @@
 }
 
 .setup-actions .shell-button:disabled:hover {
-  background: var(--panel);
+  background: var(--surface);
 }

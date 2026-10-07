@@ -28,15 +28,15 @@
   position: absolute;
   inset: 0 auto 0 0;
   border-radius: inherit;
-  background: var(--ok);
+  background: var(--ink-muted);
 }
 
 .level-meter[data-signal='dead'] .level-meter-track {
-  background: var(--danger-bg);
+  background: var(--fill);
 }
 
 .level-meter[data-signal='dead'] .level-meter-fill {
-  background: var(--danger);
+  background: var(--accent);
 }
 
 .level-meter-text {
@@ -44,11 +44,11 @@
   min-width: 9ch;
   font-size: 12px;
   font-variant-numeric: tabular-nums;
-  color: var(--muted);
+  color: var(--ink-muted);
 }
 
 .level-meter[data-signal='dead'] .level-meter-text {
-  color: var(--danger-ink);
+  color: var(--ink);
 }
 
 /* Notices: what Roger recovered from on its own. Quiet, never a warning's colours. */
@@ -65,20 +65,20 @@
 .capture-notice {
   padding: 6px 10px;
   border-radius: 8px;
-  background: var(--chip-bg);
+  background: var(--fill);
   font-size: 13px;
   overflow-wrap: anywhere;
 }
 
 .capture-notice-meta {
-  color: var(--muted);
+  color: var(--ink-muted);
   white-space: nowrap;
 }
 
 /*
- * Warning banner (the shell's banner slot, above every page). Loud: the danger tint and edge, read
- * out at once (role alert). Quiet: the warning tint (role status). The messages stay in --ink on
- * either tint: they are sentences to read, and the edge and heading carry the colour.
+ * Warning banner (the shell's banner slot, above every page). Loud: the --fill tint, read out
+ * at once (role alert). Quiet: the same tint (role status). The messages stay in --ink on it: they
+ * are sentences to read. R3 replaces the box with a problem line (docs/design.md).
  */
 
 .capture-warnings {
@@ -89,15 +89,15 @@
 
 .capture-warning {
   padding: 10px 12px 10px 14px;
-  border-left: 4px solid var(--warn);
+  border-left: 4px solid var(--ink-muted);
   border-radius: 8px;
-  background: var(--warn-bg);
+  background: var(--fill);
   color: var(--ink);
 }
 
 .capture-warning[data-loud='true'] {
-  border-left-color: var(--danger);
-  background: var(--danger-bg);
+  border-left-color: var(--accent);
+  background: var(--fill);
 }
 
 .capture-warning-heading {
@@ -114,11 +114,11 @@
 }
 
 .capture-warning[data-loud='true'] .capture-warning-stream {
-  color: var(--danger-ink);
+  color: var(--ink);
 }
 
 .capture-warning-since {
-  /* --ink, not --muted: grey on a tint drops under 4.5:1 in light. */
+  /* --ink, not --ink-muted: it is the line's own time, and it must stay readable on the tint. */
   color: var(--ink);
 }
 
@@ -202,7 +202,7 @@
   border-radius: 999px;
   font-size: 12px;
   font-weight: 600;
-  background: var(--chip-bg);
+  background: var(--fill);
   color: var(--ink);
 }
 
@@ -216,27 +216,27 @@
 }
 
 .stream-state[data-tone='ok'] {
-  background: var(--ok-bg);
+  background: var(--fill);
 }
 
 .stream-state[data-tone='ok']::before {
-  background: var(--ok);
+  background: var(--ink-muted);
 }
 
 .stream-state[data-tone='warn'] {
-  background: var(--warn-bg);
+  background: var(--fill);
 }
 
 .stream-state[data-tone='warn']::before {
-  background: var(--warn);
+  background: var(--ink-muted);
 }
 
 .stream-state[data-tone='error'] {
-  background: var(--danger-bg);
+  background: var(--fill);
 }
 
 .stream-state[data-tone='error']::before {
-  background: var(--danger);
+  background: var(--accent);
 }
 
 .stream-state[data-tone='off'] {
@@ -245,7 +245,7 @@
 }
 
 .stream-state[data-tone='off']::before {
-  background: var(--muted);
+  background: var(--ink-muted);
 }
 
 .capture-stream-detail,
@@ -256,12 +256,12 @@
 }
 
 .capture-stream-detail {
-  color: var(--muted);
+  color: var(--ink-muted);
 }
 
 /* No audio, a dead track or a source error: the call is being lost. */
 .capture-stream[data-health='stalled'] .capture-stream-detail,
 .capture-stream[data-health='ended'] .capture-stream-detail,
 .capture-stream[data-health='error'] .capture-stream-detail {
-  color: var(--danger-ink);
+  color: var(--ink);
 }

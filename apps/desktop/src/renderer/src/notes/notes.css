@@ -1,9 +1,8 @@
 /*
  * The notes editor (NoteEditor.tsx): its status line, the conflict banner, the doc and its
  * citation chips. Colours only from theme/tokens.css (noLiteralColours.test.ts fails on a literal
- * one). Text reads ink tokens: --ink, --muted, --accent-ink, --danger-ink. --accent-ink on the
- * --chip-bg tint is 4.5:1 on --panel and 4.2:1 on --bg in light, under AA for a 12px label, so a
- * chip's time reads --ink on its tint.
+ * one). Text reads ink tokens: --ink, --ink-muted, --accent-ink; --accent is a fill under
+ * --on-accent only (tokens.test.ts).
  */
 
 .note-editor {
@@ -16,7 +15,7 @@
 .note-editor-message {
   margin: 0;
   padding: 12px 14px;
-  color: var(--muted);
+  color: var(--ink-muted);
 }
 
 /* The save state, right-aligned above the doc; it keeps its height so the doc never jumps. */
@@ -33,7 +32,7 @@
   margin: 0;
   font-size: 12px;
   line-height: 18px;
-  color: var(--muted);
+  color: var(--ink-muted);
 }
 
 .note-status::before {
@@ -41,24 +40,24 @@
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: var(--muted);
+  background: var(--ink-muted);
 }
 
 .note-status-good::before {
-  background: var(--ok);
+  background: var(--ink-muted);
 }
 
 .note-status-warn::before {
-  background: var(--warn);
+  background: var(--ink-muted);
 }
 
 .note-status-bad {
-  color: var(--danger-ink);
+  color: var(--ink);
   font-weight: 600;
 }
 
 .note-status-bad::before {
-  background: var(--danger);
+  background: var(--accent);
 }
 
 .note-editor-error {
@@ -71,7 +70,7 @@
   padding: 5px 12px;
   border: 1px solid var(--line);
   border-radius: 7px;
-  background: var(--panel);
+  background: var(--surface);
   color: var(--ink);
   font: inherit;
   font-size: 13px;
@@ -91,7 +90,7 @@
 }
 
 .note-button:focus-visible {
-  outline: 2px solid var(--focus-ring);
+  outline: 2px solid var(--ring);
   outline-offset: 2px;
 }
 
@@ -103,7 +102,7 @@
   gap: 8px 16px;
   padding: 10px 12px;
   border-radius: 8px;
-  background: var(--conflict-bg);
+  background: var(--fill);
   color: var(--ink);
 }
 
@@ -121,7 +120,7 @@
 .note-conflict-error {
   flex-basis: 100%;
   margin: 0;
-  color: var(--danger-ink);
+  color: var(--ink);
 }
 
 /* The doc. EditorContent's own element wraps the ProseMirror one, which carries the class. */
@@ -134,7 +133,7 @@
   padding: 12px 14px;
   border: 1px solid var(--line);
   border-radius: 10px;
-  background: var(--panel);
+  background: var(--surface);
   color: var(--ink);
   line-height: 1.55;
   /* A long link or word wraps instead of pushing the page sideways at 390 px. */
@@ -144,7 +143,7 @@
 
 .note-editor-content:focus {
   /* The border alone: a ring around the notes for the whole call is loud. */
-  border-color: var(--focus-ring);
+  border-color: var(--ring);
 }
 
 .note-editor-content > * + * {
@@ -201,13 +200,13 @@
   margin: 0;
   padding-left: 12px;
   border-left: 3px solid var(--line);
-  color: var(--muted);
+  color: var(--ink-muted);
 }
 
 .note-editor-content code {
   padding: 0 4px;
   border-radius: 4px;
-  background: var(--chip-bg);
+  background: var(--fill);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 0.92em;
 }
@@ -217,7 +216,7 @@
   padding: 8px 10px;
   border: 1px solid var(--line);
   border-radius: 8px;
-  background: var(--bg);
+  background: var(--canvas);
   /* A long line scrolls inside the block, never the page. */
   overflow-x: auto;
 }
@@ -242,7 +241,7 @@
   content: attr(data-placeholder);
   float: left;
   height: 0;
-  color: var(--muted);
+  color: var(--ink-muted);
   pointer-events: none;
 }
 
@@ -259,7 +258,7 @@
   padding: 0 7px;
   border: 1px solid transparent;
   border-radius: 999px;
-  background: var(--chip-bg);
+  background: var(--fill);
   color: var(--ink);
   font: inherit;
   font-size: 12px;
@@ -276,7 +275,7 @@
 
 .citation-chip:focus-visible,
 .ProseMirror-selectednode > .citation-chip {
-  outline: 2px solid var(--focus-ring);
+  outline: 2px solid var(--ring);
   outline-offset: 1px;
 }
 
@@ -286,14 +285,14 @@
 
 /* Its cited lines may not say what the line says. */
 .citation-chip-weak {
-  background: var(--warn-bg);
+  background: var(--fill);
 }
 
 /* None of its lines is in the transcript any more. */
 .citation-chip-removed {
   border: 1px dashed var(--line);
   background: none;
-  color: var(--muted);
+  color: var(--ink-muted);
 }
 
 .citation-chip-removed .citation-chip-time {

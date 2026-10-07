@@ -52,11 +52,11 @@ body {
   padding: 12px 14px;
   border: 1px solid var(--line);
   border-radius: 12px;
-  background: var(--panel);
+  background: var(--surface);
 }
 
 .prompt-card[data-kind='stale_calendar'] {
-  border-left: 3px solid var(--warn);
+  border-left: 3px solid var(--ink-muted);
 }
 
 .prompt-event {
@@ -99,7 +99,7 @@ body {
 .prompt-meta {
   margin: 0;
   overflow: hidden;
-  color: var(--muted);
+  color: var(--ink-muted);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -130,7 +130,7 @@ body {
 }
 
 .prompt-button:focus-visible {
-  outline: 2px solid var(--focus-ring);
+  outline: 2px solid var(--ring);
   outline-offset: 1px;
 }
 
@@ -145,7 +145,7 @@ body {
 
 .prompt-quiet {
   padding-inline: 8px;
-  color: var(--muted);
+  color: var(--ink-muted);
   font-weight: 500;
 }
 
@@ -166,13 +166,13 @@ body {
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: var(--recording);
+  background: var(--accent);
 }
 
 .prompt-error {
   margin: 0;
   padding: 8px 10px;
   border-radius: 8px;
-  background: var(--danger-bg);
-  color: var(--danger-ink);
+  background: var(--fill);
+  color: var(--ink);
 }

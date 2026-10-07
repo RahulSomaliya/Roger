@@ -1,7 +1,7 @@
 /*
  * The meeting page (MeetingPage.tsx, MeetingHeader.tsx, regions.tsx). Colours come only from the
- * theme tokens (theme/tokens.css); text in the accent and danger hues reads the -ink tokens, never
- * the fills (theme/tokens.test.ts).
+ * theme tokens (theme/tokens.css); text in the accent hue reads --accent-ink, never the --accent
+ * fill (theme/tokens.test.ts).
  *
  * The page fills the shell's page height (app.css .meeting-page), so each region scrolls inside
  * itself. A region is a flex column: a child with `flex: 1` (transcript.css .live-transcript)
@@ -18,7 +18,7 @@
 /* Header */
 
 .meeting-title-pending {
-  color: var(--muted);
+  color: var(--ink-muted);
 }
 
 /* The recording state while Roger records this meeting; nothing once it stops. */
@@ -35,10 +35,10 @@
   white-space: nowrap;
 }
 
-/* --danger-ink, not --recording: as text on --danger-bg the dot's colour is under 4.5:1. */
+/* --ink, not --accent: as text on --fill the dot's colour is under 4.5:1. */
 .meeting-phase-recording {
-  background: var(--danger-bg);
-  color: var(--danger-ink);
+  background: var(--fill);
+  color: var(--ink);
 }
 
 .meeting-read-error {
@@ -85,7 +85,7 @@
   padding: 3px;
   border: 1px solid var(--line);
   border-radius: 9px;
-  background: var(--panel);
+  background: var(--surface);
 }
 
 .meeting-pane-button {
@@ -93,14 +93,14 @@
   border: none;
   border-radius: 6px;
   background: none;
-  color: var(--muted);
+  color: var(--ink-muted);
   font: inherit;
   font-weight: 600;
   cursor: pointer;
 }
 
 .meeting-pane-button[aria-pressed='true'] {
-  background: var(--chip-bg);
+  background: var(--fill);
   color: var(--ink);
 }
 
@@ -168,7 +168,7 @@
   border: none;
   border-bottom: 2px solid transparent;
   background: none;
-  color: var(--muted);
+  color: var(--ink-muted);
   font: inherit;
   font-weight: 600;
   cursor: pointer;

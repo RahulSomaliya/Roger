@@ -2,7 +2,7 @@
  * M2-T20b's capture details: the audio note, the re-run progress, the capture report, the echo
  * lines and the crash-resume notice. Colours come only from the theme tokens (theme/tokens.css,
  * light and dark); theme/noLiteralColours.test.ts fails on a literal colour here, and text in the
- * accent and danger hues reads the -ink tokens, never the fills (theme/tokens.test.ts). Nothing
+ * accent hue reads --accent-ink, never the --accent fill (theme/tokens.test.ts). Nothing
  * transitions a colour: a screenshot caught mid-fade reads the wrong state.
  */
 
@@ -30,7 +30,7 @@
 }
 
 .echo-lines-head .shell-button[aria-pressed='true'] {
-  background: var(--chip-bg);
+  background: var(--fill);
 }
 
 .echo-lines-list {
@@ -49,7 +49,7 @@
   gap: 2px 8px;
   padding: 6px 10px;
   border-radius: 8px;
-  background: var(--chip-bg);
+  background: var(--fill);
   font-size: 13px;
 }
 
@@ -70,7 +70,7 @@
 .echo-line-text {
   flex: 1 1 24ch;
   min-width: 0;
-  color: var(--hidden-ink);
+  color: var(--ink-subtle);
   overflow-wrap: anywhere;
 }
 
@@ -91,7 +91,7 @@
 .echo-lines-note {
   margin: 0;
   font-size: 12px;
-  color: var(--muted);
+  color: var(--ink-muted);
 }
 
 .echo-lines-error {
@@ -110,8 +110,8 @@
 }
 
 .audio-note[data-tone='warn'] {
-  border-left: 4px solid var(--warn);
-  background: var(--warn-bg);
+  border-left: 4px solid var(--ink-muted);
+  background: var(--fill);
 }
 
 .audio-note-text,
@@ -152,7 +152,7 @@
   padding: 6px 14px;
   border: 0;
   border-radius: 8px;
-  background: var(--danger);
+  background: var(--accent);
   color: var(--on-accent);
   font: inherit;
   font-weight: 600;
@@ -162,7 +162,7 @@
 .audio-actions-hint {
   margin: 0;
   font-size: 12px;
-  color: var(--muted);
+  color: var(--ink-muted);
 }
 
 .audio-error {
@@ -185,7 +185,7 @@
 
 .kept-card-intro {
   font-size: 13px;
-  color: var(--muted);
+  color: var(--ink-muted);
 }
 
 .kept-list {
@@ -264,21 +264,21 @@
   padding: 6px 10px 6px 12px;
   border-left: 4px solid var(--line);
   border-radius: 8px;
-  background: var(--chip-bg);
+  background: var(--fill);
   font-size: 13px;
   overflow-wrap: anywhere;
 }
 
 .report-gap[data-status='recovered'] {
-  border-left-color: var(--ok);
+  border-left-color: var(--ink-muted);
 }
 
 .report-gap[data-status='failed'] {
-  border-left-color: var(--danger);
+  border-left-color: var(--accent);
 }
 
 .report-gap[data-status='waiting'] {
-  border-left-color: var(--warn);
+  border-left-color: var(--ink-muted);
 }
 
 .report-gap-span {
@@ -288,11 +288,11 @@
 
 .report-gap-status {
   flex-basis: 100%;
-  color: var(--muted);
+  color: var(--ink-muted);
 }
 
 .report-gap[data-status='failed'] .report-gap-status {
-  color: var(--danger-ink);
+  color: var(--ink);
 }
 
 .report-timeline summary {
@@ -313,7 +313,7 @@
 .report-event-time {
   flex: none;
   min-width: 7ch;
-  color: var(--muted);
+  color: var(--ink-muted);
   font-variant-numeric: tabular-nums;
 }
 
@@ -340,7 +340,7 @@
   gap: 8px 12px;
   padding: 8px 12px;
   border-radius: 8px;
-  background: var(--chip-bg);
+  background: var(--fill);
 }
 
 .resumed-notice-text {
@@ -350,6 +350,6 @@
 }
 
 .resumed-notice-meta {
-  color: var(--muted);
+  color: var(--ink-muted);
   white-space: nowrap;
 }
