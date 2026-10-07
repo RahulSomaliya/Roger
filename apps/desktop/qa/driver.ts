@@ -1,4 +1,4 @@
-import { access, mkdir, writeFile } from 'node:fs/promises';
+import { access, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { createServer as createHttpServer, type Server } from 'node:http';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { type Browser, chromium, type Page } from 'playwright-core';
 import { createServer as createViteServer } from 'vite';
 import type { ForcedTheme, MainErrorName } from '../preview/control';
+import type { PromptScenarioId } from '../preview/promptScenarios';
 import { previewSearch, type ScenarioId } from '../preview/scenarios';
 
 /**
@@ -172,6 +173,59 @@ async function expectTheme(page: Page, theme: ForcedTheme): Promise<void> {
   }
 }
 
+/** A prompt panel state the preview can open: `preview/promptScenarios.ts`. */
+export interface OpenPromptOptions {
+  card: PromptScenarioId;
+  theme: ForcedTheme;
+  /** CSS pixels: QA_WIDTHS. The panel stays 360 px wide (or the page's width less a gutter). */
+  width: number;
+  height?: number;
+}
+
+/**
+ * Opens the prompt panel's own page (`preview/prompt.html`) in a fresh context. That page has no
+ * `useTheme`, so it follows the system scheme only: the context's `colorScheme` is the theme.
+ */
+export async function openPromptPreview(
+  browser: Browser,
+  origin: string,
+  options: OpenPromptOptions,
+): Promise<PreviewPage> {
+  const { card, theme, width, height = DEFAULT_HEIGHT } = options;
+  const context = await browser.newContext({ viewport: { width, height }, colorScheme: theme });
+  try {
+    const page = await context.newPage();
+    const errors: string[] = [];
+    page.on('console', (message) => {
+      if (message.type() !== 'error') return;
+      const { url } = message.location();
+      errors.push(url ? `${message.text()} (${url})` : message.text());
+    });
+    page.on('pageerror', (error) => {
+      errors.push(error.message);
+    });
+    await page.goto(`${origin}/prompt.html?card=${card}`, { waitUntil: 'load' });
+    await page.waitForSelector('html[data-state="ready"], html[data-state="error"]', {
+      state: 'attached',
+    });
+    const boot = await page.evaluate(() => ({
+      state: document.documentElement.dataset.state,
+      error: document.documentElement.dataset.error,
+    }));
+    if (boot.state !== 'ready') {
+      throw new Error(`The prompt preview of ${card} did not start: ${boot.error ?? 'no reason'}`);
+    }
+    const system = await page.evaluate(() =>
+      matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light',
+    );
+    if (system !== theme) throw new Error(`Asked for ${theme}, but the page shows ${system}`);
+    return { page, errors, close: () => context.close() };
+  } catch (error) {
+    await context.close();
+    throw error;
+  }
+}
+
 /**
  * Waits for the page to be still: the preview's requests answered and drawn, and no finite
  * animation or transition running. Mid-animation a shot catches a colour halfway through a fade,
@@ -180,10 +234,17 @@ async function expectTheme(page: Page, theme: ForcedTheme): Promise<void> {
  */
 export async function settle(page: Page): Promise<void> {
   await page.evaluate(async () => {
+    // The prompt panel's page has no fake `window.roger` to wait on (preview/prompt.html says so).
+    if (document.documentElement.dataset.preview === 'prompt') return;
     const control = window.__rogerPreview;
     if (control === undefined) throw new Error('No window.__rogerPreview: not the preview page');
     await control.settled();
   });
+  await settleAnimations(page);
+}
+
+/** The animation half of settle(): waits until no finite animation or transition runs. */
+export async function settleAnimations(page: Page): Promise<void> {
   await page.waitForFunction(() =>
     document
       .getAnimations()
@@ -393,6 +454,8 @@ export interface QaRun {
   origin: string;
   browser: Browser;
   open(options: OpenOptions): Promise<PreviewPage>;
+  /** The prompt panel's page, on one of its cards. */
+  openPrompt(options: OpenPromptOptions): Promise<PreviewPage>;
   close(): Promise<void>;
 }
 
@@ -409,6 +472,7 @@ export async function startQa(): Promise<QaRun> {
     origin: server.origin,
     browser,
     open: (options) => openPreview(browser, server.origin, options),
+    openPrompt: (options) => openPromptPreview(browser, server.origin, options),
     close: async () => {
       await browser.close();
       await server.close();
@@ -466,17 +530,44 @@ export class Gallery {
     return file;
   }
 
-  /** Writes `shots.json` next to the shots and returns its path. */
+  /**
+   * Writes `shots.json` next to the shots and returns its path. A manifest already there is kept
+   * and added to: a shot of the same file is replaced, any other stays. A QA script too long for
+   * one call (the 10-minute stall limit) runs in pieces, each adding its groups; clear the folder
+   * to start a gallery afresh, or a shot of a state that no longer exists stays in it.
+   */
   async write(meta: Record<string, string> = {}, subtitle?: string): Promise<string> {
+    const path = join(this.dir, 'shots.json');
+    const before = await readManifest(path);
+    const groups = new Map<string, GalleryShot[]>(
+      (before?.groups ?? []).map(({ name, shots }) => [name, shots]),
+    );
+    for (const [name, added] of this.groups) {
+      const kept = (groups.get(name) ?? []).filter(
+        (shot) => !added.some((again) => again.file === shot.file),
+      );
+      groups.set(name, [...kept, ...added]);
+    }
     const manifest: GalleryManifest = {
       title: this.title,
       ...(subtitle === undefined ? {} : { subtitle }),
-      meta,
-      groups: [...this.groups].map(([name, shots]) => ({ name, shots })),
+      meta: { ...before?.meta, ...meta },
+      groups: [...groups].map(([name, shots]) => ({ name, shots })),
     };
     await mkdir(this.dir, { recursive: true });
-    const path = join(this.dir, 'shots.json');
     await writeFile(path, `${JSON.stringify(manifest, null, 2)}\n`);
     return path;
   }
+}
+
+/** The manifest at `path`, or null when there is none yet; any other failure is raised. */
+async function readManifest(path: string): Promise<GalleryManifest | null> {
+  let text: string;
+  try {
+    text = await readFile(path, 'utf8');
+  } catch (error) {
+    if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return null;
+    throw new Error(`Could not read the gallery manifest ${path}`, { cause: error });
+  }
+  return JSON.parse(text) as GalleryManifest;
 }

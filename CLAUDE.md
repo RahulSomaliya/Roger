@@ -121,6 +121,24 @@ milestone plan.
 - **Tests are the exit check.** Every milestone plan names its tests. Permission tests are never
   skipped or marked flaky. A failing test is fixed or the change is reverted.
 
+## Words (one word per concept)
+
+What a person reads follows `docs/design.md` (Copy, Naming list); the short form:
+
+- **Start notes** (with a video link **Join and start notes**) and **Stop**; never "New note", "Take
+  notes".
+- **meeting** is what Roger keeps, **call** only the live audio; the state is **Recording**.
+- **My notes**, **AI notes**, **Write notes**, **Write again as**; never "Generate", "Regenerate".
+- **Jargon list** (an entry is a **term**), **Settings**, **Set up Roger**, **Details**, **Today**,
+  **Earlier**.
+- Saving is silent when it works: **Saved on this Mac** (server away), **Not saved** (this Mac
+  failed), **Not saved to Roger** (server refused), each with its reason.
+- **Try again** (a read), **Check again**, **Transcribe again**, **Dismiss** (a notice), **Cancel**
+  (only mid-work), **Reconnect**, **Delete audio**.
+- **microphone** is **Me**, **call audio** is **Them**; **Roger's server**, never "Postgres" or
+  "API" outside Details.
+- Times "9:14 am", durations "1h 23m", offsets "4:07"; sentence case, no full stop on a button.
+
 ## Working process
 
 1. Every milestone starts from `docs/plans/TEMPLATE.md`. Fill it in before writing code.

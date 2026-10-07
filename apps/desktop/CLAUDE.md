@@ -287,14 +287,14 @@ Extends the root `CLAUDE.md`, whose house rules and repo-wide failure log apply 
   (`vi.mock('../app/slots/m4-notes', () => ({ contributions: {} }))`, likewise `m5-calendar`),
   never stub `window` (`MeetingPage.test.ts`, `AppLayout.test.ts`; M4-T20, M5-T13).
 - QA traps. A check on what the page does as it loads cannot seed the preview fake (scenarios start
-  after the app subscribes): wrap `window.roger` in `context.addInitScript` (`m2-t19.qa.e2e.ts`
-  `openFirstRun`). `qa.expectVisible` uses `document.querySelector`, so `:text-is()` throws: give a
-  control a data attribute (M2-T19). A `dl`'s `textContent` joins label and value ("Saved
-  locally120 lines"): match per row (M2-T20a). Ask is disabled while the chat box is empty: type
-  first (M4-T19). The AI panel's streamed lines reuse `.note-editor-content` and come before the
-  editor: select `.ai-notes-editor .note-editor-content` (M4-T18), and assert Regenerate, not the
-  template name, which waits for the picker (M4-T20). The preview names a started meeting by the
-  clock: read `getCaptureStatus().title`, not the `h1`. `no-unnecessary-condition` applies inside
+  after the app subscribes): emit the state on the hub once the page is up, as `redesign.qa.e2e.ts`
+  does for the setup status, or wrap `window.roger` in `context.addInitScript`. `qa.expectVisible`
+  uses `document.querySelector`, so `:text-is()` throws: give a control a data attribute (M2-T19). A
+  `dl`'s `textContent` joins label and value ("Saved locally120 lines"): match per row (M2-T20a).
+  Ask is disabled while the chat box is empty: type first (M4-T19). The AI panel's streamed lines
+  reuse `.note-editor-content` and come before the editor: select `.ai-notes-editor
+.note-editor-content` (M4-T18). The preview names a started meeting by the clock: read
+  `getCaptureStatus().title`, not the `h1`. `no-unnecessary-condition` applies inside
   `page.evaluate`, where `textContent` is `string` and `?? ""` fails (M5-T13). A busy
-  `.btn[aria-disabled='true']` has `pointer-events: none`, so `elementFromPoint` skips it: click
-  it by DOM, and its handler ignores clicks itself (redesign R0b).
+  `.btn[aria-disabled='true']` has `pointer-events: none`, so `elementFromPoint` skips it: click it
+  by DOM, and its handler ignores clicks itself (redesign R0b).

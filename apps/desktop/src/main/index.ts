@@ -321,7 +321,7 @@ async function main(): Promise<void> {
 
   // [slot M4-S4b] meetings IPC
 
-  // The sidebar's recent meetings and the meeting page read roger.sqlite, never the API: both work
+  // Home's Earlier list and the meeting page read roger.sqlite, never the API: both work
   // offline. A read after the quit hook closed the store rejects, and the page shows why.
   registerMeetingsIpc({
     ipcMain,
