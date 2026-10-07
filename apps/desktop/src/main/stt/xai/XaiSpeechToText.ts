@@ -30,11 +30,11 @@ import { parseXaiMessage, XAI_AUDIO_DONE, XAI_FINALIZE, XaiLineAssembler } from 
  *   `/v1/realtime` only)
  * - https://docs.x.ai/developers/models ($0.20 an hour streaming)
  *
- * UNCONFIRMED against the real vendor (the controller checks them with a live key; the vendor log
- * in docs/research/stt-benchmark.md lists each): (1) that `/v1/stt` accepts the API's client secret
- * (the API's XaiSttTokenIssuer); a refusal then shows as "xAI: rejected with HTTP 401" at connect;
- * (2) the exact reading of the three partial states (messages.ts XaiLineAssembler); (3) that
- * `Finalize` with nothing buffered is harmless; (4) what `start` and `duration` span.
+ * Live check 2026-10-07 (the vendor log in docs/research/stt-benchmark.md): `/v1/stt` accepts the
+ * API's client secret (the API's XaiSttTokenIssuer) as `Authorization: Bearer`; a refusal would show
+ * as "xAI: rejected with HTTP 401" at connect. Still UNCONFIRMED, and listed there as open points:
+ * (1) the exact reading of the three partial states (messages.ts XaiLineAssembler); (2) what
+ * `start` and `duration` span.
  *
  * What xAI documents nothing about, and what this file therefore assumes:
  * - Billing: open time (the conservative reading; the API's price table says the same), so the core

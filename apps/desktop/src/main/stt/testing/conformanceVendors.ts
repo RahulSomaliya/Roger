@@ -225,7 +225,7 @@ export const CONFORMANCE_VENDORS: readonly ConformanceVendor[] = [
     openingMessages: [],
     // xAI's ready signal: "wait for this before sending audio".
     readyMessage: JSON.stringify({ type: 'transcript.created' }),
-    // `Finalize` (capital F, as its docs spell it), then `audio.done`.
+    // `Finalize` (xAI accepts `finalize` too), then `audio.done`.
     finishMessages: [JSON.stringify({ type: 'Finalize' }), JSON.stringify({ type: 'audio.done' })],
     // transcript.done ends the stream. xAI closes the socket after it as well; the fake leaves
     // that to the core, as AssemblyAI's and Soniox's do, so the suite proves the core closes on
