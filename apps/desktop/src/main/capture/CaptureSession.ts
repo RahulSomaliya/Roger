@@ -632,7 +632,10 @@ export class CaptureSession {
    *
    * Answers the stream, or the budget's refusal of the second open. When the second open fails,
    * the error carries both reasons. `stale` (the session closed, or the source moved on) skips the
-   * second open: the first failure is rethrown, and the caller drops it as it drops any.
+   * second open: the first failure is rethrown, and the caller drops it as it drops any. Asked
+   * before listRejected, whose warn line, capture event and warning each say the source reopens
+   * without the list: after Stop nothing reopens. The list stays on, so an open that is refused
+   * again later says so then.
    */
   private async connect(
     source: AudioSource,
@@ -642,7 +645,7 @@ export class CaptureSession {
     try {
       return { ok: true, stream: await this.openVendorStream(source, credentials) };
     } catch (error) {
-      if (!this.listRejected(source, credentials, error) || stale()) throw error;
+      if (stale() || !this.listRejected(source, credentials, error)) throw error;
       const grant = this.options.budget.acquire();
       if (!grant.ok) return { ok: false, refusal: grant, rejection: errorMessage(error) };
       try {

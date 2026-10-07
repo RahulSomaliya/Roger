@@ -1479,6 +1479,29 @@ describe('CaptureSession', () => {
       await s.close();
     });
 
+    it('says nothing of a list refused for a reopen Stop overtook, as nothing reopens', async () => {
+      const { stt, l, s, log, store, at } = listedSession();
+      const opening = s.open();
+      stt.succeed('mic');
+      const system = stt.succeed('system');
+      await opening;
+      at(20_000);
+      system.emitter.emit({ type: 'closed', code: 1011, reason: 'timeout' });
+      at(23_000);
+      s.pushAudio('system', new Uint8Array(3200).fill(1), 22_900);
+      await flush();
+      const closing = s.close(); // Stop while that reopen connects: it waits for it
+      stt.fail('system', listRefused());
+      await closing;
+      // No "reopening without it" line, event or warning: each would claim a reopen that never came.
+      expect(stt.opens).toEqual(['mic', 'system', 'system']);
+      expect(rejectedLines(log.messages)).toEqual([]);
+      expect(
+        store.listCaptureEvents('m1').filter(({ kind }) => kind === 'stt-keyterms-rejected'),
+      ).toEqual([]);
+      expect(l.warnings).toEqual([]);
+    });
+
     it('waits like any refused reopen when the budget refuses the open without the list, which comes next', async () => {
       let now = 10_000;
       const limited = new SttOpenBudget({ perMinute: 3, perMeeting: 100 }, () => now);
