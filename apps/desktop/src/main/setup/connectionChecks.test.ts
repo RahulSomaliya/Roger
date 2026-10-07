@@ -231,6 +231,33 @@ describe('describeServerFailure', () => {
     ).toBe("Roger's server failed (HTTP 500). Its log says why.");
   });
 
+  it('says something else answered when the reply is not the Roger API, never the request text', () => {
+    // api/http.ts's own texts for a reply without the API's error envelope: a network sign-in
+    // page, or the address set to another server (the Roger API always sends the envelope).
+    const notRoger = `Something at ${BASE_URL} answered, but not the way Roger's server does: a network sign-in page, or another server at that address. Check that ROGER_API_URL (or "apiUrl" in config.json in the app data folder) is the Roger API's address, then relaunch Roger.`;
+    for (const error of [
+      new ApiError(200, 'invalid_response', 'GET /health returned non-JSON'),
+      new ApiError(405, 'http_error', 'POST /v1/stt/token returned HTTP 405'),
+      new ApiError(429, 'http_error', 'POST /v1/stt/token returned HTTP 429'),
+    ]) {
+      expect(describeServerFailure(error, BASE_URL)).toEqual({
+        message: notRoger,
+        relaunchNeeded: true,
+      });
+    }
+  });
+
+  it("gives the status of the API's own refusal, and leaves its reason to the log", () => {
+    const refusal = describeServerFailure(
+      new ApiError(422, 'validation_error', 'body.sample_rate: Field required'),
+      BASE_URL,
+    );
+    expect(refusal).toEqual({
+      message: "Roger's server turned down the check (HTTP 422). Roger's log says why.",
+      relaunchNeeded: false,
+    });
+  });
+
   it("names an error that is not the API client's", () => {
     expect(describeServerFailure(new TypeError('fetch is not a function'), BASE_URL).message).toBe(
       'Roger could not check its server: fetch is not a function.',

@@ -45,6 +45,7 @@ const OK: SetupCheck<ConnectionSetupState> = Object.freeze({
 
 const API_TOKEN_SETTING =
   'ROGER_DESKTOP_API_TOKEN (or "apiToken" in config.json in the app data folder)';
+const API_URL_SETTING = 'ROGER_API_URL (or "apiUrl" in config.json in the app data folder)';
 
 /** Runs both checks at once, so the screen waits for the slower one, not for their sum. */
 export async function checkConnections(
@@ -171,7 +172,18 @@ export function describeServerFailure(
       return say("Roger's server is running but cannot reach its database.");
     case error.status >= 500:
       return say(`Roger's server failed (HTTP ${error.status}). Its log says why.`);
+    case error.code === 'invalid_response' || error.code === 'http_error':
+      // api/http.ts's codes for a reply without the API's error envelope, which the Roger API
+      // always sends (roger_api/error_handlers.py); their message is the request ("GET /health
+      // returned non-JSON"), never shown. A sign-in page answers 200 with HTML.
+      return say(
+        `Something at ${baseUrl} answered, but not the way Roger's server does: a network sign-in page, or another server at that address. Check that ${API_URL_SETTING} is the Roger API's address, then relaunch Roger.`,
+        true,
+      );
     default:
-      return say(`Roger's server refused the check (HTTP ${error.status}): ${error.message}`);
+      // The API's own refusal: its envelope's message is for the log (logFailure), not people.
+      return say(
+        `Roger's server turned down the check (HTTP ${error.status}). Roger's log says why.`,
+      );
   }
 }
