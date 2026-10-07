@@ -17,7 +17,7 @@ import type {
 import {
   type AiNotesApi,
   AiNotesSession,
-  describePending,
+  describeWaiting,
   describeRunError,
   editedSinceRun,
   layoutAiNotes,
@@ -169,48 +169,38 @@ async function opened(main: FakeMain): Promise<AiNotesSession> {
   return session;
 }
 
-describe('the waiting and ask states', () => {
+describe('the waiting states', () => {
   it('shows the waiting state from the pending row', async () => {
     const main = new FakeMain();
     main.pending = pendingGenerate({ phase: 'waiting_for_lines', waitingLines: 12 });
     const session = await opened(main);
-    expect(layoutAiNotes(session.getState()).prompt).toEqual({
-      kind: 'waiting',
-      text: 'Notes will generate when 12 lines finish uploading.',
-    });
+    expect(layoutAiNotes(session.getState()).waiting).toBe(
+      'Roger will write the notes when 12 lines finish uploading.',
+    );
 
     main.pendingChanged(pendingGenerate({ phase: 'waiting_for_notes', cause: 'offline' }));
-    expect(layoutAiNotes(session.getState()).prompt).toEqual({
-      kind: 'waiting',
-      text: 'Roger is offline; notes will generate when it is back.',
-    });
+    expect(layoutAiNotes(session.getState()).waiting).toBe(
+      'Roger is offline. It will write the notes when it is back.',
+    );
     expect(layoutAiNotes(session.getState()).stop).toBe('cancel');
-
-    main.pendingChanged(pendingGenerate({ phase: 'needs_template' }, { templateId: null }));
-    expect(layoutAiNotes(session.getState()).prompt).toEqual({ kind: 'ask' });
-    // The question has its own "Not now".
-    expect(layoutAiNotes(session.getState()).stop).toBeNull();
   });
 
-  it('says what each wait is for', () => {
-    const say = (status: PendingGenerateStatus): unknown =>
-      describePending(pendingGenerate(status));
-    expect(say({ phase: 'waiting_for_lines', waitingLines: 1 })).toEqual({
-      kind: 'waiting',
-      text: 'Notes will generate when 1 line finishes uploading.',
-    });
-    expect(say({ phase: 'waiting_for_notes', cause: 'meeting' })).toEqual({
-      kind: 'waiting',
-      text: 'Notes will generate once the call has ended and reached your workspace.',
-    });
-    expect(say({ phase: 'waiting_for_notes', cause: 'conflict' })).toEqual({
-      kind: 'waiting',
-      text: 'Resolve the conflict in My notes first: notes generate once you pick a version.',
-    });
-    expect(say({ phase: 'running' })).toEqual({ kind: 'running', text: 'Writing your notes...' });
-    // A failure is the banner's, with Retry, not a prompt.
+  it('says what each wait is for, and nothing for a run under way (the header says that)', () => {
+    const say = (status: PendingGenerateStatus): string | null =>
+      describeWaiting(pendingGenerate(status));
+    expect(say({ phase: 'waiting_for_lines', waitingLines: 1 })).toBe(
+      'Roger will write the notes when 1 line finishes uploading.',
+    );
+    expect(say({ phase: 'waiting_for_notes', cause: 'meeting' })).toBe(
+      'Roger will write the notes once the call has ended and reached its server.',
+    );
+    expect(say({ phase: 'waiting_for_notes', cause: 'conflict' })).toBe(
+      'Pick a version of My notes first. Roger will write the notes once you do.',
+    );
+    expect(say({ phase: 'running' })).toBeNull();
+    // A failure is the problem line's, with Try again, not a waiting line.
     expect(say({ phase: 'failed', code: 'llm_provider_error', message: 'x' })).toBeNull();
-    expect(describePending(null)).toBeNull();
+    expect(describeWaiting(null)).toBeNull();
   });
 
   it('a failed generate offers Retry with its template; Retry clears the old banner', async () => {
@@ -233,7 +223,7 @@ describe('the waiting and ask states', () => {
       retryTemplateId: 'standup',
       retriesItself: false,
     });
-    expect(layout.prompt).toBeNull();
+    expect(layout.waiting).toBeNull();
 
     // main's own local failure is not stored, main tries it again by itself every 30 s, and
     // Retry keeps its run id. The banner says so: dismissing it would cancel that generate.
@@ -241,12 +231,12 @@ describe('the waiting and ask states', () => {
       pendingGenerate({
         phase: 'failed',
         code: 'internal_error',
-        message: 'Roger could not generate the notes. It will try again.',
+        message: 'Roger could not write the notes. It will try again.',
       }),
     );
     expect(layoutAiNotes(session.getState()).failure).toEqual({
       source: 'pending',
-      title: 'Roger could not generate the notes.',
+      title: 'Roger could not write the notes.',
       detail: 'It will try again.',
       retryTemplateId: 'client_call',
       retriesItself: true,
@@ -258,73 +248,6 @@ describe('the waiting and ask states', () => {
       templateId: 'standup',
     });
     expect(session.getState().stream).toBeNull();
-  });
-});
-
-describe('the template picker', () => {
-  it('a generate that starts while it is open closes it for good', async () => {
-    const main = new FakeMain();
-    const session = await opened(main);
-    session.openPicker('generate');
-    expect(session.getState().picker).toBe('generate');
-
-    // Stop with auto-generate on: main writes a pending generate while the picker is open.
-    main.pendingChanged(pendingGenerate({ phase: 'running' }));
-    expect(session.getState().picker).toBeNull();
-
-    // The run ends: the picker never comes back over the notes it wrote.
-    main.event({ type: 'run', runId: NEXT_RUN, model: 'm', templateId: 'general', lineCount: 9 });
-    main.noteChanged(aiNote({ lastRunId: NEXT_RUN, baseVersion: 5, generatedVersion: 5 }));
-    main.pendingChanged(null);
-    expect(session.getState().picker).toBeNull();
-    expect(main.api.generateNotes).not.toHaveBeenCalled();
-  });
-
-  it('a run that starts streaming closes it, and it never opens over one', async () => {
-    const main = new FakeMain();
-    main.ai = aiNote();
-    const session = await opened(main);
-    session.openPicker('regenerate');
-    main.event({ type: 'run', runId: NEXT_RUN, model: 'm', templateId: 'general', lineCount: 9 });
-    expect(session.getState().picker).toBeNull();
-
-    session.openPicker('regenerate');
-    expect(session.getState().picker).toBeNull();
-    main.pendingChanged(pendingGenerate({ phase: 'waiting_for_lines', waitingLines: 2 }));
-    session.openPicker('generate');
-    expect(session.getState().picker).toBeNull();
-  });
-
-  it('a pick generates or regenerates, as the picker was opened for, and closes it', async () => {
-    const main = new FakeMain();
-    const session = await opened(main);
-    session.openPicker('generate');
-    expect(await session.pick('standup')).toBe(true);
-    expect(session.getState().picker).toBeNull();
-    expect(main.api.generateNotes).toHaveBeenCalledWith({
-      meetingId: MEETING,
-      templateId: 'standup',
-    });
-
-    // Regenerating AI notes edited since their run still asks first.
-    main.noteChanged(aiNote({ dirty: true }));
-    session.openPicker('regenerate');
-    expect(await session.pick('general')).toBe(false);
-    expect(session.getState().picker).toBeNull();
-    expect(session.getState().confirm).toEqual({ action: 'regenerate', templateId: 'general' });
-    expect(main.api.generateNotes).toHaveBeenCalledTimes(1);
-
-    // A pick with no picker open does nothing.
-    expect(await session.pick('general')).toBe(false);
-    expect(main.api.generateNotes).toHaveBeenCalledTimes(1);
-  });
-
-  it('Cancel closes it', async () => {
-    const main = new FakeMain();
-    const session = await opened(main);
-    session.openPicker('generate');
-    session.closePicker();
-    expect(session.getState().picker).toBeNull();
   });
 });
 
@@ -448,33 +371,7 @@ describe('the session', () => {
     expect(layout.editor).toBe('shown');
     expect(layout.readOnly).toBe(false);
     expect(layout.removed).toEqual([{ text: 'Everyone agreed it went well', reason: 'no_refs' }]);
-    expect(layout.about).toEqual({ templateId: 'client_call', flagged: 2 });
     expect(layout.empty).toBe(false);
-  });
-
-  it('describes notes only as their run wrote them, or the run streaming now', async () => {
-    const main = new FakeMain();
-    main.ai = aiNote();
-    const session = await opened(main);
-    expect(layoutAiNotes(session.getState()).about).toEqual({
-      templateId: 'client_call',
-      flagged: 2,
-    });
-
-    // A regeneration as General streams over the hidden notes: the bar names the new template.
-    main.pendingChanged(pendingGenerate({ phase: 'running' }, { templateId: 'general' }));
-    expect(layoutAiNotes(session.getState()).about).toBeNull();
-    main.event({ type: 'run', runId: NEXT_RUN, model: 'm', templateId: 'general', lineCount: 9 });
-    expect(layoutAiNotes(session.getState()).about).toEqual({ templateId: 'general', flagged: 0 });
-    main.event({ type: 'error', code: 'cancelled', message: 'Notes generation was cancelled.' });
-    main.pendingChanged(null);
-
-    // Restored earlier notes, or notes the user edited: the run's template and count no longer
-    // describe the doc on show.
-    main.noteChanged(aiNote({ dirty: true, revisionId: 'r-2' }));
-    expect(layoutAiNotes(session.getState()).about).toBeNull();
-    main.noteChanged(aiNote({ baseVersion: 5 }));
-    expect(layoutAiNotes(session.getState()).about).toBeNull();
   });
 
   it('shows the empty state with nothing written and nothing pending', async () => {
@@ -535,7 +432,7 @@ describe('the session', () => {
     main.pendingChanged(pendingGenerate({ phase: 'running' }));
     let layout = layoutAiNotes(session.getState());
     // Flushing the notes first: the old notes stay on show, read-only.
-    expect(layout.prompt).toEqual({ kind: 'running', text: 'Writing your notes...' });
+    expect(layout.waiting).toBeNull();
     expect(layout.editor).toBe('shown');
     expect(layout.readOnly).toBe(true);
     expect(layout.stop).toBe('stop');
@@ -574,10 +471,7 @@ describe('the session', () => {
     expect(layout.stream).toBeNull();
     expect(layout.editor).toBe('shown');
     expect(layout.readOnly).toBe(false);
-    expect(layout.prompt).toEqual({
-      kind: 'waiting',
-      text: 'Roger is offline; notes will generate when it is back.',
-    });
+    expect(layout.waiting).toBe('Roger is offline. It will write the notes when it is back.');
     expect(layout.stop).toBe('cancel');
 
     // Back online: the next attempt re-sends the run id and replays from its `run` event.
@@ -626,7 +520,7 @@ describe('the session', () => {
     expect(await session.generate('standup')).toBe(false);
     const { actionError, busy } = session.getState();
     expect(busy).toBeNull();
-    expect(actionError).toMatch(/^Roger could not start the notes: the notes of meeting /);
+    expect(actionError).toMatch(/^Roger could not start writing the notes: the notes of meeting /);
     expect(actionError).toContain('cancel them before picking another template');
     session.dismissError();
     expect(session.getState().actionError).toBeNull();
@@ -643,7 +537,7 @@ describe('the session', () => {
     expect(session.getState().cancelling).toBe(true);
     expect(session.getState().busy).toBeNull();
     // The page hears the cancel and the generate's end meanwhile.
-    main.event({ type: 'error', code: 'cancelled', message: 'Notes generation was cancelled.' });
+    main.event({ type: 'error', code: 'cancelled', message: 'Writing the notes was cancelled.' });
     main.pendingChanged(null);
     expect(session.getState().cancelling).toBe(false);
 
@@ -654,7 +548,7 @@ describe('the session', () => {
     session.cancel();
     await answered();
     expect(session.getState().cancelling).toBe(false);
-    expect(session.getState().actionError).toBe('Roger could not stop the notes: offline');
+    expect(session.getState().actionError).toBe('Roger could not stop writing the notes: offline');
   });
 
   it('says when the last run cannot be read, and reads it again', async () => {
@@ -674,7 +568,7 @@ describe('the session', () => {
     expect(layout.removed).toHaveLength(1);
   });
 
-  it('templates: General leads, the rest keep the API order; a failed list can be read again', async () => {
+  it('templates: General leads, the rest keep the API order; a failed list shows as failed', async () => {
     expect(orderTemplates(TEMPLATES).map((template) => template.id)).toEqual([
       'general',
       'one_on_one',
@@ -687,9 +581,6 @@ describe('the session', () => {
     );
     const session = await opened(main);
     expect(session.getState().templates).toEqual({ status: 'failed', error: 'Roger is offline' });
-    session.reloadTemplates();
-    await answered();
-    expect(session.getState().templates.status).toBe('ready');
   });
 
   it('stops following main once stopped', async () => {
@@ -711,9 +602,9 @@ describe('the session', () => {
 describe('describeRunError', () => {
   it('names the failure, with what main or the API said when it adds something', () => {
     expect(
-      describeRunError({ code: 'cancelled', message: 'Notes generation was cancelled.' }),
+      describeRunError({ code: 'cancelled', message: 'Writing the notes was cancelled.' }),
     ).toEqual({
-      title: 'Notes generation was cancelled.',
+      title: 'Writing the notes was cancelled.',
       detail: null,
     });
     // A cancel is the user's own doing: whatever main says, there is nothing to add.
@@ -735,15 +626,15 @@ describe('describeRunError', () => {
     expect(
       describeRunError({
         code: 'internal_error',
-        message: 'Roger could not generate the notes. It will try again.',
+        message: 'Roger could not write the notes. It will try again.',
       }),
-    ).toEqual({ title: 'Roger could not generate the notes.', detail: 'It will try again.' });
+    ).toEqual({ title: 'Roger could not write the notes.', detail: 'It will try again.' });
     expect(
-      describeRunError({ code: 'internal_error', message: 'Roger could not generate the notes.' })
+      describeRunError({ code: 'internal_error', message: 'Roger could not write the notes.' })
         .detail,
     ).toBeNull();
     expect(describeRunError({ code: 'teapot', message: 'I am a teapot' })).toEqual({
-      title: 'Roger could not generate the notes.',
+      title: 'Roger could not write the notes.',
       detail: 'I am a teapot',
     });
   });

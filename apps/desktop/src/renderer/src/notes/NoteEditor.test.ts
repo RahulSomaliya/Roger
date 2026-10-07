@@ -94,18 +94,22 @@ describe('docForSave', () => {
 });
 
 describe('NoteEditor', () => {
-  it('says the notes are opening while main reads them', () => {
+  it('says nothing while main reads the notes: the read answers within a frame', () => {
     withState({ status: 'loading', docGeneration: 0 });
     const html = render();
     expect(html).toContain('aria-busy="true"');
-    expect(html).toContain('Opening notes...');
+    expect(html).toContain('aria-label="My notes"');
+    expect(html).not.toContain('Opening');
   });
 
   it('shows why the notes could not be read, with Try again', () => {
     withState({ status: 'failed', error: 'notes.sqlite is locked' });
     const html = render();
-    expect(html).toMatch(/role="alert"[^>]*>Could not open these notes: notes.sqlite is locked/);
+    // A problem line (an icon and words), not a tinted box.
+    expect(html).toMatch(/class="problem note-editor-problem" role="alert"><svg/);
+    expect(html).toContain('Could not open these notes: notes.sqlite is locked');
     expect(html).toContain('>Try again</button>');
+    expect(html).not.toContain('class="error');
   });
 
   it('shows no editor for a doc it cannot hold, and says the notes are left as they are', () => {
@@ -127,7 +131,6 @@ describe('NoteEditor', () => {
       note: storedNote({ sync: 'conflict', conflictCopy: deepDoc(1) }),
     });
     const html = render();
-    expect(html).toContain('>Two versions<');
     expect(html).toContain('Roger cannot show that version');
     expect(html).toContain('>Use mine</button>');
     expect(html).toContain('>Keep the other version</button>');
@@ -135,10 +138,17 @@ describe('NoteEditor', () => {
     expect(html).not.toContain('contenteditable');
   });
 
-  it('shows the sync state of a doc it cannot hold, as for any other note', () => {
+  it('says nothing of a synced doc it cannot hold, and Saved on this Mac when offline', () => {
     withState({ docProblem: 'Invalid content for node listItem: <>', note: storedNote() });
-    const html = render();
-    expect(html).toContain('>Synced<');
-    expect(html).not.toContain('note-conflict');
+    const synced = render();
+    expect(synced).not.toContain('Synced');
+    expect(synced).not.toContain('class="note-status"');
+    expect(synced).not.toContain('note-conflict');
+
+    withState({
+      docProblem: 'Invalid content for node listItem: <>',
+      note: storedNote({ sync: 'offline' }),
+    });
+    expect(render()).toContain('>Saved on this Mac<');
   });
 });

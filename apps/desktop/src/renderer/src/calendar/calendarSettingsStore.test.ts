@@ -7,8 +7,6 @@ import { CalendarSettingsStore, type CalendarSettingsApi } from './calendarSetti
 
 const stored: PreferenceValues = {
   theme: 'system',
-  'notes.autoGenerate': true,
-  'notes.whenUnsure': 'ask',
   'calendar.reminderLeadMinutes': 5,
   'notice.enabled': false,
   'notice.text': 'Recording this one.',

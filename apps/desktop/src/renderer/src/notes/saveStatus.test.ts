@@ -5,36 +5,28 @@ import { describeSaveStatus } from './saveStatus';
 const SAVED = { phase: 'saved' } as const;
 
 describe('describeSaveStatus', () => {
-  it('moves through saved on this Mac, waiting for the meeting, syncing, synced, offline and conflict', () => {
-    const journey: NoteSyncState[] = [
+  it('says nothing while saving is normal: saved, waiting for the meeting, syncing, synced, conflict', () => {
+    const quiet: NoteSyncState[] = [
       'saved_locally',
       'waiting_for_meeting',
       'syncing',
       'synced',
-      'offline',
+      // The conflict has its own line (ConflictBanner); a second label would say it twice.
       'conflict',
     ];
-    expect(journey.map((sync) => describeSaveStatus(SAVED, sync))).toEqual([
+    expect(quiet.map((sync) => describeSaveStatus(SAVED, sync))).toEqual(quiet.map(() => null));
+  });
+
+  it('says Saved on this Mac, and why it is safe, only while the server cannot be reached', () => {
+    expect(describeSaveStatus(SAVED, 'offline')).toEqual(
       expect.objectContaining({ label: 'Saved on this Mac', tone: 'quiet' }),
-      expect.objectContaining({ label: 'Waiting for the meeting to upload', tone: 'quiet' }),
-      expect.objectContaining({ label: 'Syncing', tone: 'quiet' }),
-      expect.objectContaining({ label: 'Synced', tone: 'good' }),
-      expect.objectContaining({ label: 'Offline: saved on this Mac', tone: 'warn' }),
-      expect.objectContaining({ label: 'Two versions', tone: 'warn' }),
-    ]);
-  });
-
-  it('says why each state is safe, or what to do', () => {
+    );
     expect(describeSaveStatus(SAVED, 'offline')?.detail).toMatch(/uploads them when/);
-    expect(describeSaveStatus(SAVED, 'conflict')?.detail).toMatch(/Pick the version to keep/);
-    expect(describeSaveStatus(SAVED, 'waiting_for_meeting')?.detail).toMatch(/Saved on this Mac/);
   });
 
-  it('shows the save on its way to the Mac before what main last said', () => {
+  it('says nothing while a save is on its way to the Mac', () => {
     for (const phase of ['pending', 'saving'] as const) {
-      expect(describeSaveStatus({ phase }, 'synced')).toEqual(
-        expect.objectContaining({ label: 'Saving...', tone: 'quiet' }),
-      );
+      expect(describeSaveStatus({ phase }, 'synced')).toBeNull();
     }
   });
 
@@ -46,6 +38,10 @@ describe('describeSaveStatus', () => {
     expect(status).toEqual(expect.objectContaining({ label: 'Not saved', tone: 'bad' }));
     expect(status?.detail).toContain('note not saved: nested deeper than 32 levels');
     expect(status?.detail).toMatch(/still here/);
+    // Even while the server is away: the failure is the news.
+    expect(describeSaveStatus({ phase: 'failed', message: 'disk full' }, 'offline')?.label).toBe(
+      'Not saved',
+    );
   });
 
   it('says nothing for notes nobody has written yet', () => {

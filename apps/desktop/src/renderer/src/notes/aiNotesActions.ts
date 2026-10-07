@@ -20,20 +20,27 @@ import {
 } from './aiNotesStream';
 
 /**
- * The AI notes panel's state and actions (M4-T18), apart from React so they test under Node: one
+ * The AI notes' state and actions (M4-T18), apart from React so they test under Node: one
  * meeting's pending generate (notes.sqlite's `pending_generate`, through main's NotesGenerator),
  * its AI note as main holds it, the run streaming now (aiNotesStream.ts), the run that wrote the
  * notes on show (for "Removed lines" and "Restore previous notes") and the template list.
  *
- * What the panel offers (M4 "Generate after Stop", "AI notes and my notes"):
- * - The waiting states and the question "Which kind of call was this?" come from the pending
- *   generate main keeps, never from the page: a generate is a stored intent that outlives a
- *   reload, a quit and an offline API, and main says where it stands (`describePending`).
- * - Generate, Retry and the answer to the question all go through `generateNotes`. Main keeps the
- *   run id of a generate that has not failed (a new one would start a second paid run) and makes a
- *   new one for Retry after a stored failure (the API replays a finished run's result to its id).
- * - Regenerating AI notes edited since their run asks first (`editedSinceRun`), and so does
- *   restoring over them: the edits are in no run, so nothing would bring them back.
+ * Two sessions of this class run per meeting page: the header's (meeting/useMeeting.ts) owns Write
+ * notes, Write again as, Restore previous notes and their questions and problems; the AI notes
+ * tab's (AiNotesPanel.tsx) only follows main, to draw the notes, and offers Retry and Cancel on a
+ * failed run. They share main, so neither misses the other's change, but a confirmation or an
+ * action error one of them holds is not seen by the other.
+ *
+ * What the session offers (M4 "Generate after Stop", "AI notes and my notes"):
+ * - The waiting states come from the pending generate main keeps, never from the page: a generate
+ *   is a stored intent that outlives a reload, a quit and an offline API, and main says where it
+ *   stands (`describeWaiting`). Stop writes none and asks nothing (redesign calls 5 and 6): the
+ *   header's Write notes sends the template, its best guess or General.
+ * - Write notes, Write again as and Retry all go through `generateNotes`. Main keeps the run id of
+ *   a generate that has not failed (a new one would start a second paid run) and makes a new one
+ *   for Retry after a stored failure (the API replays a finished run's result to its id).
+ * - Writing AI notes again over notes edited since their run asks first (`editedSinceRun`), and so
+ *   does restoring over them: the edits are in no run, so nothing would bring them back.
  * - "Restore previous notes" saves the doc the last run replaced (`replacedDoc` of
  *   `GET .../runs/{id}`) as a new local revision on the note on show; NotesSync uploads it as the
  *   next version. The open editor then loads it as a doc from elsewhere (useNoteDocument.ts), and
@@ -69,9 +76,6 @@ export type LastRunRead =
 /** An action waiting for the user's yes: it would replace AI notes edited since their run. */
 export type Confirmation = { action: 'regenerate'; templateId: string } | { action: 'restore' };
 
-/** Why the user opened the template picker: a first generate, or a regenerate. */
-export type PickerPurpose = 'generate' | 'regenerate';
-
 export interface AiNotesState {
   /** `loading` until main answers with the pending generate and the AI note; `failed` if not. */
   status: 'loading' | 'ready' | 'failed';
@@ -81,14 +85,9 @@ export interface AiNotesState {
   note: LocalNote | null;
   stream: AiNotesStreamView | null;
   lastRun: LastRunRead;
-  /** In picker order (`orderTemplates`). */
+  /** In menu order (`orderTemplates`). */
   templates: Loadable<NoteTemplate[]>;
   confirm: Confirmation | null;
-  /**
-   * The template picker the user opened (Generate notes, Regenerate); null while it is closed.
-   * Never open while a generate is pending or a run streams (`pickerMoot`).
-   */
-  picker: PickerPurpose | null;
   /** A generate or a restore on its way to main; the panel's buttons wait for it. */
   busy: 'generate' | 'restore' | null;
   /** Stop was pressed and main has not answered; only the Stop button waits for it. */
@@ -96,13 +95,6 @@ export interface AiNotesState {
   /** Why the last action failed, for the page. */
   actionError: string | null;
 }
-
-/**
- * What the pending generate says above the notes. `ask`: "Which kind of call was this?" with the
- * templates. A failed generate is a banner with Retry instead (`AiNotesLayout.failure`).
- */
-export type PendingPrompt =
-  { kind: 'ask' } | { kind: 'waiting'; text: string } | { kind: 'running'; text: string };
 
 export interface FailureBanner {
   /**
@@ -124,9 +116,14 @@ export interface FailureBanner {
   retriesItself: boolean;
 }
 
-/** What the panel shows, worked out from the state alone (`layoutAiNotes`). */
+/** What the page shows, worked out from the state alone (`layoutAiNotes`). */
 export interface AiNotesLayout {
-  prompt: PendingPrompt | null;
+  /**
+   * Why a pending generate has not started, in words: the one thing the header's "Writing notes…"
+   * cannot say. Null when nothing waits (a run in progress is the header's to say, a failed one is
+   * `failure`).
+   */
+  waiting: string | null;
   failure: FailureBanner | null;
   /** A run's lines: arriving now (`live`), or written before it failed (`partial`, unsaved). */
   stream: 'live' | 'partial' | null;
@@ -134,19 +131,13 @@ export interface AiNotesLayout {
   editor: 'shown' | 'hidden' | null;
   /** While a run may write the AI notes, the API refuses an edit (a `409`): nobody types. */
   readOnly: boolean;
-  /** No AI notes, nothing pending and nothing streaming: the empty state with Generate. */
+  /** No AI notes, nothing pending and nothing streaming: the header offers Write notes. */
   empty: boolean;
   canRegenerate: boolean;
   /** The doc "Restore previous notes" puts back, or null when there is none to offer. */
   restorable: NoteDoc | null;
   /** "Removed lines": the streaming run's, else the run that wrote the notes on show. */
   removed: DroppedLine[];
-  /**
-   * What the bar says the notes are: the template of the run streaming now, or of the run that
-   * wrote the notes on show and its lines marked "check this". Null while neither describes what
-   * is on show: notes edited since their run, or restored from an earlier one.
-   */
-  about: { templateId: string | null; flagged: number } | null;
   /** Why the run behind the notes on show could not be read (its removed lines are unknown). */
   runProblem: string | null;
   /** `stop` a running run, or `cancel` a waiting generate; null when there is nothing to stop. */
@@ -165,22 +156,19 @@ export function editedSinceRun(note: LocalNote | null): boolean {
   return note.baseVersion > note.generatedVersion;
 }
 
-/** The pending generate's words (M4 "Generate after Stop"; main's PendingGenerateStatus). */
-export function describePending(pending: PendingGenerateState | null): PendingPrompt | null {
+/** Why a pending generate waits (main's PendingGenerateStatus); null when it does not. */
+export function describeWaiting(pending: PendingGenerateState | null): string | null {
   if (pending === null) return null;
   const { status } = pending;
   switch (status.phase) {
-    case 'needs_template':
-      return { kind: 'ask' };
     case 'waiting_for_lines': {
       const lines =
         status.waitingLines === 1 ? '1 line finishes' : `${status.waitingLines} lines finish`;
-      return { kind: 'waiting', text: `Notes will generate when ${lines} uploading.` };
+      return `Roger will write the notes when ${lines} uploading.`;
     }
     case 'waiting_for_notes':
-      return { kind: 'waiting', text: waitingForNotes(status.cause) };
+      return waitingForNotes(status.cause);
     case 'running':
-      return { kind: 'running', text: 'Writing your notes...' };
     case 'failed':
       return null;
   }
@@ -190,16 +178,16 @@ type NotesWaitCause = Extract<PendingGenerateStatus, { phase: 'waiting_for_notes
 
 function waitingForNotes(cause: NotesWaitCause): string {
   switch (cause) {
-    // Not in Postgres yet, which also covers a call still recording: a Generate pressed during the
-    // call waits for Stop, so the notes cover all of it (NotesGenerator.waitFor).
+    // Not in Postgres yet, which also covers a call still recording: a Write notes pressed during
+    // the call waits for Stop, so the notes cover all of it (NotesGenerator.waitFor).
     case 'meeting':
-      return 'Notes will generate once the call has ended and reached your workspace.';
+      return 'Roger will write the notes once the call has ended and reached its server.';
     // The notes could not upload, or a generate request or the poll after a lost stream could not
     // reach the API (M4-T23).
     case 'offline':
-      return 'Roger is offline; notes will generate when it is back.';
+      return 'Roger is offline. It will write the notes when it is back.';
     case 'conflict':
-      return 'Resolve the conflict in My notes first: notes generate once you pick a version.';
+      return 'Pick a version of My notes first. Roger will write the notes once you do.';
   }
 }
 
@@ -207,10 +195,12 @@ function waitingForNotes(cause: NotesWaitCause): string {
  * A run's error for people: what happened, by code (NotesStreamEvent's `error` codes, and the
  * API's refusals before a stream), and what main or the API said when it adds to that. A message
  * that restates the title adds only what follows it: main's `internal_error` says "Roger could not
- * generate the notes. It will try again.", and the second sentence is the one the user needs.
+ * write the notes. It will try again.", and the second sentence is the one the user needs. Main's
+ * words (NotesGenerator `runAttempt`) and the title below must stay in step, or the page says the
+ * same sentence twice.
  */
 export function describeRunError(error: RunError): { title: string; detail: string | null } {
-  const title = RUN_ERROR_TITLES[error.code] ?? 'Roger could not generate the notes.';
+  const title = RUN_ERROR_TITLES[error.code] ?? 'Roger could not write the notes.';
   // A cancel is the user's own doing: whatever main says of it adds nothing.
   if (error.code === 'cancelled') return { title, detail: null };
   const said = error.message.trim();
@@ -221,16 +211,17 @@ export function describeRunError(error: RunError): { title: string; detail: stri
 const RUN_ERROR_TITLES: Readonly<Record<string, string>> = {
   llm_provider_error: 'The AI service could not write the notes.',
   cut_off: 'The notes ran too long and were cut off, so Roger kept the earlier AI notes.',
-  cancelled: 'Notes generation was cancelled.',
-  internal_error: 'Roger could not generate the notes.',
+  cancelled: 'Writing the notes was cancelled.',
+  internal_error: 'Roger could not write the notes.',
   empty_meeting: 'There is nothing to write notes from yet: no transcript lines and no notes.',
   network_error: 'Roger could not reach its server.',
   conflict: 'The notes changed while Roger was starting to write them.',
 };
 
 /**
- * The picker's order. The API lists templates by name, ignoring case (1:1, Client call, General,
- * Standup); General leads here, as the one that fits any call, and the rest keep the API's order.
+ * The ⋯ menu's order (Write again as). The API lists templates by name, ignoring case (1:1, Client
+ * call, General, Standup); General leads here, as the one that fits any call, and the rest keep
+ * the API's order.
  */
 export function orderTemplates(templates: readonly NoteTemplate[]): NoteTemplate[] {
   const general = templates.filter((template) => template.id === 'general');
@@ -250,16 +241,8 @@ export function layoutAiNotes(state: AiNotesState): AiNotesLayout {
   const replaced = runOfNote?.replacedDoc ?? null;
   const restorable =
     canRegenerate && replaced !== null && !sameDoc(replaced, note.doc) ? replaced : null;
-  // The run's template and "check this" count describe the doc it wrote, and stop doing so once
-  // the user edits it or restores an earlier one. While a run starts, neither doc is settled.
-  const about =
-    stream !== null && live
-      ? { templateId: stream.templateId, flagged: 0 }
-      : note !== null && phase !== 'running' && !editedSinceRun(note)
-        ? { templateId: note.templateId, flagged: runOfNote?.flaggedCount ?? 0 }
-        : null;
   return {
-    prompt: describePending(pending),
+    waiting: describeWaiting(pending),
     failure: failureOf(pending, stream),
     stream: shown,
     editor: note === null ? null : live ? 'hidden' : 'shown',
@@ -268,7 +251,6 @@ export function layoutAiNotes(state: AiNotesState): AiNotesLayout {
     canRegenerate,
     restorable,
     removed: shown !== null && stream !== null ? stream.dropped : (runOfNote?.dropped ?? []),
-    about,
     runProblem:
       lastRun.status === 'failed' && note?.lastRunId === lastRun.runId ? lastRun.error : null,
     stop:
@@ -303,17 +285,6 @@ function failureOf(
   return null;
 }
 
-/**
- * A generate is pending or a run streams, so the template picker the user opened is moot: a pick
- * would only start a second run.
- */
-function pickerMoot(
-  pending: PendingGenerateState | null,
-  stream: AiNotesStreamView | null,
-): boolean {
-  return pending !== null || shownStream(stream) === 'live';
-}
-
 function sameDoc(a: NoteDoc, b: NoteDoc): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
 }
@@ -327,7 +298,6 @@ const INITIAL: AiNotesState = {
   lastRun: { status: 'none' },
   templates: { status: 'loading' },
   confirm: null,
-  picker: null,
   busy: null,
   cancelling: false,
   actionError: null,
@@ -399,39 +369,14 @@ export class AiNotesSession {
     this.load(this.run);
   }
 
-  reloadTemplates(): void {
-    this.loadTemplates(this.run);
-  }
-
   /** Try again after the run behind the notes on show could not be read. */
   reloadRun(): void {
     const { lastRun } = this.state;
     if (lastRun.status === 'failed') this.readRun(lastRun.runId);
   }
 
-  /** Opens the template picker; it stays closed while a generate is pending or a run streams. */
-  openPicker(purpose: PickerPurpose): void {
-    this.set({ picker: purpose });
-  }
-
-  closePicker(): void {
-    this.set({ picker: null });
-  }
-
   /**
-   * The user's pick in the picker they opened: a first generate, or a regenerate (which asks
-   * first over notes edited since their run). Resolves false when no picker was open.
-   */
-  async pick(templateId: string): Promise<boolean> {
-    const { picker } = this.state;
-    if (picker === null) return false;
-    this.set({ picker: null });
-    return picker === 'regenerate' ? this.regenerate(templateId) : this.generate(templateId);
-  }
-
-  /**
-   * Generate, Retry, or the answer to "Which kind of call was this?". Resolves true once main took
-   * it; false when main refused, with the reason in `actionError` (another template while the API
+   * Write notes, Write again as, or Retry. Resolves true once main took it; false when main refused, with the reason in `actionError` (another template while the API
    * may hold the run, a run already streaming).
    */
   async generate(templateId: string): Promise<boolean> {
@@ -444,14 +389,14 @@ export class AiNotesSession {
       if (stream !== null && stream.phase !== 'streaming') this.set({ stream: null });
       return true;
     } catch (error) {
-      this.set({ actionError: `Roger could not start the notes: ${describeError(error)}` });
+      this.set({ actionError: `Roger could not start writing the notes: ${describeError(error)}` });
       return false;
     } finally {
       this.set({ busy: null });
     }
   }
 
-  /** Regenerate with a template; asks first over notes edited since their run. */
+  /** Write again as a template; asks first over notes edited since their run. */
   async regenerate(templateId: string): Promise<boolean> {
     if (editedSinceRun(this.state.note)) {
       this.set({ confirm: { action: 'regenerate', templateId }, actionError: null });
@@ -498,7 +443,7 @@ export class AiNotesSession {
         if (run !== this.run) return;
         this.set({
           cancelling: false,
-          actionError: `Roger could not stop the notes: ${describeError(error)}`,
+          actionError: `Roger could not stop writing the notes: ${describeError(error)}`,
         });
       },
     );
@@ -630,13 +575,7 @@ export class AiNotesSession {
   }
 
   private set(change: Partial<AiNotesState>): void {
-    const next = { ...this.state, ...change };
-    // A generate that starts while the picker is open (Stop with auto-generate on, during the
-    // call) closes it for good, here for every change. Trap: only hiding it while the generate is
-    // pending brings it back, focused, once the run ends, and a stray Enter then starts a second
-    // paid run over the notes just written, with no question asked.
-    if (next.picker !== null && pickerMoot(next.pending, next.stream)) next.picker = null;
-    this.state = next;
+    this.state = { ...this.state, ...change };
     for (const listener of [...this.listeners]) listener();
   }
 }

@@ -35,7 +35,8 @@ function StartNotesFlushResponder() {
  * What M4-T20 mounts: My notes, AI notes and the meeting chat (all inside the meeting page's
  * CitationNavigatorProvider, which their chips reveal lines through) and the flush responder's
  * start. Slot names and their props: ../slotRegistry.ts. No Settings section: the redesign
- * deleted the notes preferences (R6; notes/NotesSettings.tsx goes with R4).
+ * deleted the notes preferences (`notes.autoGenerate`, `notes.whenUnsure`), and with them the
+ * section.
  */
 export const contributions: SlotContributions = {
   banner: [{ id: 'm4-notes-flush', order: 0, component: StartNotesFlushResponder }],

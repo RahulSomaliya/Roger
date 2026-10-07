@@ -1,11 +1,10 @@
 /**
- * Preferences: the small choices a user makes once (the theme, notes after Stop, the reminder lead
- * time), read by main and by the page. Main's PreferencesStore (src/main/preferences/) keeps them
+ * Preferences: the small choices a user makes once (the theme, the reminder lead time), read by main and by the page. Main's PreferencesStore (src/main/preferences/) keeps them
  * in `userData/preferences.json` and serves them over IPC (src/shared/ipc/prefs.ts). `config.json`
  * is not this: it holds startup settings read once (src/main/config.ts).
  *
- * This file holds the registry, the keys the app shell and the notes own, and the type of every
- * key in the app. Every other milestone keeps its keys, defaults and checks in its own file (M5:
+ * This file holds the registry, the key the app shell owns (the theme), and the type of every key
+ * in the app. Every other milestone keeps its keys, defaults and checks in its own file (M5:
  * src/shared/calendarPrefs.ts) and wires them in three places:
  *
  * 1. Typed access: PreferenceValues below extends that file's values type, so `get`,
@@ -33,19 +32,9 @@ import type { CalendarPreferenceValues } from './calendarPrefs';
 export const THEME_PREFERENCES = ['system', 'light', 'dark'] as const;
 export type ThemePreference = (typeof THEME_PREFERENCES)[number];
 
-/**
- * What Roger does at Stop when no rule picks a notes template (M4, "When notes generate"): ask
- * with the four templates, or use General.
- */
-export const NOTES_WHEN_UNSURE = ['ask', 'general'] as const;
-export type NotesWhenUnsure = (typeof NOTES_WHEN_UNSURE)[number];
-
 /** Every preference's value type, by key: this file's, and each milestone's (top of the file). */
 export interface PreferenceValues extends CalendarPreferenceValues {
   theme: ThemePreference;
-  /** Generate AI notes after Stop (M4-T23, wired by M4-T16). */
-  'notes.autoGenerate': boolean;
-  'notes.whenUnsure': NotesWhenUnsure;
 }
 
 export type PreferenceKey = keyof PreferenceValues;
@@ -69,27 +58,19 @@ export type PreferenceChange = {
   [K in PreferenceKey]: { key: K; value: PreferenceValues[K] };
 }[PreferenceKey];
 
-type AppPreferenceKey = 'theme' | 'notes.autoGenerate' | 'notes.whenUnsure';
+type AppPreferenceKey = 'theme';
 
-/** The keys this file owns: the theme (the app shell) and M4's notes switches. */
+/**
+ * The keys this file owns: the theme (the app shell). `notes.autoGenerate` and `notes.whenUnsure`
+ * are gone (redesign calls 5 and 6: Stop writes no notes and Roger never asks which kind of call
+ * it was). A preferences.json that still holds them is read as before: a key nobody registers is
+ * ignored on read and kept on write (PreferencesStore), never an error.
+ */
 export const APP_PREFERENCES: { readonly [K in AppPreferenceKey]: PreferenceSpec<K> } = {
   theme: {
     key: 'theme',
     default: 'system',
     parse: (raw) => parseOneOf('theme', THEME_PREFERENCES, raw),
-  },
-  'notes.autoGenerate': {
-    key: 'notes.autoGenerate',
-    default: true,
-    parse: (raw) => {
-      if (typeof raw === 'boolean') return raw;
-      throw new Error(`notes.autoGenerate must be true or false (got ${describe(raw)})`);
-    },
-  },
-  'notes.whenUnsure': {
-    key: 'notes.whenUnsure',
-    default: 'ask',
-    parse: (raw) => parseOneOf('notes.whenUnsure', NOTES_WHEN_UNSURE, raw),
   },
 };
 

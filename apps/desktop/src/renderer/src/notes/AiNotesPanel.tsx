@@ -1,46 +1,41 @@
-import {
-  Fragment,
-  useContext,
-  useEffect,
-  useId,
-  useMemo,
-  useState,
-  useSyncExternalStore,
-} from 'react';
+import { Fragment, useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 import {
   type CitationAttrs,
   type DroppedLine,
   type DropReason,
   FROM_YOUR_NOTES_HEADING,
   NOT_SAID_ON_THE_CALL,
-  type NoteTemplate,
 } from '../../../shared/notes';
-import { suggestTemplate } from '../../../shared/suggestTemplate';
 import type { MeetingSlotProps } from '../app/slotRegistry';
-import { MeetingViewContext } from '../meeting/useMeeting';
+import { Icon } from '../components/ui/icons';
+import { rogerNotes } from '../meeting/useMeeting';
 import { useCitationNavigator } from '../transcript/transcriptNavigator';
 import {
-  type AiNotesLayout,
+  type FailureBanner,
   AiNotesSession,
   type AiNotesState,
-  type Confirmation,
-  type FailureBanner,
   layoutAiNotes,
-  type Loadable,
 } from './aiNotesActions';
 import type { AiNotesStreamView } from './aiNotesStream';
 import { CitationChipButton } from './CitationChip';
 import { NoteEditor } from './NoteEditor';
-import { TemplatePicker } from './TemplatePicker';
 import './aiNotes.css';
 
 /**
  * The "AI notes" tab of the meeting page (M4-T18; M4-T20 mounts it in the `meetingAiNotes` slot,
- * inside the page's CitationNavigatorProvider). It shows where the meeting's notes generate stands
- * (waiting for lines or notes, "Which kind of call was this?", writing, failed with Retry), a run's
- * lines as they stream, and then the AI notes in the editor (`<NoteEditor kind="ai" />`), with the
- * lines the API removed, Regenerate and "Restore previous notes". State and actions live in
- * aiNotesActions.ts, the stream in aiNotesStream.ts; this file only draws them.
+ * inside the page's CitationNavigatorProvider). It exists once notes exist, a generate is pending
+ * or a run failed (`aiNotesTabExists`, meeting/headerAction.ts), so it has no empty state and no
+ * action of its own to start one: the meeting header owns Write notes, Cancel, the ⋯ menu (Write
+ * again as, Restore previous notes) and the question before AI notes the person edited are
+ * replaced, from the page's own AiNotesSession. This panel follows main with a session of its own
+ * and draws what the header does not: why a generate waits, a run's lines as they stream, a failed
+ * run with Try again, then the AI notes in the editor (`<NoteEditor kind="ai" />`) and the lines
+ * the API left out. State and actions live in aiNotesActions.ts, the stream in aiNotesStream.ts.
+ *
+ * Trap: this session never starts a generate except Try again, so the only `actionError` it can
+ * hold is that one's (or a Cancel's). It shows here as a problem line: the header's session does
+ * not see this one, so dropping it would hide a failed Try again (house rule 1, no silent
+ * failure).
  *
  * The editor stays mounted, hidden, under a run's live lines, and read-only while a run may write
  * the AI notes (the API refuses an AI-doc `PUT` during a run). A doc that arrives meanwhile (the
@@ -51,73 +46,47 @@ import './aiNotes.css';
 const LABEL = 'AI notes';
 
 export function AiNotesPanel({ meetingId }: MeetingSlotProps) {
-  const session = useMemo(() => new AiNotesSession(window.roger, meetingId), [meetingId]);
-  const state = useSyncExternalStore(session.subscribe, session.getState);
+  // `rogerNotes` looks `window.roger` up at each call: this render also runs under Node.
+  const session = useMemo(() => new AiNotesSession(rogerNotes, meetingId), [meetingId]);
+  const state = useSyncExternalStore(session.subscribe, session.getState, session.getState);
   useEffect(() => session.start(), [session]);
-  // The page cannot read notes.sqlite's remembered picks (main uses them at Stop), so the title is
-  // the only cue here. Outside a meeting page (a QA harness) there is none, and nothing is marked.
-  const title = useContext(MeetingViewContext)?.meeting?.title ?? '';
-  const suggested = suggestTemplate({ title, lastPick: () => null }).templateId;
-  return (
-    <AiNotesView meetingId={meetingId} state={state} actions={session} suggested={suggested} />
-  );
+  return <AiNotesView meetingId={meetingId} state={state} actions={session} />;
 }
 
 /** What the view calls; AiNotesSession is one, a test passes stand-ins. */
 export type AiNotesPanelActions = Pick<
   AiNotesSession,
-  | 'openPicker'
-  | 'closePicker'
-  | 'pick'
-  | 'generate'
-  | 'regenerate'
-  | 'restorePrevious'
-  | 'confirmAction'
-  | 'dismissConfirm'
-  | 'cancel'
-  | 'dismissFailure'
-  | 'dismissError'
-  | 'reload'
-  | 'reloadTemplates'
-  | 'reloadRun'
+  'generate' | 'cancel' | 'dismissFailure' | 'dismissError' | 'reload' | 'reloadRun'
 >;
 
 export interface AiNotesViewProps {
   meetingId: string;
   state: AiNotesState;
   actions: AiNotesPanelActions;
-  /** The template the meeting's title suggests (shared/suggestTemplate.ts), or null. */
-  suggested: string | null;
 }
 
-export function AiNotesView({ meetingId, state, actions, suggested }: AiNotesViewProps) {
+export function AiNotesView({ meetingId, state, actions }: AiNotesViewProps) {
   if (state.status === 'loading') {
-    return (
-      <div className="ai-notes" aria-busy="true">
-        <p className="ai-notes-message" role="status">
-          Opening the AI notes...
-        </p>
-      </div>
-    );
+    // Nothing to say: main answers within a frame or two (docs/design.md, Loading).
+    return <div className="ai-notes" aria-busy="true" />;
   }
   if (state.status === 'failed') {
     return (
       <div className="ai-notes">
-        <div className="error ai-notes-error" role="alert">
-          <span>Roger could not open the AI notes: {state.loadError}</span>
-          <div className="ai-notes-actions">
-            <button
-              type="button"
-              className="btn"
-              data-variant="secondary"
-              data-size="sm"
-              onClick={() => {
-                actions.reload();
-              }}
-            >
-              Try again
-            </button>
-          </div>
+        <div className="problem" role="alert">
+          <Icon name="circle-alert" />
+          <span className="problem-text">Roger could not open the AI notes: {state.loadError}</span>
+          <button
+            type="button"
+            className="btn"
+            data-variant="secondary"
+            data-size="sm"
+            onClick={() => {
+              actions.reload();
+            }}
+          >
+            Try again
+          </button>
         </div>
       </div>
     );
@@ -125,46 +94,25 @@ export function AiNotesView({ meetingId, state, actions, suggested }: AiNotesVie
 
   const layout = layoutAiNotes(state);
   const busy = state.busy !== null;
-  // The session closes the picker for good once a generate starts (AiNotesSession `set`).
-  const { picker } = state;
 
   return (
     <div className="ai-notes">
-      {state.note !== null || layout.stop !== null ? (
-        <AiNotesBar
-          state={state}
-          layout={layout}
-          actions={actions}
-          onRegenerate={() => {
-            actions.openPicker('regenerate');
-          }}
-        />
-      ) : null}
       {state.actionError === null ? null : (
-        <div className="error ai-notes-error" role="alert">
-          <span>{state.actionError}</span>
-          <div className="ai-notes-actions">
-            <button
-              type="button"
-              className="btn"
-              data-variant="secondary"
-              data-size="sm"
-              onClick={() => {
-                actions.dismissError();
-              }}
-            >
-              Dismiss
-            </button>
-          </div>
+        <div className="problem" role="alert">
+          <Icon name="circle-alert" />
+          <span className="problem-text">{state.actionError}</span>
+          <button
+            type="button"
+            className="btn"
+            data-variant="secondary"
+            data-size="sm"
+            onClick={() => {
+              actions.dismissError();
+            }}
+          >
+            Dismiss
+          </button>
         </div>
-      )}
-      {state.confirm === null ? null : (
-        <ConfirmReplace
-          confirm={state.confirm}
-          templates={state.templates}
-          busy={busy}
-          actions={actions}
-        />
       )}
       {layout.failure === null ? null : (
         <RunFailure
@@ -174,39 +122,10 @@ export function AiNotesView({ meetingId, state, actions, suggested }: AiNotesVie
           actions={actions}
         />
       )}
-      {layout.prompt?.kind === 'ask' ? (
-        <AskWhichCall state={state} busy={busy} actions={actions} />
-      ) : null}
-      {picker === null ? null : (
-        <TemplatePicker
-          question={
-            picker === 'regenerate'
-              ? 'Regenerate as which kind of call?'
-              : 'Which kind of call was this?'
-          }
-          hint={
-            picker === 'regenerate'
-              ? 'Roger keeps the notes it replaces: Restore previous notes brings them back.'
-              : 'Roger writes the AI notes in the shape of the call.'
-          }
-          templates={state.templates}
-          suggested={suggested}
-          current={state.note?.templateId ?? null}
-          takeFocus
-          disabled={busy}
-          onPick={(templateId) => {
-            void actions.pick(templateId);
-          }}
-          onReload={() => {
-            actions.reloadTemplates();
-          }}
-          dismiss={{
-            label: 'Cancel',
-            onDismiss: () => {
-              actions.closePicker();
-            },
-          }}
-        />
+      {layout.waiting === null ? null : (
+        <p className="ai-notes-waiting" role="status">
+          {layout.waiting}
+        </p>
       )}
       {layout.stream !== null && state.stream !== null ? (
         <StreamedNotes view={state.stream} live={layout.stream === 'live'} />
@@ -216,34 +135,14 @@ export function AiNotesView({ meetingId, state, actions, suggested }: AiNotesVie
           <NoteEditor meetingId={meetingId} kind="ai" label={LABEL} readOnly={layout.readOnly} />
         </div>
       )}
-      {layout.empty && picker === null ? (
-        <div className="empty-state ai-notes-empty">
-          <div>
-            <p className="empty-state-title">No AI notes yet</p>
-            <p className="empty-state-text">
-              After the call, Roger turns your notes and the transcript into clean notes, every line
-              linked to what was said.
-            </p>
-          </div>
-          <button
-            type="button"
-            className="btn"
-            data-variant="primary"
-            data-size="sm"
-            disabled={busy}
-            onClick={() => {
-              actions.openPicker('generate');
-            }}
-          >
-            Generate notes
-          </button>
-        </div>
-      ) : null}
       {layout.removed.length === 0 ? null : <RemovedLines lines={layout.removed} />}
       {layout.runProblem === null ? null : (
-        <p className="ai-notes-run-problem">
-          Roger could not read the run that wrote these notes ({layout.runProblem}), so it cannot
-          list the lines it removed.
+        <div className="problem" role="status">
+          <Icon name="circle-alert" />
+          <span className="problem-text">
+            Roger could not read the run that wrote these notes ({layout.runProblem}), so it cannot
+            list the lines it left out.
+          </span>
           <button
             type="button"
             className="btn"
@@ -255,236 +154,68 @@ export function AiNotesView({ meetingId, state, actions, suggested }: AiNotesVie
           >
             Try again
           </button>
-        </p>
+        </div>
       )}
     </div>
   );
 }
 
-interface AiNotesBarProps {
-  state: AiNotesState;
-  layout: AiNotesLayout;
-  actions: AiNotesPanelActions;
-  onRegenerate: () => void;
-}
-
-/**
- * Above the notes: where a pending generate stands (beside its Stop or Cancel), the notes'
- * template and lines to check, and Regenerate and Restore.
- */
-function AiNotesBar({ state, layout, actions, onRegenerate }: AiNotesBarProps) {
-  const busy = state.busy !== null;
-  const { about, prompt } = layout;
-  const name = about === null ? null : templateName(state.templates, about.templateId);
-  const meta = [
-    name === null ? null : `${name} template`,
-    about === null || about.flagged === 0
-      ? null
-      : `${about.flagged} ${plural(about.flagged, 'line')} to check`,
-  ].filter((part) => part !== null);
-  return (
-    <div className="ai-notes-bar">
-      <div className="ai-notes-bar-text">
-        {prompt === null || prompt.kind === 'ask' ? null : (
-          <p
-            className={
-              prompt.kind === 'running'
-                ? 'ai-notes-progress ai-notes-progress-running'
-                : 'ai-notes-progress'
-            }
-            role="status"
-          >
-            {prompt.text}
-          </p>
-        )}
-        {meta.length === 0 ? null : <p className="ai-notes-meta">{meta.join(', ')}</p>}
-      </div>
-      <div className="ai-notes-actions">
-        {layout.canRegenerate ? (
-          <button
-            type="button"
-            className="btn"
-            data-variant="secondary"
-            data-size="sm"
-            disabled={busy}
-            onClick={onRegenerate}
-          >
-            Regenerate
-          </button>
-        ) : null}
-        {layout.restorable === null ? null : (
-          <button
-            type="button"
-            className="btn"
-            data-variant="secondary"
-            data-size="sm"
-            disabled={busy}
-            onClick={() => {
-              void actions.restorePrevious();
-            }}
-          >
-            Restore previous notes
-          </button>
-        )}
-        {layout.stop === null ? null : (
-          // Never waits for main: its cancel answers once the API holds the run (up to 130 s).
-          <button
-            type="button"
-            className="btn"
-            data-variant="secondary"
-            data-size="sm"
-            disabled={state.cancelling}
-            onClick={() => {
-              actions.cancel();
-            }}
-          >
-            {state.cancelling ? 'Stopping...' : layout.stop === 'stop' ? 'Stop' : 'Cancel'}
-          </button>
-        )}
-      </div>
-    </div>
-  );
-}
-
-interface AskWhichCallProps {
-  state: AiNotesState;
-  busy: boolean;
-  actions: AiNotesPanelActions;
-}
-
-/**
- * "Which kind of call was this?": the pending generate needs a template. Roger could not tell at
- * Stop (main applied the same rule, with the remembered picks the page cannot read), so nothing is
- * marked as suggested here. The answer keeps the generate's run id (main's `generate`).
- */
-function AskWhichCall({ state, busy, actions }: AskWhichCallProps) {
-  return (
-    <TemplatePicker
-      question="Which kind of call was this?"
-      hint="Roger writes the AI notes in the shape of the call, and remembers your pick for meetings with the same title."
-      templates={state.templates}
-      suggested={null}
-      disabled={busy}
-      onPick={(templateId) => {
-        void actions.generate(templateId);
-      }}
-      onReload={() => {
-        actions.reloadTemplates();
-      }}
-      dismiss={{
-        label: 'Not now',
-        onDismiss: () => {
-          actions.cancel();
-        },
-      }}
-    />
-  );
-}
-
 interface RunFailureProps {
   failure: FailureBanner;
-  /** A cancel is the user's own doing: a notice, not an error. */
+  /** A cancel is the user's own doing: a quiet line, not a problem. */
   cancelled: boolean;
   busy: boolean;
   actions: AiNotesPanelActions;
 }
 
+/**
+ * A run that failed or was cancelled, as a problem line (an icon, the sentence, Try again as the
+ * one secondary action) with its way out beside it. Try again is not the page's primary: when the
+ * notes failed the header offers Write notes only if no generate is pending, and the page has one
+ * primary at most.
+ */
 function RunFailure({ failure, cancelled, busy, actions }: RunFailureProps) {
   const { retryTemplateId } = failure;
   return (
-    <div
-      className={cancelled ? 'notice ai-notes-failure' : 'error ai-notes-failure'}
-      role={cancelled ? 'status' : 'alert'}
-    >
-      <p className="ai-notes-failure-title">{failure.title}</p>
-      {failure.detail === null ? null : <p className="ai-notes-failure-detail">{failure.detail}</p>}
-      <div className="ai-notes-actions">
-        {retryTemplateId === null ? null : (
+    <div className="problem ai-notes-failure" role={cancelled ? 'status' : 'alert'}>
+      {cancelled ? null : <Icon name="circle-alert" />}
+      <div className="problem-text">
+        <p className="ai-notes-failure-title">{failure.title}</p>
+        {failure.detail === null ? null : (
+          <p className="ai-notes-failure-detail">{failure.detail}</p>
+        )}
+        <div className="ai-notes-actions">
+          {retryTemplateId === null ? null : (
+            // Busy is not disabled: full colour, aria-disabled, and it says what it is doing.
+            <button
+              type="button"
+              className="btn"
+              data-variant="secondary"
+              data-size="sm"
+              aria-disabled={busy ? 'true' : undefined}
+              onClick={() => {
+                if (!busy) void actions.generate(retryTemplateId);
+              }}
+            >
+              {busy ? 'Trying again…' : 'Try again'}
+            </button>
+          )}
           <button
             type="button"
             className="btn"
-            data-variant="primary"
+            data-variant="ghost"
             data-size="sm"
-            disabled={busy}
             onClick={() => {
-              void actions.generate(retryTemplateId);
+              // A failed generate main keeps is cancelled: a stored failure would wait for Try again
+              // until then, and main's own `internal_error` retries by itself, so that button says
+              // Cancel (`retriesItself`). An ended run's banner is only the page's.
+              if (failure.source === 'pending') actions.cancel();
+              else actions.dismissFailure();
             }}
           >
-            Retry
+            {failure.retriesItself ? 'Cancel' : 'Dismiss'}
           </button>
-        )}
-        <button
-          type="button"
-          className="btn"
-          data-variant="secondary"
-          data-size="sm"
-          onClick={() => {
-            // A failed generate main keeps is cancelled: a stored failure would wait for Retry
-            // until then, and main's own `internal_error` retries by itself, so that button says
-            // Cancel (`retriesItself`). An ended run's banner is only the page's.
-            if (failure.source === 'pending') actions.cancel();
-            else actions.dismissFailure();
-          }}
-        >
-          {failure.retriesItself ? 'Cancel' : 'Dismiss'}
-        </button>
-      </div>
-    </div>
-  );
-}
-
-interface ConfirmReplaceProps {
-  confirm: Confirmation;
-  templates: Loadable<NoteTemplate[]>;
-  busy: boolean;
-  actions: AiNotesPanelActions;
-}
-
-/** The question before AI notes edited since their run are replaced (M4, "AI notes and my notes"). */
-function ConfirmReplace({ confirm, templates, busy, actions }: ConfirmReplaceProps) {
-  const titleId = useId();
-  const regenerate = confirm.action === 'regenerate';
-  const name = regenerate ? templateName(templates, confirm.templateId) : null;
-  return (
-    <div className="ai-notes-confirm" role="group" aria-labelledby={titleId}>
-      <p id={titleId} className="ai-notes-confirm-title">
-        {regenerate
-          ? 'Replace your edited AI notes?'
-          : 'Replace your edited AI notes with the previous version?'}
-      </p>
-      <p className="ai-notes-confirm-text">
-        {regenerate
-          ? 'You changed these notes since Roger wrote them. Regenerating writes them again from the call; Restore previous notes brings this version back.'
-          : 'You changed these notes since Roger wrote them, and no run holds your edits, so Roger cannot bring them back afterwards.'}
-      </p>
-      <div className="ai-notes-actions">
-        <button
-          type="button"
-          className="btn"
-          data-variant="primary"
-          data-size="sm"
-          disabled={busy}
-          onClick={() => {
-            void actions.confirmAction();
-          }}
-        >
-          {regenerate
-            ? name === null
-              ? 'Regenerate'
-              : `Regenerate as ${name}`
-            : 'Restore previous notes'}
-        </button>
-        <button
-          type="button"
-          className="btn"
-          data-variant="secondary"
-          data-size="sm"
-          onClick={() => {
-            actions.dismissConfirm();
-          }}
-        >
-          Keep my edits
-        </button>
+        </div>
       </div>
     </div>
   );
@@ -498,7 +229,7 @@ function ConfirmReplace({ confirm, templates, busy, actions }: ConfirmReplacePro
  * Trap: this div carries the editor's class, and comes before the editor in the panel, so a
  * selector of `.note-editor-content` alone finds the streamed lines first (browser QA read
  * `contenteditable` from it and got null). Reach the editor as `.ai-notes-editor
- * .note-editor-content` (e2e/m4-t18.qa.e2e.ts, `EDITOR`).
+ * .note-editor-content`.
  */
 function StreamedNotes({ view, live }: { view: AiNotesStreamView; live: boolean }) {
   const empty = view.sections.length === 0 && view.fromNotes.length === 0;
@@ -514,7 +245,7 @@ function StreamedNotes({ view, live }: { view: AiNotesStreamView; live: boolean 
       )}
       <div className="note-editor-content ai-notes-stream-doc">
         {empty ? (
-          <p className="ai-notes-stream-waiting">Reading the transcript and your notes...</p>
+          <p className="ai-notes-stream-waiting">Reading the transcript and your notes…</p>
         ) : null}
         {view.sections.map((section) => (
           <Fragment key={section.index}>
@@ -578,15 +309,17 @@ const DROP_REASONS: Readonly<Record<DropReason, string>> = {
   unknown_refs: 'cited lines that are not in the transcript',
 };
 
-/** "Removed lines" (M4 D4): the AI lines no transcript line backs, kept out of the notes. */
+/**
+ * The AI lines no transcript line backs, kept out of the notes (M4 D4), closed. Every AI line
+ * links to the transcript lines behind it; the reason for each is in the list, so there is no
+ * intro paragraph.
+ */
 function RemovedLines({ lines }: { lines: readonly DroppedLine[] }) {
   return (
     <details className="ai-notes-removed">
-      <summary>Removed lines ({lines.length})</summary>
-      <p className="ai-notes-removed-intro">
-        Every AI line links to the transcript lines behind it. These had none, so Roger left them
-        out.
-      </p>
+      <summary>
+        {lines.length} {lines.length === 1 ? 'line' : 'lines'} left out
+      </summary>
       <ul className="ai-notes-removed-list">
         {lines.map((line, at) => (
           <li key={at}>
@@ -597,13 +330,4 @@ function RemovedLines({ lines }: { lines: readonly DroppedLine[] }) {
       </ul>
     </details>
   );
-}
-
-function templateName(templates: Loadable<NoteTemplate[]>, id: string | null): string | null {
-  if (id === null || templates.status !== 'ready') return null;
-  return templates.value.find((template) => template.id === id)?.name ?? null;
-}
-
-function plural(count: number, word: string): string {
-  return count === 1 ? word : `${word}s`;
 }

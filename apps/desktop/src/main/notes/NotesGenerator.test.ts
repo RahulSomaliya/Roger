@@ -4,7 +4,6 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { NotesStreamMessage, PendingGenerateChange } from '../../shared/ipc/notes';
 import type { LlmRun, LlmRunStatus, Note, NoteDoc, NoteKind } from '../../shared/notes';
-import type { NotesWhenUnsure } from '../../shared/preferences';
 import { templateTitleKey } from '../../shared/suggestTemplate';
 import type { TranscriptSegment } from '../../shared/transcript';
 import { ApiError } from '../api/http';
@@ -291,7 +290,6 @@ function harness(options: HarnessOptions = {}) {
       };
     },
   };
-  const preferences = { autoGenerate: true, whenUnsure: 'ask' as NotesWhenUnsure };
   const page = fakeWindow();
   let runIds = 0;
   const generator = new NotesGenerator({
@@ -302,10 +300,6 @@ function harness(options: HarnessOptions = {}) {
     transcripts,
     uploads,
     recordings,
-    preferences: {
-      autoGenerate: () => preferences.autoGenerate,
-      whenUnsure: () => preferences.whenUnsure,
-    },
     window: () => page.window,
     logger: silentLogger,
     clock,
@@ -326,7 +320,6 @@ function harness(options: HarnessOptions = {}) {
     sync,
     streams,
     runs,
-    preferences,
     page,
     generator,
     changes,
@@ -376,52 +369,49 @@ afterEach(() => {
 });
 
 describe('NotesGenerator: after Stop', () => {
-  it('Stop with auto-generate on writes one pending row with a run id', () => {
-    // A line still to upload keeps the generate waiting, so only the row is under test here.
+  it('Stop writes no notes by itself, whatever the title says', async () => {
+    // Redesign call 5: Write notes is the one primary after Stop. A title that suggests a template
+    // ("Acme client call") and one that does not each leave no row, no run and no question.
+    for (const title of ['Acme client call', defaultMeetingTitle(new Date(T0))]) {
+      const h = harness({ title });
+      h.generator.start();
+
+      h.stop();
+      await settle();
+      await vi.advanceTimersByTimeAsync(NOTES_RECHECK_MS);
+
+      expect(h.store.listPendingGenerates(), title).toEqual([]);
+      expect(h.generator.getPending(MEETING), title).toBeNull();
+      expect(h.changes, title).toEqual([]);
+      expect(h.log, title).toEqual([]);
+      h.generator.stop();
+    }
+  });
+
+  it('never asks which kind of call it was: a pending generate always has a template', () => {
+    // Redesign call 6: the header's Write notes sends its own best guess, and a row an earlier
+    // build left asking (template null) is dropped at launch, not shown as a question.
     const h = harness({ waitingLines: 1 });
+    h.store.putPendingGenerate({
+      meetingId: MEETING,
+      runId: RUN_1,
+      templateId: null,
+      reason: 'after_stop',
+      createdAt: new Date(T0).toISOString(),
+      lastError: null,
+    });
+
     h.generator.start();
 
-    h.stop();
-
-    expect(h.store.listPendingGenerates()).toEqual([
-      {
-        meetingId: MEETING,
-        runId: RUN_1,
-        // The title rule: "Acme client call".
-        templateId: 'client_call',
-        reason: 'after_stop',
-        createdAt: new Date(T0).toISOString(),
-        lastError: null,
-      },
-    ]);
-    expect(h.changes).toEqual([
-      {
-        meetingId: MEETING,
-        pending: {
-          meetingId: MEETING,
-          runId: RUN_1,
-          templateId: 'client_call',
-          reason: 'after_stop',
-          createdAt: new Date(T0).toISOString(),
-          status: { phase: 'waiting_for_lines', waitingLines: 1 },
-        },
-      },
-    ]);
-
-    // A second Stop of the same meeting (a resume) keeps the row and its run id: an attempt may
-    // already have reached the API, and a new id would pay for a second run.
-    h.stop();
-    expect(h.store.listPendingGenerates().map((row) => row.runId)).toEqual([RUN_1]);
+    expect(h.store.listPendingGenerates()).toEqual([]);
+    expect(h.generator.getPending(MEETING)).toBeNull();
     expect(h.log).toEqual([]);
   });
 
-  it('writes nothing when auto-generate is off, or the meeting was discarded or did not stop', () => {
+  it('a meeting that was discarded or did not stop gets no write-up, and a discarded one drops its row', () => {
     const h = harness({ waitingLines: 1 });
     h.generator.start();
 
-    h.preferences.autoGenerate = false;
-    h.stop();
-    h.preferences.autoGenerate = true;
     // Its meeting may still be open: CrashRecovery decides at the next launch.
     h.stop({ meetingId: OTHER_MEETING, stopFailed: true });
     expect(h.store.listPendingGenerates()).toEqual([]);
@@ -435,51 +425,12 @@ describe('NotesGenerator: after Stop', () => {
     expect(h.changes.at(-1)).toEqual({ meetingId: OTHER_MEETING, pending: null });
   });
 
-  it('asks for a template when no rule applies', async () => {
-    const h = harness({ title: defaultMeetingTitle(new Date(T0)) });
-    h.generator.start();
-
-    h.stop();
-
-    expect(h.generator.getPending(MEETING)).toMatchObject({
-      runId: RUN_1,
-      templateId: null,
-      status: { phase: 'needs_template' },
-    });
-    await settle();
-    // Nothing is flushed or sent until the user picks.
-    expect(h.log).toEqual([]);
-
-    // The pick keeps the run id and the reason, and runs.
-    expect(h.generator.generate(MEETING, 'one_on_one')).toMatchObject({
-      runId: RUN_1,
-      templateId: 'one_on_one',
-      reason: 'after_stop',
-      status: { phase: 'running' },
-    });
-    await settle();
-    expect(h.streams.last().request).toMatchObject({ runId: RUN_1, templateId: 'one_on_one' });
-  });
-
-  it('uses General when Roger cannot tell and the preference says so', () => {
-    const h = harness({ title: defaultMeetingTitle(new Date(T0)), waitingLines: 1 });
-    h.generator.start();
-    h.preferences.whenUnsure = 'general';
-
-    h.stop();
-
-    expect(h.store.getPendingGenerate(MEETING)?.templateId).toBe('general');
-  });
-
-  it('remembers a pick under the title, and suggests it at the next Stop', () => {
+  it('remembers a pick under the title', () => {
     const h = harness({ title: 'Weekly sync', waitingLines: 1 });
     h.generator.start();
 
     h.generator.generate(MEETING, 'one_on_one');
     expect(h.store.getTemplateChoice('weekly sync')).toBe('one_on_one');
-
-    h.stop({ meetingId: OTHER_MEETING });
-    expect(h.store.getPendingGenerate(OTHER_MEETING)?.templateId).toBe('one_on_one');
   });
 
   it('never remembers a pick for the title main gives a manual start', () => {
@@ -540,31 +491,24 @@ describe('NotesGenerator: preconditions', () => {
   });
 
   it('holds a generate pressed during the recording until Stop', async () => {
-    for (const autoGenerate of [true, false]) {
-      const h = harness({ recording: true });
-      h.preferences.autoGenerate = autoGenerate;
-      h.generator.start();
+    const h = harness({ recording: true });
+    h.generator.start();
 
-      // Mid-call, every line so far is up between two upload batches: a run now would write up
-      // part of the call, and Stop would keep its row, so nothing would ever cover the rest.
-      expect(h.generator.generate(MEETING, 'standup').status, `auto ${autoGenerate}`).toEqual({
-        phase: 'waiting_for_notes',
-        cause: 'meeting',
-      });
-      h.uploaderStatus();
-      await vi.advanceTimersByTimeAsync(NOTES_RECHECK_MS);
-      expect(h.log, `auto ${autoGenerate}`).toEqual([]);
+    // Mid-call, every line so far is up between two upload batches: a run now would write up
+    // part of the call, and Stop would keep its row, so nothing would ever cover the rest.
+    expect(h.generator.generate(MEETING, 'standup').status).toEqual({
+      phase: 'waiting_for_notes',
+      cause: 'meeting',
+    });
+    h.uploaderStatus();
+    await vi.advanceTimersByTimeAsync(NOTES_RECHECK_MS);
+    expect(h.log).toEqual([]);
 
-      // Stop ends the meeting before it tells its listeners: the same row runs on the whole call.
-      h.transcripts.markMeetingEnded(MEETING, new Date(Date.now()).toISOString());
-      h.stop();
-      await settle();
-      expect(
-        h.streams.calls.map((call) => call.request.runId),
-        `auto ${autoGenerate}`,
-      ).toEqual([RUN_1]);
-      h.generator.stop();
-    }
+    // Stop ends the meeting before it tells its listeners: the same row runs on the whole call.
+    h.transcripts.markMeetingEnded(MEETING, new Date(Date.now()).toISOString());
+    h.stop();
+    await settle();
+    expect(h.streams.calls.map((call) => call.request.runId)).toEqual([RUN_1]);
   });
 
   it('waits for the meeting to be created in Postgres', async () => {
@@ -710,7 +654,7 @@ describe('NotesGenerator: the run', () => {
     const path = join(mkdtempSync(join(tmpdir(), 'roger-notes-generator-')), 'notes.sqlite');
     const first = harness({ storePath: path });
     first.generator.start();
-    first.stop();
+    first.generator.generate(MEETING, 'client_call');
     await settle();
     // Roger quits while the run streams: the run goes on in the API.
     expect(first.streams.calls.map((call) => call.request.runId)).toEqual([RUN_1]);
@@ -1035,7 +979,7 @@ describe('NotesGenerator: cancel', () => {
   it('drops a waiting generate', async () => {
     const h = harness({ waitingLines: 3 });
     h.generator.start();
-    h.stop();
+    h.generator.generate(MEETING, 'client_call');
 
     await h.generator.cancel(MEETING);
 
@@ -1132,7 +1076,7 @@ describe('NotesGenerator: cancel', () => {
     const path = join(mkdtempSync(join(tmpdir(), 'roger-notes-generator-')), 'notes.sqlite');
     const first = harness({ storePath: path });
     first.generator.start();
-    first.stop();
+    first.generator.generate(MEETING, 'client_call');
     await settle();
     expect(first.streams.calls.map((call) => call.request.runId)).toEqual([RUN_1]);
     first.generator.stop();

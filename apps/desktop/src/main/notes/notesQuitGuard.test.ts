@@ -11,7 +11,6 @@ import { FakeSpeechToText } from '../stt/fake/FakeSpeechToText';
 import { TranscriptUploader } from '../upload/TranscriptUploader';
 import { withTimeout } from '../util/time';
 import { NOTES_RECHECK_MS, NotesGenerator } from './NotesGenerator';
-import type { NotesWhenUnsure } from '../../shared/preferences';
 import {
   KeptSilentMeetings,
   NOTES_FLUSH_TIMEOUT_MS,
@@ -257,7 +256,7 @@ describe('NotesQuitGuard', () => {
  * page that never answers the flush request: none does until M4-T20 mounts the responder, and a
  * busy page may not answer in time after that.
  */
-function stopWithAnUnansweredFlush(whenUnsure: NotesWhenUnsure) {
+function stopWithAnUnansweredFlush() {
   const lines: string[] = [];
   const logger = createLogger({ level: 'debug', format: 'json', sink: (line) => lines.push(line) });
   /** Every API request made; none is expected. */
@@ -301,7 +300,6 @@ function stopWithAnUnansweredFlush(whenUnsure: NotesWhenUnsure) {
     transcripts,
     uploads: uploader,
     recordings: capture,
-    preferences: { autoGenerate: () => true, whenUnsure: () => whenUnsure },
     window: () => null,
     logger,
   });
@@ -345,46 +343,43 @@ function stopWithAnUnansweredFlush(whenUnsure: NotesWhenUnsure) {
 }
 
 describe('a silent meeting Stop kept because a window did not save its notes', () => {
-  // `ask` (the default) leaves a generate asking for a template on a meeting page that is gone;
-  // `general` gives it one, and its run would go out for the gone meeting unless the watch is first.
-  it.each<NotesWhenUnsure>(['ask', 'general'])(
-    'loses the generate Stop wrote for it once the upload at Stop discards it as empty (%s)',
-    async (whenUnsure) => {
-      const h = stopWithAnUnansweredFlush(whenUnsure);
-      await h.capture.start();
-      const meetingId = h.capture.getStatus().meetingId ?? '';
-      expect(h.transcripts.getMeeting(meetingId)).not.toBeNull();
+  it('loses the generate pressed during the recording once the upload at Stop discards it as empty', async () => {
+    const h = stopWithAnUnansweredFlush();
+    await h.capture.start();
+    const meetingId = h.capture.getStatus().meetingId ?? '';
+    expect(h.transcripts.getMeeting(meetingId)).not.toBeNull();
+    // Write notes pressed mid-call: Stop writes no row of its own, so this is the only one.
+    h.generator.generate(meetingId, 'general');
 
-      // Nobody spoke. Stop asks the page to save, waits its 1 s, and keeps the meeting unchecked.
-      const stopping = h.capture.stop();
-      await vi.advanceTimersByTimeAsync(NOTES_FLUSH_TIMEOUT_MS);
-      await stopping;
+    // Nobody spoke. Stop asks the page to save, waits its 1 s, and keeps the meeting unchecked.
+    const stopping = h.capture.stop();
+    await vi.advanceTimersByTimeAsync(NOTES_FLUSH_TIMEOUT_MS);
+    await stopping;
 
-      expect(h.ended).toEqual([{ meetingId, reason: 'user', discarded: false, stopFailed: false }]);
-      expect(h.logged()).toContainEqual(
-        expect.objectContaining({
-          level: 'error',
-          message: 'kept a meeting whose notes could not be checked',
-          meetingId,
-        }),
-      );
-      // The generator wrote the meeting up at Stop; Stop's upload then found no line and no notes
-      // in it and discarded it as empty, and the generate went with it.
-      expect(h.transcripts.getMeeting(meetingId)).toBeNull();
-      expect(h.logged()).toContainEqual(
-        expect.objectContaining({ message: 'empty meeting discarded', meetingId }),
-      );
-      expect(h.told).toEqual([whenUnsure === 'ask' ? 'needs_template' : 'waiting_for_notes', null]);
-      expect(h.notes.listPendingGenerates()).toEqual([]);
-      expect(h.generator.getPending(meetingId)).toBeNull();
+    expect(h.ended).toEqual([{ meetingId, reason: 'user', discarded: false, stopFailed: false }]);
+    expect(h.logged()).toContainEqual(
+      expect.objectContaining({
+        level: 'error',
+        message: 'kept a meeting whose notes could not be checked',
+        meetingId,
+      }),
+    );
+    // Stop's upload found no line and no notes in the meeting and discarded it as empty, and the
+    // generate went with it.
+    expect(h.transcripts.getMeeting(meetingId)).toBeNull();
+    expect(h.logged()).toContainEqual(
+      expect.objectContaining({ message: 'empty meeting discarded', meetingId }),
+    );
+    expect(h.told).toEqual(['waiting_for_notes', null]);
+    expect(h.notes.listPendingGenerates()).toEqual([]);
+    expect(h.generator.getPending(meetingId)).toBeNull();
 
-      // Nothing waits to be re-checked, and nothing was ever sent for the gone meeting.
-      await vi.advanceTimersByTimeAsync(NOTES_RECHECK_MS);
-      expect(h.notes.listPendingGenerates()).toEqual([]);
-      expect(h.requests).toEqual([]);
-      h.stopAll();
-    },
-  );
+    // Nothing waits to be re-checked, and nothing was ever sent for the gone meeting.
+    await vi.advanceTimersByTimeAsync(NOTES_RECHECK_MS);
+    expect(h.notes.listPendingGenerates()).toEqual([]);
+    expect(h.requests).toEqual([]);
+    h.stopAll();
+  });
 });
 
 const KEPT = '5d2c7a10-8e4b-4f6a-9c3d-2b1e0f9a8c7d';
@@ -426,8 +421,8 @@ function keptSetUp(options: { generates?: string[] } = {}) {
         [...generates].map((meetingId) => ({
           meetingId,
           runId: '00000000-0000-4000-8000-000000000042',
-          templateId: null,
-          reason: 'after_stop',
+          templateId: 'general',
+          reason: 'button',
           createdAt: '2026-10-07T09:00:00.000Z',
           lastError: null,
         })),
@@ -442,10 +437,10 @@ function keptSetUp(options: { generates?: string[] } = {}) {
           ? {
               meetingId,
               runId: '00000000-0000-4000-8000-000000000042',
-              templateId: null,
-              reason: 'after_stop',
+              templateId: 'general',
+              reason: 'button',
               createdAt: '2026-10-07T09:00:00.000Z',
-              status: { phase: 'needs_template' },
+              status: { phase: 'waiting_for_notes', cause: 'meeting' },
             }
           : null;
       },
