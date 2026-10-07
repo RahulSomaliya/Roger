@@ -485,6 +485,36 @@ describe('the session', () => {
     expect(layout.readOnly).toBe(false);
   });
 
+  it('gives the notes back when a lost stream leaves its generate waiting offline', async () => {
+    const main = new FakeMain();
+    main.ai = aiNote();
+    const session = await opened(main);
+    main.pendingChanged(pendingGenerate({ phase: 'running' }));
+    main.event({ type: 'run', runId: NEXT_RUN, model: 'm', templateId: 'general', lineCount: 9 });
+    main.event({ type: 'section', index: 0, heading: 'Summary' });
+    main.event({ type: 'item', section: 0, text: 'Pilot went well', citations: [], support: 'ok' });
+    expect(layoutAiNotes(session.getState()).editor).toBe('hidden');
+
+    // The stream dropped with no event; main's poll could not reach the API.
+    main.pendingChanged(pendingGenerate({ phase: 'waiting_for_notes', cause: 'offline' }));
+    let layout = layoutAiNotes(session.getState());
+    expect(layout.stream).toBeNull();
+    expect(layout.editor).toBe('shown');
+    expect(layout.readOnly).toBe(false);
+    expect(layout.prompt).toEqual({
+      kind: 'waiting',
+      text: 'Roger is offline; notes will generate when it is back.',
+    });
+    expect(layout.stop).toBe('cancel');
+
+    // Back online: the next attempt re-sends the run id and replays from its `run` event.
+    main.pendingChanged(pendingGenerate({ phase: 'running' }));
+    main.event({ type: 'run', runId: NEXT_RUN, model: 'm', templateId: 'general', lineCount: 9 });
+    layout = layoutAiNotes(session.getState());
+    expect(layout.stream).toBe('live');
+    expect(layout.editor).toBe('hidden');
+  });
+
   it('keeps partial notes with a banner after an error, until dismissed', async () => {
     const main = new FakeMain();
     const session = await opened(main);

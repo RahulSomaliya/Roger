@@ -328,6 +328,43 @@ describe('afterPendingChanged', () => {
     const done = play([RUN_EVENT, { type: 'done', runId: RUN, note: SAVED }]);
     expect(afterPendingChanged(done, null)).toBeNull();
   });
+
+  it('ends a streaming view when its generate is no longer running', () => {
+    // A lost stream: main polled the run for 2 minutes, could not reach the API, and the same
+    // generate now waits offline. No event of the run comes until the next attempt's `run`.
+    const streaming = play([
+      RUN_EVENT,
+      { type: 'section', index: 0, heading: 'Summary' },
+      { type: 'item', section: 0, text: 'Pilot went well', citations: [], support: 'ok' },
+    ]);
+    expect(
+      afterPendingChanged(
+        streaming,
+        pending({ status: { phase: 'waiting_for_notes', cause: 'offline' } }),
+      ),
+    ).toBeNull();
+    expect(
+      afterPendingChanged(
+        streaming,
+        pending({ status: { phase: 'waiting_for_lines', waitingLines: 3 } }),
+      ),
+    ).toBeNull();
+    // main's own local failure sends no `error` event: its banner comes from the pending generate.
+    expect(
+      afterPendingChanged(
+        streaming,
+        pending({
+          status: {
+            phase: 'failed',
+            code: 'internal_error',
+            message: 'Roger could not generate the notes. It will try again.',
+          },
+        }),
+      ),
+    ).toBeNull();
+    // The next attempt re-sends the run id, and its `run` event starts the view again.
+    expect(play([RUN_EVENT])?.phase).toBe('streaming');
+  });
 });
 
 describe('chips', () => {
