@@ -1,0 +1,52 @@
+/*
+ * M2-T20a's capture status: the level meters, the stream rows, the notices and the warning banner.
+ * Colours come only from the theme tokens (theme/tokens.css, light and dark);
+ * theme/noLiteralColours.test.ts fails on a literal colour here. Nothing here transitions a colour:
+ * a screenshot or a glance mid-fade would read the wrong state (a red row as grey).
+ */
+
+/* Level meter */
+
+.level-meter {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.level-meter-track {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 48px;
+  height: 6px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--line);
+}
+
+.level-meter-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: inherit;
+  background: var(--ok);
+}
+
+.level-meter[data-signal='dead'] .level-meter-track {
+  background: var(--danger-bg);
+}
+
+.level-meter[data-signal='dead'] .level-meter-fill {
+  background: var(--danger);
+}
+
+.level-meter-text {
+  flex: none;
+  min-width: 9ch;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+}
+
+.level-meter[data-signal='dead'] .level-meter-text {
+  color: var(--danger-ink);
+}
