@@ -405,6 +405,26 @@ describe('SttUsageUploader', () => {
     expect(h.sentIds()).toEqual(['m1']);
   });
 
+  it('sends no further row of a pass once quit has come: one request at most to wait for', async () => {
+    const h = harness();
+    const out = deferred();
+    h.save.mockImplementationOnce(() => out.promise);
+    h.store.saveSttUsage(usage('m1'));
+    h.store.saveSttUsage(usage('m2', 1_000));
+    h.uploader.start();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.sentIds()).toEqual(['m1']);
+
+    const stopping = h.uploader.quitHook.run();
+    out.resolve();
+    await stopping;
+    // m1 answered and is marked; m2 was never sent, and waits for the next launch.
+    expect(h.sentIds()).toEqual(['m1']);
+    expect(h.waiting()).toEqual(['m2']);
+    await vi.advanceTimersByTimeAsync(10 * 60_000);
+    expect(h.sentIds()).toEqual(['m1']);
+  });
+
   it('sends nothing before start', async () => {
     const h = harness();
     h.store.saveSttUsage(usage('m1'));

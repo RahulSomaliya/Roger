@@ -56,8 +56,9 @@ export class SttUsageUploader {
     this.clock = options.clock ?? (() => new Date());
     this.quitHook = {
       name: 'stop the speech-to-text usage uploader',
-      // One request at most to wait for. Past the bound the store closes under it: the mark fails
-      // (logged), and the row goes up again at the next launch, which the PUT takes as a no-op.
+      // One request at most to wait for: a pass sends no further row once stopped (pass()). Past
+      // the bound the store closes under it: the mark fails (logged), and the row goes up again
+      // at the next launch, which the PUT takes as a no-op.
       timeoutMs: 1_000,
       run: () => this.stop(),
     };
@@ -84,7 +85,10 @@ export class SttUsageUploader {
     this.runPass();
   }
 
-  /** Ends the polling, and resolves once a pass still out has ended. Never rejects. */
+  /**
+   * Ends the polling, and resolves once a pass still out has ended, which it does as soon as its
+   * request out has answered: it sends no further row. Never rejects.
+   */
   async stop(): Promise<void> {
     this.running = false;
     this.clearTimer();
@@ -130,6 +134,10 @@ export class SttUsageUploader {
       const rows = this.options.store.listSttUsageToUpload(this.batchSize);
       let firstError: Error | null = null;
       for (const usage of rows) {
+        // Quit came during the pass: send no further row. The quit hook's 1 s bound covers the
+        // one request still out, not the rest of a batch of 50; past it the store closes, and
+        // every row sent after would fail its mark and go again at the next launch.
+        if (!this.running) break;
         try {
           await this.send(usage);
         } catch (error) {
