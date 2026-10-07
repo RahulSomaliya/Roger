@@ -386,6 +386,20 @@ describe('MeetingChatStore', () => {
     ]);
   });
 
+  it('a Stop main answers with no event ends the answer here', async () => {
+    const { main, chat } = await openChat();
+    chat.ask('How many lines?');
+    main.event(ASKED[0]!, run());
+    main.event(ASKED[0]!, delta('About'));
+    // main held no stream and no follow for it (a lost answer whose thread it could not read):
+    // it answers the cancel and sends nothing.
+    chat.cancel(ASKED[0]!);
+    await settle();
+    expect(lines(chat)).toEqual(['How many lines? => failed (cancelled): About [live]']);
+    expect(chat.getState().answering).toBe(false);
+    expect(chat.ask('Next')).toBe(true);
+  });
+
   it('a cancel main could not pass on says the answer may still come', async () => {
     const { main, chat } = await openChat();
     chat.ask('How many lines?');

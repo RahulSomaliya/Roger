@@ -175,14 +175,28 @@ export class MeetingChatStore {
     const answer = this.live.get(questionId);
     if (answer === undefined || !isAnswering(answer)) return;
     const run = this.run;
-    this.api
-      .cancelChatAnswer({ meetingId: this.meetingId, messageId: questionId })
-      .catch((error: unknown) => {
+    this.api.cancelChatAnswer({ meetingId: this.meetingId, messageId: questionId }).then(
+      () => {
+        if (run !== this.run) return;
+        // Main sends `cancelled` before it answers, for a stream and for a lost answer it still
+        // follows. With neither left (a lost answer whose thread main could not read again) it
+        // answers and sends nothing: still shown as coming, the answer would hold every next
+        // question back until the meeting is opened again.
+        const current = this.live.get(questionId);
+        if (current === undefined || !isAnswering(current)) return;
+        this.live.set(
+          questionId,
+          failedAnswer(current, { code: 'cancelled', message: 'The answer was cancelled.' }),
+        );
+        this.update({});
+      },
+      (error: unknown) => {
         if (run !== this.run) return;
         this.update({
           notice: `Roger could not stop that answer (${describeError(error)}). It may still arrive.`,
         });
-      });
+      },
+    );
   }
 
   private canAsk(): boolean {
