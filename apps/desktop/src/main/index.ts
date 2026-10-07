@@ -8,12 +8,16 @@ import {
   dialog,
   ipcMain,
   Menu,
+  nativeImage,
   Notification,
   session,
   systemPreferences,
+  Tray,
   type BrowserWindow,
 } from 'electron';
 import { APP_PREFERENCES } from '../shared/preferences';
+import { startKeepRunning } from './app/keepRunning';
+import { userDataOverride } from './app/userDataPath';
 import { ApiClient } from './api/ApiClient';
 import type { ApiConnection } from './api/http';
 import { NotesClient } from './api/notesClient';
@@ -73,6 +77,18 @@ async function main(): Promise<void> {
   );
 
   // [slot M5-T11 userData] "Roger Dev" when not packaged. Before the lock; never over M2-T13's.
+
+  // Before the lock: Electron keys the single-instance lock on userData, and productName is
+  // "Roger" in a dev build too, so a dev run quit at once against the installed Roger in the menu
+  // bar, and where it ran it shared roger.sqlite with it (app/userDataPath.ts). Never over the
+  // e2e run's folder (`e2e` is M2-T13's, just above) or a `--user-data-dir` the launch named.
+  const devUserData = userDataOverride({
+    isPackaged: app.isPackaged,
+    e2eOn: e2e.on,
+    userDataSwitch: app.commandLine.hasSwitch('user-data-dir'),
+    appData: app.getPath('appData'),
+  });
+  if (devUserData !== null) app.setPath('userData', devUserData);
 
   if (!app.requestSingleInstanceLock()) {
     // A second copy would fight over the SQLite file and the microphone.
@@ -188,7 +204,8 @@ async function main(): Promise<void> {
     logger,
   });
 
-  // Quit and the window closing stop the recording, and so does a page that cannot be brought
+  // Quit and the window really closing (never a hide: closing the window only hides it, M5-T11)
+  // stop the recording, and so does a page that cannot be brought
   // back (lifecycle.ts); a crash or a reload reloads the page, and a sleep pauses the sessions
   // (capture/createCaptureRuntime.ts, M2-T18). After the stop, a quit runs the hooks below in
   // order, each bounded. The two markers in the list are slots like the others: whoever rewires
@@ -362,23 +379,38 @@ async function main(): Promise<void> {
     join(__dirname, '../preload/index.js'),
     page,
     logger.child({ component: 'window' }),
+    // A launch at login keeps the window hidden (app/windowLifecycle.ts). Read here, before the
+    // page loads: macOS tells only the first read of a launch.
+    { lifecycle, openedAtLogin: app.getLoginItemSettings().wasOpenedAtLogin },
   );
   watchWindow(lifecycle, window);
   window.on('closed', () => {
     window = null;
   });
-  app.on('second-instance', () => {
-    if (window) {
-      if (window.isMinimized()) window.restore();
-      window.focus();
-    }
-  });
   logger.info('roger started', { apiUrl: config.apiUrl, userData, packaged: app.isPackaged });
 
   // [slot M5-T11 lifecycle] the tray, the login item, activate, and window-all-closed
 
-  app.on('window-all-closed', () => {
-    app.quit();
+  // Closing the window hides it, so Roger runs on in the menu bar: no quit when the last window
+  // goes, the window comes back from the Dock or a second launch, and open at login follows the
+  // preference. Quit is the app menu's or the tray's `app.quit()`, which RecordingLifecycle
+  // stops the recording for. `calendar` is M5-T9c's runtime once it is wired (`{ account, sync,
+  // cache }`): until then the menu names no meetings and a connect turns no login item on.
+  startKeepRunning({
+    app,
+    electron: { Tray, Menu, nativeImage },
+    build: { isPackaged: app.isPackaged, e2eOn: e2e.on },
+    resourcesPath: process.resourcesPath,
+    appPath: app.getAppPath(),
+    capture,
+    calendar: null,
+    preferences,
+    ipcMain,
+    getWindow: () => window,
+    navigate: (route) => {
+      navigation.navigate(route);
+    },
+    logger: logger.child({ component: 'app' }),
   });
 }
 
