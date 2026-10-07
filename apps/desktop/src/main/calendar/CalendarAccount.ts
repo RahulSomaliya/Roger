@@ -197,7 +197,13 @@ export class CalendarAccount {
     this.options.logger.info('calendar sign-in opened in the browser', {
       page: url.hostname === 'accounts.google.com' ? 'google' : 'own_redirect',
     });
-    await this.options.openExternal(url.href);
+    try {
+      await this.options.openExternal(url.href);
+    } catch (error) {
+      throw new Error(`Could not open the browser for the Google sign-in: ${errorMessage(error)}`, {
+        cause: error,
+      });
+    }
     const outcome = await loopback.outcome;
     if (!outcome.ok) throw outcome.error;
     return { code: outcome.code, codeVerifier: pkce.verifier, redirectUri: loopback.redirectUri };

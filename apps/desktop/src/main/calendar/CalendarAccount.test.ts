@@ -102,6 +102,8 @@ interface Setup {
   authorizationUrl?: (request: GoogleAuthorizationRequest) => string;
   behaviour?: Behaviour;
   signInTimeoutMs?: number;
+  /** In place of the fake browser, for a browser that cannot be opened. */
+  openExternal?: (url: string) => Promise<void>;
 }
 
 const caches: SqliteCalendarCache[] = [];
@@ -132,7 +134,7 @@ function setup(options: Setup = {}) {
   const account = new CalendarAccount({
     api,
     sync,
-    openExternal: browser.open,
+    openExternal: options.openExternal ?? browser.open,
     logger: silentLogger,
     ...(options.signInTimeoutMs === undefined ? {} : { signInTimeoutMs: options.signInTimeoutMs }),
   });
@@ -278,6 +280,18 @@ describe('CalendarAccount.connect', () => {
 
     await expect(account.connect()).rejects.toThrow(
       'Google sign-in timed out after 50 ms. Connect again.',
+    );
+    expect(api.connectGoogle).not.toHaveBeenCalled();
+    await expect(portIsOpen(redirectOf())).resolves.toBe(false);
+  });
+
+  it('says so when the browser cannot be opened, and closes the port', async () => {
+    const { api, account, redirectOf } = setup({
+      openExternal: () => Promise.reject(new Error('No application knows how to open the URL')),
+    });
+
+    await expect(account.connect()).rejects.toThrow(
+      'Could not open the browser for the Google sign-in: No application knows how to open the URL',
     );
     expect(api.connectGoogle).not.toHaveBeenCalled();
     await expect(portIsOpen(redirectOf())).resolves.toBe(false);
