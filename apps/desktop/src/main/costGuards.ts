@@ -31,6 +31,15 @@ export interface CostGuards {
   quitStopTimeoutMs: number;
   /** Asked of the vendor: close a session that receives nothing for this long (AssemblyAI). */
   sttVendorIdleTimeoutMs: number;
+  /**
+   * The silence gate's hang-over (M3-T20): close a source's session after this long with chunks
+   * arriving and none of them speech; its next speech chunk reopens it. 0 turns the gate off.
+   */
+  sttSilenceCloseMs: number;
+  /** Audio kept while a source is closed for silence, sent first when speech reopens it. */
+  sttSilencePreRollMs: number;
+  /** The gate's own reopens per meeting, both sources together; past it the gate is off. */
+  sttSilenceReopensPerMeeting: number;
 }
 
 export interface CostGuardSetting {
@@ -57,6 +66,9 @@ export const DEFAULT_COST_GUARDS: Readonly<CostGuards> = Object.freeze({
   maxRecordingMs: 4 * 3_600_000,
   quitStopTimeoutMs: 5_000,
   sttVendorIdleTimeoutMs: 120_000,
+  sttSilenceCloseMs: 30_000,
+  sttSilencePreRollMs: 1_000,
+  sttSilenceReopensPerMeeting: 120,
 });
 
 /** Definition order is the order errors are reported in, and the README table's order. */
@@ -179,7 +191,57 @@ export const COST_GUARD_SETTINGS: readonly CostGuardSetting[] = [
       'long. Above the stall close, so it only fires when Roger cannot act (the Mac slept with the ' +
       'socket half-open); unset, such a session bills to the 3-hour cap.',
   },
+  {
+    guard: 'sttSilenceCloseMs',
+    file: 'sttSilenceCloseSeconds',
+    env: 'ROGER_STT_SILENCE_CLOSE_SECONDS',
+    unit: 'seconds',
+    // 0 turns the gate off; 1 to 9 is refused in loadCostGuards (MIN_SILENCE_CLOSE_MS).
+    min: 0,
+    max: 3_600,
+    why:
+      'AssemblyAI bills a session that only hears silence (a muted mic, a waiting room, an hour ' +
+      'of listening) like one that hears talk. After 30 s of chunks with no speech in them the ' +
+      "source's session closes, and its next speech chunk reopens it (CaptureSession). Long, " +
+      'because a wrong "silence" loses words while a wrong "speech" only costs money.',
+  },
+  {
+    guard: 'sttSilencePreRollMs',
+    file: 'sttSilencePreRollSeconds',
+    env: 'ROGER_STT_SILENCE_PRE_ROLL_SECONDS',
+    unit: 'seconds',
+    min: 1,
+    max: 3,
+    why:
+      'The audio just before the speech that reopens a gated session, sent first, so a soft first ' +
+      'syllable the level check missed is not lost. 1 s, because held audio is paced at 1x and ' +
+      'every held second is lag on that session until it next closes.',
+  },
+  {
+    guard: 'sttSilenceReopensPerMeeting',
+    file: 'sttSilenceReopensPerMeeting',
+    env: 'ROGER_STT_SILENCE_REOPENS_PER_MEETING',
+    unit: 'count',
+    min: 1,
+    max: 1_000,
+    why:
+      "The silence gate's own reopens, both sources together: each takes a slot in the " +
+      'per-minute window but never one of sttOpensPerMeeting, which failures need. Past it the ' +
+      'gate is off for that meeting and sessions stay open through silence until Stop.',
+  },
 ];
+
+/**
+ * The shortest silence gate hang-over besides 0 (off). Shorter ones close sessions in the pauses
+ * of a conversation: every reopen is a handshake, a token, and up to the held audio of lag.
+ */
+const MIN_SILENCE_CLOSE_MS = 10_000;
+
+/**
+ * The most audio a gate reopen may hold (the pre-roll plus sttReopenBufferMs): the core sends it
+ * at 1x (T18), so it is lag on that session until it next closes.
+ */
+const MAX_GATE_HELD_MS = 10_000;
 
 /** Default for one setting, in its config unit (seconds or a count). */
 export function settingDefault(setting: CostGuardSetting): number {
@@ -228,6 +290,21 @@ export function loadCostGuards(
     errors.push(
       `sttReopenBackoffMaxSeconds (${guards.sttReopenBackoffMaxMs / 1000}) must be at least ` +
         `sttReopenBackoffSeconds (${guards.sttReopenBackoffMs / 1000})`,
+    );
+  }
+  if (guards.sttSilenceCloseMs > 0 && guards.sttSilenceCloseMs < MIN_SILENCE_CLOSE_MS) {
+    errors.push(
+      `sttSilenceCloseSeconds (${guards.sttSilenceCloseMs / 1000}) must be 0 (the silence gate ` +
+        `off) or at least ${MIN_SILENCE_CLOSE_MS / 1000}: a shorter hang-over closes sessions in ` +
+        'the pauses of a conversation',
+    );
+  }
+  if (guards.sttSilencePreRollMs + guards.sttReopenBufferMs > MAX_GATE_HELD_MS) {
+    errors.push(
+      `sttSilencePreRollSeconds (${guards.sttSilencePreRollMs / 1000}) plus ` +
+        `sttReopenBufferSeconds (${guards.sttReopenBufferMs / 1000}) must be at most ` +
+        `${MAX_GATE_HELD_MS / 1000}: every second held for a reopen is lag on that session until ` +
+        'it closes',
     );
   }
   return { guards, errors };
