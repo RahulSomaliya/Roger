@@ -23,6 +23,7 @@ import { WAV_HEADER_BYTES, wavHeader } from './wav';
 
 const MEETING = '1b9d6bcd-bbfd-4b2d-9b5d-ab8dfbbd4bed';
 const T0 = Date.parse('2026-10-06T09:00:00.000Z');
+const HOUR_MS = 3_600_000;
 const SAMPLES_PER_MS = PCM_SAMPLE_RATE / 1_000;
 const logger = createLogger({ level: 'error', format: 'json', sink: () => undefined });
 
@@ -240,6 +241,23 @@ describe('AudioBackupWriter', () => {
     // The check that paused it came with the chunk that arrived at the interval, which is not kept.
     expect(files('mic')[0]!.endMs).toBe(DISK_CHECK_INTERVAL_MS - 100);
     expect(closed).toHaveLength(1);
+    backup.end(MEETING);
+  });
+
+  it('reads the free space again at once when the clock steps back', () => {
+    const backup = writer();
+    backup.begin({ meetingId: MEETING, meetingStartedAtMs: T0 });
+    feed(backup, 'mic', T0, 5_000);
+    // The clock steps back an hour (a manual time change, an NTP step) as the disk fills: the
+    // next chunk reads the free space, never the hour that waiting on the old clock would take.
+    freeBytes = BACKUP_MIN_FREE_BYTES / 2;
+    feed(backup, 'mic', T0 + 5_000 - HOUR_MS, 100);
+    expect(backup.live()?.status.state).toBe('paused');
+
+    // And it goes on every DISK_CHECK_INTERVAL_MS of the stepped clock, so it starts again too.
+    freeBytes = 100 * BACKUP_MIN_FREE_BYTES;
+    feed(backup, 'mic', T0 + 5_100 - HOUR_MS, DISK_CHECK_INTERVAL_MS);
+    expect(backup.live()?.status.state).toBe('writing');
     backup.end(MEETING);
   });
 

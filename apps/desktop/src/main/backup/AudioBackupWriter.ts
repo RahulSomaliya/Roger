@@ -23,7 +23,10 @@ import type { CompressJob } from './AudioCompressor';
 import { type FreeDiskBytes, freeDiskBytes, hasBackupRoom } from './diskGuard';
 import { repairWavFile, WAV_HEADER_BYTES, wavDataBytesToMs, wavHeader } from './wav';
 
-/** Free disk space is read when a recording starts and then at most this often while it runs. */
+/**
+ * Free disk space is read when a recording starts, then once this much of the clock has passed
+ * while it runs, and at once after the clock steps back (checkDisk).
+ */
 export const DISK_CHECK_INTERVAL_MS = 10_000;
 
 /** A backup file holds at most this much of one stream (M2 D5, after anarlog's 60 s chunks). */
@@ -104,7 +107,8 @@ interface Recording extends BackupRecording {
   sources: Record<AudioSource, SourceBackup>;
   /** On disk for this recording: headers and samples of every file it wrote. */
   bytes: number;
-  nextDiskCheckAtMs: number;
+  /** When free space was last read (the writer's clock); null until the first read. */
+  lastDiskCheckAtMs: number | null;
   /** Free space could not be read: said once per recording, then writing goes on. */
   diskUnreadable: boolean;
 }
@@ -162,7 +166,7 @@ export class AudioBackupWriter implements AudioSink {
       dir: null,
       sources: { mic: newSourceBackup(), system: newSourceBackup() },
       bytes: 0,
-      nextDiskCheckAtMs: 0,
+      lastDiskCheckAtMs: null,
       diskUnreadable: false,
     };
     this.recording = rec;
@@ -382,8 +386,14 @@ export class AudioBackupWriter implements AudioSink {
   }
 
   private checkDisk(rec: Recording, now: number): void {
-    if (rec.dir === null || now < rec.nextDiskCheckAtMs) return;
-    rec.nextDiskCheckAtMs = now + DISK_CHECK_INTERVAL_MS;
+    if (rec.dir === null) return;
+    const last = rec.lastDiskCheckAtMs;
+    // A clock that stepped back (a manual time change, an NTP step) reads at once. Waiting for the
+    // old clock's next read would stop the pause and the resume for as long as the step, writing
+    // into the reserve below BACKUP_MIN_FREE_BYTES unwarned (lifecycle.ts keeps its crash window
+    // off the wall clock for the same reason).
+    if (last !== null && now >= last && now - last < DISK_CHECK_INTERVAL_MS) return;
+    rec.lastDiskCheckAtMs = now;
     let free: number;
     try {
       free = this.freeDiskBytes(rec.dir);
