@@ -9,7 +9,8 @@ import { createCalendarFormat, openAtLoginHint, reconnectLabel } from './calenda
 import type { CalendarSettingsState, CalendarSettingsStore } from './calendarSettingsStore';
 import type { CalendarState, CalendarStore } from './calendarStore';
 import { useCalendar, useCalendarSettings, useNow } from './useCalendar';
-import './calendar.css';
+import './today.css';
+import './calendarSettings.css';
 
 /** What the section calls on its two stores; the stores are one, a test passes stand-ins. */
 export interface CalendarSettingsActions {

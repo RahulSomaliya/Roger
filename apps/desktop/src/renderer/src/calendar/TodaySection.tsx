@@ -17,7 +17,7 @@ import {
 import { startRequestForEvent } from './startRequest';
 import { todayGroups } from './todayGroups';
 import { useCalendar, useCalendarSettings, useNow } from './useCalendar';
-import './calendar.css';
+import './today.css';
 
 /** The line after the first connect, by what it says (OpenAtLoginLine). */
 export type OpenAtLoginPhase = 'on' | 'approval' | 'undone';

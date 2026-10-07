@@ -5,7 +5,8 @@ import { useShell } from '../app/ShellContext';
 import type { MeetingSlotProps } from '../app/slotRegistry';
 import type { CalendarSettingsState } from './calendarSettingsStore';
 import { useCalendarSettings } from './useCalendar';
-import './calendar.css';
+import './today.css';
+import './calendarNotice.css';
 
 /** How long "Notice copied" stays up before the banner goes. */
 const COPIED_SHOWN_MS = 4_000;

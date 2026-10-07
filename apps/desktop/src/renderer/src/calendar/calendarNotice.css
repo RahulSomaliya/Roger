@@ -1,0 +1,48 @@
+/*
+ * The meeting page's consent notice (NoticeBanner.tsx) and the calendar status banner above every
+ * page (CalendarStatusBanner.tsx). Colours only from theme/tokens.css (noLiteralColours.test.ts
+ * fails on a literal one); text reads the ink tokens, never a fill (tokens.test.ts).
+ */
+
+.calendar-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+}
+
+.calendar-banner-text {
+  flex: 1 1 240px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.calendar-notice {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+}
+
+.calendar-notice-body {
+  flex: 1 1 280px;
+  min-width: 0;
+}
+
+.calendar-notice-title {
+  margin: 0;
+  font-weight: 600;
+}
+
+.calendar-notice-text {
+  margin: 2px 0 0;
+  font-size: 13px;
+  color: var(--ink-muted);
+  overflow-wrap: anywhere;
+}
+
+.calendar-notice-error {
+  margin: 4px 0 0;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}

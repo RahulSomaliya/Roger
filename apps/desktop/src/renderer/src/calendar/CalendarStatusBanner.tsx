@@ -1,6 +1,7 @@
 import { createCalendarFormat, calendarNotices, type CalendarNotice } from './calendarFormat';
 import { useCalendar, useNow } from './useCalendar';
-import './calendar.css';
+import './today.css';
+import './calendarNotice.css';
 
 export interface CalendarStatusBannerViewProps {
   notices: readonly CalendarNotice[];
