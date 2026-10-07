@@ -1,8 +1,24 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { notesChannels, type NotesFlush } from '../../shared/ipc/notes';
+import {
+  CaptureService,
+  type RecordingEnded,
+  type RecordingListener,
+} from '../capture/CaptureService';
 import { createLogger } from '../logger';
+import { InMemoryTranscriptStore } from '../store/InMemoryTranscriptStore';
+import { FakeSpeechToText } from '../stt/fake/FakeSpeechToText';
+import { TranscriptUploader } from '../upload/TranscriptUploader';
 import { withTimeout } from '../util/time';
-import { NOTES_FLUSH_TIMEOUT_MS, NotesQuitGuard, type FlushWindow } from './notesQuitGuard';
+import { NOTES_RECHECK_MS, NotesGenerator } from './NotesGenerator';
+import type { NotesWhenUnsure } from '../../shared/preferences';
+import {
+  KeptSilentMeetings,
+  NOTES_FLUSH_TIMEOUT_MS,
+  NotesQuitGuard,
+  type FlushWindow,
+} from './notesQuitGuard';
+import { SqliteNotesStore } from './SqliteNotesStore';
 
 /** A window whose page answers main's flush request after `ackAfterMs`, or never (null). */
 function page(id: number, ackAfterMs: number | null, guard: () => NotesQuitGuard) {
@@ -233,5 +249,407 @@ describe('NotesQuitGuard', () => {
         error: 'timer already cleared',
       }),
     );
+  });
+});
+
+/**
+ * Stop, the uploader, the generator, the guard and the watch as main wires them (index.ts), with a
+ * page that never answers the flush request: none does until M4-T20 mounts the responder, and a
+ * busy page may not answer in time after that.
+ */
+function stopWithAnUnansweredFlush(whenUnsure: NotesWhenUnsure) {
+  const lines: string[] = [];
+  const logger = createLogger({ level: 'debug', format: 'json', sink: (line) => lines.push(line) });
+  /** Every API request made; none is expected. */
+  const requests: string[] = [];
+  const unexpected = (what: string) => (): Promise<never> => {
+    requests.push(what);
+    return Promise.reject(new Error(`no ${what} expected`));
+  };
+  const transcripts = new InMemoryTranscriptStore();
+  const notes = new SqliteNotesStore(':memory:');
+  const unanswered: FlushWindow = {
+    webContents: { id: 7, isDestroyed: () => false, send: () => undefined },
+  };
+  const guard = new NotesQuitGuard({ store: notes, windows: () => [unanswered], logger });
+  const uploader = new TranscriptUploader({
+    store: transcripts,
+    api: {
+      createMeeting: unexpected('meeting create'),
+      appendSegments: unexpected('line upload'),
+      endMeeting: unexpected('meeting end'),
+    },
+    logger,
+    hasNotes: (meetingId) => notes.hasNotes(meetingId),
+    saveOpenNotes: () => guard.saveOpenNotes(),
+  });
+  const capture = new CaptureService({
+    store: transcripts,
+    api: { getSttToken: unexpected('speech-to-text token') },
+    uploader,
+    createSpeechToText: () => new FakeSpeechToText(),
+    ensureMicrophoneAccess: () => Promise.resolve('granted'),
+    logger,
+    sttProviderOverride: 'fake',
+    startupError: null,
+  });
+  const generator = new NotesGenerator({
+    store: notes,
+    sync: { flushMeeting: unexpected('notes flush'), pullMeeting: unexpected('notes pull') },
+    streams: { streamNotes: unexpected('notes run'), cancelNotes: unexpected('notes cancel') },
+    api: { getRun: unexpected('run read'), cancelRun: unexpected('run cancel') },
+    transcripts,
+    uploads: uploader,
+    recordings: capture,
+    preferences: { autoGenerate: () => true, whenUnsure: () => whenUnsure },
+    window: () => null,
+    logger,
+  });
+  const kept = new KeptSilentMeetings({
+    recordings: capture,
+    uploads: uploader,
+    transcripts,
+    pendingGenerates: notes,
+    generator,
+    logger,
+  });
+  // index.ts's order: the watch, then the generator.
+  kept.start();
+  generator.start();
+  const ended: RecordingEnded[] = [];
+  capture.onRecording({
+    ended: (recording) => {
+      ended.push(recording);
+    },
+  });
+  /** What the page is told of the meeting's generate: each phase, then `null` once it is gone. */
+  const told: (string | null)[] = [];
+  generator.onPendingChanged((change) => {
+    told.push(change.pending?.status.phase ?? null);
+  });
+  return {
+    transcripts,
+    notes,
+    capture,
+    generator,
+    ended,
+    told,
+    requests,
+    logged: () => lines.map((line) => JSON.parse(line) as Record<string, unknown>),
+    stopAll: () => {
+      kept.stop();
+      generator.stop();
+      uploader.stop();
+    },
+  };
+}
+
+describe('a silent meeting Stop kept because a window did not save its notes', () => {
+  // `ask` (the default) leaves a generate asking for a template on a meeting page that is gone;
+  // `general` gives it one, and its run would go out for the gone meeting unless the watch is first.
+  it.each<NotesWhenUnsure>(['ask', 'general'])(
+    'loses the generate Stop wrote for it once the upload at Stop discards it as empty (%s)',
+    async (whenUnsure) => {
+      const h = stopWithAnUnansweredFlush(whenUnsure);
+      await h.capture.start();
+      const meetingId = h.capture.getStatus().meetingId ?? '';
+      expect(h.transcripts.getMeeting(meetingId)).not.toBeNull();
+
+      // Nobody spoke. Stop asks the page to save, waits its 1 s, and keeps the meeting unchecked.
+      const stopping = h.capture.stop();
+      await vi.advanceTimersByTimeAsync(NOTES_FLUSH_TIMEOUT_MS);
+      await stopping;
+
+      expect(h.ended).toEqual([{ meetingId, reason: 'user', discarded: false, stopFailed: false }]);
+      expect(h.logged()).toContainEqual(
+        expect.objectContaining({
+          level: 'error',
+          message: 'kept a meeting whose notes could not be checked',
+          meetingId,
+        }),
+      );
+      // The generator wrote the meeting up at Stop; Stop's upload then found no line and no notes
+      // in it and discarded it as empty, and the generate went with it.
+      expect(h.transcripts.getMeeting(meetingId)).toBeNull();
+      expect(h.logged()).toContainEqual(
+        expect.objectContaining({ message: 'empty meeting discarded', meetingId }),
+      );
+      expect(h.told).toEqual([whenUnsure === 'ask' ? 'needs_template' : 'waiting_for_notes', null]);
+      expect(h.notes.listPendingGenerates()).toEqual([]);
+      expect(h.generator.getPending(meetingId)).toBeNull();
+
+      // Nothing waits to be re-checked, and nothing was ever sent for the gone meeting.
+      await vi.advanceTimersByTimeAsync(NOTES_RECHECK_MS);
+      expect(h.notes.listPendingGenerates()).toEqual([]);
+      expect(h.requests).toEqual([]);
+      h.stopAll();
+    },
+  );
+});
+
+const KEPT = '5d2c7a10-8e4b-4f6a-9c3d-2b1e0f9a8c7d';
+const SPOKEN = '6e3d8b21-9f5c-4a7b-8d4e-3c2f1a0b9d8e';
+
+/** KeptSilentMeetings over roger.sqlite's in-memory twin, with Stop, uploads and generates faked. */
+function keptSetUp(options: { generates?: string[] } = {}) {
+  const lines: string[] = [];
+  const logger = createLogger({ level: 'debug', format: 'json', sink: (line) => lines.push(line) });
+  const transcripts = new InMemoryTranscriptStore();
+  const recordingListeners = new Set<RecordingListener>();
+  const statusListeners = new Set<() => void>();
+  /** Meetings with a pending generate. */
+  const generates = new Set(options.generates ?? []);
+  const cancels: string[] = [];
+  let refusal: Error | null = null;
+  /** notes.sqlite reads that fail before one succeeds. */
+  let failedReads = 0;
+  const kept = new KeptSilentMeetings({
+    recordings: {
+      onRecording: (listener) => {
+        recordingListeners.add(listener);
+        return () => {
+          recordingListeners.delete(listener);
+        };
+      },
+    },
+    uploads: {
+      onStatus: (listener) => {
+        statusListeners.add(listener);
+        return () => {
+          statusListeners.delete(listener);
+        };
+      },
+    },
+    transcripts,
+    pendingGenerates: {
+      listPendingGenerates: () =>
+        [...generates].map((meetingId) => ({
+          meetingId,
+          runId: '00000000-0000-4000-8000-000000000042',
+          templateId: null,
+          reason: 'after_stop',
+          createdAt: '2026-10-07T09:00:00.000Z',
+          lastError: null,
+        })),
+    },
+    generator: {
+      getPending: (meetingId) => {
+        if (failedReads > 0) {
+          failedReads -= 1;
+          throw new Error('database is locked');
+        }
+        return generates.has(meetingId)
+          ? {
+              meetingId,
+              runId: '00000000-0000-4000-8000-000000000042',
+              templateId: null,
+              reason: 'after_stop',
+              createdAt: '2026-10-07T09:00:00.000Z',
+              status: { phase: 'needs_template' },
+            }
+          : null;
+      },
+      cancel: (meetingId) => {
+        cancels.push(meetingId);
+        if (refusal !== null) return Promise.reject(refusal);
+        generates.delete(meetingId);
+        return Promise.resolve();
+      },
+    },
+    logger,
+  });
+  /** A meeting Stop ended: still pending in the uploader, with `lines` lines. */
+  const ended = (meetingId: string, lineCount = 0): void => {
+    transcripts.createMeeting({
+      id: meetingId,
+      title: 'Standup',
+      startedAt: '2026-10-07T09:00:00Z',
+    });
+    for (let n = 1; n <= lineCount; n += 1) {
+      transcripts.appendSegment({
+        id: `${meetingId.slice(0, 8)}-0000-4000-8000-${String(n).padStart(12, '0')}`,
+        meetingId,
+        source: 'mic',
+        speaker: 'me',
+        startMs: n * 1000,
+        endMs: n * 1000 + 500,
+        text: `line ${n}`,
+        confidence: null,
+        words: null,
+        createdAt: '2026-10-07T09:00:00.000Z',
+      });
+    }
+    transcripts.markMeetingEnded(meetingId, '2026-10-07T09:30:00.000Z');
+  };
+  return {
+    kept,
+    transcripts,
+    generates,
+    cancels,
+    ended,
+    /** CaptureService telling its listeners how Stop went. */
+    stopped: (meetingId: string, outcome: Partial<RecordingEnded> = {}) => {
+      for (const listener of recordingListeners) {
+        listener.ended?.({
+          meetingId,
+          reason: 'user',
+          discarded: false,
+          stopFailed: false,
+          ...outcome,
+        });
+      }
+    },
+    /** The uploader ending a tick. */
+    uploaded: () => {
+      for (const listener of statusListeners) listener();
+    },
+    refuseCancels: (error: Error) => {
+      refusal = error;
+    },
+    failReads: (count: number) => {
+      failedReads = count;
+    },
+    listening: () => recordingListeners.size + statusListeners.size,
+    logged: () => lines.map((line) => JSON.parse(line) as Record<string, unknown>),
+  };
+}
+
+describe('KeptSilentMeetings', () => {
+  it('drops the generate of a kept silent meeting once the uploader discards it, once', () => {
+    const h = keptSetUp({ generates: [KEPT] });
+    h.kept.start();
+    h.ended(KEPT);
+    h.stopped(KEPT);
+    // A tick that has not decided it yet (it waits for notes.sqlite, or for a backoff).
+    h.uploaded();
+    expect(h.cancels).toEqual([]);
+
+    expect(h.transcripts.deleteMeetingIfEmpty(KEPT)).toBe(true);
+    h.uploaded();
+    h.uploaded();
+
+    expect(h.cancels).toEqual([KEPT]);
+    expect(h.generates.size).toBe(0);
+    expect(h.logged()).toContainEqual(
+      expect.objectContaining({
+        level: 'info',
+        message: 'pending generate dropped: its meeting was discarded as empty',
+        meetingId: KEPT,
+      }),
+    );
+  });
+
+  it('lets a kept meeting go once the uploader created it, or it has a line', () => {
+    const h = keptSetUp({ generates: [KEPT, SPOKEN] });
+    h.kept.start();
+    h.ended(KEPT);
+    h.ended(SPOKEN);
+    h.stopped(KEPT);
+    h.stopped(SPOKEN);
+    // Kept for its notes and created in Postgres; the other got a line (a gap re-run).
+    h.transcripts.setMeetingRemoteState(KEPT, 'created');
+    h.transcripts.appendSegment({
+      id: '6e3d8b21-0000-4000-8000-000000000001',
+      meetingId: SPOKEN,
+      source: 'system',
+      speaker: 'them',
+      startMs: 0,
+      endMs: 500,
+      text: 'Morning all',
+      confidence: null,
+      words: null,
+      createdAt: '2026-10-07T09:00:00.000Z',
+    });
+    h.uploaded();
+    // Neither is followed any more: a delete now (none can come) would cancel nothing.
+    h.transcripts.setMeetingRemoteState(KEPT, 'pending');
+    h.transcripts.deleteMeetingIfEmpty(KEPT);
+    h.uploaded();
+
+    expect(h.cancels).toEqual([]);
+  });
+
+  it('follows neither a meeting Stop discarded, nor one whose Stop failed, nor one with a line', () => {
+    const h = keptSetUp({ generates: [KEPT, SPOKEN] });
+    h.kept.start();
+    h.ended(KEPT);
+    h.ended(SPOKEN, 2);
+    // NotesGenerator drops a discarded meeting's generate itself; a failed Stop's meeting may be
+    // open, for CrashRecovery to decide.
+    h.stopped(KEPT, { discarded: true });
+    h.stopped(KEPT, { stopFailed: true });
+    h.stopped(SPOKEN);
+    h.transcripts.deleteMeetingIfEmpty(KEPT);
+    h.uploaded();
+
+    expect(h.cancels).toEqual([]);
+  });
+
+  it('follows from launch a silent meeting an earlier launch kept with a generate', () => {
+    const h = keptSetUp({ generates: [KEPT, SPOKEN] });
+    // Kept by a quit's Stop, which uploads nothing; the first tick of this launch decides it.
+    h.ended(KEPT);
+    h.ended(SPOKEN, 1);
+    h.kept.start();
+    h.transcripts.deleteMeetingIfEmpty(KEPT);
+    h.uploaded();
+
+    expect(h.cancels).toEqual([KEPT]);
+  });
+
+  it('cancels nothing for a discarded meeting with no generate, and logs a refused cancel', async () => {
+    const h = keptSetUp({ generates: [SPOKEN] });
+    h.kept.start();
+    h.ended(KEPT);
+    h.ended(SPOKEN);
+    h.stopped(KEPT);
+    h.stopped(SPOKEN);
+    h.refuseCancels(new Error('POST run cancel failed'));
+    h.transcripts.deleteMeetingIfEmpty(KEPT);
+    h.transcripts.deleteMeetingIfEmpty(SPOKEN);
+    h.uploaded();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(h.cancels).toEqual([SPOKEN]);
+    expect(h.logged()).toContainEqual(
+      expect.objectContaining({
+        level: 'warn',
+        message: 'pending generate of a discarded meeting not dropped',
+        meetingId: SPOKEN,
+        error: 'POST run cancel failed',
+      }),
+    );
+  });
+
+  it('checks again at the next status a discarded meeting whose generate could not be read', () => {
+    const h = keptSetUp({ generates: [KEPT] });
+    h.kept.start();
+    h.ended(KEPT);
+    h.stopped(KEPT);
+    h.transcripts.deleteMeetingIfEmpty(KEPT);
+    h.failReads(1);
+    h.uploaded();
+    expect(h.cancels).toEqual([]);
+    expect(h.logged()).toContainEqual(
+      expect.objectContaining({
+        level: 'error',
+        message: 'kept meeting not checked',
+        meetingId: KEPT,
+        error: 'database is locked',
+      }),
+    );
+
+    h.uploaded();
+    expect(h.cancels).toEqual([KEPT]);
+  });
+
+  it('stops listening at quit', () => {
+    const h = keptSetUp({ generates: [KEPT] });
+    h.kept.start();
+    h.ended(KEPT);
+    h.stopped(KEPT);
+    h.kept.stop();
+
+    expect(h.listening()).toBe(0);
   });
 });

@@ -18,7 +18,7 @@ import { registerNavigation } from './navigation';
 import { LlmStreams } from './notes/LlmStreams';
 import { registerNotesIpc } from './notes/notes-ipc';
 import { NotesGenerator } from './notes/NotesGenerator';
-import { NotesQuitGuard } from './notes/notesQuitGuard';
+import { KeptSilentMeetings, NotesQuitGuard } from './notes/notesQuitGuard';
 import { NotesSync } from './notes/NotesSync';
 import { SqliteNotesStore } from './notes/SqliteNotesStore';
 import { ensureMicrophoneAccess } from './permissions';
@@ -122,7 +122,8 @@ async function main(): Promise<void> {
     // M4-T16: a meeting nobody spoke in is kept for its notes, asked once the open editors have
     // saved; both delete sites in CaptureService ask through these (TranscriptUploader says why).
     // Stop's save, never the quit's flush: only it fails on a window that did not answer, and
-    // only a failure keeps the meeting (NotesQuitGuard.saveOpenNotes).
+    // only a failure keeps the meeting (NotesQuitGuard.saveOpenNotes; KeptSilentMeetings in
+    // `[slot M4-T16 notes]` drops its generate if the uploader then discards it).
     hasNotes: (meetingId) => notesStore.hasNotes(meetingId),
     saveOpenNotes: () => notesQuitGuard.saveOpenNotes(),
   });
@@ -282,6 +283,17 @@ async function main(): Promise<void> {
     window: () => (window === null || window.isDestroyed() ? null : window.webContents),
     logger: notesLogger,
   });
+  // Stop keeps a meeting nobody spoke in when the windows did not save their notes in time (every
+  // page, until M4-T20 mounts the flush responder), and the generator writes it up; the uploader
+  // may then discard it as empty, telling nobody. This drops its generate then.
+  const keptSilentMeetings = new KeptSilentMeetings({
+    recordings: capture,
+    uploads: uploader,
+    transcripts: store,
+    pendingGenerates: notesStore,
+    generator: notesGenerator,
+    logger: notesLogger,
+  });
   const notesIpc = registerNotesIpc({
     ipcMain,
     getWindow: () => window,
@@ -295,11 +307,15 @@ async function main(): Promise<void> {
   });
   // At quit, once the open editors saved, in this order: nothing writes notes.sqlite after it
   // closes, and the generator's flushes go through the sync.
-  notesQuitGuard.stopBeforeClose(notesGenerator, notesSync, notesIpc);
+  notesQuitGuard.stopBeforeClose(keptSilentMeetings, notesGenerator, notesSync, notesIpc);
   // As the uploader: without a token every request is refused, and the runtime says why. Saves
   // still land in notes.sqlite and upload at the next launch that has one.
   if (missingToken === null) {
     notesSync.start();
+    // Before the generator, and in the turn uploader.start() ran (no await since): its status
+    // listener must run first, and its scan must see the meetings an earlier launch kept before
+    // the first tick deletes them (KeptSilentMeetings).
+    keptSilentMeetings.start();
     notesGenerator.start();
   }
 

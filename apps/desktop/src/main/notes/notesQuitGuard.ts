@@ -1,7 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import { notesChannels, type NotesFlush } from '../../shared/ipc/notes';
+import type { CaptureService, RecordingEnded } from '../capture/CaptureService';
 import type { QuitHook } from '../lifecycle';
 import { errorMessage, type Logger } from '../logger';
+import type { TranscriptStore } from '../store/TranscriptStore';
+import type { NotesGenerator } from './NotesGenerator';
+import type { NotesStore } from './NotesStore';
 
 /**
  * How long main waits for each window's answer to a flush request (M4 "Saving at quit"). A page
@@ -76,7 +80,8 @@ export class NotesQuitGuard {
   /**
    * Stop's save (TranscriptUploader's `saveOpenNotes`): sends `notes:flush-request` to every open
    * window, resolves once each answered, and rejects naming the windows whose wait ran out. Its
-   * caller keeps a meeting nobody spoke in when this rejects (CaptureService.keepsForNotes).
+   * caller keeps a meeting nobody spoke in when this rejects (CaptureService.keepsForNotes), and
+   * the uploader may discard it a tick later: KeptSilentMeetings below drops its generate then.
    *
    * Trap: never resolve on a wait that ran out, as the quit does. keepsForNotes bounds this with
    * its own timer of the same 1 s, set after this one's, so this one always fires first: a wait
@@ -167,6 +172,138 @@ export class NotesQuitGuard {
         logger.warn('notes flush request not sent', { windowId, error: errorMessage(error) });
         settle(true);
       }
+    });
+  }
+}
+
+export interface KeptSilentMeetingsOptions {
+  /** Stop's outcome for each recording (CaptureService.onRecording). */
+  recordings: Pick<CaptureService, 'onRecording'>;
+  /** The uploader's status events: one ends every tick, the one that discards a meeting too. */
+  uploads: { onStatus(listener: () => void): () => void };
+  /** roger.sqlite: whether it still holds the meeting, as what. */
+  transcripts: Pick<TranscriptStore, 'getMeeting' | 'countSegments'>;
+  /** notes.sqlite's pending generates, read once at start. */
+  pendingGenerates: Pick<NotesStore, 'listPendingGenerates'>;
+  generator: Pick<NotesGenerator, 'getPending' | 'cancel'>;
+  logger: Logger;
+}
+
+/**
+ * Drops the pending generate of a meeting nobody spoke in that Stop kept and the uploader then
+ * discarded as empty (the M4-T23 hand-off: a row written at Stop for a meeting later discarded is
+ * never cleaned up otherwise).
+ *
+ * Stop keeps such a meeting, and tells its listeners `discarded: false`, when its save failed
+ * (NotesQuitGuard.saveOpenNotes: every page until M4-T20 mounts the flush responder, and a busy
+ * one after), when the notes check failed, or when it found notes (CaptureService.keepsForNotes).
+ * NotesGenerator then writes its generate. The uploader's pending rule decides the meeting again,
+ * on Stop's own upload or a later tick, and deletes it when it still holds no line and no notes,
+ * telling nobody (TranscriptUploader.syncMeeting). A generate asking for its template would then
+ * wait for good, its meeting page gone, read again at every re-check and launch; one with a
+ * template would send a run the API can only answer `404`.
+ *
+ * So each such meeting is followed until the uploader decides it: from Stop, or from launch for
+ * one an earlier launch kept with a generate (a quit's Stop uploads nothing, so the next launch's
+ * first tick decides it). Created in Postgres, or given a line, it is let go; gone from
+ * roger.sqlite, its generate is cancelled (NotesGenerator.cancel drops one whose run was never
+ * sent). Only an empty meeting is ever deleted, so a followed one that is gone was discarded.
+ *
+ * Trap: start this before NotesGenerator.start() and in the turn that started the uploader
+ * (`[slot M4-T16 notes]`). Its status listener must run before the generator's, which would
+ * otherwise send a templated run for the gone meeting first; and a first tick before the scan at
+ * start would delete a meeting an earlier launch kept before it is followed.
+ */
+export class KeptSilentMeetings implements Stoppable {
+  /** The meetings the pending rule may still discard. */
+  private readonly following = new Set<string>();
+  private readonly unsubscribes: (() => void)[] = [];
+
+  constructor(private readonly options: KeptSilentMeetingsOptions) {}
+
+  start(): void {
+    const { recordings, uploads, pendingGenerates, logger } = this.options;
+    this.unsubscribes.push(
+      recordings.onRecording({
+        ended: (recording) => {
+          this.recordingEnded(recording);
+        },
+      }),
+      uploads.onStatus(() => {
+        this.uploaded();
+      }),
+    );
+    try {
+      for (const row of pendingGenerates.listPendingGenerates()) this.follow(row.meetingId);
+    } catch (error) {
+      logger.error('kept meetings not read at launch', { error: errorMessage(error) });
+    }
+  }
+
+  /** At quit, before notes.sqlite closes. */
+  stop(): void {
+    for (const unsubscribe of this.unsubscribes.splice(0)) unsubscribe();
+    this.following.clear();
+  }
+
+  private recordingEnded(recording: RecordingEnded): void {
+    // Discarded at Stop: NotesGenerator drops the generate itself. After a failed Stop the meeting
+    // may still be open, and only CrashRecovery decides it.
+    if (recording.discarded || recording.stopFailed) return;
+    try {
+      this.follow(recording.meetingId);
+    } catch (error) {
+      this.options.logger.error('kept meeting not followed', {
+        meetingId: recording.meetingId,
+        error: errorMessage(error),
+      });
+    }
+  }
+
+  private follow(meetingId: string): void {
+    if (this.mayBeDiscarded(meetingId)) this.following.add(meetingId);
+  }
+
+  /** Not yet in Postgres and no line: the pending rule deletes it if no notes come. */
+  private mayBeDiscarded(meetingId: string): boolean {
+    const { transcripts } = this.options;
+    const meeting = transcripts.getMeeting(meetingId);
+    return (
+      meeting !== null &&
+      meeting.remoteState === 'pending' &&
+      transcripts.countSegments(meetingId) === 0
+    );
+  }
+
+  private uploaded(): void {
+    const { transcripts, logger } = this.options;
+    for (const meetingId of [...this.following]) {
+      try {
+        if (transcripts.getMeeting(meetingId) === null) {
+          this.dropGenerate(meetingId);
+          this.following.delete(meetingId);
+        } else if (!this.mayBeDiscarded(meetingId)) {
+          this.following.delete(meetingId);
+        }
+      } catch (error) {
+        // Still followed: read again at the next status.
+        logger.error('kept meeting not checked', { meetingId, error: errorMessage(error) });
+      }
+    }
+  }
+
+  private dropGenerate(meetingId: string): void {
+    const { generator, logger } = this.options;
+    if (generator.getPending(meetingId) === null) return;
+    logger.info('pending generate dropped: its meeting was discarded as empty', { meetingId });
+    generator.cancel(meetingId).catch((error: unknown) => {
+      // A run an earlier launch may have sent, and the API could not be asked to stop: the
+      // generator's 30 s re-check sends it again, the API answers 404 for the gone meeting, and
+      // that ends it.
+      logger.warn('pending generate of a discarded meeting not dropped', {
+        meetingId,
+        error: errorMessage(error),
+      });
     });
   }
 }
