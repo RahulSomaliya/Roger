@@ -262,7 +262,7 @@ describe('RecordingLifecycle once quitting', () => {
     h.lifecycle.onQuitRequested();
     await flush(); // stopped, store closed, app.quit() called: now the window closes
     h.lifecycle.stopFor('window-closed');
-    h.lifecycle.stopFor('system-sleep');
+    h.lifecycle.stopFor('renderer-gone');
     expect(h.capture.stops).toEqual([{ flushUploads: false, reason: 'quit' }]);
   });
 });
@@ -270,9 +270,9 @@ describe('RecordingLifecycle once quitting', () => {
 describe('RecordingLifecycle.stopFor', () => {
   it('stops a recording through the normal path with its reason, and logs why', () => {
     const h = harness();
-    h.lifecycle.stopFor('system-sleep');
-    expect(h.capture.stops).toEqual([{ flushUploads: false, reason: 'system-sleep' }]);
-    expect(h.lines.some((line) => line.includes('"reason":"system-sleep"'))).toBe(true);
+    h.lifecycle.stopFor('window-closed');
+    expect(h.capture.stops).toEqual([{ flushUploads: false, reason: 'window-closed' }]);
+    expect(h.lines.some((line) => line.includes('"reason":"window-closed"'))).toBe(true);
   });
 
   it('stops one still starting too, once it has started', () => {
@@ -331,16 +331,14 @@ function watched(phase: CapturePhase = 'recording') {
 }
 
 describe('the Electron events', () => {
-  it('maps quit, sleep and the window closing to a stop', () => {
+  it('maps quit and the window closing to a stop', () => {
     const h = harness();
     h.capture.idleAfterStop = false;
     const app = new EventEmitter();
-    const powerMonitor = new EventEmitter();
     const window = fakeWindow();
-    watchApp(h.lifecycle, { app, powerMonitor });
+    watchApp(h.lifecycle, { app });
     watchWindow(h.lifecycle, window);
 
-    powerMonitor.emit('suspend');
     window.emit('close');
     let prevented = 0;
     app.emit('before-quit', { preventDefault: () => (prevented += 1) });
@@ -348,10 +346,23 @@ describe('the Electron events', () => {
 
     expect(prevented).toBe(2);
     expect(h.capture.stops.map((stop) => [stop.reason, stop.detail])).toEqual([
-      ['system-sleep', undefined],
       ['window-closed', undefined],
       ['quit', undefined],
     ]);
+  });
+
+  it('leaves sleep to PowerCoordinator: a suspend no longer stops the recording (M2-T18)', () => {
+    const h = harness();
+    const app = new EventEmitter();
+    const powerMonitor = new EventEmitter();
+    // index.ts handed watchApp the powerMonitor until M2-T18; one still passed must stay unheard,
+    // or a lid closed for a minute splits the call into two meetings.
+    const sources = { app, powerMonitor };
+    watchApp(h.lifecycle, sources);
+
+    powerMonitor.emit('suspend');
+    expect(h.capture.stops).toEqual([]);
+    expect(powerMonitor.listenerCount('suspend')).toBe(0);
   });
 });
 

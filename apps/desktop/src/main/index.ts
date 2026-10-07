@@ -9,7 +9,6 @@ import {
   ipcMain,
   Menu,
   Notification,
-  powerMonitor,
   session,
   systemPreferences,
   type BrowserWindow,
@@ -189,10 +188,12 @@ async function main(): Promise<void> {
     logger,
   });
 
-  // Quit, sleep, the window closing, crashing or reloading: each stops the recording (lifecycle.ts).
-  // After the stop, a quit runs the hooks below in order, each bounded. The two markers in the
-  // list are slots like the others: whoever rewires this block keeps both, in this order, because
-  // the notes flush must run before the stores close.
+  // Quit and the window closing stop the recording, and so does a page that cannot be brought
+  // back (lifecycle.ts); a crash or a reload reloads the page, and a sleep pauses the sessions
+  // (capture/createCaptureRuntime.ts, M2-T18). After the stop, a quit runs the hooks below in
+  // order, each bounded. The two markers in the list are slots like the others: whoever rewires
+  // this block keeps both, in this order, because the notes flush must run before the stores
+  // close.
   const lifecycle = new RecordingLifecycle({
     capture,
     logger: logger.child({ component: 'lifecycle' }),
@@ -224,7 +225,7 @@ async function main(): Promise<void> {
       app.quit();
     },
   });
-  watchApp(lifecycle, { app, powerMonitor });
+  watchApp(lifecycle, { app });
 
   // After createCaptureRuntime, so a hook its slots set (T3b's beforeFirstTick) runs first.
   if (missingToken === null) uploader.start();
