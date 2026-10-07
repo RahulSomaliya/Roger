@@ -13,7 +13,11 @@ import { IpcChannel } from '../src/shared/ipc';
  * down (two loud warnings in one row), and the same banner on Home; a stream reconnecting with
  * main's countdown; the Mac offline with the backup paused and a quiet call-audio warning; a dead
  * mic and a stream that failed for good; and after Stop, with Roger's stop notice and the last
- * recording's meter. Every check runs before its shot. Run:
+ * recording's meter. Every check runs before its shot.
+ *
+ * It stands in for the plan's `e2e/capture-status.shots.e2e.ts` (shots in the real app through
+ * M2-T13's `launchRoger`): this task's wave-5 dispatch asked for browser QA. So every status here
+ * is one this script sends, never one main built: main's timing and IPC are not shot. Run:
  *
  *   ROGER_QA_OUT=<dir> pnpm exec vitest run --config vitest.e2e.config.ts e2e/m2-t20a.qa.e2e.ts
  */
