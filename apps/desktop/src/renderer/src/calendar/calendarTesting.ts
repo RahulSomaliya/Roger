@@ -124,7 +124,6 @@ export function settingsState(fields: Partial<CalendarSettingsState> = {}): Cale
     openAtLogin: 'off',
     loginItem: 'disabled',
     loginItemError: null,
-    saving: null,
     saveError: null,
     noticeDone: [],
     ...fields,

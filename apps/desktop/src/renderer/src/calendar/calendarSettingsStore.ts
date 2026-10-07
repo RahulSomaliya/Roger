@@ -31,8 +31,6 @@ export interface CalendarSettingsState {
   /** What macOS says about Roger as a login item; null until it answers or when it cannot. */
   loginItem: LoginItemStatus | null;
   loginItemError: string | null;
-  /** The key a choice is being saved for; its control waits meanwhile. */
-  saving: CalendarPreferenceKey | null;
   saveError: string | null;
   /** Meetings whose notice was copied or dismissed: the meeting banner shows once per meeting. */
   noticeDone: readonly string[];
@@ -60,7 +58,6 @@ export class CalendarSettingsStore extends RetainedStore<CalendarSettingsState> 
       openAtLogin: CALENDAR_PREFERENCES['app.openAtLogin'].default,
       loginItem: null,
       loginItemError: null,
-      saving: null,
       saveError: null,
       noticeDone: [],
     });
@@ -108,15 +105,17 @@ export class CalendarSettingsStore extends RetainedStore<CalendarSettingsState> 
     this.read(this.run);
   }
 
-  /** Saves one choice. Never rejects: a refusal shows in `saveError`, the stored value stays. */
+  /**
+   * Saves one choice. Never rejects: a refusal shows in `saveError`, the stored value stays. Calls
+   * may overlap (the notice text saves on blur, a click later saves another choice); main applies
+   * them in the order they arrive, so there is no "saving" state for a control to wait on.
+   */
   async choose<K extends CalendarPreferenceKey>(key: K, value: PreferenceValues[K]): Promise<void> {
-    this.update({ saving: key, saveError: null });
+    this.update({ saveError: null });
     try {
       await this.api.setPreference(key, value);
     } catch (error) {
       this.update({ saveError: `Roger could not save that setting: ${describeError(error)}` });
-    } finally {
-      this.update({ saving: null });
     }
   }
 

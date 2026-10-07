@@ -1,62 +1,22 @@
 /*
  * The calendar's Settings section (CalendarSettings.tsx): the account row, the Remind me select,
- * the notice switch and text, Open at login. Its shared rules (.calendar-start, .calendar-status,
- * .calendar-problem) are in today.css, which CalendarSettings.tsx imports as well. Colours only
+ * the notice switch and text, Open at login. Its section chrome, helper text, field and input
+ * come from settings/settings.css, its buttons and problem lines from styles.css. Colours only
  * from theme/tokens.css (noLiteralColours.test.ts fails on a literal one); text reads the ink
  * tokens, never a fill (tokens.test.ts).
  */
-
-.calendar-settings {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-  min-width: 0;
-}
-
-.calendar-settings-title {
-  margin: 0;
-  font-size: 16px;
-  font-weight: 650;
-}
-
-.calendar-settings-intro {
-  margin: 0;
-  color: var(--ink-muted);
-}
-
-.calendar-field {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  min-width: 0;
-}
-
-.calendar-label {
-  font-weight: 600;
-}
 
 .calendar-account {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 8px 12px;
+  gap: var(--space-2) var(--space-3);
 }
 
 .calendar-account-text {
   flex: 1 1 200px;
   min-width: 0;
   overflow-wrap: anywhere;
-}
-
-.calendar-select,
-.calendar-textarea {
-  max-width: 100%;
-  padding: 6px 10px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--surface);
-  color: var(--ink);
-  font: inherit;
 }
 
 .calendar-select {
@@ -68,55 +28,41 @@
   resize: vertical;
 }
 
-.calendar-select:focus-visible,
-.calendar-textarea:focus-visible {
-  outline: 2px solid var(--ring);
-  outline-offset: 2px;
-}
-
 .calendar-check {
   display: flex;
   align-items: flex-start;
-  gap: 8px;
+  gap: var(--space-2);
   cursor: pointer;
 }
 
 .calendar-check input {
   flex: none;
-  margin: 3px 0 0;
+  /* The 16 px box centred on the first 20 px line of text. */
+  margin: 2px 0 0;
   accent-color: var(--accent);
 }
 
 .calendar-check-text {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: var(--space-1);
   min-width: 0;
 }
 
 .calendar-hint {
-  margin: 0;
-  font-size: 13px;
   color: var(--ink-muted);
   overflow-wrap: anywhere;
-}
-
-/* Waiting on the user in System Settings: ink on a rule, never a fill as text. */
-.calendar-hint-warn {
-  padding-left: 8px;
-  border-left: 3px solid var(--ink-muted);
-  color: var(--ink);
 }
 
 .calendar-notice-editor {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-2);
   min-width: 0;
 }
 
 .calendar-notice-actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: var(--space-2);
 }
