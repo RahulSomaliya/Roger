@@ -47,7 +47,9 @@ afterAll(async () => {
   await gallery.write({ Branch: 'p2/m4-s4', Task: 'M4-S4' });
 });
 
-const LINES = '.transcript > p.line:not(.interim)';
+// M3-T9's LiveTranscript in the meeting page's transcript region: its final lines carry their id.
+const TRANSCRIPT = '.meeting-page .live-transcript-lines';
+const LINES = `${TRANSCRIPT} > p[data-segment-id]`;
 const TITLE = '.meeting-page h1';
 
 /** Every theme at every width, as each gallery shoots them. */
@@ -114,7 +116,7 @@ async function expectNewestLineVisible(page: Page): Promise<void> {
     for (const line of all) line.removeAttribute('data-qa-newest');
     all.item(all.length - 1).setAttribute('data-qa-newest', '');
   }, LINES);
-  await qa.expectVisible(page, '[data-qa-newest]', { within: '.transcript' });
+  await qa.expectVisible(page, '[data-qa-newest]', { within: TRANSCRIPT });
 }
 
 it(
@@ -125,7 +127,8 @@ it(
       const { page } = preview;
       await openFromSidebar(page, PAST_MEETING.title);
       expect(await lineCount(page)).toBe(PAST_MEETING.lines.length);
-      await expectNewestLineVisible(page);
+      // A past meeting opens at its first line (LiveTranscript follows only a live one).
+      await qa.expectVisible(page, `${LINES}:first-child`, { within: TRANSCRIPT });
       await qa.expectVisible(page, TITLE);
       expect(await page.locator('.meeting-page .page-meta').textContent()).toMatch(/ to /);
       await qa.expectNoPageOverflow(page);
@@ -136,7 +139,7 @@ it(
         `past-${theme}-${width}`,
         `The standup from the sidebar (${theme}, ${width})`,
         'pass',
-        `${PAST_MEETING.lines.length} lines from the store, newest in view; title, day and span in the header; listed in the sidebar and marked current; no sideways scroll; no console errors.`,
+        `${PAST_MEETING.lines.length} lines from the store, from the first; title, day and span in the header; listed in the sidebar and marked current; no sideways scroll; no console errors.`,
       );
 
       // Main's idle heartbeat: a fresh status after every uploader pass, every 2 s, each in its
@@ -167,17 +170,21 @@ it(
         'Roger could not read this meeting on this Mac: database is locked',
       );
       expect(await titleOf(page)).toBe('Could not read this meeting');
-      // This window played the standup, so the capture view still holds its lines.
-      expect(await lineCount(page)).toBe(PAST_MEETING.lines.length);
+      // A page opened now has heard none of the standup's lines (the transcript panel listens
+      // only while mounted), so it shows no transcript that would call the meeting empty.
+      expect(await lineCount(page)).toBe(0);
+      expect(await page.locator('.meeting-page .empty-state').textContent()).toBe(
+        'The transcript shows here once Roger can read this meeting.',
+      );
       qa.expectNoConsoleErrors(preview);
       await qa.expectNoPageOverflow(page);
       await gallery.shoot(
         page,
         'Read failed',
         `read-failed-${theme}-${width}`,
-        `The store read fails, lines heard live (${theme}, ${width})`,
+        `The store read fails (${theme}, ${width})`,
         'pass',
-        'The reason in an alert with Try again; the title says Roger could not read the meeting (never a made-up one); the lines this window heard live stay.',
+        'The reason in an alert with Try again; the title says Roger could not read the meeting (never a made-up one); no transcript until a read answers.',
       );
       await page.locator('.meeting-read-error button', { hasText: 'Try again' }).click();
       await waitForTitle(page, PAST_MEETING.title);
@@ -233,6 +240,8 @@ it(
       });
       await qa.settle(page);
       await qa.expectVisible(page, '.banner-slot .notice');
+      // The notice shrinks the transcript's box after its last line: that line stays in view.
+      await expectNewestLineVisible(page);
       expect(await page.locator('[aria-label="Capture status"]').textContent()).toContain(
         'Last recording',
       );
@@ -244,7 +253,7 @@ it(
         `stopped-${theme}-${width}`,
         `After Stop, with Roger's stop notice (${theme}, ${width})`,
         'pass',
-        'Every line stays (read again from the store), the meter becomes "Last recording", the stop notice shows above the page.',
+        'Every line stays (read again from the store), the newest still in view; the meter becomes "Last recording", the stop notice shows above the page.',
       );
 
       // New note from this page: main names the next meeting before the shell opens it. Watch
@@ -290,8 +299,8 @@ it(
       expect(watch.placeholder).toBe(false);
       expect(watch.fewestLinesWhileShown).toBe(linesBeforeStop);
       await qa.expectVisible(page, '.meeting-phase-recording');
-      expect(await page.locator('.transcript .empty').textContent()).toBe(
-        'Lines appear here as people speak.',
+      expect(await page.locator('.meeting-page .live-transcript-empty').textContent()).toBe(
+        'Listening. Lines appear here as people speak.',
       );
       const newTitle = (await titleOf(page)) ?? '';
       await qa.expectNoPageOverflow(page);
@@ -435,7 +444,7 @@ it(
       await page.evaluate(() => {
         window.__emptyTranscriptSeen = false;
         new MutationObserver(() => {
-          if (document.querySelector('.meeting-page .transcript .empty') !== null) {
+          if (document.querySelector('.meeting-page .live-transcript-empty') !== null) {
             window.__emptyTranscriptSeen = true;
           }
         }).observe(document.body, { subtree: true, childList: true, characterData: true });
@@ -475,7 +484,7 @@ it(
       await qa.settle(page);
       await qa.expectVisible(page, '.meeting-read-error');
       expect(await titleOf(page)).toBe('Could not read this meeting');
-      expect(await page.locator('.meeting-page .transcript').count()).toBe(0);
+      expect(await page.locator('.meeting-page .live-transcript').count()).toBe(0);
       await qa.expectVisible(page, '.meeting-page .empty-state');
       expect(await page.locator('.meeting-page .empty-state').textContent()).toBe(
         'The transcript shows here once Roger can read this meeting.',
@@ -488,7 +497,7 @@ it(
         `unread-${theme}-${width}`,
         `The store read fails, nothing heard live (${theme}, ${width})`,
         'pass',
-        'The reason in an alert with Try again; no made-up title and no "No lines were saved": the page says the transcript shows once Roger can read the meeting.',
+        'The reason in an alert with Try again; no made-up title and no "Nothing was transcribed": the page says the transcript shows once Roger can read the meeting.',
       );
       await page.locator('.meeting-read-error button', { hasText: 'Try again' }).click();
       await waitForTitle(page, unreadTitle);
@@ -498,7 +507,7 @@ it(
       await qa.emitEvent(page, IpcChannel.AppNavigate, `meeting/${crypto.randomUUID()}`);
       await waitForTitle(page, 'This meeting is not on this Mac');
       await qa.expectVisible(page, '.meeting-page .empty-state');
-      expect(await page.locator('.meeting-page .transcript').count()).toBe(0);
+      expect(await page.locator('.meeting-page .live-transcript').count()).toBe(0);
       await qa.expectNoPageOverflow(page);
       qa.expectNoConsoleErrors(preview);
       await gallery.shoot(
