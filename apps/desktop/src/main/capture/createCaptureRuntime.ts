@@ -12,6 +12,7 @@ import type { IpcMainLike } from '../ipc/trust';
 import type { QuitHook } from '../lifecycle';
 import type { Logger } from '../logger';
 import type { MicrophoneAccess } from '../permissions';
+import { createSetup } from '../setup/createSetup';
 import { readSigningIdentity } from '../signing';
 import type { StoredSegment, TranscriptStore } from '../store/TranscriptStore';
 import type { SpeechToTextFactory } from '../stt/createSpeechToText';
@@ -296,6 +297,20 @@ export function createCaptureRuntime(deps: CaptureRuntimeDeps): CaptureRuntime {
   }).attach();
 
   // [slot M2-T19] permission setup, `setup:*`; no navigation port (index.ts makes it later)
+
+  // The setup screen's checks and actions. The renderer opens the screen itself
+  // (app/slots/m2-setup.ts): on a first run, and when a Start is refused for the microphone.
+  createSetup({
+    ipcMain: deps.ipcMain,
+    getWindow: deps.getWindow,
+    systemAudio,
+    store,
+    config,
+    apiConnection: deps.apiConnection,
+    isPackaged: app.isPackaged,
+    logger: logger.child({ component: 'setup' }),
+    clock,
+  });
 
   // [slot M3-T19b] the STT usage uploader
 
