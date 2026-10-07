@@ -172,6 +172,8 @@ export interface SttMeterStatus {
  * - call-audio-silent: call audio went silent mid-call (CALL_AUDIO_SILENT_WARNING_MS and on)
  * - offline: the Mac lost the network, so transcription stopped
  * - backup-paused: the audio backup stopped, below BACKUP_MIN_FREE_BYTES of free disk
+ * - keyterms-rejected: the vendor refused the jargon list, so that stream runs without it for the
+ *   rest of the meeting (M3-T4b; always quiet)
  */
 export type CaptureWarningKind =
   | 'no-audio'
@@ -181,7 +183,8 @@ export type CaptureWarningKind =
   | 'call-audio-never-heard'
   | 'call-audio-silent'
   | 'offline'
-  | 'backup-paused';
+  | 'backup-paused'
+  | 'keyterms-rejected';
 
 /** Something wrong now. It stays in `CaptureStatus.warnings` until the condition clears. */
 export interface CaptureWarning {

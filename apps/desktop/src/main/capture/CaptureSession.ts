@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import type { SttStreamState } from '../../shared/capture';
+import type { CaptureWarningKind, SttStreamState } from '../../shared/capture';
 import { PCM_SAMPLE_RATE } from '../../shared/ipc';
 import { pcmBytesToMs } from '../../shared/pcm';
 import {
@@ -12,7 +12,13 @@ import {
 import { errorMessage, type Logger } from '../logger';
 import type { GapReason, JsonObject, TranscriptStore } from '../store/TranscriptStore';
 import { LatencyMeter } from '../stt/LatencyMeter';
-import type { SpeechToText, SttEvent, SttStream, SttStreamSettings } from '../stt/SpeechToText';
+import {
+  type SpeechToText,
+  SttConnectError,
+  type SttEvent,
+  type SttStream,
+  type SttStreamSettings,
+} from '../stt/SpeechToText';
 import { AudioTimeline } from './AudioTimeline';
 import type { SttOpenBudget, SttOpenDecision } from './SttOpenBudget';
 
@@ -31,6 +37,20 @@ export interface CaptureSessionListeners {
   onSaveFailure(source: AudioSource, reason: string): void;
   /** One of the source's streams finished closing mid-meeting (not at Stop): meter it now. */
   onStreamClosed(source: AudioSource): void;
+  /**
+   * Something the session worked around on its own that the person should know: the vendor
+   * refused the jargon list, so this source transcribes without it for the rest of the meeting
+   * (M3-T4b). CaptureService shows it as a quiet capture warning. Optional, so a session built
+   * without a warning sink (a test) still runs.
+   */
+  onWarning?(source: AudioSource, warning: SessionWarning): void;
+}
+
+/** A warning the session raises (onWarning). */
+export interface SessionWarning {
+  kind: Extract<CaptureWarningKind, 'keyterms-rejected'>;
+  /** For people: what happened and what to do. Never transcript text, never a term of the list. */
+  message: string;
 }
 
 export interface CaptureSessionOptions {
@@ -40,6 +60,8 @@ export interface CaptureSessionOptions {
   stt: SpeechToText;
   accessToken: string;
   settings: SttStreamSettings;
+  /** Start's token's price without the jargon list (StreamCredentials). */
+  pricePerHourUsdWithoutKeyterms?: number | null;
   /**
    * A fresh token for a reopen. Start's token is only good for opening within its TTL (AssemblyAI:
    * 30 s by default), so a source that reopens minutes later needs a new one from the API.
@@ -64,7 +86,22 @@ export interface CaptureSessionOptions {
 export interface StreamCredentials {
   accessToken: string;
   settings: SttStreamSettings;
+  /**
+   * USD per hour of one stream opened with no jargon list (the token's
+   * `price_per_hour_usd_without_keyterms`): the price of a source whose list the vendor refused,
+   * since the vendor bills a stream by what it was opened with. Null or missing (an API older than
+   * the field) meters such a stream at `settings.pricePerHourUsd`, which errs high, never low.
+   */
+  pricePerHourUsdWithoutKeyterms?: number | null;
 }
+
+/**
+ * A connect's outcome (connect): the stream, or the budget's refusal of the open without the
+ * jargon list, which each caller handles as it handles its own refusals.
+ */
+type Connected =
+  | { ok: true; stream: SttStream }
+  | { ok: false; refusal: Exclude<SttOpenDecision, { ok: true }>; rejection: string };
 
 /**
  * Why both sources are suspended at once (suspendStreams): `offline` while main's network poll
@@ -168,6 +205,11 @@ interface SourceLink {
   notBeforeMs: number;
   /** Failures in a row, for the backoff. */
   failures: number;
+  /**
+   * The vendor refused this source's jargon list (M3-T4b): every open of it for the rest of the
+   * meeting goes without the list (streamSettings), though each fresh token carries it again.
+   */
+  withoutKeyterms: boolean;
   /** Meeting offset where this source's latest final line ends (SourceWatermark.finalEndMs). */
   finalEndMs: number | null;
   /** The watermark the listeners last heard, so each change is told once. */
@@ -212,6 +254,10 @@ interface SourceLink {
  * Start's two included, passes the shared SttOpenBudget first; when it says no, the source waits
  * for the minute to pass or, with the meeting's opens spent, stays closed with an error saying
  * why. Nothing reopens without audio.
+ *
+ * A connect the vendor refuses over the jargon list is opened once more without it, through the
+ * budget, and that source goes without the list until Stop (connect): a call without the list
+ * loses a few names, a refused Start loses the meeting.
  *
  * The Mac going offline or to sleep suspends both sources at once (suspendStreams, M2-T6): offline
  * terminates each socket, asleep finishes and closes it, and either way audio is held as for a
@@ -268,7 +314,9 @@ export class CaptureSession {
   /**
    * Start: open every stream. If any fails, the ones that opened are closed and the first error is
    * rethrown. The opens are taken from the budget together first (AssemblyAI starts 5 sessions a
-   * minute on a free account, and each Start opens two); a refusal throws before any socket.
+   * minute on a free account, and each Start opens two); a refusal throws before any socket. A
+   * source whose jargon list the vendor refuses takes one more, right before its open without the
+   * list (connect), so a Start can take four, and a refusal of that one fails the Start too.
    */
   async open(): Promise<void> {
     // Both or neither: a Start with one source would look like a working meeting.
@@ -498,14 +546,22 @@ export class CaptureSession {
   }
 
   private async openStream(source: AudioSource): Promise<void> {
-    const { stt, accessToken, settings } = this.options;
+    const { accessToken, settings, pricePerHourUsdWithoutKeyterms = null } = this.options;
     const link = this.links[source];
     const attempt = (link.attempt += 1);
     this.setState(source, 'connecting', null);
-    const handle = this.track(
+    const connected = await this.connect(
       source,
-      await stt.openStream({ accessToken, settings, label: source }),
+      { accessToken, settings, pricePerHourUsdWithoutKeyterms },
+      () => this.closing || link.attempt !== attempt,
     );
+    if (!connected.ok) {
+      // Start takes its opens before any socket and fails whole when refused (open()): so here.
+      throw new Error(
+        `${connected.rejection}; not opened again without the jargon list: ${connected.refusal.message}`,
+      );
+    }
+    const handle = this.track(source, connected.stream);
     if (this.closing || link.attempt !== attempt) {
       // Another stream failed, or the source closed, while this one was connecting: do not leak it.
       await this.retire(handle);
@@ -536,7 +592,7 @@ export class CaptureSession {
     this.setState(source, 'connecting', null);
     let handle: StreamHandle;
     try {
-      const { accessToken, settings } = await this.options.refreshCredentials();
+      const credentials = await this.options.refreshCredentials();
       if (stale()) return;
       // Taken right before the open, the only place an open happens: an adapter never opens one.
       const grant = this.options.budget.acquire();
@@ -544,10 +600,13 @@ export class CaptureSession {
         this.budgetRefused(source, grant);
         return;
       }
-      handle = this.track(
-        source,
-        await this.options.stt.openStream({ accessToken, settings, label: source }),
-      );
+      const connected = await this.connect(source, credentials, stale);
+      if (!connected.ok) {
+        // Its list stays off: the open after the wait goes without it.
+        this.budgetRefused(source, connected.refusal);
+        return;
+      }
+      handle = this.track(source, connected.stream);
     } catch (error) {
       if (stale()) return;
       const reason = `could not reconnect: ${errorMessage(error)}`;
@@ -568,6 +627,99 @@ export class CaptureSession {
     }
     this.attach(source, handle, true);
     this.options.logger.info('speech-to-text stream reopened', { source });
+  }
+
+  /**
+   * Opens one vendor stream for `source`, its open already taken from the budget. A connect the
+   * vendor refused over the jargon list (SttConnectError.keytermsRejected: the core set it with
+   * the socket already closed, and never retries) is opened once more without the list, through
+   * the budget like any open (M3-T4b), and the source goes without it until Stop. Once, never a
+   * loop: the second open carries no list, so the core never blames one, and a source already
+   * without its list is never retried. A retry anywhere else (the core, an adapter) would open a
+   * billed session the budget never saw (house rule 9).
+   *
+   * Answers the stream, or the budget's refusal of the second open. When the second open fails,
+   * the error carries both reasons. `stale` (the session closed, or the source moved on) skips the
+   * second open: the first failure is rethrown, and the caller drops it as it drops any. Asked
+   * before listRejected, whose warn line, capture event and warning each say the source reopens
+   * without the list: after Stop nothing reopens. The list stays on, so an open that is refused
+   * again later says so then.
+   */
+  private async connect(
+    source: AudioSource,
+    credentials: StreamCredentials,
+    stale: () => boolean,
+  ): Promise<Connected> {
+    try {
+      return { ok: true, stream: await this.openVendorStream(source, credentials) };
+    } catch (error) {
+      if (stale() || !this.listRejected(source, credentials, error)) throw error;
+      const grant = this.options.budget.acquire();
+      if (!grant.ok) return { ok: false, refusal: grant, rejection: errorMessage(error) };
+      try {
+        return { ok: true, stream: await this.openVendorStream(source, credentials) };
+      } catch (retryError) {
+        throw new Error(
+          `${errorMessage(error)}; and without the jargon list: ${errorMessage(retryError)}`,
+          { cause: retryError },
+        );
+      }
+    }
+  }
+
+  private openVendorStream(
+    source: AudioSource,
+    credentials: StreamCredentials,
+  ): Promise<SttStream> {
+    return this.options.stt.openStream({
+      accessToken: credentials.accessToken,
+      settings: this.streamSettings(source, credentials),
+      label: source,
+    });
+  }
+
+  /**
+   * What `source` opens with: the token's settings, or, once the vendor refused the list for this
+   * source, the same with no list, metered at the price without the list's surcharge (the vendor
+   * bills a stream by what it was opened with; StreamCredentials).
+   */
+  private streamSettings(source: AudioSource, credentials: StreamCredentials): SttStreamSettings {
+    if (!this.links[source].withoutKeyterms) return credentials.settings;
+    return {
+      ...credentials.settings,
+      keyterms: [],
+      pricePerHourUsd:
+        credentials.pricePerHourUsdWithoutKeyterms ?? credentials.settings.pricePerHourUsd,
+    };
+  }
+
+  /**
+   * Whether `error` is the vendor refusing the jargon list this source just sent. If so, the source
+   * goes without the list from now on, and that is logged at warn with the term count (never the
+   * terms: they name clients and colleagues), recorded for the capture report and raised as a
+   * quiet warning. Never for a source already without its list, nor for an empty list: the open
+   * without it would be the same open again.
+   */
+  private listRejected(
+    source: AudioSource,
+    credentials: StreamCredentials,
+    error: unknown,
+  ): boolean {
+    const link = this.links[source];
+    const terms = credentials.settings.keyterms?.length ?? 0;
+    if (!(error instanceof SttConnectError) || !error.keytermsRejected) return false;
+    if (link.withoutKeyterms || terms === 0) return false;
+    link.withoutKeyterms = true;
+    this.options.logger.warn('speech-to-text jargon list rejected: reopening without it', {
+      source,
+      terms,
+    });
+    this.recordEvent(source, 'stt-keyterms-rejected', { terms });
+    this.options.listeners.onWarning?.(source, {
+      kind: 'keyterms-rejected',
+      message: `Jargon list rejected by ${this.options.stt.vendorName}, transcribing without it. Check the list in Settings.`,
+    });
+    return true;
   }
 
   /**
@@ -1145,6 +1297,7 @@ function newLink(): SourceLink {
     heldDropped: 0,
     notBeforeMs: 0,
     failures: 0,
+    withoutKeyterms: false,
     finalEndMs: null,
     // Before Start a source has no stream and holds nothing: watermark() reads it as closed.
     published: { finalEndMs: null, closed: true },
