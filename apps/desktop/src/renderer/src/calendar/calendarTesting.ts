@@ -108,7 +108,6 @@ export function calendarState(fields: Partial<CalendarState> = {}): CalendarStat
     connectError: null,
     disconnecting: false,
     disconnectError: null,
-    justConnected: false,
     ...fields,
   };
 }

@@ -22,7 +22,6 @@ import { CalendarAccount } from './CalendarAccount';
 import { registerCalendarIpc, type CalendarIpcWindow } from './calendarIpc';
 import { registerCalendarPreferences } from './calendarPreferences';
 import { CalendarSync } from './CalendarSync';
-import type { NoticeClipboard } from './consentNotice';
 import type { CalendarApiPort } from './ports';
 import { PromptLog } from './PromptLog';
 import {
@@ -51,7 +50,6 @@ export interface CalendarElectronPorts {
   powerMonitor: ResumeEvents;
   powerSaveBlocker: AppSuspensionBlocker;
   shell: { openExternal(url: string): Promise<void> };
-  clipboard: NoticeClipboard;
 }
 
 export interface CalendarRuntimeDeps {

@@ -4,7 +4,6 @@ import { join, resolve } from 'node:path';
 import { parseEnv } from 'node:util';
 import {
   app,
-  clipboard,
   desktopCapturer,
   dialog,
   ipcMain,
@@ -438,7 +437,7 @@ async function main(): Promise<void> {
       window.show();
       window.focus();
     },
-    electron: { app, powerMonitor, powerSaveBlocker, shell, clipboard },
+    electron: { app, powerMonitor, powerSaveBlocker, shell },
     logger: logger.child({ component: 'calendar' }),
   });
   // The call offer was built with the capture runtime, before this PromptService existed: until

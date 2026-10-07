@@ -1,13 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { CalendarAttendee } from '../../../shared/calendar';
-import {
-  attendeeSummary,
-  callDetectedTitle,
-  eventTitle,
-  startLabel,
-  stopsLabel,
-  timeRange,
-} from './promptFormat';
+import { callDetectedTitle, eventTitle, startLabel, stopsLabel, timeRange } from './promptFormat';
 
 const START = '2026-10-07T10:00:00.000Z';
 const at = (offsetMs: number): number => Date.parse(START) + offsetMs;
@@ -16,19 +8,6 @@ const MIN = 60_000;
 afterEach(() => {
   vi.unstubAllEnvs();
 });
-
-const person = (name: string | null, email: string, isSelf = false): CalendarAttendee => ({
-  email,
-  displayName: name,
-  responseStatus: 'accepted',
-  isSelf,
-  isOrganizer: false,
-});
-
-const ME = person('Rahul Somaliya', 'rahul@linkt.ai', true);
-const names = ['Jane Doe', 'Ali Khan', 'Sam Lee', 'Priya Rao', 'Tom Hill'];
-const others = (count: number): CalendarAttendee[] =>
-  names.slice(0, count).map((name) => person(name, `${name.split(' ')[0]?.toLowerCase()}@x.io`));
 
 describe('startLabel', () => {
   it('says how far off the start is, rounding up so it never claims less than the wait', () => {
@@ -47,58 +26,6 @@ describe('startLabel', () => {
   it('says "Starting now" at the start and "Started just now" in its first minute', () => {
     expect(startLabel(START, at(0))).toBe('Starting now');
     expect(startLabel(START, at(30_000))).toBe('Started just now');
-  });
-});
-
-describe('attendeeSummary', () => {
-  it('names the first two others and counts the rest, never counting the user', () => {
-    expect(attendeeSummary({ attendees: [ME, ...others(5)], attendeesOmitted: false })).toBe(
-      'Jane, Ali and 3 others',
-    );
-    expect(attendeeSummary({ attendees: [ME, ...others(4)], attendeesOmitted: false })).toBe(
-      'Jane, Ali and 2 others',
-    );
-  });
-
-  it('names up to three in full, and "1 other" is never written for a person we can name', () => {
-    expect(attendeeSummary({ attendees: [ME, ...others(3)], attendeesOmitted: false })).toBe(
-      'Jane, Ali and Sam',
-    );
-    expect(attendeeSummary({ attendees: [ME, ...others(2)], attendeesOmitted: false })).toBe(
-      'Jane and Ali',
-    );
-    expect(attendeeSummary({ attendees: [ME, ...others(1)], attendeesOmitted: false })).toBe(
-      'Jane',
-    );
-  });
-
-  it('has no line for a call with nobody else listed', () => {
-    expect(attendeeSummary({ attendees: [ME], attendeesOmitted: false })).toBeNull();
-    expect(attendeeSummary({ attendees: [], attendeesOmitted: false })).toBeNull();
-  });
-
-  it('falls back to the address before the @ when there is no display name', () => {
-    const attendees = [person(null, 'ali.khan@x.io'), person('  ', 'sam@x.io')];
-    expect(attendeeSummary({ attendees, attendeesOmitted: false })).toBe('ali.khan and sam');
-  });
-
-  it('says there are more when Google left attendees out', () => {
-    expect(attendeeSummary({ attendees: [ME], attendeesOmitted: true })).toBe('Others');
-    expect(attendeeSummary({ attendees: [ME, ...others(2)], attendeesOmitted: true })).toBe(
-      'Jane, Ali and others',
-    );
-    expect(attendeeSummary({ attendees: [ME, ...others(5)], attendeesOmitted: true })).toBe(
-      'Jane, Ali and 3+ others',
-    );
-  });
-
-  it('handles 40 attendees without a long line', () => {
-    const many = Array.from({ length: 40 }, (_, index) =>
-      person(`Guest${index} Surname`, `g${index}@x.io`),
-    );
-    expect(attendeeSummary({ attendees: many, attendeesOmitted: false })).toBe(
-      'Guest0, Guest1 and 38 others',
-    );
   });
 });
 

@@ -347,7 +347,7 @@ function OpenAtLoginField({ settings, actions }: FieldProps) {
   // Settings, or this build cannot register a login item. Otherwise the switch says it all.
   const hint =
     loginItem === 'requires-approval' || loginItem === 'unavailable'
-      ? openAtLoginHint(openAtLogin, loginItem)
+      ? openAtLoginHint(loginItem)
       : null;
   return (
     <div className="settings-field">

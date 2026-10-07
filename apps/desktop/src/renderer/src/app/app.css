@@ -5,8 +5,7 @@
  * ladders in styles.css.
  *
  * The rules under "Shared page rules" are still read by other screens (Settings, Set up Roger,
- * the meeting page, the notes panel, the kept-audio card): each goes when its last user does, not
- * before.
+ * the notes panel, the kept-audio card): each goes when its last user does, not before.
  */
 
 .shell {
@@ -241,17 +240,6 @@
   margin: 0 auto;
 }
 
-/* The meeting fills the page height, so only its transcript scrolls (transcript.css
-   .live-transcript). */
-.meeting-page {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  height: 100%;
-  max-width: var(--shell-content-width);
-  margin: 0 auto;
-}
-
 .page-header {
   display: flex;
   flex-wrap: wrap;
@@ -259,7 +247,6 @@
   gap: 8px 12px;
 }
 
-.page-header-text,
 .page-header > .page-title {
   flex: 1 1 auto;
   min-width: 0;
@@ -267,16 +254,11 @@
 
 .page-title {
   margin: 0;
-  font-size: 22px;
-  font-weight: 650;
-  letter-spacing: -0.01em;
+  font-size: var(--text-3xl);
+  line-height: var(--leading-3xl);
+  font-weight: 600;
+  letter-spacing: var(--tracking-3xl);
   overflow-wrap: anywhere;
-}
-
-.page-meta {
-  margin: 2px 0 0;
-  font-size: 13px;
-  color: var(--ink-muted);
 }
 
 .card {
@@ -323,14 +305,4 @@
 .empty-state .empty-state-text {
   max-width: 52ch;
   margin: 0 auto;
-}
-
-.settings-sections {
-  display: flex;
-  flex-direction: column;
-  gap: 24px;
-}
-
-.slot-failure {
-  font-size: 13px;
 }

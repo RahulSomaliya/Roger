@@ -2,10 +2,9 @@
  * Home's Today and the connect line (TodaySection.tsx, ConnectCalendarCard.tsx): a time and a
  * title per row, the button in a fixed right column. Split from the old calendar.css with
  * calendarSettings.css (the Settings section) and calendarNotice.css (the meeting page's notice).
- * They reuse styles.css (.btn, .problem, .overline). The rules shared by more than one of the
- * three (.calendar-status, .calendar-problem) stay here, so a file that uses them imports this
- * one too; delete one only when its last user goes (CalendarSettings.tsx still reads both).
- * Colours only from theme/tokens.css (noLiteralColours.test.ts fails on a literal one); text
+ * They reuse styles.css (.btn, .problem, .overline). calendarSettings.css no longer imports this
+ * file; .calendar-status is read by TodaySection.tsx only, so a file that wants it imports this
+ * one. Colours only from theme/tokens.css (noLiteralColours.test.ts fails on a literal one); text
  * reads the ink tokens, never a fill (tokens.test.ts).
  */
 
@@ -13,20 +12,6 @@
   margin: 0;
   font-size: 13px;
   color: var(--ink-muted);
-}
-
-/* An error with the button that retries it, on one row that wraps. */
-.calendar-problem {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px 12px;
-  overflow-wrap: anywhere;
-}
-
-.calendar-problem > span {
-  flex: 1 1 240px;
-  min-width: 0;
 }
 
 /* Connect: one secondary button and one helper line beside it, wrapping under it when narrow. */

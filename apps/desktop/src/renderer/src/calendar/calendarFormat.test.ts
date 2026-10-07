@@ -90,13 +90,11 @@ describe('reconnectLabel', () => {
   });
 
   it('has no date to give once Google refused the grant or the date has passed', () => {
-    expect(reconnectLabel(expiring, freshSync, expiresAt, format)).toBe(
-      'Reconnect Google Calendar',
-    );
+    expect(reconnectLabel(expiring, freshSync, expiresAt, format)).toBe('Reconnect');
     const refused = { ...connection, status: 'reconnect_required' as const };
-    expect(reconnectLabel(refused, freshSync, NOW, format)).toBe('Reconnect Google Calendar');
+    expect(reconnectLabel(refused, freshSync, NOW, format)).toBe('Reconnect');
     expect(reconnectLabel(connection, { ...freshSync, reconnectRequired: true }, NOW, format)).toBe(
-      'Reconnect Google Calendar',
+      'Reconnect',
     );
   });
 
@@ -132,7 +130,7 @@ describe('calendarNotices', () => {
       format,
     });
     expect(notices.map((notice) => notice.kind)).toEqual(['reconnect-required']);
-    expect(notices[0]?.action).toBe('Reconnect Google Calendar');
+    expect(notices[0]?.action).toBe('Reconnect');
   });
 
   it('warns before the expiry date and still shows a stale copy', () => {
@@ -207,26 +205,12 @@ describe("calendarProblem (Home's one quiet line)", () => {
 
 describe('openAtLoginHint', () => {
   it('says where to allow Roger when macOS waits for the user, with the path System Settings uses', () => {
-    const hint = openAtLoginHint('on', 'requires-approval');
+    const hint = openAtLoginHint('requires-approval');
     expect(hint).toContain(LOGIN_ITEMS_SETTINGS_PATH);
     expect(hint).toContain('missed');
   });
 
-  it('says it is on when macOS opens Roger at login', () => {
-    expect(openAtLoginHint('on', 'enabled')).toBe(
-      'Roger opens when you log in, so it can remind you before your first call.',
-    );
-  });
-
   it('says what a dev build, or a Roger macOS cannot find, cannot do', () => {
-    expect(openAtLoginHint('off', 'unavailable')).toContain('Not available');
-  });
-
-  it('says what an off or not yet registered login item means, by the choice', () => {
-    expect(openAtLoginHint('off', 'disabled')).toContain('only when you open it');
-    expect(openAtLoginHint('off', null)).toContain('only when you open it');
-    expect(openAtLoginHint('auto', 'disabled')).toBe(
-      'Roger turns this on when you connect your calendar.',
-    );
+    expect(openAtLoginHint('unavailable')).toContain('Not available');
   });
 });

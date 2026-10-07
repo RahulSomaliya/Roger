@@ -96,10 +96,10 @@ describe('the Calendar section of Settings', () => {
       const html = render(
         calendarState({ connection: { ...CONNECTION, status: 'reconnect_required' } }),
       );
-      expect(html).toContain('Reconnect Google Calendar</button>');
+      expect(html).toContain('Reconnect</button>');
       // The refused grant is the one thing to do here, so it takes the one primary.
       expect(primaries(html)).toBe(1);
-      expect(html).toMatch(/data-variant="primary"[^>]*>Reconnect Google Calendar</);
+      expect(html).toMatch(/data-variant="primary"[^>]*>Reconnect</);
     });
 
     it('says Connect Google Calendar, not "Open Google again", while it waits for the browser', () => {

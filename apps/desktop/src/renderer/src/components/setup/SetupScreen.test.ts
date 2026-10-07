@@ -139,6 +139,19 @@ describe('the setup screen', () => {
     }
   });
 
+  // Setup has no header, so a person who cannot pass a check yet (a permission left for later)
+  // would be stuck here without it. Later is the way out; it is never a second main button.
+  it('offers Later, as a ghost button, while a check needs you, calling the same onDone', () => {
+    for (const status of [firstRunMac(), refusedMac()]) {
+      const html = render(state({ status }));
+      expect(buttons(html)).toContain('Later');
+      expect(buttons(html)).not.toContain('Done');
+      expect(html).toMatch(/<button[^>]*data-variant="ghost"[^>]*>Later<\/button>/);
+      expect(primaries(html)).toHaveLength(1);
+    }
+    expect(buttons(render(state()))).not.toContain('Later');
+  });
+
   it('keeps Done off a ready Mac whose check could not run, and while the status is unknown', () => {
     expect(buttons(render(state({ status: null })))).not.toContain('Done');
     const helperMissing = {
@@ -173,7 +186,11 @@ describe('the setup screen', () => {
       .map((match) => match[0])
       .filter((tag) => !tag.includes('data-action="test-system-audio"'));
     expect(others.length).toBeGreaterThan(0);
-    for (const tag of others) expect(tag).toMatch(/\sdisabled/);
+    // Later is the way out of a screen with no header: it never waits for an action.
+    for (const tag of others) {
+      if (tag.includes('data-variant="ghost"')) expect(tag).not.toMatch(/\sdisabled/);
+      else expect(tag).toMatch(/\sdisabled/);
+    }
   });
 
   it("shows a failed action's reason as a problem line on its own row only", () => {
