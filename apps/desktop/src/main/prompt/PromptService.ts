@@ -278,7 +278,7 @@ export class PromptService implements PromptOfferPort {
 
   /** Called with the new state after every change. Returns the removal. */
   onChange(listener: (state: PromptPanelState) => void): () => void {
-    return this.events.on('change', listener);
+    return this.events.on('change', this.guarded('change', listener));
   }
 
   /**
@@ -286,7 +286,7 @@ export class PromptService implements PromptOfferPort {
    * that app from here (M2 plan, "Offer and auto-stop"). Returns the removal.
    */
   onCallCardDismissed(listener: (app: CallApp) => void): () => void {
-    return this.events.on('call-card-dismissed', listener);
+    return this.events.on('call-card-dismissed', this.guarded('call-card-dismissed', listener));
   }
 
   /**
@@ -517,10 +517,10 @@ export class PromptService implements PromptOfferPort {
       this.noteAnswered(card, nowMs);
     } else {
       this.record(card.accountEmail, card.key, 'dismissed', nowMs);
-      this.events.emit('call-card-dismissed', card.app);
     }
     this.removeCard(card);
     this.changed();
+    if (card.kind === 'call_detected') this.events.emit('call-card-dismissed', card.app);
   }
 
   private copyNotice(card: CardState): void {
@@ -989,6 +989,21 @@ export class PromptService implements PromptOfferPort {
     return id;
   }
 
+  /**
+   * A listener outside this service (the panel's IPC and window, M2's cooldown), wrapped so one
+   * that throws is logged and the others still hear: the Emitter stops at the first throw, and the
+   * throw would surface in the action that changed the cards, half done for the panel.
+   */
+  private guarded<T>(event: string, listener: (payload: T) => void): (payload: T) => void {
+    return (payload) => {
+      try {
+        listener(payload);
+      } catch (error) {
+        this.options.logger.error('prompt listener failed', { event, error: errorMessage(error) });
+      }
+    };
+  }
+
   private changed(): void {
     this.schedule();
     this.events.emit('change', this.getState());
@@ -1003,7 +1018,13 @@ function isRecording(phase: CapturePhase): boolean {
 /**
  * What keeps `source` from counting as live in a recording status: no audio yet (or a stalled,
  * ended or failed source), or a speech stream that is not open. Codes only, never the stream's
- * message: those quote the vendor.
+ * message: those quote the vendor. Digital silence still counts as audio: before the others join,
+ * call audio is legitimately silent, so M2's silence warnings never decide the outcome.
+ *
+ * Trap (M3-T20, the silence gate): a gated source's stream sits `paused` through silence, which
+ * here reads as a dead stream, so every call whose others join after 20 s would log
+ * `started_degraded`. When the gate lands, a stream paused by the gate is not a problem: read the
+ * gate's state from the status here, with a test in PromptService.test.ts.
  */
 function sourceProblems(status: CaptureStatus, source: AudioSource): string[] {
   const problems: string[] = [];

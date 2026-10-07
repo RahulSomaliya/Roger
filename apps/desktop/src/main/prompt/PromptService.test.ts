@@ -416,6 +416,22 @@ describe('PromptService', () => {
       for (const event of [first, second, later]) expect(h.row(event)?.shownAt).toBe(iso(START));
     });
 
+    it('keeps a throwing listener from the others and from the card', () => {
+      const standup = call('standup', 1);
+      const h = harness({ events: [standup] });
+      h.service.onChange(() => {
+        throw new Error('the panel is gone');
+      });
+      const seen: PromptPanelState[] = [];
+      h.service.onChange((state) => seen.push(state));
+      h.offerCalendar(standup);
+
+      expect(seen.at(-1)?.cards).toHaveLength(1);
+      expect(h.cards()).toHaveLength(1);
+      const failure = h.lines.find((line) => line.message === 'prompt listener failed');
+      expect(failure).toMatchObject({ event: 'change', error: 'the panel is gone' });
+    });
+
     it('never shows a key twice, in this run or after a restart', () => {
       const standup = call('standup', 1);
       const h = harness({ events: [standup] });
