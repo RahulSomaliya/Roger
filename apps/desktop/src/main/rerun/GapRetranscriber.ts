@@ -253,8 +253,10 @@ export class GapRetranscriber {
         this.running = null;
         this.setProgress(null);
       }
-      // Cut short: it stays first in line for the next idle, and whoever asked hears now.
-      if (!interrupted) this.queue.splice(this.queue.indexOf(meetingId), 1);
+      // Cut short: it stays first in line for the next idle, and whoever asked hears now. Found by
+      // index, never spliced at indexOf blindly: -1 would drop the last meeting in line instead.
+      const at = this.queue.indexOf(meetingId);
+      if (!interrupted && at !== -1) this.queue.splice(at, 1);
       this.release(meetingId);
       if (interrupted) return;
     }
