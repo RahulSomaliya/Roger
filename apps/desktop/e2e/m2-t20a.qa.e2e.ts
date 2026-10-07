@@ -293,7 +293,7 @@ it(
       await qa.expectVisible(page, `${row('mic')} .level-meter`);
       expect(await textOf(page, `${row('mic')} .capture-stream-detail`)).toContain(MIC_DEVICE);
       expect(await page.locator('.capture-notice').count()).toBe(2);
-      expect(await textOf(page, '.capture-notice')).toContain('2 times this recording');
+      expect(await textOf(page, '.capture-notice')).toContain('latest of 2 recent switches');
       await qa.expectVisible(page, '.capture-notice');
       expect(await page.locator('.capture-warning').count()).toBe(0);
       expect(await textOf(page, STATUS)).toContain('Speech-to-text');
@@ -304,7 +304,7 @@ it(
         `healthy-${tag}`,
         `Both streams transcribing, with levels (${theme}, ${width})`,
         'pass',
-        'Transcribing on the ok tint for both; mic bar 76% (-14 dB), call audio 60% (-24 dB); devices in the detail line, the AirPods name in full; the latest switch with "2 times this recording" and the helper restart; the meter line; no warning.',
+        'Transcribing on the ok tint for both; mic bar 76% (-14 dB), call audio 60% (-24 dB); devices in the detail line, the AirPods name in full; the latest switch with "latest of 2 recent switches" and the helper restart; the meter line; no warning.',
       );
 
       // Failure: the call audio helper is down. Two loud warnings, one row.
