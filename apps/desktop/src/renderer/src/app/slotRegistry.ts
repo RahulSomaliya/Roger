@@ -36,7 +36,7 @@ export interface SlotPropsByName {
   meetingAudioNote: MeetingSlotProps;
   /** Meeting page: the capture report after Stop (M2-T20b). */
   meetingCaptureReport: MeetingSlotProps;
-  /** Meeting page: the transcript (M3-T9; M4-S4 seeds M1's TranscriptView). */
+  /** Meeting page: the transcript (M3-T9's live transcript panel). */
   meetingTranscript: MeetingSlotProps;
   /** Meeting page: the "My notes" tab (M4-T20). */
   meetingMyNotes: MeetingSlotProps;
