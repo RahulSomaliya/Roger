@@ -170,13 +170,12 @@ def desktop_stt_provider_ids() -> set[str]:
     return set(re.findall(r"\[\s*'([^']+)',", entries.group(1)))
 
 
-# API vendors the desktop cannot run yet. The plan lands Soniox in two waves
-# (docs/plans/phase-2-build-order.md): its issuer and preset in M3-T14 (wave 3), its desktop adapter
-# in M3-T15 (wave 5). M3-T14 leaves this file alone: an exact match would turn every gate red in
-# between. Until then STT_PROVIDER=soniox fails Start on the Mac (UnsupportedSttProviderError).
-# M3-T15 deletes the entry in the commit that adds soniox to registry.ts. If M3-T15 is dropped, the
-# controller deletes it, with M3-T14's soniox if that merged (the build order's section 10).
-AWAITING_A_DESKTOP_ADAPTER = frozenset({"soniox"})
+# API vendors the desktop cannot run yet: the one allowed split of "Add a speech-to-text vendor"
+# (apps/desktop/README.md) lands a vendor's issuer and preset first and lists it here, since an
+# exact match would turn every gate red in between; meanwhile STT_PROVIDER=<vendor> fails Start on
+# the Mac (UnsupportedSttProviderError). The commit that adds the vendor to registry.ts deletes it
+# here. Empty since M3-T15 added Soniox's adapter (M3-T14 had landed its issuer and preset).
+AWAITING_A_DESKTOP_ADAPTER: frozenset[str] = frozenset()
 
 
 def test_every_preset_names_a_registered_vendor() -> None:

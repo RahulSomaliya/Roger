@@ -84,8 +84,8 @@ Fixed behaviour, not settings:
 | Guard                     | What happens                                                                                                                                                                                                                                                                                                                                    |
 | ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Failed or ended source    | Its session closes at once ("not connected"); the other source keeps going. It does not reopen: a dead track never comes back.                                                                                                                                                                                                                  |
-| Keep-alive                | Deepgram's KeepAlive is sent only while the stream is open and its source sent audio within the stall window, so a stalled stream is never kept alive.                                                                                                                                                                                          |
-| Vendor session cap        | The API asks AssemblyAI for `max_session_duration_seconds=10800` on every token (the vendor's maximum, explicit). At it the vendor closes with 3008 and Roger reopens a fresh session.                                                                                                                                                          |
+| Keep-alive                | Deepgram's KeepAlive and Soniox's keepalive are sent only while the stream is open and its source sent audio within the stall window, so a stalled stream is never kept alive.                                                                                                                                                                  |
+| Vendor session cap        | The API asks AssemblyAI for `max_session_duration_seconds=10800` on every token and Soniox for `18000` (each vendor's maximum, explicit). At it AssemblyAI closes with 3008, Soniox sends `temp_api_key_session_expired`, and Roger reopens a fresh session.                                                                                    |
 | Quit, sleep, close, crash | Quit (Cmd+Q included), the Mac going to sleep, the window closing, the renderer crashing or reloading all stop the recording through the normal stop, logged and kept as the meeting's `stt_usage.stop_reason`. Sleep, a crash or a reload leave a notice saying why; quit and a closed window (which quits Roger) leave no window to show one. |
 | Connect and close         | A connect times out after 10 s; Stop terminates any socket the vendor has not closed 5 s after the finish sequence (`SttConnection`).                                                                                                                                                                                                           |
 
@@ -118,8 +118,9 @@ response names the provider; `createSpeechToText` looks it up in the registry,
 
 Vendors bill a session for as long as its socket is open (AssemblyAI by the second, silent or not),
 so no adapter manages a socket. A websocket vendor only describes its protocol (`SttProtocol` in
-`src/main/stt/core/SttProtocol.ts`: URL and auth, ready signal, audio framing, keep-alive, how to
-read a message, the finish sequence and its completion signal, what close codes mean).
+`src/main/stt/core/SttProtocol.ts`: URL and auth, the messages it must hear before any audio,
+ready signal, audio framing, keep-alive, how to read a message, the finish sequence and its
+completion signal, what close codes mean).
 `SttConnection` (`src/main/stt/core/SttConnection.ts`) runs the one lifecycle for all of them:
 connecting → open → finishing → closed, one connect timeout over the handshake and the ready signal,
 audio dropped and counted outside open, Stop sends the finish sequence and terminates any socket
@@ -145,6 +146,20 @@ and a local fake vendor, and fails if any test leaves a socket open. Shipping ad
   quick Start before the vendor would, and says when to try.
 - `deepgram`: the second adapter (M3 bake-off). Streaming websocket, bearer token minted by the
   API, KeepAlive every 5 s only while its source sends audio, Finalize + CloseStream on stop.
+- `soniox`: the optional third adapter (M3 decision D1, bake-off run D; its docs say audio and
+  transcripts never train its models, read 2026-10-07). Real-time websocket, `stt-rt-v5`; the
+  API's temporary key goes in `Authorization: Bearer`. The configuration is a start request, the
+  first message on the socket (the protocol's opening message, which the core sends before any
+  audio): `pcm_s16le` at 16 kHz, endpoint detection on, and the jargon list as `context.terms`.
+  Soniox answers it with nothing, so the stream opens on the handshake, and a refused key, model
+  or start request arrives after it as an error on an open stream: Start succeeds, then that
+  stream fails and reopens like any failed one (its backoff, its per-meeting cap). Replies are
+  single tokens: the adapter holds the final ones until Soniox marks the end of an utterance
+  (`<end>`) and saves them as one line, showing the line in progress as the interim. Audio goes as
+  it comes, in 50 ms to 1 s frames; a keepalive every 10 s only while its source sends audio
+  (Soniox may close a session that hears nothing for 20 s). On stop: `finalize`, then an empty
+  text frame, answered by `finished`. Billed for the whole time a stream is open, like AssemblyAI;
+  the API's key caps a session at 5 hours.
 - `fake`: no network. Emits one line per two seconds of non-silent audio. Used by tests and by
   `ROGER_STT_PROVIDER=fake`.
 
@@ -169,12 +184,16 @@ Desktop:
    entry (`rejectsAudioFasterThanRealTime`). Map `settings.keyterms` (already cut to the shared
    limits in `keyterms.ts`) to the vendor's jargon parameter, and declare `keytermsRejected` for the
    refusal it gives a list it will not take (Deepgram: HTTP 400 at the handshake), with the same in
-   the entry's `keyterms`; never retry it, `CaptureSession` reopens once without the list.
+   the entry's `keyterms`; never retry it, `CaptureSession` reopens once without the list. A vendor
+   that refuses nothing while it connects (Soniox) declares none, and its entry says
+   `refusal: null`. Configuration that must reach the vendor before any audio goes in
+   `openingMessages`, never in `encodeAudio` or the keep-alive.
 3. One line in `src/main/stt/registry.ts`.
-4. One entry in `src/main/stt/testing/conformanceVendors.ts`: how the vendor says ready, its finish
-   messages and answer, a final line, a real mid-call close. The answer must match the protocol's
-   `finishedOn`: the fake closes the socket itself exactly when it declares `vendor-close`. Then
-   `pnpm test`: the conformance suite fails until the vendor closes every socket on every path.
+4. One entry in `src/main/stt/testing/conformanceVendors.ts`: what it must hear first, how the
+   vendor says ready, its finish messages and answer, a final line, a real mid-call close. The
+   answer must match the protocol's `finishedOn`: the fake closes the socket itself exactly when
+   it declares `vendor-close`. Then `pnpm test`: the conformance suite fails until the vendor
+   closes every socket on every path.
 
 API:
 

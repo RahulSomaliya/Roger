@@ -21,7 +21,7 @@ describe('registryAdapters', () => {
   it('refuses a provider the registry does not have, own keys only', () => {
     const adapters = registryAdapters({ logger, guards: DEFAULT_COST_GUARDS });
 
-    expect(() => adapters('soniox', () => undefined)).toThrow(UnsupportedSttProviderError);
+    expect(() => adapters('whisper', () => undefined)).toThrow(UnsupportedSttProviderError);
     expect(() => adapters('constructor', () => undefined)).toThrow(UnsupportedSttProviderError);
   });
 

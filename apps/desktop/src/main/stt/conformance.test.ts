@@ -160,6 +160,28 @@ describe.each(CONFORMANCE_VENDORS)('$provider conforms', (vendor) => {
     await stream.close();
   });
 
+  /**
+   * A vendor configured by a message (Soniox's start request) refuses a session whose first message
+   * is audio. The core sends the protocol's opening messages on the handshake, ahead of the ready
+   * signal, so no audio, keep-alive or ping goes first, whoever sends audio at once.
+   */
+  it('hears exactly its opening messages, once, before the first audio frame', async () => {
+    let textsAtFirstFrame: string[] = [];
+    server.script.onBinary = (connection, frame) => {
+      if (frame === 1) textsAtFirstFrame = [...connection.texts];
+    };
+    const { stream } = await open(stt({ keepAliveMs: 5, closeTimeoutMs: 2_000 }));
+
+    stream.send(new Uint8Array(CHUNK_100_MS));
+    await waitFor(() => server.last().binaryFrames.length === 1);
+    await stream.close();
+
+    expect(textsAtFirstFrame).toEqual(vendor.openingMessages);
+    for (const message of vendor.openingMessages) {
+      expect(server.last().texts.filter((text) => text === message)).toHaveLength(1);
+    }
+  });
+
   it('forwards audio as the vendor expects, then stops with its finish sequence', async () => {
     server.script.onBinary = (connection, frame) => {
       if (frame === 1) connection.socket.send(vendor.finalMessage('hello there'));
@@ -721,6 +743,8 @@ describe.each(CONFORMANCE_VENDORS)('$provider conforms', (vendor) => {
    */
   describe('with a jargon list', () => {
     const LIST = ['Linkt', 'order number'];
+    /** Whether the vendor refuses a list while it connects (ConformanceVendor `keyterms.refusal`). */
+    const refusesAList = (vendor.keyterms?.refusal ?? null) !== null;
 
     function keyterms(): NonNullable<ConformanceVendor['keyterms']> {
       if (vendor.keyterms === null) throw new Error(`${vendor.provider} takes no jargon list`);
@@ -729,6 +753,7 @@ describe.each(CONFORMANCE_VENDORS)('$provider conforms', (vendor) => {
 
     function refuseAsTheVendorDoes(): void {
       const { refusal } = keyterms();
+      if (refusal === null) throw new Error(`${vendor.provider} refuses no list while connecting`);
       if ('httpStatus' in refusal) {
         server.rejectWith = refusal.httpStatus;
         return;
@@ -739,7 +764,7 @@ describe.each(CONFORMANCE_VENDORS)('$provider conforms', (vendor) => {
     }
 
     it('declares keytermsRejected exactly when its entry says how it refuses a list', () => {
-      expect(stt().protocol.keytermsRejected !== undefined).toBe(vendor.keyterms !== null);
+      expect(stt().protocol.keytermsRejected !== undefined).toBe(refusesAList);
     });
 
     itIf(vendor.keyterms !== null)(
@@ -756,7 +781,7 @@ describe.each(CONFORMANCE_VENDORS)('$provider conforms', (vendor) => {
       },
     );
 
-    itIf(vendor.keyterms !== null)(
+    itIf(refusesAList)(
       'reports a connect refused for its list as keytermsRejected, after exactly one handshake',
       async () => {
         refuseAsTheVendorDoes();
@@ -772,7 +797,7 @@ describe.each(CONFORMANCE_VENDORS)('$provider conforms', (vendor) => {
       },
     );
 
-    itIf(vendor.keyterms !== null)(
+    itIf(refusesAList)(
       'reports the same refusal without a list as a plain connect error',
       async () => {
         refuseAsTheVendorDoes();
@@ -847,5 +872,26 @@ describe.each(CONFORMANCE_VENDORS)('$provider conforms', (vendor) => {
       );
       await waitFor(() => server.last().closed);
     });
+
+    // The opening messages go on the handshake, before the stream is handed over: as with the ready
+    // message, no listener exists yet to hear a non-fatal error (SttConnection.sendOpeningMessages).
+    itIf(vendor.openingMessages.length > 0)(
+      'when the wire tap fails on an opening message',
+      async () => {
+        const adapter = stt({
+          wireTap: (record) => {
+            if (record.kind === 'text') throw new Error('disk full');
+          },
+        });
+        const error = await open(adapter).catch((e: unknown) => e);
+
+        expect(error).toBeInstanceOf(SttConnectError);
+        expect((error as SttConnectError).message).toBe(
+          `${adapter.vendorName} wire tap failed: disk full`,
+        );
+        await waitFor(() => server.last().closed);
+        expect(server.last().binaryFrames).toEqual([]);
+      },
+    );
   });
 });

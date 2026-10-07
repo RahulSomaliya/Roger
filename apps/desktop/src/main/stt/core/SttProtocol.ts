@@ -72,6 +72,18 @@ export interface SttProtocol {
    * jargon parameter here, and never send one when the list is empty.
    */
   target(options: OpenStreamOptions): SttConnectTarget;
+  /**
+   * Text messages the vendor must hear first (Soniox's start request: model, audio format, jargon
+   * list, before any audio). The core sends them the moment the handshake completes, ahead of the
+   * ready signal, so no audio, keep-alive or ping can go before them; never send one from
+   * `encodeAudio` or a keep-alive instead. Built once per stream from the same settings `target`
+   * gets (keyterms already cut), before any socket exists: throw SttConnectError there for settings
+   * the vendor cannot take, and nothing is opened or tapped. Never put the access token in one: the
+   * wire tap records every text message (SttWireRecord), and only `target`'s URL and headers are
+   * kept from it. Missing: nothing goes first. The conformance suite checks them against the
+   * vendor's fake (conformanceVendors.ts `openingMessages`).
+   */
+  openingMessages?(settings: SttStreamSettings): string[];
   /** `socket-open`: the handshake is the ready signal (Deepgram). Otherwise wait for `ready`. */
   readonly readyOn: 'socket-open' | 'ready-message';
   /**
@@ -101,9 +113,11 @@ export interface SttProtocol {
    * Whether this refusal is the vendor rejecting the jargon list (Deepgram: HTTP 400 at the
    * handshake). The core asks only when the stream sent a non-empty list, and then rejects with
    * SttConnectError.keytermsRejected, the socket closed. Answer for the list only: a true here makes
-   * CaptureSession reopen without it, which cannot fix a bad token or a busy account. Missing: the
-   * protocol maps no keyterms, so its refusals are plain connect errors. The conformance suite
-   * checks the declaration against the vendor's fake (conformanceVendors.ts `keyterms`).
+   * CaptureSession reopen without it, which cannot fix a bad token or a busy account. Missing: no
+   * refusal is put down to the list, because the protocol maps no keyterms or its vendor refuses
+   * nothing while it connects (Soniox reads its start request only once the stream is open), so its
+   * refusals are plain connect errors. The conformance suite checks the declaration against the
+   * vendor's fake (conformanceVendors.ts `keyterms`).
    */
   keytermsRejected?(refusal: SttConnectRefusal): boolean;
 }
