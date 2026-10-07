@@ -15,6 +15,11 @@ vi.mock('../theme/useTheme', () => theme);
 // Node has no window.roger for the real provider's capture view; the layout only reads the shell.
 vi.mock('./ShellContext', () => ({ useShell: () => idleShell() }));
 
+// The layout is checked without M5's calendar: its banner reads `window.roger` through a shared
+// store, which Node lacks. What it shows is checked in the browser (e2e/m5-t13.qa.e2e.ts) and
+// mounted in slots/m5-calendar.test.ts.
+vi.mock('./slots/m5-calendar', () => ({ contributions: {} }));
+
 function idleShell(): Shell {
   return {
     route: HOME,
