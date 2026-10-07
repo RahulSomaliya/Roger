@@ -84,8 +84,14 @@ describe('LiveTranscript', () => {
     expect(vi.mocked(useRegisterTranscript)).toHaveBeenCalledWith(null);
   });
 
-  it('says what an empty transcript means, live or past', () => {
-    expect(render({ storedLines: [] })).toContain('Listening. Lines appear here as people speak.');
+  it('draws nothing for a live meeting with no line yet, and says so for a past one', () => {
+    // Empty states are absent (docs/design.md): lines appear as people speak, and a "Listening"
+    // line would say what the Recording chip already does.
+    const live = render({ storedLines: [] });
+    expect(live).not.toContain('Listening');
+    expect(live).not.toContain('live-transcript-empty');
+    expect(live).toMatch(/<div[^>]*role="log"[^>]*><\/div>/);
+    // A past meeting with no line is a fact the person asked about, not a wait.
     expect(render({ storedLines: [], live: false })).toContain(
       'Nothing was transcribed in this meeting.',
     );

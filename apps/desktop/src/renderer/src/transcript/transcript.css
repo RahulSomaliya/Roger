@@ -1,7 +1,9 @@
 /*
  * The transcript panel (LiveTranscript.tsx). Colours come only from the theme tokens
  * (theme/tokens.css, light and dark); theme/noLiteralColours.test.ts fails on a literal colour.
- * Text in the accent hue reads --accent-ink, never the --accent fill (tokens.test.ts).
+ * Text in the accent hue reads --accent-ink, never the --accent fill (tokens.test.ts). Type and
+ * space come from styles.css. The transcript is reading text: lines are 14 px and the words are
+ * capped at 68ch (docs/design.md, Type). No card around it: whitespace is the edge.
  *
  * The panel fills the box it is given and scrolls itself, so following live and "Jump to live"
  * work only in a box with a height: the meeting page's transcript region is a flex child of a
@@ -15,9 +17,6 @@
   flex: 1;
   flex-direction: column;
   min-height: 0;
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  background: var(--surface);
 }
 
 /*
@@ -30,10 +29,12 @@
 .live-transcript-lines {
   flex: 1;
   min-height: 0;
-  padding: 10px 12px;
+  /* 12 px at the sides: the cited line's tint reaches 8 px into it (transcriptNavigator.css). */
+  padding: var(--space-1) var(--space-3);
   overflow-y: auto;
   overflow-anchor: none;
-  border-radius: inherit;
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
 }
 
 .live-transcript-lines:focus-visible {
@@ -46,17 +47,20 @@
   color: var(--ink-muted);
 }
 
-/* Time, speaker, text: fixed columns, so every line's text starts at the same place. */
+/*
+ * Time, speaker, text: fixed columns, so every line's text starts at the same place. The text
+ * column stops at the reading measure; the row itself fills the pane.
+ */
 .transcript-line {
   display: grid;
-  grid-template-columns: 4.6em 3em minmax(0, 1fr);
-  gap: 8px;
+  grid-template-columns: 4.6em 3em minmax(0, var(--measure));
+  gap: var(--space-2);
   margin: 0;
-  padding: 3px 0;
+  padding: var(--space-1) 0;
 }
 
 .transcript-line-time {
-  color: var(--ink-muted);
+  color: var(--ink-subtle);
   font-variant-numeric: tabular-nums;
 }
 
@@ -83,23 +87,18 @@
   font-style: italic;
 }
 
-/* A line the echo filter hid, shown because the reader asked to see hidden lines. */
+/* A line the echo filter hid, shown because the reader asked to see hidden lines: dimmer, and
+   the word "echo" says it, so colour is not the only cue. */
 .transcript-line[data-echo] .transcript-line-speaker,
 .transcript-line[data-echo] .transcript-line-text {
   color: var(--ink-subtle);
 }
 
 .transcript-line-echo {
-  display: inline-block;
-  margin-left: 6px;
-  padding: 0 6px;
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  color: var(--ink-muted);
-  font-size: 11px;
+  margin-left: var(--space-2);
+  color: var(--ink-subtle);
+  font-size: var(--text-xs);
   font-style: normal;
-  line-height: 16px;
-  vertical-align: 1px;
 }
 
 /* A .btn (styles.css) floating over the log: only its place and its pill shape are set here. */
