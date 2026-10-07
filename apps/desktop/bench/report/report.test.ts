@@ -11,8 +11,11 @@ import { runBench } from '../run/run';
 import { tone, writeTestItem } from '../run/testing/benchFolder';
 import { ScriptedTokenApi, tokenResponse } from '../run/testing/fakes';
 import { ManualTimers } from '../run/testing/manualTimers';
+import type { RunRecord } from '../core/events';
 import {
+  type ItemInput,
   REPORT_VERSION,
+  baselineFor,
   buildReport,
   readSummaryRows,
   renderReportMarkdown,
@@ -264,6 +267,186 @@ describe('buildReport', () => {
   });
 });
 
+describe('buildReport for a --gate run (M3-T20)', () => {
+  /**
+   * One mic item: the gate closed its start session at 60 s, and speech reopened it with its
+   * pre-roll from 70 s (ready at 71.1 s, 1.1 s held). The reopened session lost the line's first
+   * word.
+   */
+  function gatedRun(): { run: RunRecord; inputs: ItemInput[] } {
+    const fixture = runFixture([
+      {
+        id: 'item-a',
+        reference:
+          '[00:00] Me: we start the demo now\n' +
+          '[01:11] Me: quokka builds ship on friday after the review\n',
+        streams: {
+          mic: [
+            at(3_000, finalEvent('we start the demo now', 0)),
+            // Stream time 1 100 of the reopened session is item time 71.1 s.
+            at(75_000, finalEvent('builds ship on friday after the review', 1_100), 1),
+          ],
+        },
+        audioMs: 90_000,
+      },
+    ]);
+    const stream = fixture.inputs[0]?.record.attempts[0]?.streams[0];
+    if (stream === undefined) throw new Error('fixture has no stream');
+    stream.sessions = [
+      {
+        cause: 'start',
+        itemOffsetMs: 0,
+        openedAtMs: T0 - 300,
+        readyAtMs: T0,
+        closedAtMs: T0 + 60_000,
+        connectedMs: 60_300,
+        backlogMs: 0,
+      },
+      {
+        cause: 'gate',
+        itemOffsetMs: 70_000,
+        openedAtMs: T0 + 71_100,
+        readyAtMs: T0 + 71_100,
+        closedAtMs: T0 + 91_000,
+        connectedMs: 19_900,
+        backlogMs: 1_100,
+      },
+    ];
+    return { run: { ...fixture.run, gate: true }, inputs: fixture.inputs };
+  }
+
+  /** The same item without the gate: one session, every word shown at 74 s. */
+  function baselineInputs(): ItemInput[] {
+    return runFixture([
+      {
+        id: 'item-a',
+        reference:
+          '[00:00] Me: we start the demo now\n' +
+          '[01:11] Me: quokka builds ship on friday after the review\n',
+        streams: {
+          mic: [
+            at(3_000, finalEvent('we start the demo now', 0)),
+            at(74_000, finalEvent('quokka builds ship on friday after the review', 71_000)),
+          ],
+        },
+        audioMs: 90_000,
+      },
+    ]).inputs;
+  }
+
+  it('reports the gated time, the money saved, the reopens with their backlog, and first-word misses', () => {
+    const { run, inputs } = gatedRun();
+
+    const report = buildReport(run, inputs, { echoFilter: true, scoredAt: SCORED_AT });
+
+    expect(report.silenceGate).toMatchObject({
+      reopens: 1,
+      backlogP50Ms: 1_100,
+      backlogMaxMs: 1_100,
+      // Closed at 60 s, open again at 71.1 s: 11.1 s at the token's $0.19 an hour.
+      gatedHours: 11_100 / 3_600_000,
+      savedUsd: 0.0006,
+      // The line starting in the 2 s after the reopen: its first 5 words, "quokka" lost.
+      firstWords: 5,
+      firstWordMisses: 1,
+      baseline: null,
+      addedLagP95Ms: null,
+    });
+    // The reopened session's words are timed apart from the rest.
+    expect(report.latency.mic.words).toBe(5);
+    expect(report.silenceGate?.reopenedLatency.mic).toMatchObject({
+      words: 7,
+      displayP95Ms: 3_540,
+    });
+    expect(report.silenceGate?.reopenedDisplayP95Ms).toBe(3_540);
+  });
+
+  it('times the reopened words against the same words in the run without the gate', () => {
+    const { run, inputs } = gatedRun();
+
+    const report = buildReport(
+      run,
+      inputs,
+      { echoFilter: true, scoredAt: SCORED_AT },
+      { runId: '20261006-090000', inputs: baselineInputs() },
+    );
+
+    // Without the gate the words of 70 to 91 s showed by 2.64 s at worst: the gate adds 0.9 s.
+    expect(report.silenceGate).toMatchObject({
+      baseline: { runId: '20261006-090000', displayP95Ms: 2_640 },
+      reopenedDisplayP95Ms: 3_540,
+      addedLagP95Ms: 900,
+    });
+    expect(report.summary).toMatchObject({
+      gate: true,
+      gateReopens: 1,
+      gateBacklogMaxMs: 1_100,
+      firstWordMisses: 1,
+      firstWords: 5,
+      reopenedDisplayP95Ms: 3_540,
+      addedLagP95Ms: 900,
+    });
+    const markdown = renderReportMarkdown(report);
+    expect(markdown).toContain('| Gate reopens | 1 (backlog p50 / max 1100 / 1100 ms) |');
+    expect(markdown).toContain('| First-word misses after a gate reopen | 1 of 5 |');
+    expect(markdown).toContain(
+      '| Reopened words, display p95 against the run without the gate | 3540 ms against ' +
+        '2640 ms in 20261006-090000: +900 ms |',
+    );
+  });
+
+  it('says nothing of the gate for a run without it', () => {
+    const { run, inputs } = twoItems();
+
+    const report = buildReport(run, inputs, { echoFilter: true, scoredAt: SCORED_AT });
+
+    expect(report.silenceGate).toBeNull();
+    expect(report.summary).toMatchObject({ gate: false, gateReopens: null, addedLagP95Ms: null });
+    expect(renderReportMarkdown(report)).not.toContain('gate');
+  });
+
+  it('writes no transcript text into the gate figures', () => {
+    const { run, inputs } = gatedRun();
+    const report = buildReport(
+      run,
+      inputs,
+      { echoFilter: true, scoredAt: SCORED_AT },
+      { runId: '20261006-090000', inputs: baselineInputs() },
+    );
+    for (const output of [renderReportMarkdown(report), JSON.stringify(report)]) {
+      for (const word of ['quokka', 'builds', 'friday', 'review', 'demo']) {
+        expect(output.toLowerCase()).not.toContain(word);
+      }
+    }
+  });
+});
+
+describe('baselineFor', () => {
+  const run = (runId: string, overrides: Partial<RunRecord> = {}): RunRecord => ({
+    ...twoItems().run,
+    runId,
+    ...overrides,
+  });
+
+  it('picks the latest finished run without the gate on the same vendor, model and jargon list', () => {
+    const gated = run('20261007-120000', { gate: true });
+
+    const picked = baselineFor(gated, [
+      run('20261006-090000'),
+      run('20261006-100000'),
+      run('20261006-110000', { finishedAt: null }),
+      run('20261006-113000', { gate: true }),
+      run('20261006-114000', { model: 'universal-3-6-pro' }),
+      run('20261006-115000', { keyterms: { enabled: false, terms: [] } }),
+      run('20261008-090000'), // after the gated run: not what it was measured against
+      gated,
+    ]);
+
+    expect(picked?.runId).toBe('20261006-100000');
+    expect(baselineFor(gated, [gated])).toBeNull();
+  });
+});
+
 describe('renderSummary', () => {
   it('prints one row per configuration for the research doc', () => {
     const { run, inputs } = twoItems();
@@ -277,6 +460,8 @@ describe('renderSummary', () => {
       '| 20261006-100000 | assemblyai | universal-streaming-english | on |',
     );
     expect(rows[0]).toContain('| 18.8% (');
+    // A run without the gate shows no gate figures.
+    expect(rows[0]).toMatch(/\| off \| n\/a \| n\/a \| n\/a \| n\/a \| n\/a \|$/);
   });
 });
 
@@ -347,6 +532,30 @@ describe('scoreRuns and readSummaryRows', () => {
       skipped: [{ runId: run.runId, reason: 'did not finish (stopped, or still running)' }],
     });
     expect((await readRun(runPaths(bench, run.runId).runJson)).finishedAt).toBeNull();
+  });
+
+  it('reads a summary row written before the gate columns as a run without the gate', async () => {
+    const { run, inputs } = twoItems();
+    const report = buildReport(run, inputs, { echoFilter: true, scoredAt: SCORED_AT });
+    const {
+      gate: _gate,
+      gateReopens: _reopens,
+      gateBacklogMaxMs: _backlog,
+      gatedHours: _gated,
+      gateSavedUsd: _saved,
+      firstWords: _words,
+      firstWordMisses: _misses,
+      reopenedDisplayP95Ms: _reopened,
+      addedLagP95Ms: _added,
+      ...older
+    } = report.summary;
+    await mkdir(join(bench, 'reports'));
+    await writeFile(
+      join(bench, 'reports', 'older.json'),
+      JSON.stringify({ ...report, summary: older }),
+    );
+
+    expect(await readSummaryRows(bench)).toEqual([report.summary]);
   });
 
   it('refuses a report file it cannot read, naming it', async () => {

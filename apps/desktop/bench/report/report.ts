@@ -3,7 +3,9 @@ import { join } from 'node:path';
 import { ECHO_FILTER_VERSION } from '../../src/main/capture/echo/EchoFilter';
 import { isFiniteNumber, isRecord } from '../../src/main/stt/json';
 import { LatencyMeter, type LatencySummary } from '../../src/main/stt/LatencyMeter';
-import { AUDIO_SOURCES, type AudioSource } from '../../src/shared/transcript';
+import type { SttEvent } from '../../src/main/stt/SpeechToText';
+import { AUDIO_SOURCES, type AudioSource, SPEAKER_FOR_SOURCE } from '../../src/shared/transcript';
+import { align } from '../core/align';
 import { type BootstrapInterval, type RatioSample, bootstrapInterval } from '../core/bootstrap';
 import {
   BenchFileError,
@@ -11,14 +13,15 @@ import {
   type RunAttempt,
   type RunItem,
   type RunRecord,
+  type RunSession,
   type RunStream,
   readEvents,
   readRun,
   runPaths,
 } from '../core/events';
 import { writePrivateFile } from '../core/files';
-import { NORMALISER_VERSION } from '../core/normalise';
-import { parseReference } from '../core/reference';
+import { NORMALISER_VERSION, normalise, normaliseEach } from '../core/normalise';
+import { type ReferenceLine, parseReference } from '../core/reference';
 import {
   type PreparedTerm,
   type TermCount,
@@ -52,6 +55,11 @@ import { type ReplayedFinal, meScoring } from './echo';
  * Nothing here writes transcript text: reports and the summary hold ids, counts, rates, times and
  * money only, because the summary is what goes into docs/research/stt-benchmark.md (only aggregate
  * numbers are committed, M3 D2).
+ *
+ * A `--gate` run (M3-T20, run F) also reports the silence gate (GateReport): the gated time and
+ * the money it saved, the reopens with their backlog, first-word misses, and the words carried by
+ * reopened sessions timed apart from the rest (`latency` holds the others), against the same words
+ * in the latest finished run without the gate on the same vendor, model and jargon list.
  */
 
 /** Bumped when a report field changes meaning; `report --summary` refuses other versions. */
@@ -126,7 +134,10 @@ export interface RunReport {
     /** Jargon terms that normalise to no words, so cannot be counted. */
     unscorable: string[];
   };
+  /** Word latency per stream; in a `--gate` run, of the words outside gate-reopened sessions. */
   latency: Record<AudioSource, LatencySummary>;
+  /** `--gate` runs only (M3-T20); null without the gate. */
+  silenceGate: GateReport | null;
   cost: {
     /** Billed open time of every session the run opened, retries included. */
     streamHours: number;
@@ -138,6 +149,47 @@ export interface RunReport {
   };
   /** The row `report --summary` prints. */
   summary: SummaryRow;
+}
+
+/** What a `--gate` run did (M3-T20), from the items' last attempts. */
+export interface GateReport {
+  /** Sessions the gate reopened, every stream. */
+  reopens: number;
+  /** Audio each reopen held at its ready signal (pre-roll plus connect): p50 and the largest. */
+  backlogP50Ms: number | null;
+  backlogMaxMs: number | null;
+  /** Time sessions were closed for silence: a gate close to the next open or the audio's end. */
+  gatedHours: number;
+  /** That time at each attempt's price: what the gate saved. Null when a price was unknown. */
+  savedUsd: number | null;
+  /**
+   * First words of the reference lines that start in the 2 s after a gate reopen (FIRST_WORDS of
+   * each), and those the vendor lost: what a late reopen or a short pre-roll costs.
+   */
+  firstWords: number;
+  firstWordMisses: number;
+  /** Word latency of the words carried by gate-reopened sessions, per stream. */
+  reopenedLatency: Record<AudioSource, LatencySummary>;
+  /** Their display p95, both streams pooled. */
+  reopenedDisplayP95Ms: number | null;
+  /**
+   * The run without the gate they are timed against (baselineFor), with the same words' display
+   * p95 there: the words its streams carried inside the reopened sessions' spans. Null when no
+   * such run was scored.
+   */
+  baseline: { runId: string; displayP95Ms: number | null } | null;
+  /**
+   * The lag the gate adds to the words of reopened sessions: their p95 minus the baseline's. D5
+   * (OD-27) turns the gate's default off above 2 000 ms; the vendor choice's 2 s gate never
+   * applies here.
+   */
+  addedLagP95Ms: number | null;
+}
+
+/** The run without the gate a `--gate` run's reopened words are timed against. */
+export interface BaselineRun {
+  runId: string;
+  inputs: readonly ItemInput[];
 }
 
 /** One configuration in the summary table: ids, counts, rates, times and money only. */
@@ -171,12 +223,27 @@ export interface SummaryRow {
   itemsLeftOut: number;
   streamHours: number;
   costPerMeetingHourUsd: number | null;
+  /** `--gate` (M3-T20). The rest are null without it, and in rows scored before the gate. */
+  gate: boolean;
+  gateReopens: number | null;
+  gateBacklogMaxMs: number | null;
+  gatedHours: number | null;
+  gateSavedUsd: number | null;
+  firstWords: number | null;
+  firstWordMisses: number | null;
+  reopenedDisplayP95Ms: number | null;
+  addedLagP95Ms: number | null;
 }
 
+/**
+ * `baseline`, for a `--gate` run: the run without the gate its reopened words are timed against
+ * (scoreRuns finds it with baselineFor).
+ */
 export function buildReport(
   run: RunRecord,
   inputs: readonly ItemInput[],
   options: ScoreOptions,
+  baseline: BaselineRun | null = null,
 ): RunReport {
   const terms = prepareTerms(run.keyterms.terms);
   const leftOut: LeftOutItem[] = [];
@@ -190,6 +257,7 @@ export function buildReport(
   const samples: RatioSample[] = [];
   const termCounts: TermCount[] = [];
   const meters: Record<AudioSource, LatencyMeter[]> = { mic: [], system: [] };
+  const gate = run.gate ? new GateTally(baseline) : null;
   const cost = new CostTally();
   let retried = 0;
   let failed = 0;
@@ -215,9 +283,15 @@ export function buildReport(
     const finals = new Map<AudioSource, ReplayedFinal[]>();
     for (const stream of last.streams) {
       const events = input.events.get(stream.source) ?? [];
-      meters[stream.source].push(measureLatency(record.itemId, stream, events));
+      // One meter per vendor session, as the app keeps one per stream: a reopened session's
+      // words would otherwise count as repeats of the session before it.
+      for (const { session, meter } of measureLatency(record.itemId, stream, events)) {
+        if (gate !== null && session.cause === 'gate') gate.addReopenedMeter(stream.source, meter);
+        else meters[stream.source].push(meter);
+      }
       finals.set(stream.source, replayedFinals(record.itemId, stream, events));
     }
+    gate?.addItem(input, last, finals);
 
     const score = scoreItem(input.item, input.reference, finals, terms.terms, options);
     if (score.kind === 'left-out') {
@@ -276,9 +350,33 @@ export function buildReport(
       unscorable: terms.unscorable,
     },
     latency,
+    silenceGate: gate?.summary() ?? null,
     cost: cost.summary(),
   };
   return { ...report, summary: summaryRow(report) };
+}
+
+/**
+ * The run a `--gate` run's reopened words are timed against: the latest finished run before it
+ * without the gate, on the same vendor, model and jargon list (run ids sort by their start, UTC),
+ * or null when none was made. D5 reads the gate's added lag against the winner's run without it.
+ */
+export function baselineFor(gated: RunRecord, runs: readonly RunRecord[]): RunRecord | null {
+  let picked: RunRecord | null = null;
+  for (const run of runs) {
+    if (
+      run.gate ||
+      run.finishedAt === null ||
+      run.runId >= gated.runId ||
+      run.provider !== gated.provider ||
+      run.model !== gated.model ||
+      run.keyterms.enabled !== gated.keyterms.enabled
+    ) {
+      continue;
+    }
+    if (picked === null || run.runId > picked.runId) picked = run;
+  }
+  return picked;
 }
 
 type ItemScore =
@@ -364,8 +462,8 @@ function figure(counts: readonly WerCounts[]): WerFigure {
   };
 }
 
-/** The item offset of an event's session: its stream time plus this is item time. */
-function sessionOffsetMs(itemId: string, stream: RunStream, session: number): number {
+/** The session an event names; one run.json does not list is refused, naming the file. */
+function sessionOf(itemId: string, stream: RunStream, session: number): RunSession {
   const found = stream.sessions[session];
   if (found === undefined) {
     throw new BenchFileError(
@@ -373,26 +471,219 @@ function sessionOffsetMs(itemId: string, stream: RunStream, session: number): nu
       `an event names session ${session}, which run.json does not list`,
     );
   }
-  return found.itemOffsetMs;
+  return found;
+}
+
+/** The item offset of an event's session: its stream time plus this is item time. */
+function sessionOffsetMs(itemId: string, stream: RunStream, session: number): number {
+  return sessionOf(itemId, stream, session).itemOffsetMs;
 }
 
 /**
- * The app's own LatencyMeter (M3-T6a) over the stream's events in arrival order. A word's capture
- * time is the replay's start plus its item time, on the clock every arrival time was read from.
+ * The app's own LatencyMeter (M3-T6a) over each session's events in arrival order, one meter per
+ * session. A word's capture time is the replay's start plus its item time, on the clock every
+ * arrival time was read from; a gate reopen (M3-T20) restarts the vendor's stream time at its own
+ * item offset.
  */
 function measureLatency(
   itemId: string,
   stream: RunStream,
   events: readonly EventRecord[],
-): LatencyMeter {
-  let offsetMs = 0;
-  const meter = new LatencyMeter((streamMs) => stream.replayStartedAtMs + offsetMs + streamMs);
+): { session: RunSession; meter: LatencyMeter }[] {
+  const meters = new Map<number, { session: RunSession; meter: LatencyMeter }>();
   for (const record of events) {
-    // A gate reopen (M3-T20) restarts the vendor's stream time at its own item offset.
-    offsetMs = sessionOffsetMs(itemId, stream, record.session);
-    meter.record(record.event, record.arrivedAtMs);
+    let entry = meters.get(record.session);
+    if (entry === undefined) {
+      const session = sessionOf(itemId, stream, record.session);
+      const offsetMs = session.itemOffsetMs;
+      entry = {
+        session,
+        meter: new LatencyMeter((streamMs) => stream.replayStartedAtMs + offsetMs + streamMs),
+      };
+      meters.set(record.session, entry);
+    }
+    entry.meter.record(record.event, record.arrivedAtMs);
   }
-  return meter;
+  return [...meters.values()];
+}
+
+/** Reference lines starting this long after a gate reopen's item offset count for first words. */
+const FIRST_WORD_WINDOW_MS = 2_000;
+/**
+ * The window opens this much early and closes this much late: a reference time is whole seconds
+ * ("[01:11]"), and a reopen's item offset is its pre-roll's start, about 1 s before the speech.
+ */
+const FIRST_WORD_SLACK_MS = 1_000;
+/** The first words of such a line that count: about what a person says in 2 s. */
+const FIRST_WORDS = 5;
+
+/** The silence gate's figures over a `--gate` run's scored items (GateReport). */
+class GateTally {
+  private readonly backlogs: number[] = [];
+  private gatedMs = 0;
+  private savedUsd: number | null = 0;
+  private firstWords = 0;
+  private firstWordMisses = 0;
+  private readonly reopened: Record<AudioSource, LatencyMeter[]> = { mic: [], system: [] };
+  private readonly baselineMeters: LatencyMeter[] = [];
+
+  constructor(private readonly baseline: BaselineRun | null) {}
+
+  addReopenedMeter(source: AudioSource, meter: LatencyMeter): void {
+    this.reopened[source].push(meter);
+  }
+
+  addItem(
+    input: ItemInput,
+    last: RunAttempt,
+    finals: ReadonlyMap<AudioSource, readonly ReplayedFinal[]>,
+  ): void {
+    // A reference with problems is left out of scoring (bench check), and so of first words.
+    const parsed = input.reference === null ? null : parseReference(input.reference);
+    const lines = parsed === null || parsed.problems.length > 0 ? [] : parsed.lines;
+    for (const stream of last.streams) {
+      const reopens = stream.sessions.filter((session) => session.cause === 'gate');
+      for (const session of reopens) this.backlogs.push(session.backlogMs);
+      const gatedMs = gatedTimeMs(stream, input.audioMs.get(stream.source) ?? 0);
+      this.gatedMs += gatedMs;
+      this.savedUsd =
+        this.savedUsd === null || (gatedMs > 0 && last.pricePerHourUsd === null)
+          ? null
+          : this.savedUsd + (gatedMs / MS_PER_HOUR) * (last.pricePerHourUsd ?? 0);
+      if (reopens.length === 0) continue;
+      this.countFirstWords(stream.source, reopens, lines, finals.get(stream.source) ?? []);
+      this.timeBaseline(input.record.itemId, stream, reopens);
+    }
+  }
+
+  summary(): GateReport {
+    const sorted = [...this.backlogs].sort((a, b) => a - b);
+    const reopenedLatency = {
+      mic: LatencyMeter.pool(this.reopened.mic),
+      system: LatencyMeter.pool(this.reopened.system),
+    };
+    const reopenedDisplayP95Ms = LatencyMeter.pool([
+      ...this.reopened.mic,
+      ...this.reopened.system,
+    ]).displayP95Ms;
+    const baseline =
+      this.baseline === null
+        ? null
+        : {
+            runId: this.baseline.runId,
+            displayP95Ms: LatencyMeter.pool(this.baselineMeters).displayP95Ms,
+          };
+    return {
+      reopens: sorted.length,
+      backlogP50Ms: sorted.length === 0 ? null : (sorted[Math.ceil(sorted.length / 2) - 1] ?? null),
+      backlogMaxMs: sorted.at(-1) ?? null,
+      gatedHours: this.gatedMs / MS_PER_HOUR,
+      savedUsd: this.savedUsd === null ? null : roundUsd(this.savedUsd),
+      firstWords: this.firstWords,
+      firstWordMisses: this.firstWordMisses,
+      reopenedLatency,
+      reopenedDisplayP95Ms,
+      baseline,
+      addedLagP95Ms:
+        reopenedDisplayP95Ms === null || baseline?.displayP95Ms == null
+          ? null
+          : reopenedDisplayP95Ms - baseline.displayP95Ms,
+    };
+  }
+
+  /**
+   * The first FIRST_WORDS words of each reference line of the stream's speaker that starts in the
+   * FIRST_WORD_WINDOW_MS after a reopen, and those the alignment of the speaker's whole reference
+   * against the stream's finals (as the vendor sent them, before the echo filter) did not match.
+   */
+  private countFirstWords(
+    source: AudioSource,
+    reopens: readonly RunSession[],
+    lines: readonly ReferenceLine[],
+    finals: readonly ReplayedFinal[],
+  ): void {
+    const speaker = SPEAKER_FOR_SOURCE[source];
+    const reference: { word: string; line: number; index: number }[] = [];
+    lines.forEach((line, lineIndex) => {
+      if (line.speaker !== speaker) return;
+      normalise(line.text).forEach((word, index) => {
+        reference.push({ word, line: lineIndex, index });
+      });
+    });
+    const matched = new Set<number>();
+    const hypothesis = normaliseEach(finals.map((final) => final.text));
+    align(
+      reference.map((entry) => entry.word),
+      hypothesis,
+    ).forEach((step) => {
+      if (step.op === 'match') matched.add(step.reference);
+    });
+    const counted = new Set<number>();
+    for (const session of reopens) {
+      const fromMs = session.itemOffsetMs - FIRST_WORD_SLACK_MS;
+      const toMs = session.itemOffsetMs + FIRST_WORD_WINDOW_MS + FIRST_WORD_SLACK_MS;
+      reference.forEach((entry, position) => {
+        const line = lines[entry.line];
+        if (line === undefined || counted.has(position) || entry.index >= FIRST_WORDS) return;
+        if (line.atMs < fromMs || line.atMs >= toMs) return;
+        counted.add(position);
+        this.firstWords += 1;
+        if (!matched.has(position)) this.firstWordMisses += 1;
+      });
+    }
+  }
+
+  /**
+   * The baseline's latency for the same words: its stream's events with each final's words cut
+   * to those ending inside a reopened session's item span. Interims stay whole, so a word still
+   * shows when the first event reaching it arrived.
+   */
+  private timeBaseline(itemId: string, stream: RunStream, reopens: readonly RunSession[]): void {
+    const input = this.baseline?.inputs.find((candidate) => candidate.record.itemId === itemId);
+    const last = input?.record.attempts.at(-1);
+    if (input === undefined || last === undefined || input.record.status !== 'ok') return;
+    const baselineStream = last.streams.find((candidate) => candidate.source === stream.source);
+    if (baselineStream === undefined) return;
+    const spans = reopens.map((session) => ({
+      fromMs: session.itemOffsetMs,
+      toMs:
+        session.closedAtMs === null
+          ? Number.POSITIVE_INFINITY
+          : session.closedAtMs - stream.replayStartedAtMs,
+    }));
+    const events = input.events.get(stream.source) ?? [];
+    const inSpans = (itemMs: number): boolean =>
+      spans.some((span) => itemMs > span.fromMs && itemMs <= span.toMs);
+    const kept = events.map((record): EventRecord => {
+      const offsetMs = sessionOffsetMs(itemId, baselineStream, record.session);
+      return { ...record, event: wordsWhere(record.event, (endMs) => inSpans(offsetMs + endMs)) };
+    });
+    for (const { meter } of measureLatency(itemId, baselineStream, kept)) {
+      this.baselineMeters.push(meter);
+    }
+  }
+}
+
+/** `event` with a final's words cut to those whose end `keep` accepts; any other event as it is. */
+function wordsWhere(event: SttEvent, keep: (endMs: number) => boolean): SttEvent {
+  if (event.type !== 'final') return event;
+  return { ...event, words: event.words.filter((word) => keep(word.endMs)) };
+}
+
+/**
+ * Time a stream's sessions were closed by the gate, on the replay clock: from each session's close
+ * to the next one's open, and from the last one's close to the end of the stream's audio when it
+ * closed before that end. A session closed at the attempt's end adds nothing.
+ */
+function gatedTimeMs(stream: RunStream, audioMs: number): number {
+  const endMs = stream.replayStartedAtMs + audioMs;
+  let gatedMs = 0;
+  stream.sessions.forEach((session, index) => {
+    if (session.closedAtMs === null) return;
+    const reopenedAtMs = stream.sessions[index + 1]?.openedAtMs ?? endMs;
+    gatedMs += Math.max(0, reopenedAtMs - session.closedAtMs);
+  });
+  return gatedMs;
 }
 
 /** The stream's finals on the item's timeline, in time order. */
@@ -526,12 +817,23 @@ function summaryRow(report: Omit<RunReport, 'summary'>): SummaryRow {
     itemsLeftOut: report.items.leftOut.length,
     streamHours: report.cost.streamHours,
     costPerMeetingHourUsd: report.cost.costPerMeetingHourUsd,
+    gate: report.gate,
+    gateReopens: report.silenceGate?.reopens ?? null,
+    gateBacklogMaxMs: report.silenceGate?.backlogMaxMs ?? null,
+    gatedHours: report.silenceGate?.gatedHours ?? null,
+    gateSavedUsd: report.silenceGate?.savedUsd ?? null,
+    firstWords: report.silenceGate?.firstWords ?? null,
+    firstWordMisses: report.silenceGate?.firstWordMisses ?? null,
+    reopenedDisplayP95Ms: report.silenceGate?.reopenedDisplayP95Ms ?? null,
+    addedLagP95Ms: report.silenceGate?.addedLagP95Ms ?? null,
   };
 }
 
 /** `reports/<run-id>.md`: one run's numbers for a person, no transcript text. */
 export function renderReportMarkdown(report: RunReport): string {
-  const { wer, latency, items, cost, terms } = report;
+  const { wer, latency, items, cost, terms, silenceGate } = report;
+  // A `--gate` run times the words of gate-reopened sessions in rows of their own (gateRows).
+  const outside = silenceGate === null ? '' : ' outside reopened sessions';
   const pooledInterval =
     wer.pooled.interval95 === null
       ? ''
@@ -548,7 +850,7 @@ export function renderReportMarkdown(report: RunReport): string {
     ['Term false alarms', String(terms.falseAlarms)],
     ...AUDIO_SOURCES.flatMap((source): [string, string][] => [
       [
-        `Word display latency, ${source}, p50 / p95`,
+        `Word display latency, ${source}${outside}, p50 / p95`,
         pair(latency[source].displayP50Ms, latency[source].displayP95Ms),
       ],
       [
@@ -571,6 +873,7 @@ export function renderReportMarkdown(report: RunReport): string {
         ? `unknown${unknown}`
         : `$${cost.costPerMeetingHourUsd.toFixed(2)}`,
     ],
+    ...(silenceGate === null ? [] : gateRows(silenceGate)),
   ];
   const lines = [
     `# STT bench run ${report.runId}`,
@@ -597,6 +900,31 @@ export function renderReportMarkdown(report: RunReport): string {
   return `${lines.join('\n')}\n`;
 }
 
+/** The `--gate` run's rows of its report (GateReport). */
+function gateRows(gate: GateReport): [string, string][] {
+  const { baseline } = gate;
+  const reopened = milliseconds(gate.reopenedDisplayP95Ms);
+  const against =
+    baseline === null
+      ? `${reopened}; no run without the gate to compare`
+      : `${reopened} against ${milliseconds(baseline.displayP95Ms)} in ${baseline.runId}: ` +
+        signedMs(gate.addedLagP95Ms);
+  return [
+    ['Silence gate: time closed', `${gate.gatedHours.toFixed(3)} stream hours`],
+    ['Silence gate: saved', gate.savedUsd === null ? 'unknown' : `$${gate.savedUsd.toFixed(4)}`],
+    [
+      'Gate reopens',
+      `${gate.reopens} (backlog p50 / max ${pair(gate.backlogP50Ms, gate.backlogMaxMs)})`,
+    ],
+    ['First-word misses after a gate reopen', `${gate.firstWordMisses} of ${gate.firstWords}`],
+    ...AUDIO_SOURCES.map((source): [string, string] => [
+      `Word display latency, ${source}, reopened sessions, p50 / p95`,
+      pair(gate.reopenedLatency[source].displayP50Ms, gate.reopenedLatency[source].displayP95Ms),
+    ]),
+    ['Reopened words, display p95 against the run without the gate', against],
+  ];
+}
+
 const SUMMARY_COLUMNS = [
   'Run',
   'Provider',
@@ -621,6 +949,12 @@ const SUMMARY_COLUMNS = [
   'Left out',
   'Stream hours',
   'Per meeting hour',
+  'Gate',
+  'Gated hours',
+  'Saved',
+  'Gate reopens (backlog max, ms)',
+  'First-word misses',
+  'Reopened display p95 (added, ms)',
 ];
 
 /** The aggregate table for docs/research/stt-benchmark.md: one row per scored run. */
@@ -649,10 +983,30 @@ export function renderSummary(rows: readonly SummaryRow[]): string {
     String(row.itemsLeftOut),
     row.streamHours.toFixed(3),
     row.costPerMeetingHourUsd === null ? 'unknown' : `$${row.costPerMeetingHourUsd.toFixed(2)}`,
+    ...gateCells(row),
   ]);
   return `${[SUMMARY_COLUMNS, SUMMARY_COLUMNS.map(() => '---'), ...cells]
     .map((row) => `| ${row.join(' | ')} |`)
     .join('\n')}\n`;
+}
+
+/** The summary's gate columns: `off` and n/a for a run without the gate. */
+function gateCells(row: SummaryRow): string[] {
+  if (!row.gate) return ['off', 'n/a', 'n/a', 'n/a', 'n/a', 'n/a'];
+  return [
+    'on',
+    row.gatedHours === null ? 'n/a' : row.gatedHours.toFixed(3),
+    row.gateSavedUsd === null ? 'unknown' : `$${row.gateSavedUsd.toFixed(4)}`,
+    `${row.gateReopens ?? 'n/a'} (${milliseconds(row.gateBacklogMaxMs, '')})`,
+    row.firstWords === null ? 'n/a' : `${row.firstWordMisses ?? 0} of ${row.firstWords}`,
+    `${milliseconds(row.reopenedDisplayP95Ms, '')} (${signedMs(row.addedLagP95Ms, '')})`,
+  ];
+}
+
+/** "+900 ms", "-120 ms", or n/a. */
+function signedMs(ms: number | null, unit = ' ms'): string {
+  if (ms === null) return 'n/a';
+  return `${ms >= 0 ? '+' : ''}${Math.round(ms)}${unit}`;
 }
 
 function percent(rate: number | null): string {
@@ -703,7 +1057,8 @@ export async function scoreRuns(
       outcome.skipped.push({ runId, reason });
       continue;
     }
-    const report = buildReport(run, await loadItemInputs(benchDir, run), options);
+    const baseline = run.gate ? await loadBaseline(benchDir, run) : null;
+    const report = buildReport(run, await loadItemInputs(benchDir, run), options, baseline);
     const reportDir = join(benchDir, 'reports');
     await writePrivateFile(
       join(reportDir, `${runId}.json`),
@@ -726,6 +1081,17 @@ async function listRunIds(benchDir: string): Promise<string[]> {
     if (isMissing(error)) return [];
     throw error;
   }
+}
+
+/** The run a `--gate` run is timed against (baselineFor), with its items, or null. */
+async function loadBaseline(benchDir: string, gated: RunRecord): Promise<BaselineRun | null> {
+  const runs: RunRecord[] = [];
+  for (const runId of await listRunIds(benchDir)) {
+    if (runId < gated.runId) runs.push(await readRun(runPaths(benchDir, runId).runJson));
+  }
+  const baseline = baselineFor(gated, runs);
+  if (baseline === null) return null;
+  return { runId: baseline.runId, inputs: await loadItemInputs(benchDir, baseline) };
 }
 
 /** What `score` needs of each item of a run, read from the bench folder. */
@@ -819,6 +1185,16 @@ function parseSummaryRow(value: unknown, label: string): SummaryRow {
     itemsLeftOut: read.number('itemsLeftOut'),
     streamHours: read.number('streamHours'),
     costPerMeetingHourUsd: read.numberOrNull('costPerMeetingHourUsd'),
+    // Added with the silence gate (M3-T20): a row scored before them reads as a run without it.
+    gate: read.optionalBoolean('gate'),
+    gateReopens: read.optionalNumber('gateReopens'),
+    gateBacklogMaxMs: read.optionalNumber('gateBacklogMaxMs'),
+    gatedHours: read.optionalNumber('gatedHours'),
+    gateSavedUsd: read.optionalNumber('gateSavedUsd'),
+    firstWords: read.optionalNumber('firstWords'),
+    firstWordMisses: read.optionalNumber('firstWordMisses'),
+    reopenedDisplayP95Ms: read.optionalNumber('reopenedDisplayP95Ms'),
+    addedLagP95Ms: read.optionalNumber('addedLagP95Ms'),
   };
 }
 
@@ -851,6 +1227,16 @@ class SummaryReader {
     const value = this.get(key);
     if (value !== null && !isFiniteNumber(value)) this.fail(key, 'a finite number or null');
     return value;
+  }
+
+  /** As numberOrNull, with a missing key read as null: a field newer than the row. */
+  optionalNumber(key: string): number | null {
+    return Object.hasOwn(this.row, key) ? this.numberOrNull(key) : null;
+  }
+
+  /** As boolean, with a missing key read as false: a field newer than the row. */
+  optionalBoolean(key: string): boolean {
+    return Object.hasOwn(this.row, key) ? this.boolean(key) : false;
   }
 
   private get(key: string): unknown {
