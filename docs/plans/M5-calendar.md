@@ -589,11 +589,9 @@ T11 in wave 6; T12 in wave 7; T13 in wave 8.
   Calendar card: "Starting in 1 min" or "Started 3 min ago", title, time range, "Jane, Ali and 3
   others", Join and take notes (only with a video link), Take notes, Copy notice (when on),
   Dismiss. Call-detected card, stale-calendar card, and the 5 s "Taking notes · Open Roger" state.
-  As built: nothing constructs `PromptWindow` or calls `registerPromptIpc` in `index.ts` yet (no
-  task owned that slot), so no prompt card is drawn: the calendar reminders and the call offers
-  reach `PromptService` and stop there. M5-T11's `startKeepRunning` also still gets `calendar:
-  null`, so the menu names no meetings and a connect turns no login item on. Both are build order
-  "Open items after Phase 2", first on the list.
+  As built, `index.ts` first did not construct `PromptWindow` or call `registerPromptIpc` (no task
+  owned that slot), and `startKeepRunning` got `calendar: null`; the Phase 2 docs pass wired both
+  (build order "Open items after Phase 2", items 1 and 2).
 - [x] **M5-T11** Owns `src/main/app/{tray,trayMenu,loginItem,loginItemPolicy,windowLifecycle,userDataPath}.ts`
   (named `windowLifecycle.ts`, not `lifecycle.ts`: the landed `src/main/lifecycle.ts` is the
   recording's `RecordingLifecycle`),

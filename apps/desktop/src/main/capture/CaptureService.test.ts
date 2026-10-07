@@ -1190,6 +1190,52 @@ describe('CaptureService forgotten Stop', () => {
     expect(h.service.getStatus().phase).toBe('idle');
   });
 
+  // A Mac that slept: the clock jumps and no timer runs, then the monitor's first tick comes at
+  // wake, often before Electron's `resume` reaches PowerCoordinator, which stops a long sleep with
+  // `system-sleep`. G5 must not take that stop from it.
+  const sleepFor = async (h: Harness, ms: number) => {
+    h.advance(ms);
+    await vi.advanceTimersByTimeAsync(500);
+  };
+
+  it('does not stop a sleep as no-speech: the tick at wake leaves the stop to the sleep reason', async () => {
+    const h = harness();
+    const ended: string[] = [];
+    h.service.onRecording({ ended: (recording) => ended.push(recording.reason) });
+    await h.service.start();
+    await h.elapse(MINUTE, silence(h), SECOND);
+
+    await sleepFor(h, 20 * MINUTE);
+    expect(h.service.getStatus().phase).toBe('recording');
+    // What PowerCoordinator.resumed does when `resume` arrives after that tick.
+    await h.service.stop({ reason: 'system-sleep' });
+    expect(ended).toEqual(['system-sleep']);
+  });
+
+  it('counts neither a sleep nor the quiet before it as time with no speech', async () => {
+    const h = harness();
+    await h.service.start();
+    await h.elapse(10 * MINUTE, silence(h), SECOND);
+    await sleepFor(h, 6 * MINUTE);
+    // 10 quiet minutes before the sleep and 4 after: 14, not 20.
+    await h.elapse(4 * MINUTE, silence(h), SECOND);
+    expect(h.service.getStatus().phase).toBe('recording');
+    await h.elapse(MINUTE + SECOND, silence(h), SECOND);
+    expect(h.service.getStatus().phase).toBe('idle');
+    expect(h.service.getStatus().notice).toContain('with no speech');
+  });
+
+  it('keeps the recording cap on awake time: a sleep does not use it up', async () => {
+    const h = harness({ guards: { maxRecordingMs: 2 * MINUTE, noSpeechStopMs: 90 * MINUTE } });
+    await h.service.start();
+    await h.elapse(MINUTE, silence(h), SECOND);
+    await sleepFor(h, 30 * MINUTE);
+    await h.elapse(30 * SECOND, silence(h), SECOND);
+    expect(h.service.getStatus().phase).toBe('recording');
+    await h.elapse(40 * SECOND, silence(h), SECOND);
+    expect(h.service.getStatus().notice).toContain('capped at 2 minutes');
+  });
+
   it('stops at the recording cap even while people talk, and both limits can be set', async () => {
     const h = harness({ guards: { maxRecordingMs: 2 * MINUTE, noSpeechStopMs: 90 * SECOND } });
     const { meetingId } = await h.service.start();

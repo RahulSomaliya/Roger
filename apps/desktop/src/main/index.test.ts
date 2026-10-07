@@ -82,4 +82,33 @@ describe('the slots in main/index.ts', () => {
     expect(lines.filter((line) => line.includes('callOffer.bindPrompts('))).toHaveLength(1);
     expect(source).toMatch(/const \{[^}]*\bcallOffer\b[^}]*\} = createCaptureRuntime\(/);
   });
+
+  // Without these two no card is ever drawn: reminders and call offers reach PromptService and stop.
+  it('builds the prompt window and registers its IPC with the panel as the trusted sender', () => {
+    const calendar = lineOf('const calendar = createCalendarRuntime(');
+    const build = lineOf('new PromptWindow({');
+    const register = lineOf('registerPromptIpc({');
+    expect(build).toBeGreaterThan(calendar);
+    expect(register).toBeGreaterThan(build);
+    expect(lineOf('promptWindow.start()')).toBeGreaterThan(register);
+    expect(lineOf('promptWindow.start()')).toBeLessThan(lineOf('[slot M5-T11 lifecycle]'));
+    // The panel, never `() => window`: the main window's page must not click a prompt.
+    expect(source).toMatch(/registerPromptIpc\(\{[^}]*getWindow: \(\) => promptWindow\.panel/);
+    expect(source).toMatch(/new PromptWindow\(\{[^}]*prompts: calendar\.prompts/);
+    expect(source).toContain("preloadPath: join(__dirname, '../preload/prompt.js')");
+  });
+
+  it('stops the prompt window and its IPC with the calendar, before the stores close', () => {
+    expect(source).toMatch(
+      /stopCalendar = async \(\) => \{[^}]*stopPromptIpc\(\);[^}]*promptWindow\.stop\(\);[^}]*await calendar\.stop\(\)/,
+    );
+  });
+
+  // `calendar: null` here left the menu bar without meetings and a connect without a login item.
+  it('hands the calendar runtime to startKeepRunning', () => {
+    const start = lineOf('startKeepRunning({');
+    const block = lines.slice(start, start + 20).join('\n');
+    expect(block).toMatch(/calendar: \{ account: calendar\.account, sync: calendar\.sync, cache: /);
+    expect(block).not.toContain('calendar: null');
+  });
 });

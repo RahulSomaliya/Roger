@@ -267,6 +267,12 @@ const FAKE_STREAM_SETTINGS: SttStreamSettings = {
 
 /** How often the audio flow is checked and chunk counters are pushed to the UI while recording. */
 const MONITOR_INTERVAL_MS = 500;
+/**
+ * A monitor tick this long after the last one means the process was suspended (a Mac asleep, a
+ * stopped debugger), not busy: nothing in main blocks for seconds. The time in between is no
+ * recording time (checkForgottenStop).
+ */
+const MONITOR_SUSPENDED_GAP_MS = 5_000;
 
 /**
  * How long a delete site waits for the open editors to save (keepsForNotes): the 1 s main gives
@@ -357,6 +363,8 @@ export class CaptureService {
   /** The start or stop under way: a stop waits for either, a Start waits out a stop (start()). */
   private transition: { kind: 'start' | 'stop'; done: Promise<CaptureStatus> } | null = null;
   private monitorTimer: NodeJS.Timeout | null = null;
+  /** Clock time of the monitor's last tick (or its start); a long gap before the next is a sleep. */
+  private lastMonitorTickMs: number | null = null;
   /** Clock time the session started recording; the no-audio check counts from it until a chunk. */
   private recordingSinceMs: number | null = null;
   /** Clock time the recording cap (maxRecordingMs) counts from: a resume's is the meeting's start. */
@@ -1147,9 +1155,12 @@ export class CaptureService {
 
   private startMonitor(): void {
     this.stopMonitor();
+    this.lastMonitorTickMs = this.clock();
     this.monitorTimer = setInterval(() => {
+      const suspendedForMs = this.suspendedSinceLastTick();
       this.checkAudioFlow();
-      this.checkForgottenStop();
+      // Not on the tick that finds a sleep: see checkForgottenStop.
+      if (suspendedForMs === 0) this.checkForgottenStop();
       this.refreshRetryCountdowns();
       // Every tick, changed or not. While main records and the window captures no mic (a reload,
       // a start from the tray), M2-T12's followMain opens it on the next status the page gets;
@@ -1162,6 +1173,26 @@ export class CaptureService {
   private stopMonitor(): void {
     if (this.monitorTimer) clearInterval(this.monitorTimer);
     this.monitorTimer = null;
+    this.lastMonitorTickMs = null;
+  }
+
+  /**
+   * Stamps this tick and returns how long the process was suspended before it (0 when it was not).
+   * The suspended time is taken out of the recording: the three clock anchors G5 and the no-audio
+   * check count from move forward by it, so a sleep is neither recording time nor silence.
+   */
+  private suspendedSinceLastTick(): number {
+    const now = this.clock();
+    const last = this.lastMonitorTickMs;
+    this.lastMonitorTickMs = now;
+    if (last === null || now - last < MONITOR_SUSPENDED_GAP_MS) return 0;
+    const gap = now - last;
+    // Capped at now: a final line may have landed between the wake and this tick.
+    const shift = (anchor: number | null) => (anchor === null ? null : Math.min(anchor + gap, now));
+    this.recordingSinceMs = shift(this.recordingSinceMs);
+    this.capFromMs = shift(this.capFromMs);
+    this.lastFinalAtMs = shift(this.lastFinalAtMs);
+    return gap;
   }
 
   /**
@@ -1236,6 +1267,12 @@ export class CaptureService {
    * AssemblyAI, for as long as the app stays open: overnight is $4.20. So a recording with no final
    * line from either source for noSpeechStopMs stops, and any recording stops at maxRecordingMs,
    * both through the normal stop (last lines saved, sessions finished and closed).
+   *
+   * Trap: time the Mac slept counts as neither (suspendedSinceLastTick), and the tick that finds a
+   * sleep never runs this check. Timers fire at wake, often before Electron delivers `resume`
+   * (PowerCoordinator), so a check on the wall clock stopped a recording that slept for
+   * noSpeechStopMs or more with `no-speech`, and PowerCoordinator's `system-sleep` stop, which
+   * decides that case on `resume`, found it already stopping. The sleep's own reason must win.
    */
   private checkForgottenStop(): void {
     if (this.currentPhase !== 'recording' || this.recordingSinceMs === null) return;

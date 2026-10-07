@@ -50,6 +50,8 @@ import { SqliteNotesStore } from './notes/SqliteNotesStore';
 import { ensureMicrophoneAccess } from './permissions';
 import { PreferencesStore } from './preferences/PreferencesStore';
 import { registerPreferencesIpc } from './preferences/preferences-ipc';
+import { PromptWindow } from './prompt/PromptWindow';
+import { registerPromptIpc } from './prompt/promptIpc';
 import { CrashRecovery } from './recovery/CrashRecovery';
 import { SqliteTranscriptStore } from './store/SqliteTranscriptStore';
 import { createSpeechToText } from './stt/createSpeechToText';
@@ -428,8 +430,10 @@ async function main(): Promise<void> {
   // Google Calendar: the synced copy, reminders, the prompt service (M5-T10's panel window draws
   // it, and registers its IPC), the calendar IPC, and the enricher that links a manual start to the
   // one call that is on. Each preference key it reads is registered inside, before anything reads.
+  // Kept by name: the runtime does not hand its cache back, and the menu bar reads it too.
+  const calendarCache = new SqliteCalendarCache(join(userData, 'calendar.sqlite'));
   const calendar = createCalendarRuntime({
-    cache: new SqliteCalendarCache(join(userData, 'calendar.sqlite')),
+    cache: calendarCache,
     apiConnection,
     preferences,
     store,
@@ -447,12 +451,35 @@ async function main(): Promise<void> {
     electron: { app, powerMonitor, powerSaveBlocker, shell, clipboard },
     logger: logger.child({ component: 'calendar' }),
   });
-  stopCalendar = () => calendar.stop();
   // The call offer was built with the capture runtime, before this PromptService existed: until
   // this line a due offer is logged and dropped. Once only: bindPrompts throws on a second call.
   callOffer.bindPrompts(calendar.prompts);
 
   const page = resolveAppPage();
+  // The prompt panel (M5-T10): without it a reminder or a call offer reaches PromptService and no
+  // card is ever drawn. Its channels trust the panel's own page, never the main window's: the
+  // getter below is the panel (null until the first card), so the main window's page cannot click
+  // a prompt and the panel's cannot use any other channel (promptIpc.ts, ipc/trust.ts).
+  const promptLogger = logger.child({ component: 'prompt' });
+  const promptWindow = new PromptWindow({
+    prompts: calendar.prompts,
+    page,
+    preloadPath: join(__dirname, '../preload/prompt.js'),
+    logger: promptLogger,
+  });
+  const stopPromptIpc = registerPromptIpc({
+    ipcMain,
+    getWindow: () => promptWindow.panel,
+    prompts: calendar.prompts,
+    logger: promptLogger,
+  });
+  promptWindow.start();
+  // The panel goes before the calendar closes its stores: a card drawn at quit has nothing to act on.
+  stopCalendar = async () => {
+    stopPromptIpc();
+    promptWindow.stop();
+    await calendar.stop();
+  };
   installPermissionHandlers(
     session.defaultSession,
     page,
@@ -478,8 +505,8 @@ async function main(): Promise<void> {
   // Closing the window hides it, so Roger runs on in the menu bar: no quit when the last window
   // goes, the window comes back from the Dock or a second launch, and open at login follows the
   // preference. Quit is the app menu's or the tray's `app.quit()`, which RecordingLifecycle
-  // stops the recording for. `calendar` is M5-T9c's runtime once it is wired (`{ account, sync,
-  // cache }`): until then the menu names no meetings and a connect turns no login item on.
+  // stops the recording for. `calendar` is M5-T9c's runtime: the menu names the next meetings and
+  // a connect turns the login item on (`{ account, sync, cache }` is all the tray reads of it).
   startKeepRunning({
     app,
     electron: { Tray, Menu, nativeImage },
@@ -488,7 +515,7 @@ async function main(): Promise<void> {
     resourcesPath: process.resourcesPath,
     appPath: app.getAppPath(),
     capture,
-    calendar: null,
+    calendar: { account: calendar.account, sync: calendar.sync, cache: calendarCache },
     preferences,
     ipcMain,
     getWindow: () => window,

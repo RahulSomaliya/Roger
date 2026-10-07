@@ -39,7 +39,7 @@ export interface KeepRunningDeps {
   /** `app.getAppPath()`. */
   appPath: string;
   capture: TrayCapture;
-  /** Null while M5-T9c's calendar runtime is not wired: the menu then names no meetings. */
+  /** Null: no calendar runtime, so the menu names no meetings and a connect turns no login item on. */
   calendar: TrayCalendarSource | null;
   preferences: {
     get(key: 'app.openAtLogin'): OpenAtLogin;

@@ -1969,13 +1969,19 @@ hand-offs, wave 5 first:
 
 ## Open items after Phase 2
 
-Written when waves 0 to 9 were merged and the integration gate was green (2026-10-07). Nothing
-below is built or checked yet; the milestone plans' unticked boxes are the same list.
+Written when waves 0 to 9 were merged and the integration gate was green (2026-10-07). Apart from
+items 1 to 3 (done, next paragraph), nothing below is built or checked yet; the milestone plans'
+unticked boxes are the same list.
 
-**Code that is still unwired (no task owns it; do these first, they are why nothing shows up on
-screen for calendar and call offers):**
+**Wired after the docs pass (2026-10-07):** items 1 to 3 below are done. `index.ts` builds
+`PromptWindow` and calls `registerPromptIpc` with the panel as `getWindow` (stopped with the
+calendar at quit), passes the calendar runtime to `startKeepRunning`, and CaptureService's G5 takes
+slept time out of its counts and skips the tick that finds a sleep, so a long sleep stops as
+`system-sleep`. The reading below is the original list, kept for the trail.
 
-1. `PromptWindow` is never constructed. In `index.ts`, build `new PromptWindow({ prompts, page:
+**Code that was unwired (no task owned it):**
+
+1. `PromptWindow` was never constructed. In `index.ts`, build `new PromptWindow({ prompts, page:
    resolveAppPage(), preloadPath: join(__dirname, '../preload/prompt.js'), logger })` after
    `promptService.start()`, stop it in the quit sequence, and call `registerPromptIpc({ ipcMain,
    getWindow: () => promptWindow.panel, prompts: calendar.prompts, logger })` (the panel as

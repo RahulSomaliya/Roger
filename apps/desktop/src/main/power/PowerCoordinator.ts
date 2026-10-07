@@ -164,12 +164,11 @@ export class PowerCoordinator {
 
   /**
    * Trap: CaptureService's no-speech stop (G5, checkForgottenStop) counts on the wall clock too,
-   * and its 500 ms monitor tick may run before Electron delivers `resume`. After a sleep of
-   * noSpeechStopMs or more it then stops first, with `no-speech`, and this finds the recording
-   * stopping and leaves it alone; a shorter sleep after a quiet stretch trips it the same way, as
-   * the sleep counts as time with no final line. Either way the recording stops at wake. Only a G5
-   * that skips time spent `paused: 'asleep'` (CaptureService, not this file) would make the reason
-   * always `system-sleep`.
+   * and its 500 ms monitor tick may run before Electron delivers `resume`. It skips the tick that
+   * finds a sleep and takes the slept time out of its counts (suspendedSinceLastTick), so after a
+   * sleep of noSpeechStopMs or more this handler, not G5, stops the recording, with `system-sleep`.
+   * The `stopping` check below stays for a stop that really did start first (the person's Stop, a
+   * quit); keep both halves in step.
    */
   private resumed(): void {
     const { capture, logger, noSpeechStopMs } = this.options;

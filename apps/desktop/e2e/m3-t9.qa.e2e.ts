@@ -77,10 +77,38 @@ async function waitForTitle(page: Page, title: string): Promise<void> {
   await qa.settle(page);
 }
 
+/**
+ * qa.expectVisible on a page grown to fit first. Since M4-T20 and M5-T13 the meeting page also
+ * holds the notes pane and the capture and calendar notices, and a banner or a new line makes a
+ * narrow page taller than the one-screen shell mid-flow; a check made before the viewport grew
+ * finds the element below the fold, outside a window nobody scrolled.
+ */
+async function expectVisible(
+  page: Page,
+  selector: string,
+  options: Parameters<typeof qa.expectVisible>[2] = {},
+): Promise<void> {
+  await qa.fitShellPage(page);
+  await qa.expectVisible(page, selector, options);
+}
+
+/**
+ * Brings the transcript forward on a narrow page. Since M4-T20 the meeting page shows one pane at a
+ * time under 720 px (notes by default, the others hidden with CSS: regions.tsx, meeting.css), so
+ * the transcript's lines are in the page but not visible until its pane button is pressed. A wide
+ * page, or one with no other pane, has no pane buttons and shows the transcript already.
+ */
+async function showTranscriptPane(page: Page): Promise<void> {
+  const button = page.locator('.meeting-pane-button[aria-controls="meeting-pane-transcript"]');
+  if (!(await button.isVisible())) return;
+  await button.click();
+  await qa.settle(page);
+}
+
 /** Opens a meeting from the sidebar, as a person would. */
 async function clickInSidebar(page: Page, title: string): Promise<void> {
   const selector = `.recent-meetings-list button[title="${title}"]`;
-  await qa.expectVisible(page, selector, { within: '.recent-meetings-list' });
+  await expectVisible(page, selector, { within: '.recent-meetings-list' });
   await page.locator(selector).click();
 }
 
@@ -340,6 +368,7 @@ it(
         await mountShowHiddenStandIn(page);
         await clickInSidebar(page, LIVE_CALL.title);
         await waitForTitle(page, LIVE_CALL.title);
+        await showTranscriptPane(page);
         // The call's interim before the page opened went to no one (the hub keeps no event):
         // stop once the next line's has come, so the still frame has one.
         await page.waitForSelector(INTERIMS);
@@ -357,8 +386,8 @@ it(
         }
         await qa.fitShellPage(page);
         await markNewestFinal(page);
-        await qa.expectVisible(page, '[data-qa-newest]', { within: LINES });
-        await qa.expectVisible(page, INTERIMS, { within: LINES });
+        await expectVisible(page, '[data-qa-newest]', { within: LINES });
+        await expectVisible(page, INTERIMS, { within: LINES });
         await shoot(
           preview,
           'Live call',
@@ -381,9 +410,9 @@ it(
           ...recording,
           error: 'Speech-to-text for Them stopped: the vendor closed the session. Reconnecting.',
         });
-        await qa.expectVisible(page, '.banner-slot [role="alert"]');
+        await expectVisible(page, '.banner-slot [role="alert"]');
         expect(await scrollTopOf(page)).toBe(readingAt);
-        await qa.expectVisible(page, JUMP, { within: PAGE_PANEL });
+        await expectVisible(page, JUMP, { within: PAGE_PANEL });
         await shoot(
           preview,
           'Reading back',
@@ -398,7 +427,7 @@ it(
         await page.waitForSelector(JUMP, { state: 'detached' });
         await qa.settle(page);
         expect(await markNewestFinal(page)).toBe(said.at(-1)?.id);
-        await qa.expectVisible(page, '[data-qa-newest]', { within: LINES });
+        await expectVisible(page, '[data-qa-newest]', { within: LINES });
 
         // An echo line: hidden by main's echo filter, shown marked with the page's showHidden.
         const echo = said[2];
@@ -411,7 +440,7 @@ it(
         await qa.settle(page);
         expect(await page.locator(echoRow).getAttribute('data-echo')).toBe('hidden');
         expect(await page.locator(`${echoRow} .transcript-line-echo`).textContent()).toBe('echo');
-        await qa.expectVisible(page, echoRow, { within: LINES });
+        await expectVisible(page, echoRow, { within: LINES });
         await shoot(
           preview,
           'Echo line',
@@ -438,7 +467,7 @@ it(
         const heightBefore = await page.locator(LINES).evaluate((box) => box.clientHeight);
         const stopped = await currentStatus(page);
         await sendStatus(page, { ...stopped, notice: STOP_NOTICE });
-        await qa.expectVisible(page, NOTICE);
+        await expectVisible(page, NOTICE);
         const heightAfter = await page.locator(LINES).evaluate((box) => box.clientHeight);
         const placed = await newestLineInBox(page);
         expect(
@@ -447,7 +476,7 @@ it(
         ).toBe(true);
         expect(placed.fromBottom).toBeLessThanOrEqual(1);
         await qa.fitShellPage(page);
-        await qa.expectVisible(page, '[data-qa-newest]', { within: LINES });
+        await expectVisible(page, '[data-qa-newest]', { within: LINES });
         // The smoke test's checks after Stop, on its own locator: it finds exactly the final rows
         // of each side (each drawn once, no interim, no empty text), and a person can see a line
         // of each side in the scroll box.
@@ -479,8 +508,8 @@ it(
           TITLE,
         );
         await qa.settle(page);
-        await qa.fitShellPage(page);
-        await qa.expectVisible(page, `${LINES} .live-transcript-empty`, { within: LINES });
+        await showTranscriptPane(page);
+        await expectVisible(page, `${LINES} .live-transcript-empty`, { within: LINES });
         expect(await page.locator(`${LINES} .live-transcript-empty`).textContent()).toBe(
           'Listening. Lines appear here as people speak.',
         );
@@ -508,12 +537,13 @@ it(
       try {
         await clickInSidebar(past.page, PAST_MEETING.title);
         await waitForTitle(past.page, PAST_MEETING.title);
+        await showTranscriptPane(past.page);
         expect(await count(past.page, FINALS)).toBe(PAST_MEETING.lines.length);
         expect(await count(past.page, INTERIMS)).toBe(0);
         expect(await count(past.page, JUMP)).toBe(0);
         expect(await scrollTopOf(past.page)).toBe(0);
         await qa.fitShellPage(past.page);
-        await qa.expectVisible(past.page, `${FINALS}:first-child`, { within: LINES });
+        await expectVisible(past.page, `${FINALS}:first-child`, { within: LINES });
         await shoot(
           past,
           'Past meeting',
@@ -532,6 +562,7 @@ it(
         await failStoreReads(page);
         await clickInSidebar(page, LIVE_CALL.title);
         await waitForTitle(page, 'Could not read this meeting');
+        await showTranscriptPane(page);
         // The store's lines are unread, so only those heard live since the page opened show.
         await page.waitForFunction(
           (finals) => document.querySelectorAll(finals).length >= 6,
@@ -544,15 +575,18 @@ it(
         await page.locator(STOP).click();
         await page.waitForFunction(() => document.querySelector('.meeting-phase') === null);
         await qa.settle(page);
-        await qa.expectVisible(page, '.meeting-read-error');
+        await expectVisible(page, '.meeting-read-error');
         expect(await page.locator('.meeting-read-error').textContent()).toContain(
           'Roger could not read this meeting on this Mac: database disk image is malformed',
         );
-        expect(await count(page, '.meeting-page .empty-state')).toBe(0);
+        // The page's own empty states ("no lines for this one", "shows here once Roger can read
+        // it"), direct children of the page. Not `.meeting-page .empty-state`: the notes region's
+        // AI notes panel has its own ("No AI notes yet", M4-T20), always there before notes exist.
+        expect(await count(page, '.meeting-page > .empty-state')).toBe(0);
         expect(await count(page, FINALS)).toBe(heard);
         await qa.fitShellPage(page);
         await markNewestFinal(page);
-        await qa.expectVisible(page, '[data-qa-newest]', { within: LINES });
+        await expectVisible(page, '[data-qa-newest]', { within: LINES });
         await shoot(
           live,
           'Store reads fail',
@@ -598,7 +632,7 @@ it(
         await page.press('.vocabulary-input', 'Enter');
         await qa.settle(page);
         await qa.fitShellPage(page);
-        await qa.expectVisible(page, '.vocabulary-save');
+        await expectVisible(page, '.vocabulary-save');
         await page.click('.vocabulary-save');
         await page.waitForFunction(
           () => document.querySelector('.vocabulary-save-status')?.textContent !== 'Saving\u2026',
@@ -628,7 +662,7 @@ it(
         await page.waitForSelector('.vocabulary-editor .error');
         await qa.settle(page);
         await qa.fitShellPage(page);
-        await qa.expectVisible(page, '.vocabulary-editor .error');
+        await expectVisible(page, '.vocabulary-editor .error');
         const failure = (await page.locator('.vocabulary-editor .error').textContent()) ?? '';
         expect(failure).toContain('save the jargon list: PUT /v1/vocabulary failed');
         expect(await count(page, 'button[aria-label="Remove Priya Raman"]')).toBe(0);
