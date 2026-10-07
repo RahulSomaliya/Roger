@@ -83,6 +83,11 @@ export class MeetingChatStore {
    * began still names one of them as failed; that failure is over, and must not end the new try.
    */
   private readonly retiredRuns = new Map<string, Set<string | null>>();
+  /**
+   * Each question's tries sent from this page. A retry puts the same waiting answer back under the
+   * same id, so only this tells a Stop's late reply that the try it was pressed on is over.
+   */
+  private readonly tries = new Map<string, number>();
   /** Bumped by every start and stop, so an answer to an earlier start is dropped. */
   private run = 0;
   /** A thread arrived since the read began: it is newer than what the read will answer. */
@@ -175,6 +180,7 @@ export class MeetingChatStore {
     const answer = this.live.get(questionId);
     if (answer === undefined || !isAnswering(answer)) return;
     const run = this.run;
+    const stoppedTry = this.tries.get(questionId);
     this.api.cancelChatAnswer({ meetingId: this.meetingId, messageId: questionId }).then(
       () => {
         if (run !== this.run) return;
@@ -182,6 +188,10 @@ export class MeetingChatStore {
         // follows. With neither left (a lost answer whose thread main could not read again) it
         // answers and sends nothing: still shown as coming, the answer would hold every next
         // question back until the meeting is opened again.
+        //
+        // Main may answer only once the API stopped the run, long after its `cancelled` offered
+        // Ask again: a retry main took meanwhile is a new paid run, not this Stop's to end.
+        if (this.tries.get(questionId) !== stoppedTry) return;
         const current = this.live.get(questionId);
         if (current === undefined || !isAnswering(current)) return;
         this.live.set(
@@ -205,6 +215,7 @@ export class MeetingChatStore {
 
   private send(question: ChatQuestion): void {
     const run = this.run;
+    this.tries.set(question.id, (this.tries.get(question.id) ?? 0) + 1);
     this.api
       .sendChatMessage({ meetingId: this.meetingId, messageId: question.id, text: question.text })
       .catch((error: unknown) => {

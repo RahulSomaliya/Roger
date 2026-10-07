@@ -60,6 +60,9 @@ function fakeMain() {
   const loads: { resolve: (thread: ChatThread) => void; reject: (error: Error) => void }[] = [];
   const sends: SendChatMessageRequest[] = [];
   const cancels: ChatAnswerRequest[] = [];
+  /** main's answers to cancels still waiting on the API, when the test holds them. */
+  const cancelReplies: (() => void)[] = [];
+  let holdCancels = false;
   let refuseSend: Error | null = null;
   let refuseCancel: Error | null = null;
   const api: MeetingChatApi = {
@@ -75,7 +78,11 @@ function fakeMain() {
     },
     cancelChatAnswer: (request) => {
       cancels.push(request);
-      return refuseCancel === null ? Promise.resolve() : Promise.reject(refuseCancel);
+      if (refuseCancel !== null) return Promise.reject(refuseCancel);
+      if (!holdCancels) return Promise.resolve();
+      return new Promise<void>((resolve) => {
+        cancelReplies.push(resolve);
+      });
     },
     onChatEvent: (listener) => {
       eventListeners.add(listener);
@@ -101,6 +108,14 @@ function fakeMain() {
     },
     refuseCancels: (error: Error) => {
       refuseCancel = error;
+    },
+    /** main answers each cancel only when the test says (answerCancel), as once the API stopped it. */
+    holdCancelReplies: () => {
+      holdCancels = true;
+    },
+    answerCancel: async () => {
+      cancelReplies.shift()?.();
+      await settle();
     },
     answerLoad: async (messages: ChatMessage[], meetingId = MEETING) => {
       loads.shift()?.resolve({ meetingId, messages });
@@ -398,6 +413,47 @@ describe('MeetingChatStore', () => {
     expect(lines(chat)).toEqual(['How many lines? => failed (cancelled): About [live]']);
     expect(chat.getState().answering).toBe(false);
     expect(chat.ask('Next')).toBe(true);
+  });
+
+  it('a retry asked before main answered the Stop is not ended by that answer', async () => {
+    const { main, chat } = await openChat();
+    chat.ask('How many lines?');
+    main.event(ASKED[0]!, run());
+    main.event(ASKED[0]!, delta('About'));
+    main.holdCancelReplies();
+    chat.cancel(ASKED[0]!);
+    // main tells the page at once, and answers the cancel once the API has stopped the run (a
+    // lost answer it follows): Ask again shows meanwhile, and main takes the retry.
+    main.event(ASKED[0]!, {
+      type: 'error',
+      code: 'cancelled',
+      message: 'The answer was cancelled.',
+    });
+    chat.retry(ASKED[0]!);
+    main.event(ASKED[0]!, run(RUN_2));
+    await main.answerCancel();
+    expect(lines(chat)).toEqual(['How many lines? => streaming:  [live]']);
+    expect(chat.getState().answering).toBe(true);
+
+    main.event(ASKED[0]!, delta('About fifteen hundred'));
+    expect(lines(chat)).toEqual(['How many lines? => streaming: About fifteen hundred [live]']);
+  });
+
+  it('a retry asked before main answered the Stop, still waiting, is not ended by it', async () => {
+    const { main, chat } = await openChat();
+    chat.ask('How many lines?');
+    main.holdCancelReplies();
+    // Stopped while Roger still read the meeting: the retry waits just as the stopped try did.
+    chat.cancel(ASKED[0]!);
+    main.event(ASKED[0]!, {
+      type: 'error',
+      code: 'cancelled',
+      message: 'The answer was cancelled.',
+    });
+    chat.retry(ASKED[0]!);
+    await main.answerCancel();
+    expect(lines(chat)).toEqual(['How many lines? => waiting:  [live]']);
+    expect(chat.getState().answering).toBe(true);
   });
 
   it('a cancel main could not pass on says the answer may still come', async () => {
