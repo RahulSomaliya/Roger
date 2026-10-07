@@ -63,6 +63,8 @@ class FakeNotesApi implements NotesSyncApi {
    */
   answerAfterMs = 0;
   readonly missing = new Set<string>();
+  /** Every PUT is refused with this (a `422`, a `401`); the API itself is up. */
+  refuseWith: ApiError | null = null;
   private readonly stored = new Map<string, { note: Note; revisionId: string | null }>();
   private gate: Promise<void> | null = null;
 
@@ -126,6 +128,7 @@ class FakeNotesApi implements NotesSyncApi {
     if (this.down) {
       throw new ApiError(0, 'network_error', `${method} /v1/meetings/${meetingId}/notes failed`);
     }
+    if (this.refuseWith !== null && method === 'PUT') throw this.refuseWith;
     if (this.missing.has(meetingId)) {
       throw new ApiError(404, 'not_found', `Meeting ${meetingId} not found`);
     }
@@ -346,6 +349,30 @@ describe('NotesSync: uploads', () => {
     sync.save(MEETING, 'user', paragraphs('Back online'));
     await vi.advanceTimersByTimeAsync(1_500);
     expect(api.puts()).toHaveLength(9);
+    sync.stop();
+  });
+
+  it('shows a refused upload as its own state, not as saved_locally, and keeps it through a save', async () => {
+    const { api, store, sync } = harness();
+    sync.start();
+    // saveStatus.ts shows `saved_locally` as silence: a refusal written as it is invisible.
+    api.refuseWith = new ApiError(422, 'validation_error', 'doc is not valid');
+
+    sync.save(MEETING, 'user', paragraphs('Refused'));
+    await vi.advanceTimersByTimeAsync(1_500);
+    expect(store.getNote(MEETING, 'user')).toMatchObject({ dirty: true, sync: 'refused' });
+    // As offline: typing more does not change why the note cannot upload.
+    expect(sync.save(MEETING, 'user', paragraphs('Refused', 'more')).sync).toBe('refused');
+
+    // The server's answer changes (a rejected token, 401): another reason, in its own state.
+    api.refuseWith = new ApiError(401, 'unauthorized', 'Bad token');
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(store.getNote(MEETING, 'user')).toMatchObject({ dirty: true, sync: 'refused_access' });
+
+    // Accepted at last: the state clears with the upload, and the note is not stuck refused.
+    api.refuseWith = null;
+    await vi.advanceTimersByTimeAsync(4_000);
+    expect(store.getNote(MEETING, 'user')).toMatchObject({ dirty: false, sync: 'synced' });
     sync.stop();
   });
 

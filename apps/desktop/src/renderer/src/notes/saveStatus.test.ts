@@ -17,6 +17,24 @@ describe('describeSaveStatus', () => {
     expect(quiet.map((sync) => describeSaveStatus(SAVED, sync))).toEqual(quiet.map(() => null));
   });
 
+  it('says Not saved to Roger, in plain words, when the server refused the upload', () => {
+    for (const sync of ['refused', 'refused_access'] as const) {
+      const status = describeSaveStatus(SAVED, sync);
+      expect(status).toEqual(expect.objectContaining({ label: 'Not saved to Roger', tone: 'bad' }));
+      // Safe on this Mac, and never a status code or a vendor word.
+      expect(status?.detail).toMatch(/safe on this Mac/);
+      expect(status?.detail).not.toMatch(/\b(?:40\d|422|HTTP|API|Postgres)\b/);
+    }
+    expect(describeSaveStatus(SAVED, 'refused')?.detail).toMatch(/did not accept these notes/);
+    expect(describeSaveStatus(SAVED, 'refused_access')?.detail).toMatch(/did not accept this Mac/);
+  });
+
+  it("keeps the editor's own failure above a refused upload", () => {
+    expect(describeSaveStatus({ phase: 'failed', message: 'disk full' }, 'refused')?.label).toBe(
+      'Not saved',
+    );
+  });
+
   it('says Saved on this Mac, and why it is safe, only while the server cannot be reached', () => {
     expect(describeSaveStatus(SAVED, 'offline')).toEqual(
       expect.objectContaining({ label: 'Saved on this Mac', tone: 'quiet' }),

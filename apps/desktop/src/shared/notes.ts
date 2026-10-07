@@ -237,11 +237,23 @@ export interface Note {
  * - `syncing`: a `PUT` is on its way.
  * - `synced`: the server holds this doc.
  * - `offline`: the API is away; the doc stays on this Mac and NotesSync retries with backoff.
+ * - `refused`: the API answered and turned the upload down (a `422`, a `409` its own copy did not
+ *   explain). Unlike `offline` it is a problem the user must see ("Not saved to Roger"); the doc
+ *   stays on this Mac and NotesSync retries with backoff.
+ * - `refused_access`: as `refused`, for an answer about this Mac's access (a `401`, a `403`), which
+ *   the page words differently.
  * - `conflict`: the server had a newer version. `doc` is now the server's, and `conflictCopy`
  *   keeps the local one until the user picks ("Use mine").
  */
 export type NoteSyncState =
-  'saved_locally' | 'waiting_for_meeting' | 'syncing' | 'synced' | 'offline' | 'conflict';
+  | 'saved_locally'
+  | 'waiting_for_meeting'
+  | 'syncing'
+  | 'synced'
+  | 'offline'
+  | 'refused'
+  | 'refused_access'
+  | 'conflict';
 
 /** A note as notes.sqlite holds it (main/notes/NotesStore.ts): what the editor shows. */
 export interface LocalNote {

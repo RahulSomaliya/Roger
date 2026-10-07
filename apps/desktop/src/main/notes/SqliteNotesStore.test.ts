@@ -690,6 +690,57 @@ describe('SqliteNotesStore: hasNotes', () => {
     store.close();
   });
 
+  it('a notes.sqlite made before refused uploads gains the states, its notes kept', () => {
+    const path = tempPath();
+    const first = openStore(path);
+    first.saveLocal(MEETING, 'user', paragraphs('Before'));
+    first.close();
+    // Wound back to schema 2: the notes table as it was, its CHECK without the refused states.
+    const raw = new DatabaseSync(path);
+    raw.exec(`
+      DROP INDEX notes_dirty;
+      ALTER TABLE notes RENAME TO notes_new;
+      CREATE TABLE notes (
+        meeting_id TEXT NOT NULL,
+        kind TEXT NOT NULL CHECK (kind IN ('user', 'ai')),
+        doc_json TEXT NOT NULL,
+        revision_id TEXT,
+        dirty INTEGER NOT NULL CHECK (dirty IN (0, 1)),
+        base_version INTEGER NOT NULL CHECK (base_version >= 0),
+        template_id TEXT,
+        last_run_id TEXT,
+        generated_version INTEGER,
+        conflict_json TEXT,
+        sync_state TEXT NOT NULL CHECK (sync_state IN
+          ('saved_locally', 'waiting_for_meeting', 'syncing', 'synced', 'offline')),
+        has_text INTEGER NOT NULL CHECK (has_text IN (0, 1)),
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (meeting_id, kind),
+        CHECK (dirty = 0 OR revision_id IS NOT NULL)
+      );
+      INSERT INTO notes SELECT * FROM notes_new;
+      DROP TABLE notes_new;
+      CREATE INDEX notes_dirty ON notes (updated_at) WHERE dirty = 1;
+      PRAGMA user_version = 2;
+    `);
+    raw.close();
+
+    const store = openStore(path);
+    expect(store.getNote(MEETING, 'user')).toMatchObject({
+      doc: paragraphs('Before'),
+      dirty: true,
+      sync: 'saved_locally',
+    });
+    // Refused states are stored now, and they survive a reopen as they are.
+    expect(store.setSyncState(MEETING, 'user', 'refused')?.sync).toBe('refused');
+    expect(store.setSyncState(MEETING, 'user', 'refused_access')?.sync).toBe('refused_access');
+    expect(store.listDirtyNotes()).toHaveLength(1);
+    store.close();
+    const reopened = openStore(path);
+    expect(reopened.getNote(MEETING, 'user')?.sync).toBe('refused_access');
+    reopened.close();
+  });
+
   it('counts held typing, which also keeps its note from being deleted as empty', () => {
     const store = openStore();
     store.saveLocal(MEETING, 'user', paragraphs(''), null);

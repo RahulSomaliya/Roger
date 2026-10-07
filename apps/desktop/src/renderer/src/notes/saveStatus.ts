@@ -3,14 +3,17 @@ import type { SaverState } from './debouncedSaver';
 
 /**
  * The one save state a note shows (M4 plan, "Notes on the Mac"; docs/design.md, Copy). Saving is
- * normal, so only two states say anything: "Saved on this Mac" while the server cannot be reached,
- * and "Not saved" with its reason when a save failed. Everything else is silence: no "Syncing",
+ * normal, so only three states say anything: "Saved on this Mac" while the server cannot be
+ * reached, "Not saved to Roger" when the server turned the upload down, and "Not saved" with its
+ * reason when a save on this Mac failed. Everything else is silence: no "Syncing",
  * no green "Synced". A failure never hides behind an older good state (a silent failure is the
  * bug this product exists to avoid), so the editor's own failure outranks main's state.
  *
- * Trap: `saved_locally` is also what NotesSync writes when the server REFUSED an upload (a 401, a
- * 422), and it reads as silence here like the moment after every save. The notes are safe on this
- * Mac either way, but a refused upload shows nowhere on this line.
+ * Trap: `saved_locally` is the moment after every save and reads as silence here. NotesSync must
+ * never write it for an upload the server REFUSED (a 401, a 422): that has its own states,
+ * `refused` and `refused_access`, shown as a problem line ("Not saved to Roger"), because the
+ * notes would otherwise sit on this Mac with nothing on the page saying Roger's server never got
+ * them. Offline stays quiet: the server is away, which the user can do nothing about.
  */
 
 /** `quiet` needs nothing from the user; `bad` lost a save, and says so loudly. */
@@ -31,6 +34,18 @@ const SYNC_STATUS: Partial<Record<NoteSyncState, SaveStatus>> = {
     detail:
       'Roger cannot reach its server. The notes are safe here, and it uploads them when it can.',
     tone: 'quiet',
+  },
+  refused: {
+    label: 'Not saved to Roger',
+    detail:
+      "Roger's server did not accept these notes. They are safe on this Mac, and Roger tries again.",
+    tone: 'bad',
+  },
+  refused_access: {
+    label: 'Not saved to Roger',
+    detail:
+      "Roger's server did not accept this Mac's access. The notes are safe on this Mac, and Roger tries again.",
+    tone: 'bad',
   },
 };
 
