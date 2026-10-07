@@ -400,6 +400,18 @@ export class PromptService implements PromptOfferPort {
       if (match !== null && this.showCalendarCard(account, match, 'call_detected')) return;
     }
     // 4. A call-detected card. Its start links an event only through M5-T9c's enricher.
+    // Trap: never a second one for an app that has one up. M2 offers again whenever the mic comes
+    // back to the app (a switch to AirPods, a second call within the card's 10 min), and its
+    // CallOffer hears only of a dismiss (`onCallCardDismissed`), never of a card still up: the
+    // panel would show two identical cards and the log two rows for one call.
+    if (
+      this.cards.some((card) => card.kind === 'call_detected' && card.app.bundleId === app.bundleId)
+    ) {
+      this.options.logger.info('call offer dropped: a card for this app is up', {
+        bundleId: app.bundleId,
+      });
+      return;
+    }
     const key = this.options.log.recordCallDetected({
       accountEmail: account,
       app,

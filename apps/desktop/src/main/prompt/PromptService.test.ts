@@ -971,6 +971,18 @@ describe('PromptService', () => {
       expect(h.callRows()).toMatchObject([{ action: 'started', meetingId: MEETING }]);
     });
 
+    it('offer_call_detected_dropped_while_a_card_for_the_same_app_shows', async () => {
+      const h = harness({ connected: false });
+      h.offerCall();
+      // The mic went back to Zoom after a switch to AirPods: the same call, offered again.
+      await vi.advanceTimersByTimeAsync(MINUTE);
+      h.offerCall();
+
+      expect(h.onlyCard()).toMatchObject({ kind: 'call_detected', app: ZOOM });
+      expect(h.callRows()).toHaveLength(1);
+      expect(h.messages()).toContain('call offer dropped: a card for this app is up');
+    });
+
     it('offer_two_overlapping_events_link_nothing', () => {
       const h = harness({ events: [call('a', -5), call('b', 2)] });
       h.offerCall();
