@@ -911,7 +911,7 @@ describe.each(qa.QA_THEMES.flatMap((theme) => qa.QA_WIDTHS.map((width) => ({ the
           'The API is offline: the chat says it could not open, with Try again; the box cannot ask meanwhile',
           async () => {
             expect(await textOf(page, `${CHAT_LOG} .meeting-chat-read-error`)).toMatch(
-              /^Could not open this chat: chat:get-thread failed: .+ Try again$/,
+              /^Could not open this chat\. Roger could not reach its server\. Try again$/,
             );
             await qa.expectVisible(page, `${CHAT_LOG} .meeting-chat-read-error button`);
             await page.fill(INPUT, 'How many lines?');
