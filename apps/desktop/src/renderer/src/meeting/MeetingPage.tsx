@@ -69,13 +69,17 @@ export function MeetingPage({ meetingId }: { meetingId: string }) {
   // Before main's first answer, or when the first read failed, the page knows none of the stored
   // lines: the transcript would say "Nothing was transcribed in this meeting", false beside the
   // sidebar's title, so the regions wait unless this meeting records now. Main answers within a
-  // frame or two: a loading text would flash on every open. Once shown, the regions stay on this
-  // page: the transcript panel holds the lines it heard live (it subscribes only while mounted),
-  // so taking it away after Stop until a read answers would drop them, for good if reads fail.
-  // State set while rendering, so no frame shows the page without them.
-  const [regionsShown, setRegionsShown] = useState(false);
+  // frame or two: a loading text would flash on every open. Once shown, the regions stay for this
+  // meeting: the transcript panel holds the lines it heard live (it subscribes only while
+  // mounted), so taking it away after Stop until a read answers would drop them, for good if reads
+  // fail. State set while rendering, so no frame shows the page without them. Kept as the meeting
+  // it was set for, never a bare flag: a flag set for meeting A would show B's regions before B's
+  // read answers, and B's transcript would say "Nothing was transcribed". AppLayout gives each
+  // route a new page (its <main> key) today, but this page must not rely on that key staying.
+  const [regionsShownFor, setRegionsShownFor] = useState<string | null>(null);
+  const regionsShown = regionsShownFor === meetingId;
   const unread = read.value === undefined && phase === 'idle' && !regionsShown;
-  if (!missing && !unread && !regionsShown) setRegionsShown(true);
+  if (!missing && !unread && !regionsShown) setRegionsShownFor(meetingId);
   // Never a made-up title after a failed read ("Untitled meeting" was one): main names every
   // meeting it keeps, and the sidebar beside this page shows that name.
   const title = missing

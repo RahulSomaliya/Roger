@@ -1,4 +1,4 @@
-import { createElement } from 'react';
+import { createElement, useState } from 'react';
 import { renderToString } from 'react-dom/server';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { type CaptureStatus, idleCaptureStatus } from '../../../shared/capture';
@@ -22,6 +22,8 @@ const fakes = vi.hoisted(() => ({
    */
   later: [] as Shell[],
   read: null as Read<StoredMeeting | null> | null,
+  /** A meeting's own read, where a test gives one; any other meeting reads `read`. */
+  readOf: new Map<string, Read<StoredMeeting | null>>(),
   /** What each render passed to useMeeting: the meeting and the key that makes it read again. */
   reads: [] as { meetingId: string; refreshKey: string }[],
 }));
@@ -36,9 +38,10 @@ vi.mock('../app/ShellContext', () => ({
 vi.mock('./useMeeting', async (importOriginal) => ({
   ...(await importOriginal<typeof UseMeeting>()),
   useMeeting: (meetingId: string, refreshKey: string) => {
-    if (fakes.read === null) throw new Error('set fakes.read first');
     fakes.reads.push({ meetingId, refreshKey });
-    return fakes.read;
+    const answer = fakes.readOf.get(meetingId) ?? fakes.read;
+    if (answer === null) throw new Error('set fakes.read first');
+    return answer;
   },
 }));
 
@@ -140,6 +143,19 @@ const PANEL = /<div[^>]*class="live-transcript-lines"[^>]*role="log"[^>]*aria-la
 /** The text content of the rendered page, tags and React's comment markers removed. */
 const text = (html: string): string => html.replace(/<[^>]*>/g, '');
 
+/**
+ * One page whose route changes from meeting A to B while it stays mounted. renderToString cannot
+ * give a mounted page new props, so the page runs as this component's body and the route changes
+ * during its render: React keeps the page's state through that, as it would for one MeetingPage
+ * whose meetingId changes.
+ */
+function RouteFromAToB() {
+  const [meetingId, setMeetingId] = useState(A);
+  const shown = MeetingPage({ meetingId });
+  if (meetingId === A) setMeetingId(B);
+  return shown;
+}
+
 /** The refreshKey the page passes to useMeeting for meeting `meetingId` under `fake`. */
 function readKeyFor(fake: Shell, meetingId = A): string {
   fakes.shell = fake;
@@ -155,6 +171,7 @@ beforeEach(() => {
   fakes.shell = shell({});
   fakes.later = [];
   fakes.read = read(undefined);
+  fakes.readOf = new Map();
   fakes.reads = [];
 });
 
@@ -327,6 +344,20 @@ describe('the meeting page', () => {
     expect(html).toMatch(PANEL);
     expect(text(html)).not.toContain('The transcript shows here once');
     expect(html).toMatch(/role="alert"[^>]*>.*disk I\/O error/);
+  });
+
+  it("shows no transcript for B before B's read answers, after A's on the same page", () => {
+    // AppLayout keys <main> by route, so each meeting gets a new page today; the page must not
+    // rely on it. Meeting A's regions were shown; B is not recording and main has not answered.
+    fakes.readOf = new Map([
+      [A, read(stored(A, [line(A, 'l1', 2100, 'A line of meeting A')]))],
+      [B, read(undefined)],
+    ]);
+    const html = renderToString(createElement(RouteFromAToB));
+    expect(fakes.reads.map((each) => each.meetingId)).toContain(B);
+    expect(html).toMatch(/<h1[^>]*>Loading…<\/h1>/);
+    expect(text(html)).not.toContain('Nothing was transcribed');
+    expect(html).not.toMatch(PANEL);
   });
 
   it('shows the transcript of a meeting recording now before the first read answers', () => {

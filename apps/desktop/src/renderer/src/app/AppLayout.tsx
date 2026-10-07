@@ -25,7 +25,12 @@ export function AppLayout() {
       {fullWindow ? null : <Sidebar />}
       <div className="shell-main">
         <BannerSlot themeError={theme.error} />
-        {/* Keyed by route, so each page starts at its top rather than the last page's scroll. */}
+        {/*
+          Keyed by route, so each page starts at its top rather than the last page's scroll, and
+          with new state. MeetingPage keeps what must not cross meetings per meeting itself
+          (regionsShownFor), so a scroll-to-top in place of this key cannot show meeting B's
+          transcript with meeting A's state.
+        */}
         <main key={formatRoute(route)} className="shell-page">
           <Page route={route} />
         </main>

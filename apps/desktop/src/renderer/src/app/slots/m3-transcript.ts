@@ -13,8 +13,11 @@ import type { MeetingSlotProps, SlotContributions } from '../slotRegistry';
  * the lines the echo filter hid come from the page (useMeetingView). The panel subscribes to
  * main's transcript events itself and adds them to the stored lines; it renders inside the page's
  * CitationNavigatorProvider, which it registers with. The page mounts this region only once main
- * has answered the first read, or the meeting records (`unread` in meeting/MeetingPage.tsx), so
- * an empty past transcript here means the store holds no line.
+ * has answered the first read or the meeting records, and then keeps it for that meeting through
+ * Stop, as the panel holds the lines it heard live (`unread` and `regionsShownFor` in
+ * meeting/MeetingPage.tsx). So an empty past transcript here means the store holds no line, but
+ * for one case: a page opened mid-recording whose every read failed through Stop knows only the
+ * lines spoken while it was open, and says nothing was transcribed if nobody spoke meanwhile.
  *
  * `live` is this meeting's phase, never main's alone (meetingPhase): while the next meeting
  * starts, the last one's page must stop following and offering "Jump to live".
