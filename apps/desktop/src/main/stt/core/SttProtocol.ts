@@ -113,9 +113,11 @@ export interface SttProtocol {
    * Whether this refusal is the vendor rejecting the jargon list (Deepgram: HTTP 400 at the
    * handshake). The core asks only when the stream sent a non-empty list, and then rejects with
    * SttConnectError.keytermsRejected, the socket closed. Answer for the list only: a true here makes
-   * CaptureSession reopen without it, which cannot fix a bad token or a busy account. Missing: the
-   * protocol maps no keyterms, so its refusals are plain connect errors. The conformance suite
-   * checks the declaration against the vendor's fake (conformanceVendors.ts `keyterms`).
+   * CaptureSession reopen without it, which cannot fix a bad token or a busy account. Missing: no
+   * refusal is put down to the list, because the protocol maps no keyterms or its vendor refuses
+   * nothing while it connects (Soniox reads its start request only once the stream is open), so its
+   * refusals are plain connect errors. The conformance suite checks the declaration against the
+   * vendor's fake (conformanceVendors.ts `keyterms`).
    */
   keytermsRejected?(refusal: SttConnectRefusal): boolean;
 }

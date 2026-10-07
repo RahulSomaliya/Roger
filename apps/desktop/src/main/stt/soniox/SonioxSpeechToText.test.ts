@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createLogger } from '../../logger';
+import { createSpeechToText } from '../createSpeechToText';
 import { SttConnectError, type SttEvent, type SttStreamSettings } from '../SpeechToText';
 import { type FakeVendorConnection, FakeVendorServer, waitFor } from '../testing/fakeVendorServer';
 import { buildStartRequest, sonioxProtocol, SonioxSpeechToText } from './SonioxSpeechToText';
@@ -77,6 +78,18 @@ describe('buildStartRequest', () => {
     expect(() => buildStartRequest({ ...settings, encoding: 'opus' })).toThrow(
       'Soniox cannot be sent opus audio; Roger sends linear16',
     );
+  });
+});
+
+describe('the registry', () => {
+  it('builds the Soniox adapter for the provider id the API names (stt_vendors.py)', () => {
+    const stt = createSpeechToText('soniox', {
+      logger: createLogger({ level: 'error', format: 'json', sink: () => undefined }),
+    });
+
+    expect(stt).toBeInstanceOf(SonioxSpeechToText);
+    expect(stt.provider).toBe('soniox');
+    expect(stt.vendorName).toBe('Soniox');
   });
 });
 

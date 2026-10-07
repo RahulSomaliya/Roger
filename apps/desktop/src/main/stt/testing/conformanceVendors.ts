@@ -37,14 +37,18 @@ export interface ConformanceVendor {
   rejectsAudioFasterThanRealTime: boolean;
   /**
    * How the vendor takes a jargon list and how it refuses one it will not take. Null only while
-   * the protocol maps no keyterms and declares no `keytermsRejected`; the suite fails a vendor whose
-   * protocol and entry disagree.
+   * the protocol maps no keyterms; the suite fails a vendor whose protocol and entry disagree.
    */
   keyterms: {
-    /** The terms the adapter sent, read from the connect request. */
+    /** The terms the adapter sent, read from the connect request or the opening messages. */
     sent(connection: FakeVendorConnection): string[];
-    /** The refusal: an HTTP status at the handshake, or a close before the ready message. */
-    refusal: { httpStatus: number } | { closeBeforeReady: { code: number; reason: string } };
+    /**
+     * The refusal: an HTTP status at the handshake, or a close before the ready message; the
+     * protocol then declares `keytermsRejected`. Null for a vendor that refuses no list while it
+     * connects (Soniox reads its start request only once the stream is open), whose protocol
+     * declares none.
+     */
+    refusal: { httpStatus: number } | { closeBeforeReady: { code: number; reason: string } } | null;
   } | null;
 }
 
@@ -136,6 +140,76 @@ export const CONFORMANCE_VENDORS: readonly ConformanceVendor[] = [
       sent: (connection) => new URL(connection.url, 'ws://vendor').searchParams.getAll('keyterm'),
       // Past its 500 tokens Deepgram refuses the whole request at the handshake.
       refusal: { httpStatus: 400 },
+    },
+  },
+  {
+    provider: 'soniox',
+    settings: {
+      model: 'stt-rt-v5',
+      language: 'en',
+      sampleRate: 16000,
+      encoding: 'linear16',
+      pricePerHourUsd: 0.12,
+    },
+    // The start request: Soniox refuses a session whose first message is not this one.
+    openingMessages: [
+      JSON.stringify({
+        model: 'stt-rt-v5',
+        audio_format: 'pcm_s16le',
+        sample_rate: 16000,
+        num_channels: 1,
+        enable_endpoint_detection: true,
+      }),
+    ],
+    // Soniox answers nothing to the start request: the handshake is the ready signal.
+    readyMessage: null,
+    // `finalize`, then the empty text frame that ends the stream.
+    finishMessages: [JSON.stringify({ type: 'finalize' }), ''],
+    // The finished response. Soniox closes the socket after it as well; the fake leaves that to
+    // the core, as AssemblyAI's does, so the suite proves the core closes on the message.
+    answerFinish: (socket) => {
+      socket.send(
+        JSON.stringify({
+          tokens: [],
+          final_audio_proc_ms: 500,
+          total_audio_proc_ms: 500,
+          finished: true,
+        }),
+      );
+    },
+    // One utterance: its final tokens, then the endpoint marker that ends the line.
+    finalMessage: (text) =>
+      JSON.stringify({
+        tokens: [
+          { text, start_ms: 0, end_ms: 500, confidence: 0.9, is_final: true },
+          { text: '<end>', start_ms: 500, end_ms: 500, confidence: 1, is_final: true },
+        ],
+        final_audio_proc_ms: 500,
+        total_audio_proc_ms: 500,
+      }),
+    // Soniox documents 1001 for a connection closed as idle, not its reason text: this one is ours.
+    midCallClose: { code: 1001, reason: 'idle' },
+    // The 5-hour cap the API's key asks for (M3-T14): Soniox's words, then a normal close.
+    errorFrame: JSON.stringify({
+      tokens: [],
+      error_code: 403,
+      error_type: 'temp_api_key_session_expired',
+      error_message:
+        'Temporary API key session duration limit exceeded. Create a new temporary API key to ' +
+        'start a new session.',
+    }),
+    keepAliveMessage: JSON.stringify({ type: 'keepalive' }),
+    // No hard rate rule: "brief buffering" is tolerated (SonioxSpeechToText.ts, audioPacing).
+    rejectsAudioFasterThanRealTime: false,
+    keyterms: {
+      // `context.terms` in the start request, the first text message.
+      sent: (connection) => {
+        const start = JSON.parse(connection.texts[0] ?? '{}') as { context?: { terms?: string[] } };
+        return start.context?.terms ?? [];
+      },
+      // Soniox reads the start request once the stream is open, and its refusals arrive there as
+      // error responses: none can be put down to the list at connect.
+      refusal: null,
     },
   },
 ];

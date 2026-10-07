@@ -743,6 +743,8 @@ describe.each(CONFORMANCE_VENDORS)('$provider conforms', (vendor) => {
    */
   describe('with a jargon list', () => {
     const LIST = ['Linkt', 'order number'];
+    /** Whether the vendor refuses a list while it connects (ConformanceVendor `keyterms.refusal`). */
+    const refusesAList = (vendor.keyterms?.refusal ?? null) !== null;
 
     function keyterms(): NonNullable<ConformanceVendor['keyterms']> {
       if (vendor.keyterms === null) throw new Error(`${vendor.provider} takes no jargon list`);
@@ -751,6 +753,7 @@ describe.each(CONFORMANCE_VENDORS)('$provider conforms', (vendor) => {
 
     function refuseAsTheVendorDoes(): void {
       const { refusal } = keyterms();
+      if (refusal === null) throw new Error(`${vendor.provider} refuses no list while connecting`);
       if ('httpStatus' in refusal) {
         server.rejectWith = refusal.httpStatus;
         return;
@@ -761,7 +764,7 @@ describe.each(CONFORMANCE_VENDORS)('$provider conforms', (vendor) => {
     }
 
     it('declares keytermsRejected exactly when its entry says how it refuses a list', () => {
-      expect(stt().protocol.keytermsRejected !== undefined).toBe(vendor.keyterms !== null);
+      expect(stt().protocol.keytermsRejected !== undefined).toBe(refusesAList);
     });
 
     itIf(vendor.keyterms !== null)(
@@ -778,7 +781,7 @@ describe.each(CONFORMANCE_VENDORS)('$provider conforms', (vendor) => {
       },
     );
 
-    itIf(vendor.keyterms !== null)(
+    itIf(refusesAList)(
       'reports a connect refused for its list as keytermsRejected, after exactly one handshake',
       async () => {
         refuseAsTheVendorDoes();
@@ -794,7 +797,7 @@ describe.each(CONFORMANCE_VENDORS)('$provider conforms', (vendor) => {
       },
     );
 
-    itIf(vendor.keyterms !== null)(
+    itIf(refusesAList)(
       'reports the same refusal without a list as a plain connect error',
       async () => {
         refuseAsTheVendorDoes();
