@@ -21,6 +21,29 @@ const NO_STATE: CalendarSyncState = {
   reconnectRequired: false,
 };
 
+/**
+ * Resolves after the fake's refresh following a Connect has landed: like main's, it answers a
+ * task after Connect resolves (a timer queued first fires first).
+ */
+function refreshed(): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, 0);
+  });
+}
+
+/** What each listener heard, in order, as `connection`, `events:<count>` and `state:<success>`. */
+function listen(calendar: ReturnType<typeof createCalendarFake>): string[] {
+  const heard: string[] = [];
+  calendar.onCalendarConnectionChanged((connection) => {
+    heard.push(`connection:${connection === null ? 'none' : connection.status}`);
+  });
+  calendar.onCalendarEventsChanged((events) => heard.push(`events:${events.length}`));
+  calendar.onCalendarSyncStateChanged((state) => {
+    heard.push(`state:${state.lastSuccessAt ?? 'never'}${state.reconnectRequired ? ':424' : ''}`);
+  });
+  return heard;
+}
+
 function timed(events: CalendarEvent[], id: string): TimedCalendarEvent {
   const event = events.find((each) => each.id === id);
   if (event === undefined || event.allDay) throw new Error(`no timed event ${id}`);
@@ -35,13 +58,9 @@ describe('the preview calendar fake', () => {
     await expect(calendar.getCalendarSyncState()).resolves.toEqual(NO_STATE);
   });
 
-  it("connects the fake provider's account and fills the day, telling the listeners", async () => {
-    const hub = new FakeHub();
-    const calendar = createCalendarFake(hub, () => NOW);
-    const heard: string[] = [];
-    calendar.onCalendarConnectionChanged(() => heard.push('connection'));
-    calendar.onCalendarEventsChanged(() => heard.push('events'));
-    calendar.onCalendarSyncStateChanged(() => heard.push('state'));
+  it("connects the fake provider's account, then fills the day after Connect answers, in main's order", async () => {
+    const calendar = createCalendarFake(new FakeHub(), () => NOW);
+    const heard = listen(calendar);
 
     const connection = await calendar.connectCalendar();
 
@@ -53,13 +72,57 @@ describe('the preview calendar fake', () => {
       expiresHint: null,
       lastError: null,
     });
-    expect(heard).toEqual(['connection', 'events', 'state']);
+    // CalendarSync.connected sends the copy as it stands (empty for a new account), state first;
+    // only then does CalendarAccount send the connection. A page that reads the copy's events as
+    // "not connected" while the connection is still null must cope with this order.
+    expect(heard).toEqual(['state:never', 'events:0', 'connection:active']);
     await expect(calendar.getCalendarConnection()).resolves.toEqual(connection);
+    await expect(calendar.getCalendarEvents()).resolves.toEqual([]);
+
+    // The refresh CalendarSync starts at the connect answers after Connect has resolved.
+    await refreshed();
+    expect(heard).toEqual([
+      'state:never',
+      'events:0',
+      'connection:active',
+      `state:${NOW.toISOString()}`,
+      `events:${previewCalendarDay(NOW).length}`,
+    ]);
     await expect(calendar.getCalendarEvents()).resolves.toEqual(previewCalendarDay(NOW));
     await expect(calendar.getCalendarSyncState()).resolves.toEqual({
       ...NO_STATE,
       lastSuccessAt: NOW.toISOString(),
     });
+  });
+
+  it('keeps the copy of the account already connected at a Connect, as main does', async () => {
+    const hub = new FakeHub();
+    const calendar = createCalendarFake(hub, () => NOW);
+    await calendar.connectCalendar();
+    await refreshed();
+    hub.emit(calendarChannels.CalendarSyncStateChanged, {
+      ...NO_STATE,
+      lastSuccessAt: NOW.toISOString(),
+      reconnectRequired: true,
+    });
+    const heard = listen(calendar);
+
+    await calendar.connectCalendar();
+
+    // The same account keeps its day, and the connect clears the refused-grant mark.
+    const day = `events:${previewCalendarDay(NOW).length}`;
+    expect(heard).toEqual([`state:${NOW.toISOString()}`, day, 'connection:active']);
+  });
+
+  it('drops the day of a refresh still on its way when Disconnect comes first', async () => {
+    const calendar = createCalendarFake(new FakeHub(), () => NOW);
+    await calendar.connectCalendar();
+    await calendar.disconnectCalendar();
+
+    await refreshed();
+
+    await expect(calendar.getCalendarEvents()).resolves.toEqual([]);
+    await expect(calendar.getCalendarSyncState()).resolves.toEqual(NO_STATE);
   });
 
   it("holds the API fake's day: a call in 2 minutes, then the edge cases, ordered by start", () => {
@@ -80,15 +143,17 @@ describe('the preview calendar fake', () => {
     }
   });
 
-  it('disconnects, emptying the copy and telling the listeners', async () => {
+  it("disconnects, emptying the copy and telling the listeners in main's order", async () => {
     const calendar = createCalendarFake(new FakeHub(), () => NOW);
     await calendar.connectCalendar();
-    const connections: (CalendarConnection | null)[] = [];
-    calendar.onCalendarConnectionChanged((connection) => connections.push(connection));
+    await refreshed();
+    const heard = listen(calendar);
 
     await calendar.disconnectCalendar();
 
-    expect(connections).toEqual([null]);
+    // CalendarAccount sends the connection first, then CalendarSync.disconnected the state and
+    // the emptied copy.
+    expect(heard).toEqual(['connection:none', 'state:never', 'events:0']);
     await expect(calendar.getCalendarConnection()).resolves.toBeNull();
     await expect(calendar.getCalendarEvents()).resolves.toEqual([]);
     await expect(calendar.getCalendarSyncState()).resolves.toEqual(NO_STATE);
@@ -125,6 +190,7 @@ describe('the preview calendar fake', () => {
   it('hands out copies, so the page cannot change what the fake holds', async () => {
     const calendar = createCalendarFake(new FakeHub(), () => NOW);
     await calendar.connectCalendar();
+    await refreshed();
     const events = await calendar.getCalendarEvents();
     events.pop();
     await expect(calendar.getCalendarEvents()).resolves.toEqual(previewCalendarDay(NOW));
@@ -153,6 +219,7 @@ describe('the preview calendar fake', () => {
     const hub = new PreviewHub();
     const calendar = createCalendarFake(hub, () => NOW);
     await calendar.connectCalendar();
+    await refreshed();
     hub.setApiOffline(true);
 
     await expect(calendar.getCalendarConnection()).rejects.toThrow(

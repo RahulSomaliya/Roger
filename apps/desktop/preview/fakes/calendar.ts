@@ -61,15 +61,10 @@ export function createCalendarFake(hub: FakeHub, now: () => Date = () => new Dat
     for (const { eventId, meetingId } of described) links.set(eventId, meetingId);
   });
 
-  /** Main's order after a connect or disconnect: the connection, then the copy and its state. */
-  const publish = (
-    next: CalendarConnection | null,
-    copy: CalendarEvent[],
-    health: CalendarSyncState,
-  ): void => {
-    hub.emit(calendarChannels.CalendarConnectionChanged, next);
-    hub.emit(calendarChannels.CalendarEventsChanged, copy);
+  /** The copy and its health, state first, as CalendarSync sends them (notifyState, notifyEvents). */
+  const publishCopy = (copy: CalendarEvent[], health: CalendarSyncState): void => {
     hub.emit(calendarChannels.CalendarSyncStateChanged, health);
+    hub.emit(calendarChannels.CalendarEventsChanged, copy);
   };
 
   return {
@@ -82,16 +77,33 @@ export function createCalendarFake(hub: FakeHub, now: () => Date = () => new Dat
       hub.request(
         calendarChannels.CalendarConnect,
         fromApi('POST /v1/calendar/google/authorization', () => {
-          const at = now().toISOString();
           const connected: CalendarConnection = {
             provider: 'fake',
             accountEmail: PREVIEW_CALENDAR_ACCOUNT,
             status: 'active',
-            connectedAt: at,
+            connectedAt: now().toISOString(),
             expiresHint: null,
             lastError: null,
           };
-          publish(connected, structuredClone(day), { ...NO_SYNC_STATE, lastSuccessAt: at });
+          // Main's order (CalendarAccount.recordConnected): CalendarSync.connected first sends the
+          // copy as it stands, the same account's kept with its refused-grant mark cleared, any
+          // other's emptied; then the connection; then Connect resolves; the day comes later with
+          // the refresh, dropped if the connection changed first. Keep it: Home is built and its QA
+          // run on this preview, and a fake that sent the connection first would hide a page that
+          // reads a copy arriving while the connection is still null as "not connected".
+          const kept = connection?.accountEmail === PREVIEW_CALENDAR_ACCOUNT;
+          publishCopy(
+            kept ? structuredClone(events) : [],
+            kept ? { ...state, reconnectRequired: false } : NO_SYNC_STATE,
+          );
+          hub.emit(calendarChannels.CalendarConnectionChanged, connected);
+          setTimeout(() => {
+            if (connection !== connected) return;
+            publishCopy(structuredClone(day), {
+              ...NO_SYNC_STATE,
+              lastSuccessAt: now().toISOString(),
+            });
+          }, 0);
           return connected;
         }),
       ),
@@ -99,7 +111,10 @@ export function createCalendarFake(hub: FakeHub, now: () => Date = () => new Dat
       hub.request(
         calendarChannels.CalendarDisconnect,
         fromApi('DELETE /v1/calendar/connection', () => {
-          publish(null, [], NO_SYNC_STATE);
+          // Main's order: CalendarAccount sends the connection, then CalendarSync.disconnected the
+          // state and the emptied copy.
+          hub.emit(calendarChannels.CalendarConnectionChanged, null);
+          publishCopy([], NO_SYNC_STATE);
         }),
       ),
     getCalendarEvents: () =>
