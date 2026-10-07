@@ -367,6 +367,18 @@ async function takeNotes(h: Harness, event: TimedCalendarEvent): Promise<void> {
   await h.service.act({ cardId: cardId(h), action: 'take_notes', eventId: event.id });
 }
 
+/** calendar.sqlite refuses every write to `event`'s row from now on (a full disk). Returns the fix. */
+function failWrites(h: Harness, event: TimedCalendarEvent): () => void {
+  const recordAction = h.log.recordAction.bind(h.log);
+  const spy = vi.spyOn(h.log, 'recordAction').mockImplementation((entry) => {
+    if (entry.key === promptKey(event)) throw new Error('database or disk is full');
+    return recordAction(entry);
+  });
+  return () => {
+    spy.mockRestore();
+  };
+}
+
 describe('PromptService', () => {
   beforeEach(() => {
     vi.useFakeTimers({ now: START });
@@ -819,6 +831,74 @@ describe('PromptService', () => {
       expect(h.cards()).toHaveLength(1);
       h.setSync({ staleSince: null, lastSuccessAt: iso(START) });
       expect(h.cards()).toEqual([]);
+    });
+  });
+
+  describe('a deadline whose row cannot be written', () => {
+    const failures = (h: Harness): number =>
+      h.messages().filter((message) => message === 'prompt deadline could not be settled').length;
+
+    it('retries its expiry every 10 s, never in a loop, and the next card expires on time', async () => {
+      const first = call('first', 1);
+      const later = call('later', 3.25);
+      const h = harness({ events: [first, later] });
+      h.offerCalendar(first);
+      h.offerCalendar(later);
+      const recover = failWrites(h, first);
+
+      await vi.advanceTimersByTimeAsync(START + MINUTE + PROMPT_OPEN_AFTER_START_MS - Date.now());
+      expect(failures(h)).toBe(1);
+      await vi.advanceTimersByTimeAsync(10 * SECOND - 1);
+      expect(failures(h)).toBe(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(failures(h)).toBe(2);
+
+      // Off the 10 s retries, and after the failing card in the list.
+      await vi.advanceTimersByTimeAsync(
+        START + 3.25 * MINUTE + PROMPT_OPEN_AFTER_START_MS - Date.now(),
+      );
+      expect(h.row(later)?.action).toBe('expired');
+      expect(h.onlyCard()).toMatchObject({ events: [first] });
+
+      recover();
+      await vi.advanceTimersByTimeAsync(10 * SECOND);
+      expect(h.row(first)?.action).toBe('expired');
+      expect(h.cards()).toEqual([]);
+    });
+
+    it('still decides a start at 20 s while another card fails to expire', async () => {
+      const ended = call('ended', -9.9);
+      const standup = call('standup', 1);
+      const h = harness({ events: [ended, standup] });
+      h.offerCalendar(ended);
+      h.offerCalendar(standup);
+      failWrites(h, ended);
+      const card = h
+        .cards()
+        .find((shown) => shown.kind === 'calendar' && shown.events[0].id === standup.id);
+      if (card === undefined) throw new Error('no standup card');
+      await h.service.act({ cardId: card.id, action: 'take_notes', eventId: standup.id });
+
+      await vi.advanceTimersByTimeAsync(START_OUTCOME_WINDOW_MS);
+      expect(failures(h)).toBeGreaterThan(0);
+      expect(h.row(standup)).toMatchObject({ action: 'start_failed', reason: 'not_taken' });
+    });
+
+    it('keeps a shared card taking notes until its other call is logged expired', async () => {
+      const first = call('first', 1);
+      const second = call('second', 1.5);
+      const h = harness({ events: [first, second] });
+      h.offerCalendar(first);
+      h.offerCalendar(second);
+      await h.service.act({ cardId: cardId(h), action: 'take_notes', eventId: second.id });
+      const recover = failWrites(h, first);
+
+      await vi.advanceTimersByTimeAsync(TAKING_NOTES_SHOWN_MS);
+      expect(h.onlyCard()).toMatchObject({ phase: 'taking_notes' });
+      recover();
+      await vi.advanceTimersByTimeAsync(10 * SECOND);
+      expect(h.cards()).toEqual([]);
+      expect(h.row(first)).toMatchObject({ action: 'expired', reason: 'another_event_started' });
     });
   });
 

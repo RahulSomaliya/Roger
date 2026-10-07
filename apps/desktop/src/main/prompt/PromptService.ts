@@ -231,6 +231,11 @@ export class PromptService implements PromptOfferPort {
   /** Calendar cards answered lately, with their events: D5 rule 2. */
   private recentAnswers: { atMs: number; events: TimedCalendarEvent[] }[] = [];
   private timer: NodeJS.Timeout | null = null;
+  /**
+   * When the deadlines the last check could not settle (their row could not be written) are tried
+   * again; null after a check that settled every one it met.
+   */
+  private deadlineRetryAtMs: number | null = null;
   private stops: (() => void)[] = [];
   private running = false;
 
@@ -853,29 +858,48 @@ export class PromptService implements PromptOfferPort {
 
   // Deadlines ------------------------------------------------------------------------------------
 
-  /** Settles every deadline that has passed, then waits for the next. */
+  /**
+   * Settles every deadline that has passed, then waits for the next. Each is settled on its own:
+   * one whose row cannot be written (a full or read-only disk) keeps neither the cards after it nor
+   * the start's outcome from theirs. It stays due, tried again DEADLINE_CHECK_MS later (`schedule`).
+   */
   private checkDeadlines(): void {
     const nowMs = this.clock();
     let changed = false;
-    try {
-      for (const card of [...this.cards]) {
-        if (card.kind === 'stale_calendar') continue;
+    let failed = false;
+    for (const card of [...this.cards]) {
+      if (card.kind === 'stale_calendar') continue;
+      try {
         if (card.takingNotesUntilMs !== null && card.takingNotesUntilMs <= nowMs) {
           this.endTakingNotes(card, nowMs);
           changed = true;
         } else if (this.expire(card, nowMs)) {
           changed = true;
         }
+      } catch (error) {
+        failed = true;
+        this.deadlineFailed(cardKeys(card), error);
       }
-      const attempt = this.attempt;
-      if (attempt?.decideAtMs != null && attempt.decideAtMs <= nowMs) this.decide(attempt);
-    } catch (error) {
-      this.options.logger.error('prompt deadlines could not be settled', {
-        error: errorMessage(error),
-      });
     }
+    const attempt = this.attempt;
+    if (attempt?.decideAtMs != null && attempt.decideAtMs <= nowMs) {
+      try {
+        this.decide(attempt);
+      } catch (error) {
+        failed = true;
+        this.deadlineFailed([attempt.key], error);
+      }
+    }
+    this.deadlineRetryAtMs = failed ? nowMs + DEADLINE_CHECK_MS : null;
     if (changed) this.changed();
     else this.schedule();
+  }
+
+  private deadlineFailed(keys: string[], error: unknown): void {
+    this.options.logger.error('prompt deadline could not be settled', {
+      keys,
+      error: errorMessage(error),
+    });
   }
 
   /** Logs `expired` for each open event past its window. Returns whether the card changed. */
@@ -897,10 +921,10 @@ export class PromptService implements PromptOfferPort {
 
   /**
    * The "Taking notes" moment is over: the card leaves the panel. The other calls on a shared card
-   * go with it, `expired`: the user chose one of the two.
+   * go with it, `expired`: the user chose one of the two. The deadline is cleared only after their
+   * rows are written: cleared first, a write that throws would leave the card up for good.
    */
   private endTakingNotes(card: StartableCard, nowMs: number): void {
-    card.takingNotesUntilMs = null;
     if (card.kind === 'calendar') {
       const others = card.events.filter(({ key }) => key !== card.startingKey);
       for (const { key } of others) {
@@ -908,22 +932,28 @@ export class PromptService implements PromptOfferPort {
       }
       card.events = card.events.filter(({ key }) => key === card.startingKey);
     }
+    card.takingNotesUntilMs = null;
     this.removeCard(card);
   }
 
   private schedule(): void {
     this.clearTimer();
     if (!this.running) return;
-    const nextMs = this.nextDeadlineMs();
-    if (nextMs === null) return;
-    const waitMs = Math.min(Math.max(nextMs - this.clock(), 0), DEADLINE_CHECK_MS);
+    const nowMs = this.clock();
+    const retryAtMs = this.deadlineRetryAtMs;
+    // Trap: a deadline the last check could not settle is still past, so taken as it is it makes
+    // every wait 0 ms: a loop logging an error each millisecond for as long as the disk stays full.
+    // A past deadline waits for the retry; those still ahead keep their time.
+    const due = this.deadlines().map((ms) => (ms <= nowMs && retryAtMs !== null ? retryAtMs : ms));
+    if (due.length === 0) return;
+    const waitMs = Math.min(Math.max(Math.min(...due) - nowMs, 0), DEADLINE_CHECK_MS);
     this.timer = setTimeout(() => {
       this.timer = null;
       this.checkDeadlines();
     }, waitMs);
   }
 
-  private nextDeadlineMs(): number | null {
+  private deadlines(): number[] {
     const deadlines: number[] = [];
     for (const card of this.cards) {
       if (card.kind === 'stale_calendar') continue;
@@ -933,7 +963,7 @@ export class PromptService implements PromptOfferPort {
       else deadlines.push(...card.events.map(({ closesAtMs }) => closesAtMs));
     }
     if (this.attempt?.decideAtMs != null) deadlines.push(this.attempt.decideAtMs);
-    return deadlines.length === 0 ? null : Math.min(...deadlines);
+    return deadlines;
   }
 
   private clearTimer(): void {
@@ -1062,6 +1092,11 @@ function sourceProblems(status: CaptureStatus, source: AudioSource): string[] {
   const stream = status.streams[source];
   if (stream !== 'open') problems.push(`stream ${stream}`);
   return problems;
+}
+
+/** The prompt rows a card stands for, for the log. */
+function cardKeys(card: StartableCard): string[] {
+  return card.kind === 'call_detected' ? [card.key] : card.events.map(({ key }) => key);
 }
 
 function toPromptCard(card: CardState): PromptCard | null {
