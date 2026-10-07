@@ -274,6 +274,46 @@ async def test_an_action_item_counts_only_under_the_owner_the_line_gives_it_to()
     assert counted(scores.action_items) == (2, 6)
 
 
+async def test_a_late_colon_does_not_make_the_clause_before_it_an_owner() -> None:
+    # Only a short list of names before the colon is an owner list. A trailing "why" clause would
+    # otherwise make the whole first clause the owner, and a name anywhere in it would count.
+    labels = CaseLabels(
+        action_items=(
+            ActionItemLabel(owner="Them", text="send the signed contract by Friday"),
+            ActionItemLabel(owner="Me", text="send the deck for Lena"),
+            ActionItemLabel(owner="Priya", text="send the deck by Friday"),
+            # Two words before the colon, but the owner does not open them: Me pings Them.
+            ActionItemLabel(owner="Them", text="send the pricing sheet"),
+            # Found: the line opens with its owner, and an owner named in a list of names.
+            ActionItemLabel(owner="Them", text="send the slides by Monday"),
+            ActionItemLabel(owner="Lena", text="book the venue"),
+            ActionItemLabel(owner="Priya", text="share the migration runbook"),
+        )
+    )
+    case = inline_case(*(f"Line {number}." for number in range(1, 8)), labels=labels)
+    answer = (
+        "- Send Them the signed contract by Friday: legal needs it [L1]\n"
+        "- Them to send me the deck for Lena by Friday: Lena presents Monday [L2]\n"
+        "- Send Priya the deck by Friday: she presents Monday [L3]\n"
+        "- Ping Them: send the pricing sheet [L4]\n"
+        "- Them to send the slides by Monday: the board meets Tuesday [L5]\n"
+        "- Priya, Sam & Lena: book the venue [L6]\n"
+        "- Priya Shah (PM): share the migration runbook [L7]\n"
+    )
+
+    report = await run_eval([case], scripted(answer), provider="fake", reasoning="off")
+
+    scores = report.cases[0].scores
+    assert scores is not None
+    assert [(item.owner, item.text) for item in scores.missed_action_items] == [
+        ("Them", "send the signed contract by Friday"),
+        ("Me", "send the deck for Lena"),
+        ("Priya", "send the deck by Friday"),
+        ("Them", "send the pricing sheet"),
+    ]
+    assert counted(scores.action_items) == (3, 7)
+
+
 async def test_flagged_lines_and_numbers_are_counted_against_their_cited_lines() -> None:
     case = inline_case(
         "Beta ships on Friday.",
