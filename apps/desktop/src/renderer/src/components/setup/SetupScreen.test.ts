@@ -69,14 +69,26 @@ describe('the setup screen', () => {
     expect(html).not.toContain('Each check below');
   });
 
-  it('folds the passing checks into one line and shows only the one left to test', () => {
+  it('folds the passing checks and the untested notification into one line', () => {
     const html = render(state());
-    expect(html).toContain('5 checks pass');
+    expect(html).toContain('5 checks pass, 1 not tested');
     expect(buttons(html)).toContain('Show');
-    for (const id of ['microphone', 'callAudio', 'signing', 'server', 'speechToText']) {
+    for (const id of [
+      'microphone',
+      'callAudio',
+      'signing',
+      'server',
+      'speechToText',
+      'notifications',
+    ]) {
       expect(hasRow(html, id)).toBe(false);
     }
+  });
+
+  it('lists the untested notification, with its test, once Show is pressed', () => {
+    const html = render(state(), { showPassing: true });
     expect(rowOf(html, 'notifications')).toContain('Not tested');
+    expect(buttons(rowOf(html, 'notifications'))).toEqual(['Send a test notification']);
   });
 
   it('shows every passing row with its state once Show is pressed', () => {
@@ -94,10 +106,10 @@ describe('the setup screen', () => {
     expect(rowOf(html, 'microphone')).toContain('data-tone="ok"');
   });
 
-  it('has no passing line when nothing passes yet', () => {
+  it('claims no pass when nothing passes yet, only what is not tested', () => {
     const html = render(state({ status: refusedMac() }));
-    expect(html).not.toContain('pass');
-    expect(buttons(html)).not.toContain('Show');
+    expect(html).not.toMatch(/check(s)? pass/);
+    expect(html).toContain('1 check not tested');
   });
 
   it("puts main's message and the row's fixes on a refused Mac, only the first fix as the main button", () => {
@@ -139,14 +151,13 @@ describe('the setup screen', () => {
     }
   });
 
-  // Setup has no header, so a person who cannot pass a check yet (a permission left for later)
-  // would be stuck here without it. Later is the way out; it is never a second main button.
-  it('offers Later, as a ghost button, while a check needs you, calling the same onDone', () => {
+  // D6: the page has the header's Home button like every page, so the foot holds no Later.
+  // A person who cannot pass a check yet leaves by the header; the foot is Done or nothing.
+  it('has no Later: the header is the way out while a check needs you', () => {
     for (const status of [firstRunMac(), refusedMac()]) {
       const html = render(state({ status }));
-      expect(buttons(html)).toContain('Later');
+      expect(buttons(html)).not.toContain('Later');
       expect(buttons(html)).not.toContain('Done');
-      expect(html).toMatch(/<button[^>]*data-variant="ghost"[^>]*>Later<\/button>/);
       expect(primaries(html)).toHaveLength(1);
     }
     expect(buttons(render(state()))).not.toContain('Later');
@@ -186,7 +197,6 @@ describe('the setup screen', () => {
       .map((match) => match[0])
       .filter((tag) => !tag.includes('data-action="test-system-audio"'));
     expect(others.length).toBeGreaterThan(0);
-    // Later is the way out of a screen with no header: it never waits for an action.
     for (const tag of others) {
       if (tag.includes('data-variant="ghost"')) expect(tag).not.toMatch(/\sdisabled/);
       else expect(tag).toMatch(/\sdisabled/);

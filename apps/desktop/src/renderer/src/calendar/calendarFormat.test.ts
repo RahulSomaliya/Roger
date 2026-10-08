@@ -6,6 +6,8 @@ import {
   calendarNotices,
   calendarProblem,
   createCalendarFormat,
+  GOOGLE_NOT_SET_UP,
+  isGoogleNotSetUp,
   openAtLoginHint,
   reconnectLabel,
   staleText,
@@ -203,6 +205,23 @@ describe("calendarProblem (Home's one quiet line)", () => {
   });
 });
 
+describe('isGoogleNotSetUp', () => {
+  it('knows the sentence of main and the API code for a server with no Google client', () => {
+    expect(isGoogleNotSetUp(GOOGLE_NOT_SET_UP)).toBe(true);
+    expect(isGoogleNotSetUp('calendar_not_configured')).toBe(true);
+    expect(
+      isGoogleNotSetUp(
+        "Could not connect Google Calendar: Google Calendar is not set up on Roger's server yet",
+      ),
+    ).toBe(true);
+  });
+
+  it('is false for every other failure and for none', () => {
+    expect(isGoogleNotSetUp(null)).toBe(false);
+    expect(isGoogleNotSetUp('Roger could not reach its server.')).toBe(false);
+  });
+});
+
 describe('openAtLoginHint', () => {
   it('says where to allow Roger when macOS waits for the user, with the path System Settings uses', () => {
     const hint = openAtLoginHint('requires-approval');
@@ -210,7 +229,10 @@ describe('openAtLoginHint', () => {
     expect(hint).toContain('missed');
   });
 
-  it('says what a dev build, or a Roger macOS cannot find, cannot do', () => {
-    expect(openAtLoginHint('unavailable')).toContain('Not available');
+  // W11: no "development build" and no "this copy": a person reads what to do, not how Roger was made.
+  it('says what to do when this Roger cannot register a login item', () => {
+    const hint = openAtLoginHint('unavailable');
+    expect(hint).toContain('Applications folder');
+    expect(hint).not.toMatch(/development|build|this copy/i);
   });
 });

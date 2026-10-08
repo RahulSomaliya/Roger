@@ -1,4 +1,4 @@
-import { useId, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState, type KeyboardEvent } from 'react';
 import {
   DEFAULT_NOTICE_TEXT,
   MAX_NOTICE_TEXT_LENGTH,
@@ -6,7 +6,13 @@ import {
   type ReminderLeadMinutes,
 } from '../../../shared/calendarPrefs';
 import { SettingsProblem } from '../settings/SettingsProblem';
-import { createCalendarFormat, openAtLoginHint, reconnectLabel } from './calendarFormat';
+import { SettingsRow } from '../settings/SettingsRow';
+import {
+  createCalendarFormat,
+  GOOGLE_NOT_SET_UP,
+  isGoogleNotSetUp,
+  reconnectLabel,
+} from './calendarFormat';
 import type { CalendarSettingsState, CalendarSettingsStore } from './calendarSettingsStore';
 import type { CalendarState, CalendarStore } from './calendarStore';
 import { noticeToSave } from './noticeDraft';
@@ -22,10 +28,11 @@ export interface CalendarSettingsActions {
 
 /**
  * Settings: the Calendar section (M5-T12; M5-T13 mounts it in the shell's `settings` slot): the
- * Google account with Connect, Reconnect and Disconnect, how long before a call the reminder
- * shows, the notice to the other people on the call with its text, and whether Roger opens at
- * login. Every choice saves as it is made (no Save buttons, redesign R6): the select and the
- * switches on change, the notice text on blur. Main's PreferencesStore keeps the choices; this
+ * Google account with Connect, Reconnect and Disconnect (which asks first, in place), how long
+ * before a call the reminder shows, and the notice to the other people on the call with its text.
+ * Opening Roger at login lives in the Mac section (settings/MacSettings.tsx). Every choice saves as
+ * it is made (no Save buttons, redesign R6): the select and the switch on change, the notice text
+ * on blur. Main's PreferencesStore keeps the choices; this
  * shows what main stored and changes it only through `setPreference` (calendarSettingsStore.ts).
  *
  * Trap: no control here is ever `disabled` while a save is out. The notice box saves on blur, and
@@ -51,6 +58,8 @@ export interface CalendarSettingsSectionProps {
   settings: CalendarSettingsState;
   nowMs: number;
   actions: CalendarSettingsActions;
+  /** Whether Disconnect's question starts open; a test shows that state without a click. */
+  confirmingDisconnect?: boolean;
 }
 
 export function CalendarSettingsSection({
@@ -58,18 +67,28 @@ export function CalendarSettingsSection({
   settings,
   nowMs,
   actions,
+  confirmingDisconnect = false,
 }: CalendarSettingsSectionProps) {
   const headingId = useId();
+  const accountId = useId();
   return (
     <section className="settings-section calendar-settings" aria-labelledby={headingId}>
       <h2 id={headingId} className="settings-section-title">
         Calendar
       </h2>
-      <p className="settings-help">
-        Roger reads your Google Calendar to list today’s meetings and to remind you just before a
-        call. It never changes your events.
-      </p>
-      <AccountRow calendar={calendar} nowMs={nowMs} actions={actions.calendar} />
+      <SettingsRow
+        label="Google account"
+        labelId={accountId}
+        help="Roger reads your Google Calendar to list today’s meetings and to remind you just before a call. It never changes your events."
+      >
+        <AccountRow
+          calendar={calendar}
+          nowMs={nowMs}
+          actions={actions.calendar}
+          labelId={accountId}
+          confirmingDisconnect={confirmingDisconnect}
+        />
+      </SettingsRow>
       {settings.status === 'loading' ? (
         <p className="settings-help" role="status">
           Loading the calendar settings…
@@ -99,7 +118,6 @@ export function CalendarSettingsSection({
         <>
           <ReminderField settings={settings} actions={actions.settings} />
           <NoticeFields settings={settings} actions={actions.settings} />
-          <OpenAtLoginField settings={settings} actions={actions.settings} />
         </>
       ) : null}
       {settings.saveError === null ? null : (
@@ -113,62 +131,137 @@ function AccountRow({
   calendar,
   nowMs,
   actions,
+  labelId,
+  confirmingDisconnect,
 }: {
   calendar: CalendarState;
   nowMs: number;
   actions: CalendarSettingsActions['calendar'];
+  labelId: string;
+  confirmingDisconnect: boolean;
 }) {
   const { connection } = calendar;
   // Per render, not at import: createCalendarFormat says why.
   const reconnect = reconnectLabel(connection, calendar.sync, nowMs, createCalendarFormat());
+  const notSetUp = isGoogleNotSetUp(calendar.connectError);
+  const [confirming, setConfirming] = useState(confirmingDisconnect);
+  const trigger = useRef<HTMLButtonElement>(null);
+  const cancel = useRef<HTMLButtonElement>(null);
+  // Focus follows the question: onto Cancel (the safe answer) when it opens, back onto Disconnect
+  // when it is cancelled. Confirming clears `asked` first: the button is about to go away with the
+  // connection, and focus has nowhere useful to return to.
+  const asked = useRef(false);
+  useEffect(() => {
+    if (confirming) {
+      asked.current = true;
+      cancel.current?.focus();
+    } else if (asked.current) {
+      asked.current = false;
+      trigger.current?.focus();
+    }
+  }, [confirming]);
   const connect = (): void => {
     void actions.connect();
   };
   const disconnect = (): void => {
+    asked.current = false;
+    setConfirming(false);
     // Busy is not disabled (docs/design.md): the button keeps its colour and takes no click.
     if (calendar.disconnecting) return;
     void actions.disconnect();
   };
+  const leaveQuestion = (event: KeyboardEvent<HTMLElement>): void => {
+    if (event.key !== 'Escape' || !confirming) return;
+    // Escape closes the question only: it must not also leave Settings for Home (the shell's
+    // Escape), so the key stops here.
+    event.preventDefault();
+    event.stopPropagation();
+    setConfirming(false);
+  };
   return (
-    <div className="settings-field" role="group" aria-label="Google account">
+    <div
+      className="settings-field"
+      role="group"
+      aria-labelledby={labelId}
+      onKeyDown={leaveQuestion}
+    >
       <div className="calendar-account">
         {connection === null ? (
           <>
-            <span className="calendar-account-text">
-              {calendar.connectionStatus === 'failed'
-                ? 'Roger could not read the connection.'
-                : 'No calendar connected.'}
-            </span>
             {calendar.connectionStatus === 'failed' ? (
-              <button
-                type="button"
-                className="btn"
-                data-variant="secondary"
-                data-size="sm"
-                onClick={() => {
-                  actions.reload();
-                }}
-              >
-                Try again
-              </button>
+              <>
+                <span className="calendar-account-text">Roger could not read the connection.</span>
+                <button
+                  type="button"
+                  className="btn"
+                  data-variant="secondary"
+                  data-size="sm"
+                  onClick={() => {
+                    actions.reload();
+                  }}
+                >
+                  Try again
+                </button>
+              </>
             ) : (
               // The view's one primary. While Roger waits for the browser the button stays, and
-              // opens Google again if the tab was closed: the line below says so.
-              <button
-                type="button"
-                className="btn"
-                data-variant="primary"
-                data-size="sm"
-                onClick={connect}
-              >
-                Connect Google Calendar
-              </button>
+              // opens Google again if the tab was closed: the line below says so. With no Google
+              // client on the server (D4) pressing it can only fail again, so it is disabled and
+              // the reason sits beside it.
+              <>
+                <button
+                  type="button"
+                  className="btn"
+                  data-variant="primary"
+                  data-size="sm"
+                  disabled={notSetUp}
+                  aria-describedby={notSetUp ? `${labelId}-why` : undefined}
+                  onClick={connect}
+                >
+                  Connect Google Calendar
+                </button>
+                {notSetUp ? (
+                  <span id={`${labelId}-why`} className="calendar-account-text" role="status">
+                    {GOOGLE_NOT_SET_UP}
+                  </span>
+                ) : null}
+              </>
             )}
+          </>
+        ) : confirming ? (
+          <>
+            <span className="calendar-account-text" role="alert">
+              Disconnect Google Calendar? Reminders stop.
+            </span>
+            <button
+              ref={cancel}
+              type="button"
+              className="btn"
+              data-variant="ghost"
+              data-size="sm"
+              onClick={() => {
+                setConfirming(false);
+              }}
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              className="btn"
+              data-variant="secondary"
+              data-size="sm"
+              onClick={disconnect}
+            >
+              Disconnect
+            </button>
           </>
         ) : (
           <>
             <span className="calendar-account-text">
-              Connected as <strong>{connection.accountEmail}</strong>
+              Connected as{' '}
+              <strong>
+                {connection.provider === 'fake' ? 'Demo calendar' : connection.accountEmail}
+              </strong>
             </span>
             {reconnect === null ? null : (
               // A refused or expiring grant is the one thing to do on this screen, so it takes
@@ -184,12 +277,15 @@ function AccountRow({
               </button>
             )}
             <button
+              ref={trigger}
               type="button"
               className="btn"
               data-variant="ghost"
               data-size="sm"
               aria-disabled={calendar.disconnecting ? 'true' : undefined}
-              onClick={disconnect}
+              onClick={() => {
+                if (!calendar.disconnecting) setConfirming(true);
+              }}
             >
               {calendar.disconnecting ? 'Disconnecting…' : 'Disconnect'}
             </button>
@@ -201,7 +297,7 @@ function AccountRow({
           Finish signing in in your browser. Roger waits up to 3 minutes.
         </p>
       ) : null}
-      {calendar.connectError === null ? null : (
+      {calendar.connectError === null || notSetUp ? null : (
         <SettingsProblem role="alert">
           Roger could not connect Google Calendar: {calendar.connectError}
         </SettingsProblem>
@@ -230,10 +326,7 @@ function leadLabel(minutes: ReminderLeadMinutes): string {
 function ReminderField({ settings, actions }: FieldProps) {
   const id = useId();
   return (
-    <div className="settings-field">
-      <label htmlFor={id} className="settings-label">
-        Remind me
-      </label>
+    <SettingsRow label="Remind me" htmlFor={id}>
       <select
         id={id}
         className="settings-input calendar-select"
@@ -251,39 +344,41 @@ function ReminderField({ settings, actions }: FieldProps) {
           </option>
         ))}
       </select>
-    </div>
+    </SettingsRow>
   );
 }
 
 function NoticeFields({ settings, actions }: FieldProps) {
   return (
-    <div className="settings-field">
-      <label className="calendar-check">
-        <input
-          type="checkbox"
-          checked={settings.noticeEnabled}
-          onChange={(event) => {
-            void actions.choose('notice.enabled', event.currentTarget.checked);
-          }}
-        />
-        <span className="calendar-check-text">
-          <span>Offer a notice for the other people on the call</span>
-          <span className="calendar-hint">
-            The meeting page gets a Copy notice button, to paste into the call’s chat.
+    <SettingsRow label="Call notice">
+      <div className="settings-field">
+        <label className="settings-check">
+          <input
+            type="checkbox"
+            checked={settings.noticeEnabled}
+            onChange={(event) => {
+              void actions.choose('notice.enabled', event.currentTarget.checked);
+            }}
+          />
+          <span className="settings-check-text">
+            <span>Offer a notice for the other people on the call</span>
+            <span className="settings-hint">
+              The meeting page gets a Copy notice button, to paste into the call’s chat.
+            </span>
           </span>
-        </span>
-      </label>
-      {settings.noticeEnabled ? (
-        // Keyed by the stored text: after a save the draft starts again from what main stored.
-        <NoticeTextEditor
-          key={settings.noticeText}
-          stored={settings.noticeText}
-          onSave={(text) => {
-            void actions.choose('notice.text', text);
-          }}
-        />
-      ) : null}
-    </div>
+        </label>
+        {settings.noticeEnabled ? (
+          // Keyed by the stored text: after a save the draft starts again from what main stored.
+          <NoticeTextEditor
+            key={settings.noticeText}
+            stored={settings.noticeText}
+            onSave={(text) => {
+              void actions.choose('notice.text', text);
+            }}
+          />
+        ) : null}
+      </div>
+    </SettingsRow>
   );
 }
 
@@ -336,43 +431,6 @@ function NoticeTextEditor({ stored, onSave }: { stored: string; onSave: (text: s
             Use the default text
           </button>
         </div>
-      )}
-    </div>
-  );
-}
-
-function OpenAtLoginField({ settings, actions }: FieldProps) {
-  const { openAtLogin, loginItem } = settings;
-  // Said only when there is something to do or to know: macOS waits on a click in System
-  // Settings, or this build cannot register a login item. Otherwise the switch says it all.
-  const hint =
-    loginItem === 'requires-approval' || loginItem === 'unavailable'
-      ? openAtLoginHint(loginItem)
-      : null;
-  return (
-    <div className="settings-field">
-      <label className="calendar-check">
-        <input
-          type="checkbox"
-          checked={openAtLogin !== 'off'}
-          disabled={loginItem === 'unavailable'}
-          onChange={(event) => {
-            void actions.choose('app.openAtLogin', event.currentTarget.checked ? 'on' : 'off');
-          }}
-        />
-        <span className="calendar-check-text">
-          <span>Open Roger at login</span>
-          {hint === null ? null : (
-            <span className="calendar-hint" data-login-item={loginItem}>
-              {hint}
-            </span>
-          )}
-        </span>
-      </label>
-      {settings.loginItemError === null ? null : (
-        <SettingsProblem role="alert">
-          Roger could not ask macOS about it: {settings.loginItemError}
-        </SettingsProblem>
       )}
     </div>
   );

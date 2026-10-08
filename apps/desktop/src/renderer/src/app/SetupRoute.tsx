@@ -1,7 +1,8 @@
 import { SlotOutlet } from './SlotOutlet';
 
 /**
- * The full-window setup route (no header): the `setup` slot, M2's permission setup. Main opens it
+ * The full-window setup route: the `setup` slot, M2's permission setup, under the shell's header
+ * like every page, so its "Home" button is the exit at any time (D6; there is no Later). Main opens it
  * with app:navigate, from "Set up Roger…" in the app menu and, from M2-T19, on first run. Its Done
  * button is in the slot, not here: it shows only once every check passes, and only the screen
  * knows (components/setup/SetupScreen.tsx). The slot is always mounted, so the route has no empty
