@@ -2,7 +2,13 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CalendarConnection, CalendarEvent, CalendarSyncState } from '../../shared/calendar';
-import type { CapturePhase, StartCaptureRequest } from '../../shared/capture';
+import {
+  type CapturePhase,
+  type CaptureStatus,
+  type CaptureWarning,
+  idleCaptureStatus,
+  type StartCaptureRequest,
+} from '../../shared/capture';
 import { createLogger } from '../logger';
 import {
   MenuBarTray,
@@ -50,6 +56,23 @@ const meeting: CalendarEvent = {
   htmlLink: null,
 };
 
+const NO_UPLOAD = {
+  state: 'idle',
+  pending: 0,
+  rejected: 0,
+  lastError: null,
+  nextAttemptAt: null,
+} as const;
+const warning = (loud: boolean): CaptureWarning => ({
+  kind: 'mic-dead',
+  source: 'mic',
+  since: '2026-10-06T09:00:00.000Z',
+  message: "Roger can't hear you.",
+  loud,
+});
+const LOUD = warning(true);
+const QUIET = warning(false);
+
 function fakeView() {
   const view = {
     icons: [] as string[],
@@ -77,13 +100,13 @@ function fakeView() {
 }
 
 function fakeCapture() {
-  const listeners = new Set<() => void>();
+  const listeners = new Set<(status: CaptureStatus) => void>();
   const capture = {
     phase: 'idle' as CapturePhase,
     starts: [] as StartCaptureRequest[],
     stops: 0,
     failStart: null as Error | null,
-    on: (_event: 'status', listener: () => void) => {
+    on: (_event: 'status', listener: (status: CaptureStatus) => void) => {
       listeners.add(listener);
       return () => void listeners.delete(listener);
     },
@@ -95,9 +118,10 @@ function fakeCapture() {
       capture.stops += 1;
       return Promise.resolve();
     },
-    setPhase: (phase: CapturePhase) => {
+    setPhase: (phase: CapturePhase, warnings: CaptureWarning[] = []) => {
       capture.phase = phase;
-      for (const listener of [...listeners]) listener();
+      const status: CaptureStatus = { ...idleCaptureStatus(NO_UPLOAD), phase, warnings };
+      for (const listener of [...listeners]) listener(status);
     },
     listenerCount: () => listeners.size,
   } satisfies TrayCapture & Record<string, unknown>;
@@ -161,6 +185,7 @@ function setup(options: { calendar?: ReturnType<typeof fakeCalendar> | null } = 
     actions: {
       open: () => calls.push('open'),
       reconnect: () => calls.push('reconnect'),
+      settings: () => calls.push('settings'),
       quit: () => calls.push('quit'),
     },
     now: () => clock.ms,
@@ -183,7 +208,7 @@ describe('MenuBarTray', () => {
     h.tray.start();
     expect(h.view.icons).toEqual(['/icons/idle.png']);
     expect(h.view.tooltips).toEqual(['Roger']);
-    expect(h.view.labels).toEqual(['Start notes', 'Open Roger', 'Quit Roger']);
+    expect(h.view.labels).toEqual(['Start notes', 'Open Roger', 'Settings', 'Quit Roger']);
   });
 
   it('shows the next meeting once the calendar is connected, and follows its changes', () => {
@@ -267,6 +292,27 @@ describe('MenuBarTray', () => {
     expect(h.calls).toEqual(['reconnect', 'open']);
   });
 
+  it('opens Settings from its own line', () => {
+    const h = setup();
+    h.tray.start();
+    h.view.click('Settings');
+    expect(h.calls).toEqual(['settings']);
+  });
+
+  it('turns to the recording-with-warning icon on a loud warning and back when it clears', () => {
+    const h = setup();
+    h.tray.start();
+    h.capture.setPhase('recording');
+    h.capture.setPhase('recording', [LOUD, QUIET]);
+    h.capture.setPhase('recording', [QUIET]);
+    expect(h.view.icons).toEqual([
+      '/icons/idle.png',
+      '/icons/recording.png',
+      '/icons/recording-warning.png',
+      '/icons/recording.png',
+    ]);
+  });
+
   it('logs a start it cannot make and carries on', () => {
     const h = setup();
     h.tray.start();
@@ -290,7 +336,7 @@ describe('MenuBarTray', () => {
   it('works without a calendar: no meeting lines, and no calendar listeners', () => {
     const h = setup({ calendar: null });
     h.tray.start();
-    expect(h.view.labels).toEqual(['Start notes', 'Open Roger', 'Quit Roger']);
+    expect(h.view.labels).toEqual(['Start notes', 'Open Roger', 'Settings', 'Quit Roger']);
   });
 
   it('removes the icon and every listener and timer when stopped', () => {
@@ -336,6 +382,26 @@ describe('the menu bar icon files', () => {
         `- from: build\\n\\s+to: ${TRAY_ICON_BUNDLE_DIR}\\n\\s+filter:\\n\\s+- tray\\*Template\\*\\.png\\n`,
       ),
     );
+  });
+
+  it('are drawn for all four states, and the app icon is the one electron-builder names', () => {
+    expect(Object.keys(TRAY_ICON_FILES).sort()).toEqual([
+      'idle',
+      'recording',
+      'recording-warning',
+      'warning',
+    ]);
+    const builder = readFileSync(join(desktop, 'electron-builder.yml'), 'utf8');
+    expect(builder).toMatch(/^ {2}icon: build\/icon\.icns$/m);
+    expect(existsSync(join(desktop, 'build', 'icon.icns'))).toBe(true);
+  });
+
+  it('say call audio and microphone in the permission prompts, never "system audio"', () => {
+    const builder = readFileSync(join(desktop, 'electron-builder.yml'), 'utf8');
+    const prompt = (key: string) => new RegExp(`${key}: (.+)`).exec(builder)?.[1] ?? '';
+    expect(prompt('NSAudioCaptureUsageDescription')).toMatch(/call audio/);
+    expect(prompt('NSMicrophoneUsageDescription')).toMatch(/microphone/);
+    expect(builder).not.toMatch(/system audio|transcribe/i);
   });
 
   it('are read from Resources/tray when packaged and from build/ in a dev run', () => {

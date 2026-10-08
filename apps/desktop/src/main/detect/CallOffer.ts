@@ -228,8 +228,8 @@ export class CallOffer {
       .stop({ reason: 'call-ended', detail: call.name })
       .then(() => {
         notifier.notify({
-          title: `Stopped: the call in ${call.name} ended`,
-          body: 'Roger stopped the recording. Your notes are in Roger.',
+          title: `Roger stopped your notes: the call in ${call.name} ended`,
+          body: 'Your notes are in Roger.',
         });
       })
       .catch((error: unknown) => {

@@ -5,8 +5,10 @@ import { errorMessage, type Logger } from '../logger';
 
 /**
  * The setup screen's two server rows (M2-T19): is the Roger API there, and would a Start get a
- * speech-to-text token from it. Each failure is said in plain words for the person; the raw error
- * ("POST /v1/stt/token failed: connect ECONNREFUSED 127.0.0.1:8000") goes to the log only.
+ * speech-to-text token from it. Each failure is said in plain words for the person, with no address,
+ * setting name, status code, audio format or vendor (docs/design.md, Words from main); the raw error
+ * ("POST /v1/stt/token failed: connect ECONNREFUSED 127.0.0.1:8000") and the setting that fixes it
+ * go to the log only. `connectionChecks.test.ts` fails on any such word in a message.
  *
  * The token check asks `POST /v1/stt/token` and opens no vendor session: every open is billed and
  * spends the per-minute open budget (cost guard G3). It reads only the provider and the audio
@@ -15,7 +17,7 @@ import { errorMessage, type Logger } from '../logger';
 export interface ConnectionChecksOptions {
   /** The Roger API (api/http.ts), with a timeout short enough for a screen a person waits on. */
   request: ApiRequest;
-  /** The API's address, named in the message when nothing answers there. */
+  /** The API's address: logged with a failure, never put in a message. */
   baseUrl: string;
   /** False when config.json and ROGER_DESKTOP_API_TOKEN give none: no token fetch can succeed. */
   hasApiToken: boolean;
@@ -43,6 +45,7 @@ const OK: SetupCheck<ConnectionSetupState> = Object.freeze({
   relaunchNeeded: false,
 });
 
+// The settings that fix a failure: for the log line only, never a message a person reads.
 const API_TOKEN_SETTING =
   'ROGER_DESKTOP_API_TOKEN (or "apiToken" in config.json in the app data folder)';
 const API_URL_SETTING = 'ROGER_API_URL (or "apiUrl" in config.json in the app data folder)';
@@ -84,9 +87,10 @@ async function tokenCheck(
 ): Promise<SetupCheck<ConnectionSetupState>> {
   if (options.sttProviderOverride === 'fake') return OK;
   if (!options.hasApiToken) {
+    options.logger.warn('setup check: no API token is configured', { fix: API_TOKEN_SETTING });
     return {
       state: 'failed',
-      message: `Roger has no API token. Set ${API_TOKEN_SETTING}, then relaunch Roger.`,
+      message: 'Roger has no access key for its server. Add one, then relaunch Roger.',
       relaunchNeeded: true,
     };
   }
@@ -97,7 +101,8 @@ async function tokenCheck(
     });
     return {
       state: 'failed',
-      message: `Roger's server uses "${token.provider}" for speech-to-text, which this copy of Roger cannot use. Update Roger, or set STT_PROVIDER on the server to a vendor it knows.`,
+      message:
+        "Roger's server uses a speech-to-text service this copy of Roger does not know. Update Roger, or ask whoever runs the server to switch services.",
       relaunchNeeded: false,
     };
   }
@@ -107,10 +112,12 @@ async function tokenCheck(
     options.logger.warn('setup check: the API asks for another audio format', {
       sampleRate,
       encoding,
+      fix: `set STT_SAMPLE_RATE=${PCM_SAMPLE_RATE} and STT_ENCODING=${PCM_ENCODING} on the server`,
     });
     return {
       state: 'failed',
-      message: `Roger's server asks for ${sampleRate} Hz ${encoding} audio, but Roger sends ${PCM_SAMPLE_RATE} Hz ${PCM_ENCODING}. Set STT_SAMPLE_RATE=${PCM_SAMPLE_RATE} and STT_ENCODING=${PCM_ENCODING} on the server.`,
+      message:
+        "Roger's server asks for a different audio format than this copy of Roger sends, so transcripts would come out as garbage. Update Roger, or ask whoever runs the server to match it.",
       relaunchNeeded: false,
     };
   }
@@ -123,12 +130,27 @@ function failed(
   error: unknown,
 ): SetupCheck<ConnectionSetupState> {
   logFailure(options, check, error);
-  return { state: 'failed', ...describeServerFailure(error, options.baseUrl) };
+  return { state: 'failed', ...describeServerFailure(error) };
 }
 
 function logFailure(options: ConnectionChecksOptions, check: string, error: unknown): void {
   // The ApiError's text names the method, path and cause, never a body or a credential (http.ts).
-  options.logger.warn('setup check failed', { check, error: errorMessage(error) });
+  options.logger.warn('setup check failed', {
+    check,
+    baseUrl: options.baseUrl,
+    error: errorMessage(error),
+    ...fixFor(error),
+  });
+}
+
+/** The setting that cures a failure, for the log only (see describeServerFailure's cases). */
+function fixFor(error: unknown): { fix?: string } {
+  if (!(error instanceof ApiError)) return {};
+  if (error.status === 401 || error.status === 403) return { fix: `set ${API_TOKEN_SETTING}` };
+  if (error.code === 'invalid_response' || error.code === 'http_error') {
+    return { fix: `check ${API_URL_SETTING}` };
+  }
+  return {};
 }
 
 function isUnreachable(error: unknown): boolean {
@@ -139,51 +161,48 @@ function isUnreachable(error: unknown): boolean {
  * A failed request to the Roger API, as a person reads it: what is wrong and what to do, never the
  * method, path or socket error the ApiError carries.
  */
-export function describeServerFailure(
-  error: unknown,
-  baseUrl: string,
-): { message: string; relaunchNeeded: boolean } {
+export function describeServerFailure(error: unknown): {
+  message: string;
+  relaunchNeeded: boolean;
+} {
   const say = (message: string, relaunchNeeded = false) => ({ message, relaunchNeeded });
-  if (!(error instanceof ApiError)) {
-    return say(`Roger could not check its server: ${errorMessage(error)}.`);
-  }
-  const fix = 'Check that the Roger API is running and that this Mac is online.';
+  if (!(error instanceof ApiError))
+    return say('Roger could not check its server. Its log says why.');
+  const fix = 'Check that the server is running and that this Mac is online.';
   switch (true) {
     case error.status === 0 && error.message.includes('timed out'):
-      return say(`Roger's server at ${baseUrl} did not answer in time. ${fix}`);
+      return say(`Roger's server did not answer in time. ${fix}`);
     case error.status === 0:
-      return say(`Roger can't reach its server at ${baseUrl}. ${fix}`);
+      return say(`Roger can't reach its server. ${fix}`);
     case error.status === 401 || error.status === 403:
       // index.ts reads the token once at startup: a fixed config.json needs a new process.
       return say(
-        `Roger's server refused its API token. Set ${API_TOKEN_SETTING}, then relaunch Roger.`,
+        "Roger's server did not accept this copy of Roger's access key. Check the key, then relaunch Roger.",
         true,
       );
     case error.status === 404:
       return say(
-        `Roger's server at ${baseUrl} does not know this request: it may be older than this copy of Roger.`,
+        "Roger's server does not know this request: it may be older than this copy of Roger.",
       );
     case error.code === 'stt_provider_error':
       return say(
-        "Roger's server could not get a speech-to-text token: the vendor refused or did not answer. Check the vendor key on the server.",
+        "Roger's server could not start a speech-to-text session: the speech service refused or did not answer. Check the server's key for it.",
       );
     case error.status === 503:
       // GET /health answers 503 when Postgres is unreachable (docs/api-contract.md).
       return say("Roger's server is running but cannot reach its database.");
     case error.status >= 500:
-      return say(`Roger's server failed (HTTP ${error.status}). Its log says why.`);
+      return say("Roger's server failed. Its log says why.");
     case error.code === 'invalid_response' || error.code === 'http_error':
       // api/http.ts's codes for a reply without the API's error envelope, which the Roger API
       // always sends (roger_api/error_handlers.py); their message is the request ("GET /health
       // returned non-JSON"), never shown. A sign-in page answers 200 with HTML.
       return say(
-        `Something at ${baseUrl} answered, but not the way Roger's server does: a network sign-in page, or another server at that address. Check that ${API_URL_SETTING} is the Roger API's address, then relaunch Roger.`,
+        "Something answered, but not Roger's server: a network sign-in page, or another server at that address. Check the server address Roger uses, then relaunch Roger.",
         true,
       );
     default:
       // The API's own refusal: its envelope's message is for the log (logFailure), not people.
-      return say(
-        `Roger's server turned down the check (HTTP ${error.status}). Roger's log says why.`,
-      );
+      return say("Roger's server turned down the check. Roger's log says why.");
   }
 }

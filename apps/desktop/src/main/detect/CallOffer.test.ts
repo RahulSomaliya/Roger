@@ -273,7 +273,10 @@ describe('CallOffer', () => {
       expect(t.stops).toEqual([]);
       await vi.advanceTimersByTimeAsync(1);
       expect(t.stops).toEqual([{ reason: 'call-ended', detail: 'Zoom' }]);
-      expect(t.notices.map((notice) => notice.title)).toEqual(['Stopped: the call in Zoom ended']);
+      expect(t.notices.map((notice) => notice.title)).toEqual([
+        'Roger stopped your notes: the call in Zoom ended',
+      ]);
+      expect(t.notices.map((notice) => notice.body)).toEqual(['Your notes are in Roger.']);
     });
 
     it('does not stop when the mic returns within the debounce (AirPods connecting)', async () => {

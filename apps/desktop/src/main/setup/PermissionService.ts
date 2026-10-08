@@ -83,7 +83,7 @@ type IdentityRead = { identity: SigningIdentity } | { error: unknown };
 
 const TEST_NOTIFICATION: NotificationContent = {
   title: 'Roger can reach you',
-  body: 'This is how Roger tells you when a recording stops hearing you.',
+  body: 'This is how Roger tells you when it stops hearing you or the call.',
 };
 
 /**
@@ -157,7 +157,7 @@ export class PermissionService {
   async testSystemAudio(): Promise<SetupStatus> {
     if (this.mode === 'electron') {
       throw new Error(
-        'Roger records call audio through Screen Recording on this Mac, not through its audio helper, so there is no sound test to run.',
+        'Roger records call audio through Screen Recording on this Mac, so there is no sound test to run.',
       );
     }
     this.probing ??= this.probe().finally(() => {
@@ -253,7 +253,7 @@ export class PermissionService {
       // what macOS checks (apps/desktop/CLAUDE.md, the first failure-log line).
       return check(
         kind,
-        'This is a development build: macOS keeps its permissions for the terminal that started it, where call audio stays silent. Install Roger with make install-desktop to test call audio.',
+        'This is a development build: macOS keeps its permissions for the terminal that started it, where call audio stays silent. Install Roger on this Mac from the project to test call audio.',
       );
     }
     switch (kind) {
@@ -263,12 +263,12 @@ export class PermissionService {
       case 'adhoc':
         return check(
           kind,
-          "This copy of Roger is signed ad hoc, so macOS forgets its permissions every time it is rebuilt. Install it with make install-desktop, which signs it with this Mac's own identity.",
+          "This copy of Roger is signed ad hoc, so macOS forgets its permissions every time it is rebuilt. Install it on this Mac from the project, which signs it with this Mac's own identity.",
         );
       case 'unsigned':
         return check(
           kind,
-          'This copy of Roger is not signed, so macOS cannot keep its permissions. Install it with make install-desktop.',
+          'This copy of Roger is not signed, so macOS cannot keep its permissions. Install it on this Mac from the project.',
         );
     }
   }
@@ -380,14 +380,12 @@ export class PermissionService {
       reason: lookup.reason,
     });
     return this.options.isPackaged
-      ? `Roger's call audio helper is missing from this copy of Roger, so it cannot record call audio. ${this.helperFix()}`
-      : `Roger's call audio helper is not built, so it cannot record call audio. ${this.helperFix()}`;
+      ? `Roger can't hear call audio: part of this copy of Roger is missing. ${this.helperFix()}`
+      : `Roger can't hear call audio: this copy was built without its audio part. ${this.helperFix()}`;
   }
 
   private helperFix(): string {
-    return this.options.isPackaged
-      ? 'Reinstall Roger with make install-desktop.'
-      : 'Build it with make native.';
+    return this.options.isPackaged ? 'Reinstall Roger.' : 'Build Roger again, then relaunch it.';
   }
 
   private lookUpHelper(): HelperLookup | { found: false; reason: string } {
@@ -405,7 +403,7 @@ export class PermissionService {
     // The row's Test is its lead button once the missing helper turns it amber (setupRows.ts): a
     // press that answered the same status would look like a test that ran and changed nothing.
     if (!lookup.found) {
-      throw new Error(`Roger has no call audio helper to test with. ${this.helperFix()}`);
+      throw new Error(`Roger has no way to test call audio on this copy. ${this.helperFix()}`);
     }
     let outcome = await ports.probe(lookup.location);
     // No answer says nothing about the permission (a route change, a tap that failed): probe once
