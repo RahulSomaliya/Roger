@@ -37,9 +37,17 @@
   margin: 0;
 }
 
-.ai-notes-failure-detail {
+.ai-notes-failure-details {
   color: var(--ink-muted);
   font-weight: 400;
+}
+
+.ai-notes-failure-details summary {
+  cursor: pointer;
+}
+
+.ai-notes-failure-detail {
+  overflow-wrap: anywhere;
 }
 
 .ai-notes-failure .ai-notes-actions {

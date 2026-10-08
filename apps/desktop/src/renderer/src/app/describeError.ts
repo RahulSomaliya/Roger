@@ -29,12 +29,50 @@ function apiFailureInWords(text: string): string | null {
 }
 
 /**
- * An error for the page: a failed API request in a few plain words by kind, any other message
- * (main writes those for people: "the notes of meeting m-1 are still being written") as it is.
+ * Main's wrapper around a failed API request in the calendar flows (CalendarAccount.ts):
+ * "Could not reach the Roger API to <action>. Is it running? (<client message>)". The action is
+ * plain words ("connect Google Calendar") and is kept; the parenthesis holds the route and the
+ * errno, and is dropped. Keep in step with that file's wording: its test and this one fail together.
+ */
+const REACH_WRAPPER = /^Could not reach the Roger API to ([^.(]+)\. Is it running\?(?: \(.*\))?$/s;
+
+/**
+ * A vendor's failure as the STT core and the notes model word it: "<Vendor>: rejected with HTTP
+ * 401", "<Vendor>: socket closed". Only the HTTP/socket shapes count, so main's own
+ * "Microphone: permission denied" is not mistaken for one.
+ */
+const VENDOR_FAILURE =
+  /^[A-Za-z][\w.-]*(?: [\w.-]+)?: .*(?:\bHTTP \d{3}\b|\b(?:socket|websocket|closed|timed out|overloaded)\b|\bE[A-Z]{4,}\b)/i;
+
+/**
+ * What must never reach a sentence a person reads: a route, an address, an errno or a database
+ * code, an HTTP status. A message with any of these (and no wrapper above that explains it) reads
+ * as the generic line instead.
+ */
+const INTERNALS =
+  /\/v1\/|\bHTTP \d{3}\b|\b(?:E[A-Z]{4,}|SQLITE_[A-Z_]+)\b|\b\d{1,3}(?:\.\d{1,3}){3}\b|:\d{4,5}\b/;
+
+const GENERIC = 'Something went wrong. Try again in a moment.';
+
+/**
+ * An error for the page: a failed API request in a few plain words by kind, a vendor's failure as
+ * "A service Roger relies on had a problem", any other message (main writes those for people: "the
+ * notes of meeting m-1 are still being written") as it is unless it carries a route, an address, an
+ * errno or an HTTP code.
  */
 export function describeError(error: unknown): string {
   const text = messageOf(error);
-  return text === null ? 'an unexpected error' : (apiFailureInWords(text) ?? text);
+  if (text === null) return 'an unexpected error';
+  const api = apiFailureInWords(text);
+  if (api !== null) return api;
+  const reach = REACH_WRAPPER.exec(text)?.[1];
+  if (reach !== undefined) {
+    return `Roger could not reach its server to ${reach}. Check the connection and try again.`;
+  }
+  if (VENDOR_FAILURE.test(text)) {
+    return 'A service Roger relies on had a problem. Try again in a moment.';
+  }
+  return INTERNALS.test(text) ? GENERIC : text;
 }
 
 /** The message with Electron's IPC wrapper off; null for what is neither an Error nor a string. */
