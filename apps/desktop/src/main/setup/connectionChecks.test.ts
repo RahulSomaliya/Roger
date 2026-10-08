@@ -84,7 +84,8 @@ describe('checkConnections', () => {
     const result = await checkConnections(checks);
     expect(result.api).toEqual({
       state: 'failed',
-      message: `Roger can't reach its server at ${BASE_URL}. Check that the Roger API is running and that this Mac is online.`,
+      message:
+        "Roger can't reach its server. Check that the server is running and that this Mac is online.",
       relaunchNeeded: false,
     });
     // The same cause twice would be two red rows for one problem.
@@ -98,6 +99,7 @@ describe('checkConnections', () => {
     }
     // The raw reason goes to the log, for whoever debugs it.
     expect(lines.join('\n')).toContain('connect ECONNREFUSED 127.0.0.1:8000');
+    expect(lines.join('\n')).toContain(BASE_URL);
   });
 
   it('names a refused token and asks for a relaunch, since the token is read at startup', async () => {
@@ -105,24 +107,28 @@ describe('checkConnections', () => {
       'GET /health': { status: 'ok', database: 'ok' },
       'POST /v1/stt/token': new ApiError(401, 'unauthorized', 'Missing or invalid bearer token'),
     });
-    const result = await checkConnections(options(request).options);
+    const { options: checks, lines } = options(request);
+    const result = await checkConnections(checks);
     expect(result.api.state).toBe('ok');
     expect(result.stt).toEqual({
       state: 'failed',
       message:
-        'Roger\'s server refused its API token. Set ROGER_DESKTOP_API_TOKEN (or "apiToken" in config.json in the app data folder), then relaunch Roger.',
+        "Roger's server did not accept this copy of Roger's access key. Check the key, then relaunch Roger.",
       relaunchNeeded: true,
     });
+    // The setting that fixes it is for whoever reads the log, not for the row.
+    expect(lines.join('\n')).toContain('ROGER_DESKTOP_API_TOKEN');
   });
 
   it('fetches no token without an API token, and says how to add one', async () => {
     const { request, calls } = api({ 'GET /health': { status: 'ok', database: 'ok' } });
-    const result = await checkConnections(options(request, { hasApiToken: false }).options);
+    const { options: checks, lines } = options(request, { hasApiToken: false });
+    const result = await checkConnections(checks);
     expect(calls).toEqual(['GET /health']);
+    expect(lines.join('\n')).toContain('ROGER_DESKTOP_API_TOKEN');
     expect(result.stt).toEqual({
       state: 'failed',
-      message:
-        'Roger has no API token. Set ROGER_DESKTOP_API_TOKEN (or "apiToken" in config.json in the app data folder), then relaunch Roger.',
+      message: 'Roger has no access key for its server. Add one, then relaunch Roger.',
       relaunchNeeded: true,
     });
   });
@@ -136,7 +142,7 @@ describe('checkConnections', () => {
     expect(result.stt).toEqual({
       state: 'failed',
       message:
-        "Roger's server could not get a speech-to-text token: the vendor refused or did not answer. Check the vendor key on the server.",
+        "Roger's server could not start a speech-to-text session: the speech service refused or did not answer. Check the server's key for it.",
       relaunchNeeded: false,
     });
   });
@@ -164,7 +170,7 @@ describe('checkConnections', () => {
     expect(result.stt).toEqual({
       state: 'failed',
       message:
-        'Roger\'s server uses "soniox" for speech-to-text, which this copy of Roger cannot use. Update Roger, or set STT_PROVIDER on the server to a vendor it knows.',
+        "Roger's server uses a speech-to-text service this copy of Roger does not know. Update Roger, or ask whoever runs the server to switch services.",
       relaunchNeeded: false,
     });
   });
@@ -178,9 +184,46 @@ describe('checkConnections', () => {
     expect(result.stt).toEqual({
       state: 'failed',
       message:
-        "Roger's server asks for 48000 Hz linear16 audio, but Roger sends 16000 Hz linear16. Set STT_SAMPLE_RATE=16000 and STT_ENCODING=linear16 on the server.",
+        "Roger's server asks for a different audio format than this copy of Roger sends, so transcripts would come out as garbage. Update Roger, or ask whoever runs the server to match it.",
       relaunchNeeded: false,
     });
+  });
+
+  it('keeps every internal out of every message and in the log', async () => {
+    const failures: ApiError[] = [
+      new ApiError(0, 'network_error', 'GET /health failed: connect ECONNREFUSED 127.0.0.1:8000'),
+      new ApiError(0, 'network_error', 'GET /health failed: timed out after 5000 ms'),
+      new ApiError(401, 'unauthorized', 'bad bearer'),
+      new ApiError(404, 'not_found', 'Not found'),
+      new ApiError(502, 'stt_provider_error', 'AssemblyAI answered 401'),
+      new ApiError(503, 'http_error', 'GET /health returned HTTP 503'),
+      new ApiError(500, 'internal_error', 'boom'),
+      new ApiError(200, 'invalid_response', 'GET /health returned non-JSON'),
+      new ApiError(422, 'validation_error', 'body.sample_rate: Field required'),
+    ];
+    const messages: string[] = [];
+    for (const failure of failures) {
+      const { request } = api({ 'GET /health': failure, 'POST /v1/stt/token': failure });
+      const { options: checks } = options(request);
+      const result = await checkConnections(checks);
+      messages.push(result.api.message ?? '', result.stt.message ?? '');
+    }
+    for (const bad of [
+      { options: { hasApiToken: false }, token: tokenAnswer() },
+      { options: {}, token: { ...tokenAnswer(), provider: 'soniox' } },
+      { options: {}, token: tokenAnswer({ sample_rate: 48_000, encoding: 'mulaw' }) },
+    ]) {
+      const { request } = api({ 'GET /health': { status: 'ok' }, 'POST /v1/stt/token': bad.token });
+      const result = await checkConnections(options(request, bad.options).options);
+      messages.push(result.stt.message ?? '');
+    }
+    messages.push(describeServerFailure(new TypeError('fetch is not a function')).message);
+    expect(messages.filter((message) => message !== '')).toHaveLength(22);
+    for (const message of messages) {
+      expect(message).not.toMatch(
+        /ROGER_|STT_|config\.json|HTTP|https?:|127\.0|:\d{4}|\bHz\b|linear16|mulaw|soniox|assemblyai|vendor|\bAPI\b|token|Postgres|\/v1|fetch/i,
+      );
+    }
   });
 
   it('asks the API for no token with the fake provider: Start asks for none either', async () => {
@@ -209,38 +252,37 @@ describe('describeServerFailure', () => {
     expect(
       describeServerFailure(
         new ApiError(0, 'network_error', 'GET /health failed: timed out after 5000 ms'),
-        BASE_URL,
       ),
     ).toEqual({
-      message: `Roger's server at ${BASE_URL} did not answer in time. Check that the Roger API is running and that this Mac is online.`,
+      message:
+        "Roger's server did not answer in time. Check that the server is running and that this Mac is online.",
       relaunchNeeded: false,
     });
   });
 
   it('says an older server lacks the route', () => {
-    expect(
-      describeServerFailure(new ApiError(404, 'not_found', 'Not found'), BASE_URL).message,
-    ).toBe(
-      `Roger's server at ${BASE_URL} does not know this request: it may be older than this copy of Roger.`,
+    expect(describeServerFailure(new ApiError(404, 'not_found', 'Not found')).message).toBe(
+      "Roger's server does not know this request: it may be older than this copy of Roger.",
     );
   });
 
   it("points at the server's log for its own failures", () => {
-    expect(
-      describeServerFailure(new ApiError(500, 'internal_error', 'boom'), BASE_URL).message,
-    ).toBe("Roger's server failed (HTTP 500). Its log says why.");
+    expect(describeServerFailure(new ApiError(500, 'internal_error', 'boom')).message).toBe(
+      "Roger's server failed. Its log says why.",
+    );
   });
 
   it('says something else answered when the reply is not the Roger API, never the request text', () => {
     // api/http.ts's own texts for a reply without the API's error envelope: a network sign-in
     // page, or the address set to another server (the Roger API always sends the envelope).
-    const notRoger = `Something at ${BASE_URL} answered, but not the way Roger's server does: a network sign-in page, or another server at that address. Check that ROGER_API_URL (or "apiUrl" in config.json in the app data folder) is the Roger API's address, then relaunch Roger.`;
+    const notRoger =
+      "Something answered, but not Roger's server: a network sign-in page, or another server at that address. Check the server address Roger uses, then relaunch Roger.";
     for (const error of [
       new ApiError(200, 'invalid_response', 'GET /health returned non-JSON'),
       new ApiError(405, 'http_error', 'POST /v1/stt/token returned HTTP 405'),
       new ApiError(429, 'http_error', 'POST /v1/stt/token returned HTTP 429'),
     ]) {
-      expect(describeServerFailure(error, BASE_URL)).toEqual({
+      expect(describeServerFailure(error)).toEqual({
         message: notRoger,
         relaunchNeeded: true,
       });
@@ -250,17 +292,16 @@ describe('describeServerFailure', () => {
   it("gives the status of the API's own refusal, and leaves its reason to the log", () => {
     const refusal = describeServerFailure(
       new ApiError(422, 'validation_error', 'body.sample_rate: Field required'),
-      BASE_URL,
     );
     expect(refusal).toEqual({
-      message: "Roger's server turned down the check (HTTP 422). Roger's log says why.",
+      message: "Roger's server turned down the check. Roger's log says why.",
       relaunchNeeded: false,
     });
   });
 
   it("names an error that is not the API client's", () => {
-    expect(describeServerFailure(new TypeError('fetch is not a function'), BASE_URL).message).toBe(
-      'Roger could not check its server: fetch is not a function.',
+    expect(describeServerFailure(new TypeError('fetch is not a function')).message).toBe(
+      'Roger could not check its server. Its log says why.',
     );
   });
 });

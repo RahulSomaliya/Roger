@@ -13,7 +13,8 @@ import { useShell } from './ShellContext';
 
 /**
  * Home, three groups: the hero (the one primary: Start notes, or Stop while a call records),
- * Today's meetings, and Earlier's past ones. Nothing else: no "Home" heading, no empty-state
+ * Today's meetings, and Earlier's past ones. At 960 px and up the hero is the left column and
+ * Today and Earlier the right (D2); below that they stack in that order. Nothing else: no "Home" heading, no empty-state
  * cards, no recording card (the hero is it), no kept-audio card (a meeting with a gap says so on
  * its own page).
  */
@@ -42,36 +43,43 @@ export function HomePage() {
 
   return (
     <div className="home">
-      <HomeHero
-        phase={capture.status?.phase ?? 'idle'}
-        startBusy={capture.busy}
-        live={
-          liveMeeting === null
-            ? null
-            : { id: liveMeeting.id, title: liveTitle, startedAt: liveMeeting.startedAt }
-        }
-        subject={subject}
-        nowMs={nowMs}
-        onStart={() => {
-          // Never `onClick={startNewNote}`: the click event would arrive as the start request.
-          startNewNote(subject === null ? undefined : startRequestForEvent(subject.event));
-        }}
-        onStop={stopRecording}
-        onOpenLive={() => {
-          if (liveMeeting !== null) navigate({ name: 'meeting', meetingId: liveMeeting.id });
-        }}
-      />
-      <TodaySection />
-      <Earlier
-        meetings={recent.value}
-        liveId={liveMeeting?.id ?? null}
-        error={recent.error}
-        now={new Date(nowMs)}
-        onOpen={(meetingId) => {
-          navigate({ name: 'meeting', meetingId });
-        }}
-        onRetry={recent.refresh}
-      />
+      {/* Left column from 960 px: the hero, under it the calendar line or Connect (app.css). */}
+      <div className="home-main">
+        <HomeHero
+          phase={capture.status?.phase ?? 'idle'}
+          startBusy={capture.busy}
+          live={
+            liveMeeting === null
+              ? null
+              : { id: liveMeeting.id, title: liveTitle, startedAt: liveMeeting.startedAt }
+          }
+          subject={subject}
+          nowMs={nowMs}
+          onStart={() => {
+            // Never `onClick={startNewNote}`: the click event would arrive as the start request.
+            startNewNote(subject === null ? undefined : startRequestForEvent(subject.event));
+          }}
+          onStop={stopRecording}
+          onOpenLive={() => {
+            if (liveMeeting !== null) navigate({ name: 'meeting', meetingId: liveMeeting.id });
+          }}
+        />
+        <TodaySection part="line" />
+      </div>
+      {/* Right column: Today, then Earlier. Empty when neither has anything, and then absent. */}
+      <div className="home-side">
+        <TodaySection part="day" />
+        <Earlier
+          meetings={recent.value}
+          liveId={liveMeeting?.id ?? null}
+          error={recent.error}
+          now={new Date(nowMs)}
+          onOpen={(meetingId) => {
+            navigate({ name: 'meeting', meetingId });
+          }}
+          onRetry={recent.refresh}
+        />
+      </div>
     </div>
   );
 }
@@ -116,7 +124,11 @@ export function HomeHero({
           {stopping ? PHASE_LABEL.stopping : PHASE_LABEL.recording}
           {live.startedAt === null ? '' : ` · started ${formatClockTime(live.startedAt)}`}
         </p>
-        {live.title === null ? null : (
+        {live.title === null ? (
+          // Until the list answers (or if it never does) Home still needs its one h1, for focus
+          // and the window title; a guessed meeting title would flip to the real one.
+          <h1 className="sr-only">Home</h1>
+        ) : (
           <h1 className="home-hero-title">
             <button type="button" className="home-hero-link" onClick={onOpenLive}>
               {live.title}
@@ -140,7 +152,13 @@ export function HomeHero({
   const busy = phase !== 'idle' || startBusy;
   return (
     <div className="home-hero">
-      {subject === null ? null : <NextMeetingCard entry={subject} nowMs={nowMs} />}
+      {subject === null ? (
+        // Focus lands on the page's h1 on arrival (AppLayout): Home needs one when no meeting is
+        // named, and the hero's own title is that h1 when one is.
+        <h1 className="sr-only">Home</h1>
+      ) : (
+        <NextMeetingCard entry={subject} nowMs={nowMs} />
+      )}
       <button
         type="button"
         className="btn"

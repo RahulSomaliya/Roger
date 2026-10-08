@@ -26,10 +26,7 @@ const RUNNING_TEXT: Record<SetupActionKind, string> = {
 };
 
 interface SetupScreenProps {
-  /**
-   * Leaves setup. The route has no header button for it: Later shows here while a check needs you,
-   * Done once all pass.
-   */
+  /** Done: leaves setup once every check passes. The header's Home leaves at any time. */
   onDone: () => void;
 }
 
@@ -158,7 +155,8 @@ function SetupBody({
     );
   }
   const rows = setupRows(status);
-  const { open, passing } = splitRows(rows);
+  const { open, passing, untested } = splitRows(rows);
+  const folded = [...passing, ...untested];
   const lead = leadingFix(rows);
   const list = (views: readonly SetupRowView[], label: string) =>
     views.length === 0 ? null : (
@@ -184,9 +182,9 @@ function SetupBody({
         />
       )}
       {list(open, 'What Roger needs')}
-      {passing.length === 0 ? null : (
+      {folded.length === 0 ? null : (
         <div className="setup-passing">
-          <span>{passingLine(passing.length)}</span>
+          <span>{passingLine(passing.length, untested.length)}</span>
           <span aria-hidden="true">&middot;</span>
           <button
             type="button"
@@ -200,21 +198,22 @@ function SetupBody({
           </button>
         </div>
       )}
-      {showPassing ? list(passing, 'Checks that pass') : null}
-      {/* Setup has no header, so this is the only way out. While a check needs you it is Later
-          (ghost: the first fix above stays the one main button); with nothing left it is Done.
-          Never disabled by a running action: it must always be a way out. */}
-      <div className="setup-actions">
-        <button
-          type="button"
-          className="btn"
-          data-variant={needsYou(rows) ? 'ghost' : 'primary'}
-          data-size="md"
-          onClick={onDone}
-        >
-          {needsYou(rows) ? 'Later' : 'Done'}
-        </button>
-      </div>
+      {showPassing ? list(folded, 'Checks that pass') : null}
+      {/* The header's "Home" is the way out at any time (D6), so there is no Later. Done is the
+          foot's only button and shows once nothing needs you; it is the one main button then. */}
+      {needsYou(rows) ? null : (
+        <div className="setup-actions">
+          <button
+            type="button"
+            className="btn"
+            data-variant="primary"
+            data-size="md"
+            onClick={onDone}
+          >
+            Done
+          </button>
+        </div>
+      )}
     </>
   );
 }

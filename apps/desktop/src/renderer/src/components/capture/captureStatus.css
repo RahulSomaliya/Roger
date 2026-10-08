@@ -52,3 +52,34 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
+
+/*
+ * The full message, with what to do, under the one-line headline while the line is hovered or has
+ * keyboard focus (R8: a `title` is hover only). It floats over the editor instead of pushing it
+ * down (docs/design.md, Traps: nothing moves under the cursor). `display: none` still lets
+ * `aria-describedby` hand its text to a screen reader (StatusLine.tsx).
+ */
+.meeting-status-problem {
+  position: relative;
+}
+
+.meeting-status-full {
+  display: none;
+  position: absolute;
+  top: calc(100% + var(--space-1));
+  left: 0;
+  z-index: 1;
+  box-sizing: border-box;
+  max-width: min(100%, var(--measure));
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  color: var(--ink);
+  font-weight: 400;
+  white-space: normal;
+}
+
+.meeting-status-problem:is(:hover, :focus-visible) .meeting-status-full {
+  display: block;
+}

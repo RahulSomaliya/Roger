@@ -4,6 +4,7 @@ import type {
   CitationAttrs,
   RefCitation,
 } from '../../../shared/notes';
+import { describeError } from '../app/describeError';
 
 /**
  * One answer of the meeting chat as the panel shows it, from the API's events as main forwards
@@ -144,12 +145,17 @@ export function describeAnswerError({ code, message }: AnswerError): string {
       return 'This meeting is too long to chat with: over about 10 hours of talk.';
     case 'not_found':
       return 'This meeting is not on the server yet. Try again once its transcript has uploaded.';
+    // Roger's own code for a stored answer that never finished (storedAnswer): its words are ours.
+    case 'stored_failure':
+      return message;
     case NOT_SENT:
       return STILL_ON_ITS_WAY.test(message)
         ? 'The last try is still closing. Try again in a moment.'
-        : `Roger could not send this question: ${message}`;
+        : `Roger could not send this question: ${describeError(message)}`;
+    // An unknown code's message is the API's or a vendor's text, which names routes and ids: the
+    // generic line, never the text. A known code above carries its own words.
     default:
-      return message;
+      return 'Something went wrong. Try again in a moment.';
   }
 }
 

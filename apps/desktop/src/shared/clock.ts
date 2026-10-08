@@ -25,3 +25,17 @@ export function formatClock(at: Date | number, timeZone?: string): string {
     parts.find((candidate) => candidate.type === type)?.value ?? '';
   return `${part('hour')}:${part('minute')} ${part('dayPeriod').toLowerCase()}`;
 }
+
+/**
+ * A meeting's hours in the one form Home, the meeting page and the prompt panel share:
+ * "3:27 pm to 3:57 pm". Both ends keep their "am"/"pm" (no dropped first suffix, no dash), so a
+ * 11:30 am to 12:15 pm span is never ambiguous and the three surfaces cannot word it differently.
+ * Same zone rules as `formatClock`.
+ */
+export function meetingHours(
+  startMs: Date | number,
+  endMs: Date | number,
+  timeZone?: string,
+): string {
+  return `${formatClock(startMs, timeZone)} to ${formatClock(endMs, timeZone)}`;
+}

@@ -20,10 +20,19 @@ import { previewSearch, type ScenarioId } from '../preview/scenarios';
 export const CHROME_PATH =
   process.env.ROGER_QA_CHROME ?? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 
-/** Every gallery shoots both themes, at a laptop width and a phone width. */
+/**
+ * Every gallery shoots both themes at the window's two real sizes (docs/plans/redesign-sweep.md,
+ * R10): the default landscape window, 1080 x 730 (main/window.ts), and the narrow one, 420 x 760
+ * (the minimum width, a portrait height). The old 1440 and 390 were a laptop and a phone, neither
+ * of which Roger's window ever is.
+ */
 export const QA_THEMES: readonly ForcedTheme[] = ['light', 'dark'];
-export const QA_WIDTHS: readonly number[] = [1440, 390];
-const DEFAULT_HEIGHT = 900;
+export const QA_WIDTHS: readonly number[] = [1080, 420];
+
+/** The window's height at `width`: the landscape default is 730 tall, the narrow window 760. */
+export function qaHeight(width: number): number {
+  return width >= 960 ? 730 : 760;
+}
 
 const PREVIEW_CONFIG = fileURLToPath(new URL('../vite.preview.config.ts', import.meta.url));
 
@@ -125,7 +134,7 @@ export async function openPreview(
   origin: string,
   options: OpenOptions,
 ): Promise<PreviewPage> {
-  const { scenario, theme, width, height = DEFAULT_HEIGHT } = options;
+  const { scenario, theme, width, height = qaHeight(width) } = options;
   const context = await browser.newContext({ viewport: { width, height }, colorScheme: theme });
   try {
     const page = await context.newPage();
@@ -177,9 +186,14 @@ async function expectTheme(page: Page, theme: ForcedTheme): Promise<void> {
 export interface OpenPromptOptions {
   card: PromptScenarioId;
   theme: ForcedTheme;
-  /** CSS pixels: QA_WIDTHS. The panel stays 360 px wide (or the page's width less a gutter). */
+  /**
+   * CSS pixels. The preview stands in for a screen (menu bar, a call behind the panel, the panel
+   * at promptBounds' top-right place), so QA gives it a 1440 x 900 screen, not a window size.
+   */
   width: number;
   height?: number;
+  /** The call behind the panel (`?backdrop=`): a dark Meet or a light Zoom. */
+  backdrop?: 'dark' | 'light';
 }
 
 /**
@@ -191,7 +205,7 @@ export async function openPromptPreview(
   origin: string,
   options: OpenPromptOptions,
 ): Promise<PreviewPage> {
-  const { card, theme, width, height = DEFAULT_HEIGHT } = options;
+  const { card, theme, width, backdrop, height = qaHeight(width) } = options;
   const context = await browser.newContext({ viewport: { width, height }, colorScheme: theme });
   try {
     const page = await context.newPage();
@@ -204,7 +218,8 @@ export async function openPromptPreview(
     page.on('pageerror', (error) => {
       errors.push(error.message);
     });
-    await page.goto(`${origin}/prompt.html?card=${card}`, { waitUntil: 'load' });
+    const backdropQuery = backdrop === undefined ? '' : `&backdrop=${backdrop}`;
+    await page.goto(`${origin}/prompt.html?card=${card}${backdropQuery}`, { waitUntil: 'load' });
     await page.waitForSelector('html[data-state="ready"], html[data-state="error"]', {
       state: 'attached',
     });
@@ -295,6 +310,21 @@ export async function screenshotElement(page: Page, selector: string, path: stri
   await mkdir(dirname(path), { recursive: true });
   await page.screenshot({ path, clip: box, animations: 'disabled', caret: 'hide' });
   await page.setViewportSize(viewport);
+}
+
+/**
+ * Shoots a region of the page in viewport coordinates. For the prompt panel's stage, where the shot
+ * is the panel and the strip of call and menu bar around it, not the whole 1440 x 900 screen. The
+ * page does not scroll (the stage is fixed), so viewport and document coordinates agree.
+ */
+export async function screenshotClip(
+  page: Page,
+  clip: { x: number; y: number; width: number; height: number },
+  path: string,
+): Promise<void> {
+  await settle(page);
+  await mkdir(dirname(path), { recursive: true });
+  await page.screenshot({ path, clip, animations: 'disabled', caret: 'hide' });
 }
 
 async function growToDocument(page: Page, width: number, minHeight: number): Promise<void> {
@@ -524,6 +554,24 @@ export class Gallery {
   ): Promise<string> {
     const file = join(this.dir, `${name}.png`);
     await screenshot(page, file);
+    const shot: GalleryShot =
+      note === undefined ? { file, caption, check } : { file, caption, check, note };
+    this.groups.set(group, [...(this.groups.get(group) ?? []), shot]);
+    return file;
+  }
+
+  /** Like `shoot`, for a region of the page (see `screenshotClip`). */
+  async shootClip(
+    page: Page,
+    clip: { x: number; y: number; width: number; height: number },
+    group: string,
+    name: string,
+    caption: string,
+    check: ShotCheck = 'pass',
+    note?: string,
+  ): Promise<string> {
+    const file = join(this.dir, `${name}.png`);
+    await screenshotClip(page, clip, file);
     const shot: GalleryShot =
       note === undefined ? { file, caption, check } : { file, caption, check, note };
     this.groups.set(group, [...(this.groups.get(group) ?? []), shot]);

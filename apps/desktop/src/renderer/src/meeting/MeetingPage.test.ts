@@ -191,7 +191,7 @@ describe('the meeting page', () => {
     expect(text(html)).toContain('Morning! Can everyone hear me?');
     expect(html).not.toContain('>Stop<');
     // A meeting Roger is not recording has no capture status of its own.
-    expect(html).not.toContain('aria-label="Capture status"');
+    expect(html).not.toContain('aria-label="Meeting status"');
   });
 
   it('shows Stop and the capture status line while the meeting records, and no recording pill', () => {
@@ -201,13 +201,14 @@ describe('the meeting page', () => {
     });
     fakes.read = read(stored(A, []));
     const html = page();
-    expect(text(html)).toContain('Started');
+    // The status line says Recording; no second "Started 9:00 am" line (redesign R9).
+    expect(text(html)).not.toContain('Started');
     expect(html).toMatch(/<button[^>]*class="btn"[^>]*data-variant="primary"[^>]*>Stop<\/button>/);
     // The status line (a slot) sits in the header; it holds its line while recording.
     expect(html).toMatch(
       /<header class="meeting-header" data-recording="">.*class="meeting-status"/,
     );
-    expect(html).toContain('aria-label="Capture status"');
+    expect(html).toContain('aria-label="Meeting status"');
     // The words "Recording" are the status line's now: the pill beside Stop is deleted.
     expect(html).not.toContain('meeting-phase');
   });
@@ -287,7 +288,7 @@ describe('the meeting page', () => {
     expect(html).toMatch(/<h1[^>]*>Daily standup<\/h1>/);
     expect(text(html)).toContain('A line of meeting A');
     expect(text(html)).not.toContain('can show only the meeting it recorded last');
-    expect(html).not.toContain('aria-label="Capture status"');
+    expect(html).not.toContain('aria-label="Meeting status"');
     expect(html).not.toContain('>Stop<');
   });
 

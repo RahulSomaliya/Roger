@@ -1,3 +1,4 @@
+import { parseAppRoute } from '../../shared/ipc/app';
 import type { CallApp, PromptOffer } from '../../shared/calendar';
 import type { CapturePhase } from '../../shared/capture';
 import type { StatusContributor, StopOptions } from '../capture/CaptureService';
@@ -24,6 +25,8 @@ export interface CallOfferMonitor {
 /** What it needs of CaptureService, through the M2-T4 seams. */
 export interface CallOfferCapture {
   readonly phase: CapturePhase;
+  /** The live meeting's id, or null. Read before Stop: it is gone once the stop lands. */
+  readonly meetingId: string | null;
   onRecording(listener: { started?(): void; ended?(): void }): () => void;
   stop(options: StopOptions): Promise<unknown>;
   addStatusContributor(name: string, read: StatusContributor): () => void;
@@ -224,12 +227,17 @@ export class CallOffer {
     this.detector.stopRequested();
     if (capture.phase !== 'recording') return;
     logger.info('the call ended: stopping the recording', { bundleId: call.bundleId });
+    // Read before the stop: the session is gone when it lands, and a click on the notice must open
+    // THIS meeting, not Home (the Notifier's route; none means Home).
+    const meetingId = capture.meetingId;
+    const route = meetingId === null ? null : parseAppRoute(`meeting/${meetingId}`);
     capture
       .stop({ reason: 'call-ended', detail: call.name })
       .then(() => {
         notifier.notify({
-          title: `Stopped: the call in ${call.name} ended`,
-          body: 'Roger stopped the recording. Your notes are in Roger.',
+          title: `Roger stopped your notes: the call in ${call.name} ended`,
+          body: 'Your notes are in Roger.',
+          ...(route === null ? {} : { route }),
         });
       })
       .catch((error: unknown) => {

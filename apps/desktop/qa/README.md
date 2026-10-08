@@ -3,9 +3,11 @@
 Roger's screens are checked in a browser, not in Electron: the **preview** runs the renderer in
 Chrome with a fake `window.roger`, and **`qa/driver.ts`** opens it, checks it and shoots it. Every
 QA gallery uses this one driver. The one QA script is `e2e/redesign.qa.e2e.ts`: every screen in its
-states, both themes, 1440 and 390 wide, with the checks the redesign promises (at most one visible
-primary and the one `docs/design.md` names, every problem line visible, no sideways scroll, no
-console error, nothing animating). It replaced the per-milestone scripts, which selected classes
+states, both themes, at the window's two real sizes (1080 x 730 and 420 x 760), with the checks the
+redesign and the sweep promise (at most one visible primary and the one `docs/design.md` names,
+every problem line visible, no raw text outside Details, the header's Home and current gear, no
+sideways scroll, no console error, nothing animating), and the behaviours: Back, Escape, what
+main's Cmd+[ sends, focus on the h1, Appearance, no focus box). It replaced the per-milestone scripts, which selected classes
 the redesign deleted.
 
 ## The preview
@@ -126,9 +128,12 @@ run fails once the screen is fixed so the entry is removed.
 `shots.json` is the manifest the gallery page is built from: `{ title, meta, groups: [{ name,
 shots: [{ file, caption, check, note }] }] }`, `check` being `pass`, `warn` or `fail`. The gallery
 is published as one page (an Artifact), never as loose PNG paths. Keep it under 12 MB: shoot PNG,
-then write JPEG at quality about 55 with the 1440 shots scaled to about 1000 px wide
-(`sips -s format jpeg -s formatOptions 55 --resampleWidth 1000 in.png --out out.jpg`), and build the page
-with `python3 ~/.claude/scripts/qa-gallery.py --manifest shots.json -o <page>.html`.
+then write JPEG at quality about 55 with the 1080 shots scaled to about 900 px wide, light beside
+dark in one image, and build the page with
+`python3 ~/.claude/scripts/qa-gallery.py --manifest gallery.json -o <page>.html`. The first step is
+`python3 -I qa/build-gallery.py <ROGER_QA_OUT> <ROGER_QA_OUT>/gallery.json` (needs Pillow, which this
+Mac has): it pairs `<slug>-light-<size>.png` with its `-dark-` twin, writes the JPEGs to `jpg/` and
+the manifest the page is built from.
 
 ## Rules the driver keeps, and why
 
@@ -157,5 +162,18 @@ with `python3 ~/.claude/scripts/qa-gallery.py --manifest shots.json -o <page>.ht
 - **The app's Content-Security-Policy.** `preview/index.html` carries `src/renderer/index.html`'s
   policy unchanged (`preview/index.test.ts` fails if they differ), so an image from another host or
   a fetch that skips main is refused and logged, as in Electron, and `expectNoConsoleErrors` fails.
-- **Every gallery:** both themes, 1440 and 390 wide (`QA_THEMES`, `QA_WIDTHS`), no sideways page
+- **Every gallery:** both themes, 1080 x 730 and 420 x 760 (`QA_THEMES`, `QA_WIDTHS`, `qaHeight`), no sideways page
   scroll, no console errors, and realistic data (long names, long lines, empty lists, many rows).
+- **The prompt panel is shot on a screen, not a window.** `openPrompt` takes a 1440 x 900 screen
+  (menu bar strip, a call behind it: `backdrop: 'dark' | 'light'`, the page's `?backdrop=`) and the
+  panel sits where `promptBounds.ts` puts it; `Gallery.shootClip` crops the panel and a strip of the
+  call around it. Theme there is the system scheme (the panel has no `useTheme`; main's
+  `nativeTheme` does it in the app), so all four theme and backdrop pairs are shot.
+- **`getPreferences()` in the preview always answers the forced theme.** A set reaches the fake and
+  fires `PrefsChanged`, but the read-back is the forced one: assert a save by waiting for
+  `onPreferenceChanged`, not by reading the preference back.
+- **Words are main's.** `detectWarnings`, `START_FAILURE_SENTENCES`, `unsavedLinesWords`,
+  `stopNotice` and `describeServerFailure` build the QA's status text, so a reworded message changes
+  the shots and an unplain one fails `expectNoInternals` (`wordsOutsideDetails`, the list main's own
+  tests use). Details is skipped by `startsWith('Details')` on the dialog's text: its title runs
+  into the first row ("DetailsMicrophone"), so a `\b` after the word never matches.

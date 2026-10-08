@@ -1,4 +1,6 @@
+import { useState } from 'react';
 import { SlotOutlet } from '../app/SlotOutlet';
+import { SaveStatusSlotContext } from '../notes/saveStatusSlot';
 import { panelId, tabId, Tabs } from '../components/ui/Tabs';
 import { type MeetingTab, TAB_LABEL, tabSpecs } from './panes';
 
@@ -16,6 +18,9 @@ const ID_PREFIX = 'meeting';
  * unsaved text and save timers, and the citation navigator finds a chip's lines in a hidden
  * transcript before showTranscript brings it forward (transcriptNavigator.ts). The global
  * `[hidden]` rule in styles.css makes that hold whatever `display` a pane's CSS sets.
+ *
+ * The tab row's right end holds the open note's save state ("Saved on this Mac", "Not saved"),
+ * drawn there by the editors through a portal: no band of its own under the tabs (redesign R2).
  */
 export function MeetingRegions({
   meetingId,
@@ -30,19 +35,24 @@ export function MeetingRegions({
   onTab: (tab: MeetingTab) => void;
 }) {
   const row = tabs.length > 1;
+  // The row's right end, where the open note's save state is drawn (notes/saveStatusSlot.ts).
+  const [statusEnd, setStatusEnd] = useState<HTMLElement | null>(null);
   return (
     <div className="meeting-body">
       {row ? (
-        <Tabs
-          tabs={tabSpecs(tabs)}
-          selected={tab}
-          onSelect={(id) => {
-            const picked = tabs.find((each) => each === id);
-            if (picked !== undefined) onTab(picked);
-          }}
-          label={TABS_LABEL}
-          idPrefix={ID_PREFIX}
-        />
+        <div className="meeting-tabbar">
+          <Tabs
+            tabs={tabSpecs(tabs)}
+            selected={tab}
+            onSelect={(id) => {
+              const picked = tabs.find((each) => each === id);
+              if (picked !== undefined) onTab(picked);
+            }}
+            label={TABS_LABEL}
+            idPrefix={ID_PREFIX}
+          />
+          <div className="meeting-tabbar-status" ref={setStatusEnd} />
+        </div>
       ) : null}
       {tabs.map((each) => (
         <div
@@ -55,7 +65,9 @@ export function MeetingRegions({
           data-pane={each}
           hidden={each !== tab}
         >
-          <Region meetingId={meetingId} tab={each} />
+          <SaveStatusSlotContext value={{ target: statusEnd, shown: each === tab }}>
+            <Region meetingId={meetingId} tab={each} />
+          </SaveStatusSlotContext>
         </div>
       ))}
     </div>

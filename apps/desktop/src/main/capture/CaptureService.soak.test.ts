@@ -138,6 +138,7 @@ describe('CaptureService over a 2-hour call', () => {
       segmentsStored: 2 * LINES_PER_STREAM,
       segmentsUnsaved: 0,
       error: null,
+      errorDetail: null,
     });
     expect(recording.sources.mic).toMatchObject({ health: 'active', chunks: CHUNKS });
     expect(recording.sources.system).toMatchObject({ health: 'active', chunks: CHUNKS });

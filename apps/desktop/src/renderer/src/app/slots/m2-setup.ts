@@ -13,8 +13,8 @@ const SETUP: Route = { name: 'setup' };
 let redirect: SetupRedirect | null = null;
 
 /**
- * The setup slot's mount: the screen with Done going Home, since the route has no header to leave
- * by. Done is the screen's own and shows only once nothing fails (SetupScreen.tsx).
+ * The setup slot's mount: the screen with Done going Home. The header's Home leaves at any time
+ * (D6); Done is the screen's own and shows only once nothing fails (SetupScreen.tsx).
  */
 function SetupSlot() {
   const { navigate } = useShell();

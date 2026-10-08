@@ -7,6 +7,14 @@ import { PANEL_WIDTH, displayUnder, promptBounds } from './promptBounds';
 import type { PromptPanelWindow } from './promptIpc';
 import type { PromptService } from './PromptService';
 
+/**
+ * How long main waits for the page to report height 0 after the last card went. The card slides out
+ * over 170 ms (prompt.css `slide-out`) and the page reports 0 when that ends; this is the backstop
+ * for a page that never does (a crashed or throttled one), so the window cannot hang over the call
+ * with a ghost card. Keep it above the page's own exit time.
+ */
+export const EXIT_FALLBACK_MS = 400;
+
 export interface PromptWindowOptions {
   prompts: Pick<PromptService, 'getState' | 'onChange'>;
   /** Where the pages are served from (window.ts `resolveAppPage`); the panel's page is next to the app's. */
@@ -45,6 +53,8 @@ export class PromptWindow {
   private wanted = false;
   /** The page's last reported card height in CSS pixels; 0 until it reports (or with no cards). */
   private height = 0;
+  /** The backstop that hides the window if the page never reports 0 after the last card went. */
+  private exitTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(private readonly options: PromptWindowOptions) {}
 
@@ -69,6 +79,7 @@ export class PromptWindow {
     this.unsubscribe?.();
     this.unsubscribe = null;
     this.wanted = false;
+    this.clearExitTimer();
     const window = this.window;
     this.window = null;
     if (window !== null && !window.isDestroyed()) window.destroy();
@@ -91,15 +102,42 @@ export class PromptWindow {
   private sync(state: PromptPanelState): void {
     this.wanted = state.cards.length > 0;
     if (!this.wanted) {
-      this.hide();
+      this.leave();
       return;
     }
+    this.clearExitTimer();
     this.reveal(this.ensureWindow());
   }
 
+  /**
+   * The last card went. It slides out first, so the window stays up until the page reports height 0
+   * (`onPageTitle`) or `EXIT_FALLBACK_MS` passes. Hiding here at once, as before the sweep, cut the
+   * exit off and made the card vanish over the call (P3).
+   */
+  private leave(): void {
+    const window = this.window;
+    if (window === null || window.isDestroyed() || !window.isVisible()) return;
+    if (this.exitTimer !== null) return;
+    this.exitTimer = setTimeout(() => {
+      this.exitTimer = null;
+      this.guarded('hide', () => {
+        this.hide();
+      });
+    }, EXIT_FALLBACK_MS);
+  }
+
+  private clearExitTimer(): void {
+    if (this.exitTimer !== null) clearTimeout(this.exitTimer);
+    this.exitTimer = null;
+  }
+
   private hide(): void {
-    if (this.window !== null && !this.window.isDestroyed() && this.window.isVisible()) {
-      this.window.hide();
+    this.clearExitTimer();
+    const window = this.window;
+    if (window !== null && !window.isDestroyed() && window.isVisible()) {
+      window.hide();
+      // macOS caches a transparent window's shadow (P13): drop it with the card.
+      window.invalidateShadow();
     }
   }
 
@@ -117,6 +155,9 @@ export class PromptWindow {
       : screen.getCursorScreenPoint();
     const display = displayUnder(anchor, screen.getAllDisplays());
     window.setBounds(promptBounds(display.workArea, this.height));
+    // Trap: a transparent window's shadow is computed by macOS and cached. Without this a card
+    // that grew (a problem line, a second meeting) keeps the old, smaller shadow (P13).
+    window.invalidateShadow();
     if (!window.isVisible()) window.showInactive();
   }
 

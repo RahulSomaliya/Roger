@@ -250,7 +250,7 @@ describe('AiNotesView', () => {
     );
     // An icon and words, never a red or tinted box (docs/design.md, Problem line).
     expect(html).toMatch(
-      /<div class="problem ai-notes-failure" role="alert"><svg[^>]*><[^]*<\/svg><div class="problem-text"><p class="ai-notes-failure-title">The AI service could not write the notes\.<\/p><p class="ai-notes-failure-detail">Provider returned 503\.<\/p>/,
+      /<div class="problem ai-notes-failure" role="alert"><svg[^>]*><[^]*<\/svg><div class="problem-text"><p class="ai-notes-failure-title">The AI service could not write the notes\.<\/p><details class="ai-notes-failure-details"><summary>Details<\/summary><p class="ai-notes-failure-detail">Provider returned 503\.<\/p><\/details>/,
     );
     expect(html).not.toMatch(/class="(?:[^"]* )?(?:error|notice)[" ]/);
     expect(html).toMatch(/data-variant="secondary" data-size="sm">Try again<\/button>/);
@@ -284,7 +284,7 @@ describe('AiNotesView', () => {
       }),
     );
     expect(html).toContain(
-      '<p class="ai-notes-failure-title">Roger could not write the notes.</p><p class="ai-notes-failure-detail">It will try again.</p>',
+      '<p class="ai-notes-failure-title">Roger could not write the notes.</p><details class="ai-notes-failure-details"><summary>Details</summary><p class="ai-notes-failure-detail">It will try again.</p></details>',
     );
     expect(html).toContain('>Try again</button>');
     expect(html).toContain('>Cancel</button>');

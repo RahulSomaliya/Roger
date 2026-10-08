@@ -17,6 +17,7 @@ import { MeetingProblem, ReplaceNotesDialog } from './MeetingProblems';
 import { meetingTimeLabel } from './meetingTimes';
 import { activeTab, meetingTabs, type MeetingTab } from './panes';
 import { MeetingRegions } from './regions';
+import { useCopyNotes } from './useCopyNotes';
 import { type MeetingView, MeetingViewContext, useMeeting, useMeetingNotes } from './useMeeting';
 
 const NO_LINES: readonly TranscriptSegment[] = [];
@@ -105,11 +106,12 @@ export function MeetingPage({ meetingId }: { meetingId: string }) {
   const time =
     startedAt === null
       ? null
-      : meetingTimeLabel(
-          { startedAt, endedAt: meeting?.endedAt ?? null },
-          phase !== 'idle',
-          new Date(),
-        );
+      : meetingTimeLabel({ startedAt, endedAt: meeting?.endedAt ?? null }, new Date());
+
+  // Trap: keep `activeTab(chosenTab, tabs)` inline, never a `const shownTab` above showTranscript's
+  // useCallback: the React Compiler then skips the page ("existing memoization could not be
+  // preserved", setChosenTab) and lint fails.
+  const copy = useCopyNotes(meetingId, activeTab(chosenTab, tabs));
 
   const action = headerAction({
     phase,
@@ -138,13 +140,15 @@ export function MeetingPage({ meetingId }: { meetingId: string }) {
             title={title}
             pending={read.value === undefined && read.error === null}
             time={missing ? null : time}
+            live={phase !== 'idle'}
+            copied={copy.status}
             action={action}
             onStop={stopRecording}
             onWrite={write}
             onCancelWrite={() => {
               notes.cancel();
             }}
-            menu={notesMenuEntries(notesState, notes)}
+            menu={[...copy.entries, ...notesMenuEntries(notesState, notes)]}
             details={!missing && (meeting !== null || phase !== 'idle')}
           />
           {/*
@@ -154,6 +158,11 @@ export function MeetingPage({ meetingId }: { meetingId: string }) {
           {read.error === null ? null : (
             <MeetingProblem action="Try again" onAction={read.refresh}>
               {read.error}
+            </MeetingProblem>
+          )}
+          {copy.problem === null ? null : (
+            <MeetingProblem action="Dismiss" onAction={copy.dismissProblem}>
+              {copy.problem}
             </MeetingProblem>
           )}
           {notesState.actionError === null ? null : (

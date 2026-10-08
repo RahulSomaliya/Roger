@@ -83,10 +83,14 @@ export const BACKUP_MIN_FREE_BYTES = 2 * 1024 ** 3;
  */
 export const BACKUP_KEEP_FOR_RERUN_MAX_DAYS = 30;
 
-/** How the UI and user-facing errors name each stream. */
+/**
+ * How main's sentences name each stream inside a sentence ("the call audio"), per the naming list:
+ * never "mic" or "(them)". The page's Details rows have their own capitalised labels
+ * (renderer/src/format.ts SOURCE_NAME), and the transcript's speakers are Me and Them.
+ */
 export const AUDIO_SOURCE_LABEL: Readonly<Record<AudioSource, string>> = {
-  mic: 'Mic (me)',
-  system: 'Call audio (them)',
+  mic: 'microphone',
+  system: 'call audio',
 };
 
 /**
@@ -508,8 +512,17 @@ export interface CaptureStatus {
   /** Final segments this session that the local store refused (shown live, not saved). */
   segmentsUnsaved: number;
   upload: UploadStatus;
-  /** Last error worth showing the user, or null. */
+  /**
+   * The last error worth showing the person, as one plain sentence with what to do next
+   * (main/capture/errorWords.ts), or null. The banner, the prompt panel and Set up Roger's redirect
+   * read it as it is: it never holds a vendor's name, an HTTP code, a route or an internal word.
+   */
   error: string | null;
+  /**
+   * The raw text behind `error` (a vendor's reason, an API route, a store error), for Details and
+   * the log only; null exactly when `error` is. Never on the page outside Details.
+   */
+  errorDetail: string | null;
   /** This meeting's speech-to-text use while recording; the last meeting's after Stop. */
   meter: SttMeterStatus | null;
   /**
@@ -568,6 +581,7 @@ export function idleCaptureStatus(upload: UploadStatus): CaptureStatus {
     segmentsUnsaved: 0,
     upload,
     error: null,
+    errorDetail: null,
     meter: null,
     notice: null,
   };

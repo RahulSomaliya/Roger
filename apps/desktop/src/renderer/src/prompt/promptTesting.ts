@@ -58,6 +58,7 @@ export function calendarCard(
     error: null,
     events,
     shownBy: 'calendar',
+    startedEventId: null,
     ...overrides,
   };
 }

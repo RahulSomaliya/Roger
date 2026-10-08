@@ -88,11 +88,25 @@ describe('RecordingChip', () => {
 });
 
 describe('AppHeader', () => {
-  it('names Roger and Settings, and shows no chip when nothing records', () => {
+  it('names Roger as text on Home, offers Settings, and shows no chip when nothing records', () => {
     const html = header(HOME);
-    expect(html).toContain('>Roger</button>');
+    expect(html).toContain('<span class="app-brand">Roger</span>');
+    expect(html).not.toContain('app-back');
     expect(html).toContain('aria-label="Settings"');
     expect(html).not.toContain('recording-chip');
+  });
+
+  it('shows "Home" with the arrow on every other page, and navigates home', () => {
+    const live = '5c1d7a4e-2f3b-4c8a-9e61-0d2b7f4a9c13';
+    for (const route of [
+      { name: 'settings' },
+      { name: 'setup' },
+      { name: 'meeting', meetingId: live },
+    ] as const) {
+      const html = header(route);
+      expect(html).toMatch(/class="btn app-back"[^>]*><svg[^>]*>.*<\/svg>Home<\/button>/);
+      expect(html).not.toContain('app-brand');
+    }
   });
 
   it('shows the chip on Home and Settings while a call records', () => {
@@ -108,8 +122,8 @@ describe('AppHeader', () => {
     expect(header({ name: 'meeting', meetingId: other }, recording())).toContain('recording-chip');
   });
 
-  it('marks the page it is on', () => {
-    expect(header(HOME)).toMatch(/aria-current="page"[^>]*>Roger</);
+  it('marks Settings as the current page on the gear, and nothing elsewhere', () => {
     expect(header({ name: 'settings' })).toMatch(/aria-label="Settings" aria-current="page"/);
+    expect(header(HOME)).not.toContain('aria-current');
   });
 });

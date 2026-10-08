@@ -247,6 +247,21 @@ describe('CalendarAccount.connect', () => {
     );
     expect(unticked.cache.activeConnection()).toBeNull();
 
+    // D4: a server with no calendar provider. Plain words, and no browser tab opened for nothing.
+    const notSetUp = setup();
+    notSetUp.api.createGoogleAuthorization.mockRejectedValueOnce(
+      new ApiError(
+        503,
+        'calendar_not_configured',
+        "Google Calendar is not set up on Roger's server yet.",
+      ),
+    );
+    await expect(notSetUp.account.connect()).rejects.toThrow(
+      "Google Calendar is not set up on Roger's server yet.",
+    );
+    expect(notSetUp.browser.opened).toEqual([]);
+    await expect(portIsOpen(notSetUp.redirectOf())).resolves.toBe(false);
+
     const googleDown = setup();
     googleDown.api.connectGoogle.mockRejectedValueOnce(
       new ApiError(502, 'calendar_provider_error', 'Google answered HTTP 503.'),
@@ -284,7 +299,7 @@ describe('CalendarAccount.connect', () => {
     const { api, account, redirectOf } = setup({ behaviour: 'idle', signInTimeoutMs: 50 });
 
     await expect(account.connect()).rejects.toThrow(
-      'Google sign-in timed out after 50 ms. Connect again.',
+      'Google sign-in timed out after 50 ms. Press Connect Google Calendar to try again.',
     );
     expect(api.connectGoogle).not.toHaveBeenCalled();
     await expect(portIsOpen(redirectOf())).resolves.toBe(false);

@@ -1,6 +1,6 @@
 # Roger desktop: failure log
 
-Extends the root `CLAUDE.md`, whose house rules and repo-wide failure log apply here too: these are the traps hit only in `apps/desktop` (its bench, e2e and QA scripts and the Swift helper included). Add one when you hit a new one. Renderer and UI traps from the redesign live in `src/renderer/CLAUDE.md`.
+Extends the root `CLAUDE.md`, whose house rules and repo-wide failure log apply here too: these are the traps hit only in `apps/desktop` (its bench, e2e and QA scripts and the Swift helper included). Add one when you hit a new one. Renderer and UI traps from the redesign live in `src/renderer/CLAUDE.md`, main-process ones from the sweep in `src/main/CLAUDE.md`.
 
 - In `make dev-desktop` the terminal is the app macOS asks for capture permission. cmux, iTerm2 and
   Terminal.app have no `NSAudioCaptureUsageDescription`, so the system audio ("Them") stream is

@@ -37,9 +37,20 @@
   line-height: var(--leading-sm);
 }
 
+/*
+ * No box. A click, the jump to live and a citation all put focus here, and an orange frame around
+ * the whole transcript read as an error (Rahul, 2026-10-08: "that weird highlight ring"). Keyboard
+ * focus is a 2 px --ring line along the left edge instead (docs/design.md, Focus). An inset shadow,
+ * not a border: it takes no room (the lines never shift) and, unlike an outline, the scrolling pane
+ * around it cannot clip it. chat/chat.css `.meeting-chat-log` draws the same line; keep the two
+ * alike. transcript.focus.test.ts fails on an outline or a border here.
+ */
+.live-transcript-lines:focus {
+  outline: none;
+}
+
 .live-transcript-lines:focus-visible {
-  outline: 2px solid var(--ring);
-  outline-offset: -2px;
+  box-shadow: inset 2px 0 0 var(--ring);
 }
 
 .live-transcript-empty {
@@ -64,12 +75,10 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* Both speakers read alike but for the word: the accent hue is a link's, not decoration (R4). */
 .transcript-line-speaker {
+  color: var(--ink-muted);
   font-weight: 600;
-}
-
-.transcript-line[data-speaker='them'] .transcript-line-speaker {
-  color: var(--accent-ink);
 }
 
 /* A pasted link or a long name must wrap, never push the page sideways. */

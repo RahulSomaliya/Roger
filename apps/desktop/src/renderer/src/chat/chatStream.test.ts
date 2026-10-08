@@ -265,9 +265,14 @@ describe('describeAnswerError', () => {
         'the answer to message 4c8e2b6f-3a1d-4e75-b9c0-8d2f6a4e1b39 is already on its way',
       ),
     ).toBe('The last try is still closing. Try again in a moment.');
-    expect(say('internal_error', 'The answer could not be saved.')).toBe(
-      'The answer could not be saved.',
+    // Roger could not reach a route: the sentence holds no path.
+    expect(say('not_sent', 'GET /v1/x failed: connect ECONNREFUSED 127.0.0.1:8000')).toBe(
+      'Roger could not send this question: Roger could not reach its server.',
     );
+    // An unknown code reads the generic line, never the API's or a vendor's text.
+    for (const message of ['The answer could not be saved.', 'OpenRouter: HTTP 502 /v1/chat']) {
+      expect(say('internal_error', message)).toBe('Something went wrong. Try again in a moment.');
+    }
   });
 });
 

@@ -284,12 +284,12 @@ describe('the system audio row', () => {
     expect((await installed.service.status()).systemAudio).toEqual({
       state: 'unknown',
       message:
-        "Roger's call audio helper is missing from this copy of Roger, so it cannot record call audio. Reinstall Roger with make install-desktop.",
+        "Roger can't hear call audio: part of this copy of Roger is missing. Reinstall Roger.",
       relaunchNeeded: false,
     });
     const dev = harness({ helper: missing, isPackaged: false });
     expect((await dev.service.status()).systemAudio.message).toBe(
-      "Roger's call audio helper is not built, so it cannot record call audio. Build it with make native.",
+      "Roger can't hear call audio: this copy was built without its audio part. Build Roger again, then relaunch it.",
     );
     expect(installed.ports.probe).not.toHaveBeenCalled();
   });
@@ -302,15 +302,15 @@ describe('the system audio row', () => {
     };
     const installed = harness({ helper: missing });
     await expect(installed.service.testSystemAudio()).rejects.toThrow(
-      'Roger has no call audio helper to test with. Reinstall Roger with make install-desktop.',
+      'Roger has no way to test call audio on this copy. Reinstall Roger.',
     );
     expect(installed.ports.probe).not.toHaveBeenCalled();
     const dev = harness({ helper: missing, isPackaged: false });
     await expect(dev.service.confirmSystemAudioAllowed()).rejects.toThrow(
-      'Roger has no call audio helper to test with. Build it with make native.',
+      'Roger has no way to test call audio on this copy. Build Roger again, then relaunch it.',
     );
     // The failed press leaves nothing behind: the next one asks again.
-    await expect(installed.service.testSystemAudio()).rejects.toThrow('no call audio helper');
+    await expect(installed.service.testSystemAudio()).rejects.toThrow('no way to test call audio');
   });
 
   it('shows Screen Recording instead on the Electron path, and runs no probe there', async () => {
@@ -384,7 +384,7 @@ describe('the signing row', () => {
     expect((await service.status()).signing).toEqual({
       state: 'adhoc',
       message:
-        "This copy of Roger is signed ad hoc, so macOS forgets its permissions every time it is rebuilt. Install it with make install-desktop, which signs it with this Mac's own identity.",
+        "This copy of Roger is signed ad hoc, so macOS forgets its permissions every time it is rebuilt. Install it on this Mac from the project, which signs it with this Mac's own identity.",
       relaunchNeeded: false,
     });
   });
@@ -392,7 +392,7 @@ describe('the signing row', () => {
   it('says a development build asks macOS on behalf of the terminal', async () => {
     const { service } = harness({ identity: ADHOC, isPackaged: false });
     expect((await service.status()).signing.message).toBe(
-      'This is a development build: macOS keeps its permissions for the terminal that started it, where call audio stays silent. Install Roger with make install-desktop to test call audio.',
+      'This is a development build: macOS keeps its permissions for the terminal that started it, where call audio stays silent. Install Roger on this Mac from the project to test call audio.',
     );
   });
 

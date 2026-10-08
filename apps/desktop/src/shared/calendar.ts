@@ -207,6 +207,11 @@ export interface CalendarPromptCard extends ActionablePromptCard {
    */
   events: [TimedCalendarEvent, ...TimedCalendarEvent[]];
   shownBy: PromptShownBy;
+  /**
+   * The event whose start is under way (the card is `taking_notes`), else null. A card of two
+   * calls keeps both until the 5 s line ends, and the line must say which one started.
+   */
+  startedEventId: string | null;
 }
 
 export interface CallDetectedPromptCard extends ActionablePromptCard {

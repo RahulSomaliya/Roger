@@ -23,6 +23,14 @@ export function describeEcho(counts: EchoStatus): string | null {
   return null;
 }
 
+/**
+ * True only when EchoLines would draw something: the filter changed a line, or this window saw one
+ * change. Details asks the same question (CaptureDetails `showEcho`) so the two never disagree.
+ */
+export function echoLinesShow(counts: EchoStatus | null, listed: number): boolean {
+  return (counts !== null && describeEcho(counts) !== null) || listed > 0;
+}
+
 export interface EchoLinesProps {
   /** Main's counts for the meeting: the live status while it records, the report after Stop. */
   counts: EchoStatus;
@@ -57,7 +65,7 @@ export function EchoLines({
   error,
 }: EchoLinesProps) {
   const summary = describeEcho(counts);
-  if (summary === null && lines.length === 0) return null;
+  if (!echoLinesShow(counts, lines.length)) return null;
   const listedHidden = lines.filter((line) => line.kind === 'hidden').length;
   const unlisted =
     Math.max(0, counts.hidden - listedHidden) +

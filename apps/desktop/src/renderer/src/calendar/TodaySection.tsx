@@ -20,7 +20,17 @@ export interface MeetingActions {
   onOpen: (meetingId: string) => void;
 }
 
+/**
+ * Which half of Home's calendar a view draws. At 960 px and up Home has two columns (D2): the
+ * "line" (loading, connect, a connection that cannot be read) sits under the hero on the left, the
+ * "day" (Today's list) on the right. Each state belongs to exactly one half, so mounting both
+ * draws the whole section once.
+ */
+export type CalendarPart = 'line' | 'day' | 'both';
+
 export interface TodaySectionViewProps extends MeetingActions {
+  /** Defaults to both. */
+  part?: CalendarPart;
   state: CalendarState;
   nowMs: number;
   /**
@@ -39,7 +49,7 @@ export interface TodaySectionViewProps extends MeetingActions {
  * what is wrong with the calendar, Reconnect or Try again beside it. The day is absent when it
  * has nothing to say: no heading, no "Nothing on your calendar today".
  */
-export function TodaySection() {
+export function TodaySection({ part = 'day' }: { part?: CalendarPart }) {
   const { state, store } = useCalendar();
   const { capture, captureMeeting, navigate, startNewNote } = useShell();
   const nowMs = useNow();
@@ -49,15 +59,17 @@ export function TodaySection() {
   const recordingMeetingId = capture.status?.meetingId ?? null;
   const { events } = state;
   useEffect(() => {
+    if (part === 'line') return;
     // The whole copy (three days), not today's: the lookup is one indexed query, and Home need
     // not cut the day here a second time (todayGroups does it).
     const ids = events.flatMap((event) => (event.allDay ? [] : [event.id]));
     void store.refreshLinks(ids);
-  }, [store, events, recordingMeetingId]);
+  }, [store, events, recordingMeetingId, part]);
 
   const hero = heroMeeting(todayGroups({ events: state.events, links: state.links, nowMs }), nowMs);
   return (
     <TodaySectionView
+      part={part}
       state={state}
       nowMs={nowMs}
       startBlocked={meetingPhase(captureMeeting, capture.status) !== 'idle' || capture.busy}
@@ -80,7 +92,12 @@ export function TodaySection() {
 
 /** The section for one calendar state. */
 export function TodaySectionView(props: TodaySectionViewProps) {
-  const { state } = props;
+  const { state, part = 'both' } = props;
+  const noDay =
+    (state.connectionStatus === 'loading' && !state.loaded && state.copyError === null) ||
+    (state.connection === null && state.events.length === 0);
+  // The line and the day are different states, so each half is nothing in the other's.
+  if (noDay ? part === 'day' : part === 'line') return null;
   if (state.connectionStatus === 'loading' && !state.loaded && state.copyError === null) {
     return (
       <p className="calendar-status" role="status">

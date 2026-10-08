@@ -1,4 +1,5 @@
 import type { CaptureWarning, UploadStatus } from '../../../../shared/capture';
+import { warningHeadline } from '../../../../shared/captureWords';
 import type { AudioSource } from '../../../../shared/transcript';
 
 /*
@@ -26,33 +27,10 @@ export function refusedLinesProblem(upload: UploadStatus): string | null {
 /**
  * A few words for what a warning means, for the meeting header's one-line status
  * ("Roger can't hear the call · since 4:59 pm"). Main's message (what is wrong and what to do) is
- * the long form, which the banner and Details show. A `switch` over every `CaptureWarningKind`
- * with no default: a kind added in shared/capture.ts fails the type check until it has its words.
+ * the long form, which the banner and Details show. The words live in shared/captureWords.ts, which
+ * main's notifications read too (warnings.ts `warningTitle`): one name per warning on every surface.
  */
-export function warningHeadline({ kind, source }: Pick<CaptureWarning, 'kind' | 'source'>): string {
-  switch (kind) {
-    case 'no-audio':
-      if (source === 'mic') return "Roger can't hear you";
-      return source === 'system' ? "Roger can't hear the call" : "Roger can't hear any audio";
-    case 'source-ended':
-      if (source === 'mic') return 'Your microphone stopped';
-      return source === 'system' ? 'Call audio stopped' : 'Audio stopped';
-    case 'helper-hung':
-      return 'Call audio stalled';
-    case 'mic-dead':
-      return "Roger can't hear you";
-    case 'call-audio-never-heard':
-      return 'No call audio yet';
-    case 'call-audio-silent':
-      return "Roger can't hear the call";
-    case 'offline':
-      return 'The Mac is offline, so transcription stopped';
-    case 'backup-paused':
-      return 'Audio backup paused';
-    case 'keyterms-rejected':
-      return 'The jargon list was refused';
-  }
-}
+export { warningHeadline };
 
 /** One stream's warnings of one loudness, as the banner, the status line and Details show them. */
 export interface WarningGroup {

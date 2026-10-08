@@ -5,8 +5,12 @@ import type { Unsubscribe } from '../../../shared/ipc/unsubscribe';
 export interface PromptFeed {
   /** The latest state main sent; null until the first read answers, or when it failed. */
   state: PromptPanelState | null;
-  /** Why the state could not be read, else null. */
-  error: string | null;
+  /**
+   * The first read failed (an untrusted sender, a main that is gone). A flag, not the cause: the
+   * cause is an IPC error text ("Error invoking remote method 'prompt:...'") that is not for a person
+   * floating over their call (redesign sweep, P2), and this page has no channel to the log.
+   */
+  readFailed: boolean;
 }
 
 /**
@@ -26,16 +30,15 @@ export function followPromptState(
   let changed = false;
   const unsubscribe = api.onStateChanged((state) => {
     changed = true;
-    onFeed({ state, error: null });
+    onFeed({ state, readFailed: false });
   });
   api.getState().then(
     (state) => {
-      if (!stopped && !changed) onFeed({ state, error: null });
+      if (!stopped && !changed) onFeed({ state, readFailed: false });
     },
-    (error: unknown) => {
+    () => {
       if (stopped || changed) return;
-      const message = error instanceof Error ? error.message : String(error);
-      onFeed({ state: null, error: `Could not read the prompt panel: ${message}` });
+      onFeed({ state: null, readFailed: true });
     },
   );
   return () => {

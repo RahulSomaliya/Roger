@@ -1,7 +1,7 @@
 import { join } from 'node:path';
 import type { Menu, nativeImage, Tray } from 'electron';
 import type { CalendarConnection, CalendarEvent, CalendarSyncState } from '../../shared/calendar';
-import type { CapturePhase, StartCaptureRequest } from '../../shared/capture';
+import type { CapturePhase, CaptureStatus, StartCaptureRequest } from '../../shared/capture';
 import { errorMessage, type Logger } from '../logger';
 import {
   buildTrayModel,
@@ -12,8 +12,8 @@ import {
 } from './trayMenu';
 
 /**
- * Roger's menu bar item (M5-T11): the icon (idle, recording, warning), the next meeting, Start
- * notes, Stop, a reconnect line, Open Roger and Quit Roger. What the menu says is
+ * Roger's menu bar item (M5-T11): the icon (idle, recording, recording with a warning, calendar warning), the next meeting, Start
+ * notes, Stop, a reconnect line, Open Roger, Settings and Quit Roger. What the menu says is
  * decided in trayMenu.ts; this file feeds it, routes each click and keeps Electron's Tray current.
  *
  * Quit calls `app.quit()` and nothing else: RecordingLifecycle stops the recording and runs the
@@ -40,7 +40,8 @@ export interface TrayView {
 export interface TrayCapture {
   /** Not getStatus(): that reads the store, which a quit's cleanup closes. */
   readonly phase: CapturePhase;
-  on(event: 'status', listener: () => void): () => void;
+  /** The status event carries the status: the tray reads its loud warnings, never the store. */
+  on(event: 'status', listener: (status: CaptureStatus) => void): () => void;
   /** Asks the window to start a recording: audio capture runs in the page, so main cannot alone. */
   requestStart(request: StartCaptureRequest): void;
   stop(): Promise<unknown>;
@@ -74,6 +75,8 @@ export interface MenuBarTrayOptions {
     open: () => void;
     /** Opens Settings, where the Google sign-in is run again. */
     reconnect: () => void;
+    /** Opens Settings. */
+    settings: () => void;
     /** `app.quit()`. */
     quit: () => void;
   };
@@ -89,6 +92,10 @@ export class MenuBarTray {
   private connection: CalendarConnection | null = null;
   private events: readonly CalendarEvent[] = [];
   private sync: CalendarSyncState | null = null;
+  private loudWarning = false;
+  /** The recording meeting's title and start, from the last status; read only while recording. */
+  private recordingTitle: string | null = null;
+  private recordingStartedMs: number | null = null;
   /** The model last given to the view, as text: an unchanged model touches nothing. */
   private shown: string | null = null;
   private shownIcon: TrayIconState | null = null;
@@ -100,7 +107,11 @@ export class MenuBarTray {
   start(): void {
     const { capture, calendar } = this.options;
     this.stops.push(
-      capture.on('status', () => {
+      capture.on('status', (status) => {
+        this.loudWarning = (status.warnings ?? []).some((warning) => warning.loud);
+        this.recordingTitle = status.title;
+        const startedMs = status.startedAt === null ? Number.NaN : Date.parse(status.startedAt);
+        this.recordingStartedMs = Number.isFinite(startedMs) ? startedMs : null;
         this.refresh();
       }),
     );
@@ -141,6 +152,9 @@ export class MenuBarTray {
     try {
       const model = buildTrayModel({
         recording: capture.phase === 'recording',
+        recordingTitle: this.recordingTitle,
+        recordingStartedMs: this.recordingStartedMs,
+        loudWarning: this.loudWarning,
         nowMs: now(),
         events: this.events,
         connection: this.connection,
@@ -199,6 +213,9 @@ export class MenuBarTray {
         case 'reconnect':
           actions.reconnect();
           return;
+        case 'settings':
+          actions.settings();
+          return;
         case 'quit':
           actions.quit();
           return;
@@ -215,6 +232,7 @@ export class MenuBarTray {
 export const TRAY_ICON_FILES: Readonly<Record<TrayIconState, string>> = {
   idle: 'trayTemplate.png',
   recording: 'trayRecordingTemplate.png',
+  'recording-warning': 'trayRecordingWarningTemplate.png',
   warning: 'trayWarningTemplate.png',
 };
 

@@ -22,6 +22,10 @@ import './captureDetails.css';
  * Keep the meter line in every phase: it is the vendor's billed time and cost, which the owner
  * asked to see (cost guards, G7), "Last recording" after Stop. No level meter: a bar moving twice
  * a second was decoration, and the loud no-audio warning is what says Roger cannot hear.
+ *
+ * Main's error is a plain sentence the banner and the header already say; the Problem row holds
+ * only the raw text it came from (`errorDetail`: a vendor's reason, a store error), which may be
+ * read here and nowhere else on the page (docs/design.md, Words from main).
  */
 export function CaptureFacts({ status }: { status: CaptureStatus }) {
   const recording = status.phase !== 'idle';
@@ -41,6 +45,7 @@ export function CaptureFacts({ status }: { status: CaptureStatus }) {
           />
         ) : null}
         <Fact label="Roger's server" value={describeUpload(status.upload)} />
+        {status.errorDetail === null ? null : <Fact label="Problem" value={status.errorDetail} />}
         {status.meter ? (
           // What the vendor bills: open time, silent or not. The tooltip has the rest.
           <Fact

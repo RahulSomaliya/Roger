@@ -64,6 +64,9 @@ function event(
 function inputs(changes: Partial<TrayInputs> = {}): TrayInputs {
   return {
     recording: false,
+    recordingTitle: null,
+    recordingStartedMs: null,
+    loudWarning: false,
     nowMs: NOW,
     events: [],
     connection,
@@ -85,7 +88,7 @@ describe('the menu bar menu', () => {
       buildTrayModel(inputs({ connection: null, sync: null })),
       buildTrayModel(inputs({ recording: true })),
     ]) {
-      expect(texts(model).slice(-2)).toEqual(['Open Roger', 'Quit Roger']);
+      expect(texts(model).slice(-3)).toEqual(['Open Roger', 'Settings', 'Quit Roger']);
       expect(model.entries.at(-2)).toEqual({ kind: 'separator' });
     }
   });
@@ -165,7 +168,7 @@ describe('the menu bar menu', () => {
 
   it('says nothing of meetings when no calendar is connected', () => {
     const model = buildTrayModel(inputs({ connection: null, sync: null }));
-    expect(texts(model)).toEqual(['Start notes', 'Open Roger', 'Quit Roger']);
+    expect(texts(model)).toEqual(['Start notes', 'Open Roger', 'Settings', 'Quit Roger']);
   });
 
   it('shortens a long title, and names an untitled one', () => {
@@ -181,7 +184,36 @@ describe('the menu bar menu', () => {
         events: [event('a', '  ', '2026-10-06T10:00:00.000Z', '2026-10-06T11:00:00.000Z')],
       }),
     );
-    expect(texts(untitled)[0]).toBe('Next: Untitled meeting, 3:30 pm');
+    expect(texts(untitled)[0]).toBe('Next: Meeting at 3:30 pm, 3:30 pm');
+  });
+
+  it('names the meeting being recorded and for how long, first, while notes are taken (gap M6)', () => {
+    const at = (minutes: number) => NOW - minutes * 60_000;
+    const first = (changes: Partial<TrayInputs>) =>
+      texts(buildTrayModel(inputs({ recording: true, ...changes })))[0];
+    expect(first({ recordingTitle: 'Acme renewal', recordingStartedMs: at(12) })).toBe(
+      'Recording: Acme renewal, 12m',
+    );
+    expect(first({ recordingTitle: 'Acme renewal', recordingStartedMs: at(83) })).toBe(
+      'Recording: Acme renewal, 1h 23m',
+    );
+    expect(first({ recordingTitle: 'Acme renewal', recordingStartedMs: NOW })).toBe(
+      'Recording: Acme renewal, 0m',
+    );
+    // Long titles are cut like the next meeting's; a missing one or start leaves that part out.
+    expect(
+      first({
+        recordingTitle: 'Quarterly planning with every team lead and the whole finance group',
+        recordingStartedMs: at(1),
+      }),
+    ).toBe('Recording: Quarterly planning with every team lead…, 1m');
+    expect(first({ recordingTitle: null, recordingStartedMs: at(5) })).toBe('Recording, 5m');
+    expect(first({ recordingTitle: 'Acme renewal', recordingStartedMs: null })).toBe(
+      'Recording: Acme renewal',
+    );
+    expect(texts(buildTrayModel(inputs({ recordingTitle: 'Acme renewal' })))).not.toContain(
+      'Recording: Acme renewal',
+    );
   });
 
   it('never puts attendees into the menu', () => {
@@ -220,6 +252,7 @@ describe('the menu bar menu', () => {
         'No upcoming meetings',
         'Start notes',
         'Open Roger',
+        'Settings',
         'Quit Roger',
       ]);
       expect(model.icon).toBe('idle');
@@ -229,7 +262,7 @@ describe('the menu bar menu', () => {
   it('says nothing of a calendar that is not connected, whatever health is left over', () => {
     const stale = { ...freshSync, staleSince: '2026-10-06T04:42:00.000Z', reconnectRequired: true };
     const model = buildTrayModel(inputs({ connection: null, sync: stale }));
-    expect(texts(model)).toEqual(['Start notes', 'Open Roger', 'Quit Roger']);
+    expect(texts(model)).toEqual(['Start notes', 'Open Roger', 'Settings', 'Quit Roger']);
     expect(model.icon).toBe('idle');
   });
 
@@ -315,7 +348,22 @@ describe('the menu bar icon', () => {
     expect(buildTrayModel(inputs()).tooltip).toBe('Roger');
     expect(buildTrayModel(inputs({ recording: true })).tooltip).toBe('Roger: recording');
     expect(buildTrayModel(inputs({ connection: refused })).tooltip).toBe(
-      'Roger: calendar needs attention',
+      'Roger: reconnect Google Calendar',
     );
+  });
+
+  it('shows the recording-with-warning icon while recording with a loud capture warning', () => {
+    const model = buildTrayModel(inputs({ recording: true, loudWarning: true }));
+    expect(model.icon).toBe('recording-warning');
+    expect(model.tooltip).toBe('Roger: recording, but something is wrong');
+    // Stop stays in the menu: the warning never takes the way to end the notes.
+    expect(texts(model)).toContain('Stop');
+  });
+
+  it('outranks the calendar warning, and a loud warning without a recording changes nothing', () => {
+    expect(
+      buildTrayModel(inputs({ recording: true, loudWarning: true, connection: refused })).icon,
+    ).toBe('recording-warning');
+    expect(buildTrayModel(inputs({ loudWarning: true })).icon).toBe('idle');
   });
 });

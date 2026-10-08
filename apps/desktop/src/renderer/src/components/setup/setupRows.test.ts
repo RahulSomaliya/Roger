@@ -224,10 +224,10 @@ const helperMissing: SetupStatus = {
 };
 
 describe('splitRows', () => {
-  it('keeps only what is not fine in the default view, and counts the rest as passing', () => {
-    const { open, passing } = splitRows(setupRows(readyMac()));
-    // Notifications are not tested yet: not a pass, so the person can still send the test.
-    expect(open.map((view) => view.id)).toEqual(['notifications']);
+  it('folds an untested notification row away with the passes, counted apart from them', () => {
+    const { open, passing, untested } = splitRows(setupRows(readyMac()));
+    // R12: an untested row is not a failing one, so nothing is left in the default view.
+    expect(open).toEqual([]);
     expect(passing.map((view) => view.id)).toEqual([
       'microphone',
       'callAudio',
@@ -235,6 +235,14 @@ describe('splitRows', () => {
       'server',
       'speechToText',
     ]);
+    // Not a pass either: it is counted on its own, and Show still lists it with its test button.
+    expect(untested.map((view) => view.id)).toEqual(['notifications']);
+  });
+
+  it('keeps an untested call audio row in view: its test is the fix for a call that cannot be heard', () => {
+    const { open, untested } = splitRows(setupRows(firstRunMac()));
+    expect(open.map((view) => view.id)).toContain('callAudio');
+    expect(untested.map((view) => view.id)).toEqual(['notifications']);
   });
 
   it('puts every failing check in the default view, in the order a person fixes them', () => {
@@ -242,12 +250,21 @@ describe('splitRows', () => {
     expect(open.map((view) => view.id)).toEqual([
       'microphone',
       'callAudio',
-      'notifications',
       'signing',
       'server',
       'speechToText',
     ]);
     expect(passing).toEqual([]);
+  });
+
+  it('keeps a notification row that failed in view', () => {
+    const status: SetupStatus = {
+      ...readyMac(),
+      notifications: { state: 'failed', message: 'macOS showed nothing.', relaunchNeeded: false },
+    };
+    const { open, untested } = splitRows(setupRows(status));
+    expect(open.map((view) => view.id)).toEqual(['notifications']);
+    expect(untested).toEqual([]);
   });
 
   it('never folds a row that says it cannot record into the passing ones', () => {
@@ -261,6 +278,12 @@ describe('passingLine', () => {
   it('counts the checks that pass', () => {
     expect(passingLine(1)).toBe('1 check passes');
     expect(passingLine(4)).toBe('4 checks pass');
+  });
+
+  it('says what is not tested apart from the passes', () => {
+    expect(passingLine(5, 1)).toBe('5 checks pass, 1 not tested');
+    expect(passingLine(0, 1)).toBe('1 check not tested');
+    expect(passingLine(2, 2)).toBe('2 checks pass, 2 not tested');
   });
 });
 

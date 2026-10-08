@@ -357,7 +357,8 @@ describe('PromptService', () => {
       h.offerCalendar(first);
       h.offerCalendar(later);
 
-      const [shared, own] = h.cards();
+      // Newest card first: the later call's card came last.
+      const [own, shared] = h.cards();
       expect(shared).toMatchObject({ kind: 'calendar', events: [first, second] });
       expect(own).toMatchObject({ kind: 'calendar', events: [later] });
       for (const event of [first, second, later]) expect(h.row(event)?.shownAt).toBe(iso(START));
@@ -602,7 +603,48 @@ describe('PromptService', () => {
         reason: 'request_refused',
         detail: refusal,
       });
-      expect(h.onlyCard()).toMatchObject({ phase: 'open', error: refusal });
+      // The card gets a plain line; the field name and the refusal stay in the prompt log.
+      expect(h.onlyCard()).toMatchObject({
+        phase: 'open',
+        error: 'Roger could not start notes from here. Try again.',
+      });
+    });
+
+    it('says plainly when the note being recorded could not be stopped, naming it', async () => {
+      const standup = call('standup', 1);
+      const h = harness({ events: [standup] });
+      h.capture.record(EARLIER_MEETING, { mic: LIVE, system: LIVE });
+      h.offerCalendar(standup);
+      vi.spyOn(h.capture, 'stop').mockRejectedValue(new Error('upload drain: ECONNRESET'));
+      await takeNotes(h, standup);
+
+      expect(h.row(standup)).toMatchObject({ reason: 'stop_failed' });
+      expect(h.onlyCard()).toMatchObject({
+        phase: 'open',
+        error: 'Roger could not stop the notes on A meeting. Stop them in Roger, then try again.',
+      });
+    });
+
+    it('puts the newest card first, as macOS banners do', () => {
+      const first = call('first', 1);
+      const later = call('later', 6);
+      const h = harness({ events: [first, later] });
+      h.offerCalendar(first);
+      h.offerCalendar(later);
+      expect(h.cards().map((card) => (card.kind === 'calendar' ? card.events[0].id : ''))).toEqual([
+        'later',
+        'first',
+      ]);
+    });
+
+    it('names the call that started on a card of two, for the Recording line', async () => {
+      const first = call('first', 1);
+      const second = call('second', 1.5);
+      const h = harness({ events: [first, second] });
+      h.offerCalendar(first);
+      h.offerCalendar(second);
+      await h.service.act({ cardId: cardId(h), action: 'take_notes', eventId: second.id });
+      expect(h.onlyCard()).toMatchObject({ phase: 'taking_notes', startedEventId: 'second' });
     });
 
     it('on a card of two calls, starts the one clicked and lets the other expire', async () => {

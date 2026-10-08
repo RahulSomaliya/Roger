@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { CaptureWarning, UploadStatus } from '../../../../shared/capture';
+import { warningHeadline as sharedHeadline } from '../../../../shared/captureWords';
 import { groupWarnings, refusedLinesProblem, warningHeadline } from './captureProblems';
 
 const upload = (rejected: number): UploadStatus => ({
@@ -138,6 +139,10 @@ describe('warningHeadline', () => {
     expect(warningHeadline(NO_CALL_AUDIO)).toBe("Roger can't hear the call");
     expect(warningHeadline(MIC_DEAD)).toBe("Roger can't hear you");
     expect(warningHeadline({ kind: 'no-audio', source: 'mic' })).toBe("Roger can't hear you");
-    expect(warningHeadline(OFFLINE)).toBe('The Mac is offline, so transcription stopped');
+    expect(warningHeadline(OFFLINE)).toBe('The Mac is offline');
+  });
+
+  it("is the shared word list's, so the page and a notification never disagree (sweep N1)", () => {
+    expect(warningHeadline).toBe(sharedHeadline);
   });
 });

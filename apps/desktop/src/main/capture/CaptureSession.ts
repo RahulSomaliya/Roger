@@ -483,6 +483,7 @@ export class CaptureSession {
   async open(): Promise<void> {
     // Both or neither: a Start with one source would look like a working meeting.
     const grant = this.options.budget.acquire(AUDIO_SOURCES.length);
+    // errorWords.ts tells this refusal by its prefix (the page's words): reword the two together.
     if (!grant.ok) throw new Error(`Speech-to-text was not started: ${grant.message}`);
     const { accessToken, settings, pricePerHourUsdWithoutKeyterms = null } = this.options;
     const startToken: StreamCredentials = { accessToken, settings, pricePerHourUsdWithoutKeyterms };
@@ -760,6 +761,7 @@ export class CaptureSession {
     const connected = await this.connect(source, credentials, stale, 'meeting');
     if (!connected.ok) {
       // Start takes its opens before any socket and fails whole when refused (open()): so here.
+      // errorWords.ts tells it by "; not opened again without the jargon list: ": change together.
       throw new Error(
         `${connected.rejection}; not opened again without the jargon list: ${connected.refusal.message}`,
       );

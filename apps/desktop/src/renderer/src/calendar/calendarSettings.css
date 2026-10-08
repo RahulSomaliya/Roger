@@ -28,32 +28,6 @@
   resize: vertical;
 }
 
-.calendar-check {
-  display: flex;
-  align-items: flex-start;
-  gap: var(--space-2);
-  cursor: pointer;
-}
-
-.calendar-check input {
-  flex: none;
-  /* The 16 px box centred on the first 20 px line of text. */
-  margin: 2px 0 0;
-  accent-color: var(--accent);
-}
-
-.calendar-check-text {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-  min-width: 0;
-}
-
-.calendar-hint {
-  color: var(--ink-muted);
-  overflow-wrap: anywhere;
-}
-
 .calendar-notice-editor {
   display: flex;
   flex-direction: column;

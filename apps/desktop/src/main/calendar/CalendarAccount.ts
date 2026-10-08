@@ -352,8 +352,10 @@ export class CalendarAccount {
         { cause: error },
       );
     }
-    // The API's own words say what to do (connect again, tick the calendar box).
-    if (error.code === 'calendar_reconnect_required')
+    // The API's own words say what to do (connect again, tick the calendar box) or why nothing
+    // can be done here (`calendar_not_configured`: the server has no Google client, so Connect
+    // cannot work from this Mac; docs/api-contract.md, error table).
+    if (error.code === 'calendar_reconnect_required' || error.code === 'calendar_not_configured')
       return new Error(error.message, { cause: error });
     return new Error(`Could not ${action}: ${error.message}`, { cause: error });
   }

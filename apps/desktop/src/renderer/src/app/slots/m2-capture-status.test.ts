@@ -193,7 +193,7 @@ describe("the meeting page's capture status", () => {
       { ...recording(B), warnings: [] },
       { id: B, startedAt: '2026-10-07T09:00:00.000Z' },
     );
-    expect(region(B)).toContain('aria-label="Capture status"');
+    expect(region(B)).toContain('aria-label="Meeting status"');
     expect(region(B)).toContain('Recording');
     expect(region(A)).toBe('');
   });

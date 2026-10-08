@@ -40,7 +40,7 @@ from roger_api.log import get_logger
 from roger_api.services.calendar import connections
 from roger_api.services.calendar import google as google_module
 from roger_api.services.calendar.connections import CalendarStoreError, StoredConnection
-from roger_api.services.calendar.fake import FAKE_ACCOUNT_EMAIL, FakeCalendarProvider
+from roger_api.services.calendar.fake import FAKE_ACCOUNT_NAME, FakeCalendarProvider
 from roger_api.services.calendar.google import (
     GOOGLE_AUTHORIZATION_URL,
     GOOGLE_EVENTS_URL,
@@ -56,6 +56,7 @@ from roger_api.services.calendar.runtime import (
     get_calendar_runtime,
     open_calendar_runtime,
 )
+from roger_api.services.calendar.unconfigured import UnconfiguredCalendarProvider
 from tests.conftest import make_settings
 from tests.helpers import AUTH_HEADERS, BASE_URL, assert_error
 
@@ -93,6 +94,13 @@ AUTHORIZATION_BODY = {"redirect_uri": REDIRECT_URI, "code_challenge": CHALLENGE,
 
 type Json = dict[str, Any]
 type Handler = Callable[[httpx.Request], httpx.Response]
+
+
+@pytest.fixture
+def settings(database_url: str) -> Settings:
+    """Overrides conftest's: this file's routes run on the fake provider unless a test says
+    otherwise. With no CALENDAR_PROVIDER the API has no calendar (see the not-configured tests)."""
+    return make_settings(database_url, calendar_provider="fake")
 
 
 @pytest.fixture(autouse=True)
@@ -662,7 +670,7 @@ async def test_connection_expires_hint_is_null_on_the_fake_provider(
     connection = await connect(client, code="fake")
 
     assert connection["provider"] == "fake"
-    assert connection["account_email"] == FAKE_ACCOUNT_EMAIL
+    assert connection["account_email"] == FAKE_ACCOUNT_NAME
     assert connection["expires_hint"] is None
 
 
@@ -904,6 +912,56 @@ async def test_events_after_the_token_key_changed_is_424(
     assert google.kinds == ["exchange"]
     assert "calendar_token_unreadable" in logs.names
     assert OTHER_TOKEN_KEY not in logs.text
+
+
+# No calendar provider (CALENDAR_PROVIDER unset) ---------------------------------------------------
+
+
+def use_no_calendar(app: FastAPI) -> None:
+    use_runtime(
+        app,
+        CalendarRuntime(
+            provider=UnconfiguredCalendarProvider(),
+            token_key=None,
+            audience="external_testing",
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "body"),
+    [
+        ("POST", "/v1/calendar/google/authorization", AUTHORIZATION_BODY),
+        ("POST", "/v1/calendar/google/connection", CONNECTION_BODY),
+    ],
+)
+async def test_connecting_with_no_calendar_provider_is_503_and_stores_nothing(
+    app: FastAPI, client: httpx.AsyncClient, method: str, path: str, body: Json
+) -> None:
+    use_no_calendar(app)
+
+    response = await client.request(method, path, json=body)
+
+    message = assert_error(response, 503, "calendar_not_configured")
+    assert "not set up" in message
+    assert await get_connection(client) is None
+
+
+async def test_a_connection_stored_under_the_fake_stays_readable_and_can_be_disconnected(
+    app: FastAPI, client: httpx.AsyncClient
+) -> None:
+    await connect(client, code="fake")
+    use_no_calendar(app)
+
+    # Readable, so the desktop can show it and offer Disconnect; its events cannot be served.
+    stored = await get_connection(client)
+    assert stored is not None
+    assert stored["status"] == "active"
+    assert_error(
+        await client.get("/v1/calendar/events", params=WINDOW), 503, "calendar_not_configured"
+    )
+    assert (await client.delete("/v1/calendar/connection")).status_code == 204
+    assert await get_connection(client) is None
 
 
 async def test_events_after_the_provider_changed_is_424_and_the_grant_kept(
@@ -1324,12 +1382,19 @@ def runtime_settings(database_url: str) -> SettingsFactory:
     return build
 
 
-async def test_runtime_is_the_fake_provider_by_default(
+async def test_runtime_has_no_provider_by_default(runtime_settings: SettingsFactory) -> None:
+    async with open_calendar_runtime(runtime_settings()) as runtime:
+        assert isinstance(runtime.provider, UnconfiguredCalendarProvider)
+        assert not runtime.configured
+
+
+async def test_runtime_is_the_fake_provider_when_asked_for(
     runtime_settings: SettingsFactory,
 ) -> None:
     before = datetime.now(UTC)
 
-    async with open_calendar_runtime(runtime_settings()) as runtime:
+    async with open_calendar_runtime(runtime_settings(calendar_provider="fake")) as runtime:
+        assert runtime.configured
         assert isinstance(runtime.provider, FakeCalendarProvider)
         assert runtime.audience == "external_testing"
         # Anchored at startup: the scripted call is two minutes after the API started.
@@ -1343,7 +1408,9 @@ async def test_runtime_is_the_fake_provider_by_default(
 
 
 async def test_runtime_reads_the_fake_calendar_file(runtime_settings: SettingsFactory) -> None:
-    settings = runtime_settings(fake_calendar_file=str(FIXTURES / "fake_calendar.json"))
+    settings = runtime_settings(
+        calendar_provider="fake", fake_calendar_file=str(FIXTURES / "fake_calendar.json")
+    )
 
     async with open_calendar_runtime(settings) as runtime:
         events = await runtime.provider.list_events(

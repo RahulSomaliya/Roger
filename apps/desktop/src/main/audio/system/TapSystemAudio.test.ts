@@ -204,7 +204,7 @@ describe.concurrent('TapSystemAudio', () => {
     const [state] = capture.states;
     expect(state).toMatchObject({ source: 'system', state: 'error' });
     expect(state!.message).toBe(
-      'the call audio helper stopped 6 times in a row (last: exit 1, tap_failed)',
+      'call audio capture stopped 6 times in a row (last: exit 1, tap_failed)',
     );
     expect(status().warnings).toBeUndefined();
     expect(events()).toEqual([...Array<string>(5).fill('helper-restarted'), 'helper-failed']);
@@ -233,7 +233,7 @@ describe.concurrent('TapSystemAudio', () => {
     expect(capture.states[0]).toEqual({
       source: 'system',
       state: 'error',
-      message: `the call audio helper stopped 6 times in a row (last: could not start ${path}: spawn ENOEXEC)`,
+      message: `call audio capture stopped 6 times in a row (last: could not start ${path}: spawn ENOEXEC)`,
     });
     expect(events()).toEqual([...Array<string>(5).fill('helper-restarted'), 'helper-failed']);
     // No run sent audio, so the restarts' "Roger is restarting it" held until the failure: it is
@@ -263,12 +263,18 @@ describe.concurrent('TapSystemAudio', () => {
       kind: 'helper-hung',
       source: 'system',
       loud: true,
+      // The banner's and the notification's words: no helper, no exit (sweep W2).
+      message: 'Call audio stopped responding, so Roger is restarting it.',
     });
     // The restarted helper sends audio again, then hangs again (hang-after holds for every run):
     // both are read in one look, before the second hang.
     await vi.waitFor(() => {
       const now = status();
-      expect(onlyNotice(now)).toMatchObject({ kind: 'helper-restarted', source: 'system' });
+      expect(onlyNotice(now)).toMatchObject({
+        kind: 'helper-restarted',
+        source: 'system',
+        message: 'Call audio is back: Roger restarted it once in this meeting.',
+      });
       expect(onlyWarning(now)).toBeUndefined();
     });
     const [event] = store.listCaptureEvents(MEETING);
@@ -290,6 +296,8 @@ describe.concurrent('TapSystemAudio', () => {
         kind: 'source-ended',
         source: 'system',
         loud: true,
+        // How it exited is in the capture event and the log, not in these words (sweep W2).
+        message: 'Call audio stopped, so Roger is restarting it.',
       });
     });
     expect(capture.states).toEqual([]);
@@ -386,7 +394,7 @@ describe.concurrent('TapSystemAudio', () => {
       {
         source: 'system',
         state: 'error',
-        message: 'there is no call audio helper: no audio helper at /x/roger-audio',
+        message: "Roger's call audio capture is missing: no audio helper at /x/roger-audio",
       },
     ]);
     expect(status().warnings).toBeUndefined();

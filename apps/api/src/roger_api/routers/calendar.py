@@ -42,12 +42,18 @@ _RECONNECT_REQUIRED: dict[int | str, dict[str, Any]] = {
 _PROVIDER_ERROR: dict[int | str, dict[str, Any]] = {
     502: {"model": ErrorEnvelope, "description": "calendar_provider_error: Google failed"}
 }
+_NOT_CONFIGURED: dict[int | str, dict[str, Any]] = {
+    503: {
+        "model": ErrorEnvelope,
+        "description": "calendar_not_configured: the server has no calendar provider",
+    }
+}
 _NOT_CONNECTED: dict[int | str, dict[str, Any]] = {
     404: {"model": ErrorEnvelope, "description": "No calendar is connected"}
 }
 
 
-@router.post("/google/authorization")
+@router.post("/google/authorization", responses=_NOT_CONFIGURED)
 async def create_google_authorization(
     principal: PrincipalDep, body: GoogleAuthorizationIn, runtime: CalendarRuntimeDep
 ) -> GoogleAuthorizationOut:
@@ -60,7 +66,7 @@ async def create_google_authorization(
 @router.post(
     "/google/connection",
     status_code=201,
-    responses={**_RECONNECT_REQUIRED, **_PROVIDER_ERROR},
+    responses={**_RECONNECT_REQUIRED, **_PROVIDER_ERROR, **_NOT_CONFIGURED},
 )
 async def connect_google(
     principal: PrincipalDep,
@@ -96,7 +102,10 @@ async def disconnect(
     await connections.disconnect(session, principal, runtime)
 
 
-@router.get("/events", responses={**_NOT_CONNECTED, **_RECONNECT_REQUIRED, **_PROVIDER_ERROR})
+@router.get(
+    "/events",
+    responses={**_NOT_CONNECTED, **_RECONNECT_REQUIRED, **_PROVIDER_ERROR, **_NOT_CONFIGURED},
+)
 async def list_events(
     principal: PrincipalDep,
     window: Annotated[CalendarEventsQuery, Query()],

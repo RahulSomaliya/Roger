@@ -1,5 +1,11 @@
 import { join } from 'node:path';
-import { BrowserWindow, type Session } from 'electron';
+import { BrowserWindow, screen, type Session } from 'electron';
+import {
+  loadWindowBounds,
+  MIN_WINDOW_SIZE,
+  restoreBounds,
+  saveWindowBounds,
+} from './app/windowBounds';
 import { hideOnClose, showWhenReady } from './app/windowLifecycle';
 import type { RecordingLifecycle } from './lifecycle';
 import { errorMessage, type Logger } from './logger';
@@ -40,6 +46,19 @@ export function installPermissionHandlers(session: Session, page: AppPage, logge
 }
 
 /**
+ * Traffic lights (sweep D1): the system title bar row is gone (`hiddenInset`) and the page's 52 px
+ * header takes its place, so "Roger" shows once. The lights are 12 px circles 8 px apart (52 px
+ * together) and sit at x 16, y 18: that centres them on the header's middle line (18 + 16 / 2 =
+ * 26 = 52 / 2) and leaves 80 px at the left of the header for them. Renderer/src header (T4) keeps
+ * that 80 px empty and `-webkit-app-region: drag` elsewhere; change a number here, change it there
+ * and in docs/design.md (Window and layout).
+ */
+export const TRAFFIC_LIGHT_POSITION = { x: 16, y: 18 } as const;
+
+/** How long a resize or move must rest before the bounds are written (a drag fires many). */
+const SAVE_BOUNDS_AFTER_MS = 400;
+
+/**
  * The single app window. Renderer isolation is non-negotiable (house rule 5).
  *
  * Closing it hides it (app/windowLifecycle.ts): the page keeps capturing the microphone and Roger
@@ -54,17 +73,33 @@ export function createMainWindow(
   {
     lifecycle,
     openedAtLogin,
-  }: { lifecycle: Pick<RecordingLifecycle, 'quitting'>; openedAtLogin: boolean },
+    boundsPath,
+    backgroundColor,
+  }: {
+    lifecycle: Pick<RecordingLifecycle, 'quitting'>;
+    openedAtLogin: boolean;
+    /** `userData/window-bounds.json`: the size and place the person left it at. */
+    boundsPath: string;
+    /** The canvas of the theme in force (app/appearance.ts); the window shows no other colour. */
+    backgroundColor: string;
+  },
 ): BrowserWindow {
+  // Landscape by default (Rahul, 2026-10-08), or where the person left it when that still lies on
+  // a connected display (app/windowBounds.ts). The display under the cursor hosts a first launch.
+  const cursorDisplay = screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
+  const bounds = restoreBounds(
+    loadWindowBounds(boundsPath, logger),
+    screen.getAllDisplays().map((display) => display.workArea),
+    cursorDisplay.workArea,
+  );
   const window = new BrowserWindow({
-    // Landscape by default (Rahul, 2026-10-08: "change the default window size ... landscape").
-    // No size is saved between launches, so every Mac opens at this one; the pages are laid out
-    // for it first and still work down to minWidth.
-    width: 1080,
-    height: 730,
-    minWidth: 420,
-    minHeight: 520,
+    ...bounds,
+    minWidth: MIN_WINDOW_SIZE.width,
+    minHeight: MIN_WINDOW_SIZE.height,
     title: 'Roger',
+    backgroundColor,
+    titleBarStyle: 'hiddenInset',
+    trafficLightPosition: TRAFFIC_LIGHT_POSITION,
     show: false,
     autoHideMenuBar: true,
     webPreferences: {
@@ -81,6 +116,7 @@ export function createMainWindow(
   });
   showWhenReady(window, { openedAtLogin });
   hideOnClose(window, lifecycle);
+  rememberBounds(window, boundsPath, logger);
   // No new windows: the app has no links, and a new window would sit outside these guards.
   window.webContents.setWindowOpenHandler(({ url }) => {
     logger.warn('new window blocked', { url });
@@ -101,4 +137,26 @@ export function createMainWindow(
     logger.error('app page failed to load', { error: errorMessage(error) });
   });
   return window;
+}
+
+/**
+ * Writes the window's normal (not maximised or full-screen) bounds once a move or resize rests, and
+ * on close. Close only hides the window (hideOnClose), so a quit may never see a 'closed': saving on
+ * 'close' as well keeps the last place across a quit from the menu bar.
+ */
+function rememberBounds(window: BrowserWindow, path: string, logger: Logger): void {
+  let timer: NodeJS.Timeout | null = null;
+  const save = (): void => {
+    if (timer !== null) clearTimeout(timer);
+    timer = null;
+    if (window.isDestroyed() || window.isMinimized() || window.isFullScreen()) return;
+    saveWindowBounds(path, window.getNormalBounds(), logger);
+  };
+  const later = (): void => {
+    if (timer !== null) clearTimeout(timer);
+    timer = setTimeout(save, SAVE_BOUNDS_AFTER_MS);
+  };
+  window.on('resized', later);
+  window.on('moved', later);
+  window.on('close', save);
 }

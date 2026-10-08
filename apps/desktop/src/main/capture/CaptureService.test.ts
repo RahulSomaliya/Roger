@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { MeetingCalendarEvent } from '../../shared/calendar';
 import type { CaptureStatus, StartCaptureRequest } from '../../shared/capture';
+import { wordsOutsideDetails } from '../../shared/captureWords';
 import type { AudioSource, TranscriptSegment } from '../../shared/transcript';
 import type { MeetingDto, SttTokenApi, UploadApi } from '../api/ApiClient';
 import { type CostGuards, DEFAULT_COST_GUARDS } from '../costGuards';
@@ -27,7 +28,9 @@ import {
   type StartRequestEnricher,
 } from './CaptureService';
 import { CaptureSession } from './CaptureSession';
+import { START_FAILURE_SENTENCES as SENTENCE } from './errorWords';
 import { SttOpenBudget } from './SttOpenBudget';
+import { KEYTERMS_REJECTED_MESSAGE } from './warnings';
 
 const logger = createLogger({ level: 'error', format: 'json', sink: () => undefined });
 
@@ -342,9 +345,12 @@ describe('CaptureService', () => {
     const status = h.service.getStatus();
     expect(status.phase).toBe('recording');
     expect(status.streams.system).toBe('retrying');
-    expect(status.error).toContain('Transcription of Them (them) stopped');
-    expect(status.error).toContain('code 1011');
-    expect(status.error).toContain('Reconnecting when its audio flows, in 2 s');
+    // Plain words on the page; the vendor's reason in the detail, for Details and the log.
+    expect(status.error).toBe(
+      'The speech-to-text service dropped the connection for the call audio. Roger reconnects on its own.',
+    );
+    expect(status.errorDetail).toContain('call audio:');
+    expect(status.errorDetail).toContain('code 1011');
     await h.service.stop();
   });
 
@@ -360,11 +366,12 @@ describe('CaptureService', () => {
     expect(status.segmentsStored).toBe(0);
     expect(status.segmentsUnsaved).toBe(1);
     expect(status.error).toContain('1 line could not be saved on this Mac');
-    // No ids and no stream labels on the page: both are in the log (CaptureSession, 'line not
-    // saved locally'). What stays is the plain fact and what to do (house rule 1).
+    // No ids, no stream labels and no store error on the page: the ids are in the log
+    // (CaptureSession, 'line not saved locally'), the store's reason in the detail. What stays is
+    // the plain fact and what to do (house rule 1).
     expect(status.error).not.toContain(meetingId!);
-    expect(status.error).not.toContain('Mic (me)');
-    expect(status.error).toContain('database or disk is full');
+    expect(wordsOutsideDetails(status.error ?? '')).toEqual([]);
+    expect(status.errorDetail).toBe('database or disk is full');
     expect(h.statuses.at(-1)?.error).toBe(status.error);
     expect(h.segments.map((s) => s.text)).toEqual(['lost line']);
 
@@ -372,7 +379,8 @@ describe('CaptureService', () => {
     status = h.service.getStatus();
     expect(status.segmentsStored).toBe(1);
     expect(status.segmentsUnsaved).toBe(1);
-    expect(status.error).toContain('database or disk is full');
+    expect(status.error).toContain('1 line could not be saved on this Mac');
+    expect(status.errorDetail).toBe('database or disk is full');
 
     const stopped = await h.service.stop();
     expect(stopped.segmentsUnsaved).toBe(0);
@@ -381,21 +389,26 @@ describe('CaptureService', () => {
 
   it('returns to idle with an error and no stray meeting when speech-to-text cannot connect', async () => {
     const h = harness();
-    h.stt.failWith = new SttConnectError('rejected with HTTP 401', 401);
+    h.stt.failWith = new SttConnectError('xAI: rejected with HTTP 401', 401);
     const status = await h.service.start();
     expect(status.phase).toBe('idle');
-    expect(status.error).toContain('401');
+    // The failure that started the sweep: plain words about the speech-to-text service.
+    expect(status.error).toBe(SENTENCE.serviceRefused);
+    expect(status.errorDetail).toBe('xAI: rejected with HTTP 401');
     expect(h.store.meetings.size).toBe(0);
   });
 
   it('refuses to start without microphone access or with a startup configuration error', async () => {
     const denied = harness({ mic: 'denied' });
-    expect((await denied.service.start()).error).toContain('Microphone access is denied');
+    const refusedMic = await denied.service.start();
+    expect(refusedMic.error).toBe(SENTENCE.microphone);
+    expect(refusedMic.errorDetail).toContain('Microphone access is denied');
     const misconfigured = harness({ startupError: 'No API token' });
-    expect(await misconfigured.service.start()).toMatchObject({
-      phase: 'idle',
-      error: 'No API token',
-    });
+    // Before any Start too: the window's first status says Roger cannot start notes.
+    expect(misconfigured.service.getStatus().errorDetail).toBe('No API token');
+    const refused = await misconfigured.service.start();
+    expect(refused).toMatchObject({ phase: 'idle', errorDetail: 'No API token' });
+    expect(refused.error).toContain('Roger is not set up correctly on this Mac');
     expect(misconfigured.api.getSttToken).not.toHaveBeenCalled();
   });
 
@@ -416,8 +429,9 @@ describe('CaptureService', () => {
     });
     const status = await h.service.start();
     expect(status.phase).toBe('idle');
-    expect(status.error).toContain('48000 Hz');
-    expect(status.error).toContain('16000 Hz');
+    expect(status.error).toBe(SENTENCE.updateRoger);
+    expect(status.errorDetail).toContain('48000 Hz');
+    expect(status.errorDetail).toContain('16000 Hz');
     expect(h.stt.opened).toHaveLength(0);
     expect(h.store.meetings.size).toBe(0);
   });
@@ -622,8 +636,10 @@ describe('CaptureService audio flow', () => {
       health: 'ended',
       message: 'The audio device stopped delivering audio',
     });
-    expect(status.error).toContain('Call audio (them) stopped');
-    expect(status.error).toContain('The audio device stopped delivering audio');
+    // No error: SignalMonitor's loud source-ended warning says it (SignalMonitor.test.ts, attach),
+    // and an error as well said the one cut twice (CaptureService.reportSourceState).
+    expect(status.error).toBeNull();
+    expect(status.errorDetail).toBeNull();
     const ended = log.lines.find((l) => l.includes('audio source problem'));
     expect(ended).toContain('"source":"system"');
     expect(ended).toContain(`"meetingId":"${meetingId}"`);
@@ -666,8 +682,8 @@ describe('CaptureService with a jargon list the vendor rejects (M3-T4b)', () => 
     (options.settings.keyterms?.length ?? 0) > 0 ? listRefused() : null;
   const opened = (h: Harness) =>
     h.stt.opened.map(({ label, settings }) => [label, settings.keyterms, settings.pricePerHourUsd]);
-  const message =
-    'Jargon list rejected by Scripted, transcribing without it. Check the list in Settings.';
+  // The session's own text names the vendor; the warning reads the plain words.
+  const message = KEYTERMS_REJECTED_MESSAGE;
 
   it('records with each refused stream opened again without the list, as a quiet warning on it', async () => {
     const h = harness();
@@ -734,8 +750,10 @@ describe('CaptureService with a jargon list the vendor rejects (M3-T4b)', () => 
       refusesLists(options) ?? new SttConnectError('Scripted: rejected with HTTP 401', 401);
     const status = await h.service.start();
     expect(status.phase).toBe('idle');
-    expect(status.error).toContain('the jargon list (2 terms) was rejected');
-    expect(status.error).toContain(
+    // Read by the second failure, CaptureSession.connect's cause; both reasons in the detail.
+    expect(status.error).toBe(SENTENCE.serviceRefused);
+    expect(status.errorDetail).toContain('the jargon list (2 terms) was rejected');
+    expect(status.errorDetail).toContain(
       '; and without the jargon list: Scripted: rejected with HTTP 401',
     );
     expect(status).not.toHaveProperty('warnings');
@@ -795,7 +813,7 @@ describe('CaptureService cost guards', () => {
     expect(h.stt.streams.get('mic')?.closed).toBe(true);
     expect(h.stt.streams.get('system')?.closed).toBe(false);
     expect(h.service.getStatus().streams.mic).toBe('closed');
-    expect(h.service.getStatus().error).toContain('Mic (me) stopped');
+    expect(h.service.getStatus().sources.mic.health).toBe('ended');
     await h.service.stop();
   });
 
@@ -1052,7 +1070,7 @@ describe('CaptureService reopen budget', () => {
     await h.service.stop();
   });
 
-  it('counts the reconnect wait down on screen, and drops it once only audio is awaited', async () => {
+  it('says a dropped stream reconnects in words that never tick, through the wait and after it', async () => {
     const h = harness();
     await h.service.start();
     const micTalks = () => {
@@ -1061,16 +1079,21 @@ describe('CaptureService reopen budget', () => {
     await h.elapse(1_000, bothTalk(h));
 
     vendorCloses(h, 'system');
-    expect(h.service.getStatus().error).toContain('Reconnecting when its audio flows, in 2 s.');
+    const said = h.service.getStatus().error;
+    expect(said).toBe(
+      'The speech-to-text service dropped the connection for the call audio. Roger reconnects on its own.',
+    );
+    // A time that ticks never rides in a message (docs/design.md, Words from main): the old
+    // "in 2 s" rewrote the banner every second.
     await h.elapse(1_000, micTalks); // the system source has gone quiet
-    expect(h.service.getStatus().error).toContain('Reconnecting when its audio flows, in 1 s.');
+    expect(h.service.getStatus().error).toBe(said);
     await h.elapse(1_500, micTalks);
 
-    // The wait is over, but a source reopens only with its next chunk: no countdown to show.
+    // The wait is over, but a source reopens only with its next chunk: the words still hold.
     const status = h.service.getStatus();
     expect(status.streams.system).toBe('retrying');
-    expect(status.error).toMatch(/Reconnecting when its audio flows\.$/);
-    expect(h.statuses.at(-1)?.error).toBe(status.error);
+    expect(status.error).toBe(said);
+    expect(h.statuses.at(-1)?.error).toBe(said);
     expect(h.stt.opened).toHaveLength(2);
     await h.service.stop();
   });
@@ -1113,7 +1136,7 @@ describe('CaptureService reopen budget', () => {
     let status = h.service.getStatus();
     expect(status.streams.system).toBe('retrying');
     expect(status.streamMessages.system).toContain("Roger's limit is 4, sttOpensPerMinute");
-    expect(status.error).toContain('Transcription of Them (them)');
+    expect(status.error).toContain('for the call audio. Roger reconnects on its own.');
 
     await h.elapse(46_000, bothTalk(h)); // Start's opens leave the window at 60 s
     expect(h.stt.opened).toHaveLength(5);
@@ -1135,8 +1158,10 @@ describe('CaptureService reopen budget', () => {
     const status = h.service.getStatus();
     expect(status.streams).toEqual({ mic: 'open', system: 'error' });
     expect(status.streamMessages.system).toContain("Roger's limit is 3, sttOpensPerMeeting");
-    expect(status.error).toContain('Transcription of Them (them) stopped');
-    expect(status.error).toContain('Press Stop, then Start again');
+    expect(status.error).toBe(
+      'The speech-to-text service dropped the connection for the call audio, and Roger cannot reconnect it in this meeting. Press Stop, then Start notes again.',
+    );
+    expect(status.errorDetail).toContain('call audio:');
     await h.service.stop();
   });
 
@@ -1151,8 +1176,11 @@ describe('CaptureService reopen budget', () => {
 
     const refused = await h.service.start();
     expect(refused.phase).toBe('idle');
-    expect(refused.error).toContain("Roger's limit is 4, sttOpensPerMinute");
-    expect(refused.error).toContain('the next may open in 50 s');
+    // The real CaptureSession.open refusal, as errorWords.ts reads its text: the pattern there and
+    // the throw there change together, or this falls back to the unknown sentence.
+    expect(refused.error).toBe(SENTENCE.tooManyStarts);
+    expect(refused.errorDetail).toContain("Roger's limit is 4, sttOpensPerMinute");
+    expect(refused.errorDetail).toContain('the next may open in 50 s');
     expect(h.stt.opened).toHaveLength(4);
     expect(h.store.meetings.size).toBe(0);
     // The two meetings that ran keep their usage; the refused one opened nothing to keep.
@@ -1310,7 +1338,8 @@ describe('CaptureService open budget', () => {
     expect(budget.acquire(2, 'minute')).toEqual({ ok: true });
     const refused = await h.service.start();
     expect(refused.phase).toBe('idle');
-    expect(refused.error).toContain("Roger's limit is 4, sttOpensPerMinute");
+    expect(refused.error).toBe(SENTENCE.tooManyStarts);
+    expect(refused.errorDetail).toContain("Roger's limit is 4, sttOpensPerMinute");
     expect(h.stt.opened).toHaveLength(2);
   });
 });
@@ -1456,7 +1485,8 @@ describe('CaptureService recording listeners', () => {
 
     const stopped = await h.service.stop();
 
-    expect(stopped).toMatchObject({ phase: 'idle', error: 'database or disk is full' });
+    expect(stopped).toMatchObject({ phase: 'idle', errorDetail: 'database or disk is full' });
+    expect(stopped.error).toContain('Roger could not finish stopping these notes');
     expect(h.store.getMeeting(meetingId!)?.endedAt).toBeNull();
     expect(calls).toEqual([
       ['ended', { meetingId, reason: 'user', discarded: false, stopFailed: true }],
@@ -1786,17 +1816,19 @@ describe('CaptureService resume', () => {
     h.stt.failWith = new SttConnectError('rejected with HTTP 401', 401);
     const failed = await h.service.start({ resume: { meetingId } });
     expect(failed.phase).toBe('idle');
-    expect(failed.error).toContain('401');
+    expect(failed.error).toBe(SENTENCE.serviceRefused);
+    expect(failed.errorDetail).toContain('401');
     expect(h.store.getMeeting(meetingId)?.endedAt).toBeNull(); // CrashRecovery decides what next
     h.stt.failWith = null;
 
     const unknown = await h.service.start({
       resume: { meetingId: '0e9d8c7b-6a5f-4e3d-8c1b-0a9f8e7d6c5b' },
     });
-    expect(unknown.error).toContain('not in the local store');
+    expect(unknown.error).toBe(SENTENCE.resume);
+    expect(unknown.errorDetail).toContain('not in the local store');
     h.store.markMeetingEnded(meetingId, new Date().toISOString());
     const ended = await h.service.start({ resume: { meetingId } });
-    expect(ended.error).toContain('already ended');
+    expect(ended.errorDetail).toContain('already ended');
     expect(h.stt.opened).toHaveLength(2); // the failed connect's two; nothing since
     expect(h.store.meetings.size).toBe(1);
   });
@@ -1888,7 +1920,7 @@ describe('CaptureService meetings with notes (M4)', () => {
     h.stt.failWith = new SttConnectError('rejected with HTTP 401', 401);
     const status = await h.service.start();
     expect(status.phase).toBe('idle');
-    expect(status.error).toContain('401');
+    expect(status.errorDetail).toContain('401');
 
     const kept = [...h.store.meetings.values()];
     expect(kept).toHaveLength(1);
@@ -1933,7 +1965,7 @@ describe('CaptureService meetings with notes (M4)', () => {
     h.stt.failWith = new SttConnectError('rejected with HTTP 401', 401);
     const status = await h.service.start();
     expect(status).toMatchObject({ phase: 'idle' });
-    expect(status.error).toContain('401');
+    expect(status.errorDetail).toContain('401');
 
     // Kept, as at Stop: deleted, a meeting whose notes exist would strand them for good.
     const kept = [...h.store.meetings.values()];
@@ -2156,6 +2188,20 @@ describe('CaptureService start requests (M5)', () => {
     expect(lastMeeting(h)?.title).toBe(defaultMeetingTitle(new Date(h.now())));
   });
 
+  it("names a blank-titled calendar start from the event's start, as the prompt card does, not from the click", async () => {
+    const h = harness();
+    // The click is not the invite's start (STANDUP is 09:30 UTC; the harness clock differs).
+    const started = await h.service.start({
+      source: 'notification',
+      title: ' ',
+      calendarEvent: STANDUP,
+    });
+    const expected = defaultMeetingTitle(new Date(STANDUP.scheduledStart));
+    expect(expected).not.toBe(defaultMeetingTitle(new Date(h.now())));
+    expect(started.title).toBe(expected);
+    expect(lastMeeting(h)?.title).toBe(expected);
+  });
+
   // The uploader sends the stored title, so the local title is the one the server keeps.
   it('stores the title as the API stores it: U+0000 dropped, then trimmed as the API trims', async () => {
     const h = harness();
@@ -2170,7 +2216,8 @@ describe('CaptureService start requests (M5)', () => {
     const refused = await h.service.start({ source: 'tray', title: 'x'.repeat(501) });
     expect(refused).toMatchObject({
       phase: 'idle',
-      error: 'invalid start request: title is over 500 characters',
+      error: SENTENCE.badRequest,
+      errorDetail: 'invalid start request: title is over 500 characters',
     });
     expect(h.api.getSttToken).not.toHaveBeenCalled();
     expect(h.store.meetings.size).toBe(0);
@@ -2359,7 +2406,9 @@ describe('CaptureService start requests (M5)', () => {
     expect(request).not.toBeNull();
     const refused = await h.service.start(request ?? {});
     expect(refused).toMatchObject({ phase: 'idle', meetingId: null, title: null });
-    expect(refused.error).toContain("Roger's limit is 4, sttOpensPerMinute");
+    // The plain sentence is what the prompt panel shows (PromptService reads `error` as it is).
+    expect(refused.error).toBe(SENTENCE.tooManyStarts);
+    expect(refused.errorDetail).toContain("Roger's limit is 4, sttOpensPerMinute");
     expect(h.stt.opened).toHaveLength(4);
     expect(h.store.meetings.size).toBe(0);
   });
