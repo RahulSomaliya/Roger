@@ -6,6 +6,7 @@ import {
   type OpenStreamOptions,
   type SpeechToText,
   SttConnectError,
+  type SttCredentialUse,
   SttEventEmitter,
   type SttEventListener,
   type SttStream,
@@ -60,10 +61,15 @@ class ScriptedStream implements SttStream {
   }
 }
 
-/** Streams open when the test says so, in any order. */
+/**
+ * Streams open when the test says so, in any order. As `single-connection` it plays xAI: an open
+ * with a token an earlier open used is refused at once with HTTP 401 (the 2026-10-08 probe).
+ */
 class ControlledSpeechToText implements SpeechToText {
   readonly provider = 'scripted';
   readonly vendorName = 'Scripted';
+  private readonly tokensUsed = new Set<string>();
+  constructor(readonly credentialUse: SttCredentialUse = 'reusable') {}
   usage(): SttUsage {
     return {
       sessionsOpened: 0,
@@ -85,6 +91,11 @@ class ControlledSpeechToText implements SpeechToText {
   openStream(options: OpenStreamOptions): Promise<SttStream> {
     this.opens.push(options.label);
     this.openOptions.push(options);
+    const spent = this.tokensUsed.has(options.accessToken);
+    this.tokensUsed.add(options.accessToken);
+    if (spent && this.credentialUse === 'single-connection') {
+      return Promise.reject(new SttConnectError('Scripted: rejected with HTTP 401', 401));
+    }
     return new Promise((resolve, reject) => {
       this.pending.set(options.label, { resolve, reject });
     });
@@ -2182,6 +2193,228 @@ describe('CaptureSession', () => {
       expect(g.mic.closed).toBe(false);
       expect(g.s.gateUsage()).toEqual({ gatedMs: 0, estimatedSavedUsd: 0 });
       await g.s.close();
+    });
+  });
+
+  /**
+   * xAI's client secret opens ONE websocket, ever (the 2026-10-08 probe: a second connection with
+   * it, at once or after the first closed, is HTTP 401). Every Start failed while Start's one token
+   * served both sources. For such a vendor no token may reach two opens on any path; for a reusable
+   * one (AssemblyAI) Start keeps its one fetch and the gate its one shared token.
+   */
+  describe('a vendor whose token opens one connection (SttCredentialUse)', () => {
+    const GATE = { closeAfterMs: 30_000, preRollMs: 1_000, reopensPerMeeting: 120 };
+    const voice = (): Uint8Array => new Uint8Array(3200).fill(64);
+    const quiet = (): Uint8Array => new Uint8Array(3200);
+
+    /**
+     * Started on a test clock with Start's token "start", every later token numbered as the API
+     * hands it out (each good for 30 s). Its double refuses a token it has seen, as xAI does.
+     */
+    async function started(
+      credentialUse: SttCredentialUse = 'single-connection',
+      overrides: Partial<CaptureSessionOptions> = {},
+    ) {
+      const stt = new ControlledSpeechToText(credentialUse);
+      const l = listeners();
+      let now = 10_000;
+      let fetched = 0;
+      const s = session(stt, l, () => now, meetingStore(), {
+        accessToken: 'start',
+        refreshCredentials: (): Promise<StreamCredentials> => {
+          fetched += 1;
+          return Promise.resolve({
+            accessToken: `token-${fetched}`,
+            settings,
+            expiresAtMs: now + 30_000,
+          });
+        },
+        ...overrides,
+      });
+      const opening = s.open();
+      await flush(); // a single-connection vendor's other source fetches its own token first
+      const mic = stt.succeed('mic');
+      const system = stt.succeed('system');
+      await opening;
+      const push = (source: AudioSource, atMs: number, pcm: Uint8Array = quiet()): void => {
+        now = atMs;
+        s.pushAudio(source, pcm, atMs);
+      };
+      return {
+        stt,
+        l,
+        s,
+        mic,
+        system,
+        push,
+        fetched: () => fetched,
+        at: (ms: number) => {
+          now = ms;
+        },
+        /** Chunks of `source` every 100 ms from `fromMs` up to `toMs`, the clock following. */
+        pushUntil: (source: AudioSource, fromMs: number, toMs: number, pcm = quiet): void => {
+          for (let t = fromMs; t < toMs; t += 100) push(source, t, pcm());
+        },
+        /** Each open's source and the token it was handed, in order. */
+        opened: () => stt.openOptions.map(({ label, accessToken }) => `${label}:${accessToken}`),
+      };
+    }
+
+    /** The tokens handed to more than one open. */
+    function reused(stt: ControlledSpeechToText): string[] {
+      const tokens = stt.openOptions.map((options) => options.accessToken);
+      return [...new Set(tokens.filter((token, i) => tokens.indexOf(token) !== i))];
+    }
+
+    it("opens Start's sources with a token each, the second fetched beside the first's open", async () => {
+      const r = await started();
+      expect(r.opened()).toEqual(['mic:start', 'system:token-1']);
+      expect(r.fetched()).toBe(1);
+      expect(r.l.states.slice(-2).sort()).toEqual(['mic:open', 'system:open']);
+      await r.s.close();
+    });
+
+    it("keeps a reusable vendor's Start on its one token, with no fetch", async () => {
+      const r = await started('reusable');
+      expect(r.opened()).toEqual(['mic:start', 'system:start']);
+      expect(r.fetched()).toBe(0);
+      await r.s.close();
+    });
+
+    it("fails Start when the second source's token cannot be had, leaking no stream", async () => {
+      const stt = new ControlledSpeechToText('single-connection');
+      const s = session(stt, listeners(), () => 10_000, meetingStore(), {
+        accessToken: 'start',
+        refreshCredentials: () => Promise.reject(new Error('API unreachable')),
+      });
+      const opening = s.open();
+      await flush();
+      const mic = stt.succeed('mic');
+      await expect(opening).rejects.toThrow('API unreachable');
+      expect(mic.closed).toBe(true);
+      expect(stt.opens).toEqual(['mic']);
+    });
+
+    it('gives a stall reopen and a failure reopen a token each', async () => {
+      const r = await started();
+      r.at(40_000);
+      r.s.pauseSource('system', 30_000);
+      r.push('system', 40_000);
+      await flush();
+      r.stt.succeed('system');
+      await flush();
+      r.mic.emitter.emit({ type: 'closed', code: 1011, reason: 'timeout' });
+      r.push('mic', 42_000); // after the 2 s backoff
+      await flush();
+      r.stt.succeed('mic');
+      await flush();
+      expect(r.opened()).toEqual(['mic:start', 'system:token-1', 'system:token-2', 'mic:token-3']);
+      expect(r.l.failures.map(([source]) => source)).toEqual(['mic']);
+      await r.s.close();
+    });
+
+    it('reopens each source with a token of its own after an offline flip and a sleep', async () => {
+      const r = await started();
+      r.s.suspendStreams('offline');
+      r.s.resumeStreams('offline');
+      r.push('mic', 11_000);
+      r.push('system', 11_000);
+      await flush();
+      r.stt.succeed('mic');
+      r.stt.succeed('system');
+      await flush();
+      r.s.suspendStreams('asleep');
+      r.at(500_000);
+      r.s.resumeStreams('asleep');
+      r.push('mic', 500_000);
+      r.push('system', 500_000);
+      await flush();
+      r.stt.succeed('mic');
+      r.stt.succeed('system');
+      await flush();
+      expect(r.stt.opens).toHaveLength(6);
+      expect(reused(r.stt)).toEqual([]);
+      expect(r.l.failures).toEqual([]);
+      await r.s.close();
+    });
+
+    it('prefetches one token per gated source, and spends each on one speech reopen', async () => {
+      const r = await started('single-connection', { silenceGate: GATE });
+      for (let t = 10_000; t < 70_100; t += 100) {
+        r.push('mic', t);
+        r.push('system', t);
+      }
+      await flush();
+      expect(r.fetched()).toBe(3); // Start's second source, then one for each gated source
+
+      r.push('mic', 70_100, voice());
+      r.push('system', 70_100, voice());
+      await flush();
+      expect(r.fetched()).toBe(3); // no API call at the onset
+      r.stt.succeed('mic');
+      r.stt.succeed('system');
+      await flush();
+      expect(r.opened().slice(2).sort()).toEqual(['mic:token-2', 'system:token-3']);
+
+      // Gated again: the mic's spent token is never handed on; it prefetches a new one.
+      r.pushUntil('mic', 70_200, 130_300);
+      await flush();
+      r.push('mic', 130_300, voice());
+      await flush();
+      r.stt.succeed('mic');
+      await flush();
+      expect(r.stt.opens).toHaveLength(5);
+      expect(reused(r.stt)).toEqual([]);
+      expect(r.l.failures).toEqual([]);
+      await r.s.close();
+    });
+
+    it("keeps a reusable vendor's one shared gate token for both sources", async () => {
+      const r = await started('reusable', { silenceGate: GATE });
+      for (let t = 10_000; t < 70_100; t += 100) {
+        r.push('mic', t);
+        r.push('system', t);
+      }
+      await flush();
+      r.push('mic', 70_100, voice());
+      r.push('system', 70_100, voice());
+      await flush();
+      r.stt.succeed('mic');
+      r.stt.succeed('system');
+      await flush();
+      expect(r.fetched()).toBe(1);
+      expect(r.opened().slice(2)).toEqual(['mic:token-1', 'system:token-1']);
+      await r.s.close();
+    });
+
+    it('fetches a new token for the open without the jargon list', async () => {
+      const listed = { ...settings, keyterms: ['Linkt'] };
+      const stt = new ControlledSpeechToText('single-connection');
+      let fetched = 0;
+      const s = session(stt, listeners(), () => 10_000, meetingStore(), {
+        accessToken: 'start',
+        settings: listed,
+        refreshCredentials: () => {
+          fetched += 1;
+          return Promise.resolve({ accessToken: `token-${fetched}`, settings: listed });
+        },
+      });
+      const opening = s.open();
+      await flush();
+      stt.fail(
+        'mic',
+        new SttConnectError('Scripted: rejected with HTTP 400', 400, { keytermsRejected: true }),
+      );
+      await flush();
+      stt.succeed('mic');
+      stt.succeed('system');
+      await opening;
+      expect(stt.openOptions.map(({ label, accessToken }) => `${label}:${accessToken}`)).toEqual([
+        'mic:start',
+        'system:token-1',
+        'mic:token-2',
+      ]);
+      await s.close();
     });
   });
 });

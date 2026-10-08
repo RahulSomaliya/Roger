@@ -199,6 +199,7 @@ class EndedStream implements SttStream {
 class OpenAtOnce implements SpeechToText {
   readonly provider = 'scripted';
   readonly vendorName = 'Scripted';
+  readonly credentialUse = 'reusable';
   readonly streams: EndedStream[] = [];
   openStream(): Promise<SttStream> {
     const stream = new EndedStream();

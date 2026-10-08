@@ -34,6 +34,16 @@ ever refuses it there, a relay (which house rule 3 allows) is the next step; do 
 key to the desktop. xAI documents no session-length cap for a secret or for
 `/v1/stt`, so nothing here asks for one: the desktop's own guards (stall close, idle timeout,
 4-hour auto-stop in apps/desktop/src/main/costGuards.ts) are the only net.
+
+Unlike AssemblyAI's token and Soniox's key, an xAI client secret opens exactly ONE websocket,
+ever (live probe 2026-10-08 through this issuer, in the same vendor log): one secret, two
+connections at once: one opens, the other is refused with HTTP 401; two secrets, two at once:
+both open; one secret, open, close, open again: the second is HTTP 401. xAI documents no
+parameter that changes it, and the key was fine. So each `/v1/stt/token` answer serves one
+desktop stream: the desktop's xAI adapter declares `credentialUse: 'single-connection'`
+(apps/desktop/src/main/stt/SpeechToText.ts `SttCredentialUse`) and asks for a token per open,
+two at every Start. Never cache a secret here to save a call: a second desktop stream on it
+fails.
 """
 
 from collections.abc import Awaitable
@@ -231,7 +241,9 @@ class XaiSttTokenIssuer:
 
     `/v1/stt` accepts the client secret (live check 2026-10-07), though xAI documents it for the
     voice-agent socket only: treat a refusal of the minted secret at the desktop's handshake as
-    this issuer's problem, not the desktop's.
+    this issuer's problem, not the desktop's, unless the secret was used before. Each secret opens
+    one websocket, ever (probe 2026-10-08): the desktop asks for one per stream it opens, and a
+    second connection on a secret is refused with HTTP 401 whatever this issuer does.
     """
 
     def __init__(self, http: httpx.AsyncClient, *, api_key: str, ttl_seconds: int) -> None:

@@ -23,6 +23,7 @@ function protocol(baseUrl: string): SttProtocol {
     finishedOn: 'vendor-close',
     keepAlive: null,
     audioPacing: 'none',
+    credentialUse: 'reusable',
     target: () => ({ url: `${baseUrl}/listen`, headers: {} }),
     session: () => ({
       encodeAudio: (pcm) => [pcm],

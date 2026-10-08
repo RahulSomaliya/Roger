@@ -71,6 +71,9 @@ export function deepgramProtocol(options: DeepgramProtocolOptions = {}): SttProt
   return {
     provider: 'deepgram',
     vendorName: 'Deepgram',
+    // A grant is checked at the handshake only, any number of times within its 30 s: Start has
+    // opened both sources with one since M1.
+    credentialUse: 'reusable',
     // A backend-minted grant is a bearer token. A raw API key would be `Token ...`, but raw keys
     // never reach the desktop (house rule 3).
     target: ({ accessToken, settings }) => ({

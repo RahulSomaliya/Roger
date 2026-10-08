@@ -10,6 +10,7 @@ import {
   type OpenStreamOptions,
   type SpeechToText,
   SttConnectError,
+  type SttCredentialUse,
   SttEventEmitter,
   type SttEventListener,
   type SttStream,
@@ -90,8 +91,14 @@ class ScriptedStream implements SttStream {
 class ScriptedSpeechToText implements SpeechToText {
   readonly provider = 'scripted';
   readonly vendorName = 'Scripted';
+  /**
+   * As `single-connection` it plays xAI: an open with a token an earlier open used is refused with
+   * HTTP 401 (the 2026-10-08 probe).
+   */
+  credentialUse: SttCredentialUse = 'reusable';
   readonly streams = new Map<string, ScriptedStream>();
   private readonly all: ScriptedStream[] = [];
+  private readonly tokensUsed = new Set<string>();
   readonly opened: OpenStreamOptions[] = [];
   failWith: Error | null = null;
   /** Decides each open after `failWith`: the error it is refused with, or null to open it. */
@@ -120,6 +127,11 @@ class ScriptedSpeechToText implements SpeechToText {
   }
   openStream(options: OpenStreamOptions): Promise<SttStream> {
     this.opened.push(options);
+    const spent = this.tokensUsed.has(options.accessToken);
+    this.tokensUsed.add(options.accessToken);
+    if (spent && this.credentialUse === 'single-connection') {
+      return Promise.reject(new SttConnectError('Scripted: rejected with HTTP 401', 401));
+    }
     if (this.failWith) return Promise.reject(this.failWith);
     const refusal = this.refuse?.(options) ?? null;
     if (refusal !== null) return Promise.reject(refusal);
@@ -2565,5 +2577,88 @@ describe('CaptureService silence gate (M3-T20)', () => {
     expect(h.service.getStatus().meter?.silenceGate).toBe('spent');
     await h.service.stop();
     expect(h.service.getStatus().meter?.silenceGate).toBe('spent');
+  });
+});
+
+/**
+ * xAI's client secret opens ONE websocket, ever (the 2026-10-08 probe): while Start's one token
+ * served both sources, every Start failed with "rejected with HTTP 401". The API mints a new token
+ * at each request, so this double numbers them; its vendor refuses a token it has seen.
+ */
+describe('CaptureService with a vendor whose token opens one connection (SttCredentialUse)', () => {
+  /** Lets the token fetches and opens in flight settle. */
+  const settle = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
+  const voice = () => new Uint8Array(3200).fill(64);
+
+  function numberedTokens(h: Harness, credentialUse: SttCredentialUse): void {
+    h.stt.credentialUse = credentialUse;
+    let minted = 0;
+    h.api.getSttToken.mockImplementation(() => {
+      minted += 1;
+      return Promise.resolve({
+        provider: 'scripted',
+        access_token: `tok-${minted}`,
+        expires_in: 30,
+        stream: {
+          model: 'm',
+          language: 'en',
+          sample_rate: 16000,
+          encoding: 'linear16',
+          price_per_hour_usd: 0.15,
+          keyterms: [],
+        },
+      });
+    });
+  }
+
+  /** Each open's source and the token it was handed, in order. */
+  const opened = (h: Harness) => h.stt.opened.map((o) => `${o.label}:${o.accessToken}`);
+
+  it("opens Start's two sources with a token each, and a reusable vendor's with one", async () => {
+    const single = harness();
+    numberedTokens(single, 'single-connection');
+    const started = await single.service.start();
+    expect(started.phase).toBe('recording');
+    expect(started.error).toBeNull();
+    expect(opened(single)).toEqual(['mic:tok-1', 'system:tok-2']);
+    expect(single.api.getSttToken).toHaveBeenCalledTimes(2);
+    await single.service.stop();
+
+    const reusable = harness();
+    numberedTokens(reusable, 'reusable');
+    await reusable.service.start();
+    expect(opened(reusable)).toEqual(['mic:tok-1', 'system:tok-1']);
+    expect(reusable.api.getSttToken).toHaveBeenCalledTimes(1);
+    await reusable.service.stop();
+  });
+
+  it('gives every mid-call open a token no open had: a failure reopen, then speech after silence', async () => {
+    const h = harness();
+    numberedTokens(h, 'single-connection');
+    await h.service.start();
+    h.stt.streams.get('system')!.emitter.emit({ type: 'closed', code: 1011, reason: 'error' });
+    h.advance(2_100); // past the first backoff
+    h.service.pushAudio('system', voice(), h.now() - 100);
+    await settle();
+    expect(h.service.getStatus().streams.system).toBe('open');
+
+    // Nobody else on the call for a minute: the silence gate closes call audio.
+    for (let passed = 0; passed < 61_000; passed += 100) {
+      h.advance(100);
+      h.service.pushAudio('mic', voice(), h.now() - 100);
+      h.service.pushAudio('system', new Uint8Array(3200), h.now() - 100);
+    }
+    await settle();
+    expect(h.service.getStatus().streams.system).toBe('paused');
+    h.advance(100);
+    h.service.pushAudio('system', voice(), h.now() - 100);
+    await settle();
+
+    expect(h.service.getStatus().streams.system).toBe('open');
+    expect(h.service.getStatus().error).toBeNull();
+    // The fourth was prefetched at the gate's close and spent on the speech reopen alone.
+    expect(opened(h)).toEqual(['mic:tok-1', 'system:tok-2', 'system:tok-3', 'system:tok-4']);
+    expect(h.api.getSttToken).toHaveBeenCalledTimes(4);
+    await h.service.stop();
   });
 });

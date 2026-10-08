@@ -365,6 +365,7 @@ class RecordedStream implements SttStream {
 class OpenAtOnce implements SpeechToText {
   readonly provider = 'scripted';
   readonly vendorName = 'Scripted';
+  readonly credentialUse = 'reusable';
   readonly opens: string[] = [];
   readonly streams: RecordedStream[] = [];
   openStream({ label }: { label?: string }): Promise<SttStream> {

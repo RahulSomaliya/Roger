@@ -1,5 +1,5 @@
 import type { WebSocket } from 'ws';
-import type { SttStreamSettings } from '../SpeechToText';
+import type { SttCredentialUse, SttStreamSettings } from '../SpeechToText';
 import type { FakeVendorConnection } from './fakeVendorServer';
 
 /**
@@ -11,6 +11,12 @@ export interface ConformanceVendor {
   provider: string;
   /** What the API hands out for this vendor (/v1/stt/token `stream`). */
   settings: SttStreamSettings;
+  /**
+   * What one of its tokens may open (SttCredentialUse); the protocol must declare the same. For
+   * `single-connection` the fake refuses a token it has seen with HTTP 401
+   * (FakeVendorServer.singleUseCredentials), so every open in the suite gets a token of its own.
+   */
+  credentialUse: SttCredentialUse;
   /**
    * What the vendor must hear first, before any audio, for `settings` (Soniox's start request;
    * SttProtocol.openingMessages). [] for a vendor that needs nothing first.
@@ -62,6 +68,8 @@ export const CONFORMANCE_VENDORS: readonly ConformanceVendor[] = [
       encoding: 'linear16',
       pricePerHourUsd: 0.15,
     },
+    // "One token may open several sessions" within its window (the API's stt_tokens.py).
+    credentialUse: 'reusable',
     // Everything is in the URL's query.
     openingMessages: [],
     readyMessage: JSON.stringify({ type: 'Begin', id: 'session-1', expires_at: 1772570132 }),
@@ -116,6 +124,8 @@ export const CONFORMANCE_VENDORS: readonly ConformanceVendor[] = [
       encoding: 'linear16',
       pricePerHourUsd: 0.462,
     },
+    // A grant is checked at each handshake within its 30 s.
+    credentialUse: 'reusable',
     openingMessages: [],
     readyMessage: null,
     finishMessages: [JSON.stringify({ type: 'Finalize' }), JSON.stringify({ type: 'CloseStream' })],
@@ -151,6 +161,8 @@ export const CONFORMANCE_VENDORS: readonly ConformanceVendor[] = [
       encoding: 'linear16',
       pricePerHourUsd: 0.12,
     },
+    // The API asks for every key with `single_use: false`.
+    credentialUse: 'reusable',
     // The start request: Soniox refuses a session whose first message is not this one.
     openingMessages: [
       JSON.stringify({
@@ -221,6 +233,8 @@ export const CONFORMANCE_VENDORS: readonly ConformanceVendor[] = [
       encoding: 'linear16',
       pricePerHourUsd: 0.2,
     },
+    // A client secret opens one websocket, ever: the 2026-10-08 probe (XaiSpeechToText.ts header).
+    credentialUse: 'single-connection',
     // Everything is in the URL's query.
     openingMessages: [],
     // xAI's ready signal: "wait for this before sending audio".

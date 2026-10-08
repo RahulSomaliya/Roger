@@ -172,6 +172,76 @@ describe('replayItemAttempt', () => {
     });
   });
 
+  /**
+   * xAI's client secret opens one websocket, ever (SttCredentialUse, the 2026-10-08 probe): both
+   * streams of an item on one token would get the second refused with HTTP 401.
+   */
+  it('opens each stream with a token of its own for a single-connection vendor, both on one otherwise', async () => {
+    const single = setup({ vendor: { credentialUse: 'single-connection' } });
+    const result = await single.attempt(
+      new Map([
+        ['mic', tone(100)],
+        ['system', tone(100)],
+      ]),
+    );
+    expect(result.record.error).toBeNull();
+    expect(single.vendor.streams.map((s) => [s.label, s.options.accessToken])).toEqual([
+      ['mic', 'tok-1'],
+      ['system', 'tok-2'],
+    ]);
+    expect(single.api.calls).toBe(2);
+
+    const reusable = setup();
+    await reusable.attempt(
+      new Map([
+        ['mic', tone(100)],
+        ['system', tone(100)],
+      ]),
+    );
+    expect(reusable.vendor.streams.map((s) => s.options.accessToken)).toEqual(['tok-1', 'tok-1']);
+    expect(reusable.api.calls).toBe(1);
+  });
+
+  it("records a failed request for the second stream's token without opening anything", async () => {
+    const { vendor, attempt } = setup({
+      vendor: { credentialUse: 'single-connection' },
+      api: new ScriptedTokenApi(tokenResponse(), new Error('POST /v1/stt/token failed: 503')),
+    });
+
+    const result = await attempt(
+      new Map([
+        ['mic', tone(100)],
+        ['system', tone(100)],
+      ]),
+    );
+
+    expect(result.record).toMatchObject({
+      tokenReceivedAtMs: null,
+      error: 'token request failed: POST /v1/stt/token failed: 503',
+      streams: [],
+    });
+    expect(vendor.opens).toBe(0);
+  });
+
+  it("stops the run when the second stream's connect query holds that stream's own token", async () => {
+    const { attempt } = setup({
+      vendor: {
+        credentialUse: 'single-connection',
+        connectQuery: (options) =>
+          options.label === 'system' ? `token=${options.accessToken}` : 'sample_rate=16000',
+      },
+    });
+
+    await expect(
+      attempt(
+        new Map([
+          ['mic', tone(100)],
+          ['system', tone(100)],
+        ]),
+      ),
+    ).rejects.toThrow(RunStoppedError);
+  });
+
   it('fails the attempt on a refused connect, closes the other stream and sends no audio', async () => {
     const { vendor, attempt } = setup({
       vendor: {
@@ -448,6 +518,31 @@ describe('replayItemAttempt with --gate (M3-T20)', () => {
     ).toEqual([
       [0, 'closed'],
       [1, 'closed'],
+    ]);
+  });
+
+  it('prefetches a token per gated stream for a single-connection vendor, each spent on one reopen', async () => {
+    const { vendor, api, attempt } = setup({
+      gate: GATE,
+      vendor: { credentialUse: 'single-connection' },
+    });
+    const talk = joined(tone(1_000), silence(70_000), tone(2_000));
+
+    const result = await attempt(
+      new Map([
+        ['mic', talk],
+        ['system', talk],
+      ]),
+    );
+
+    expect(result.record.error).toBeNull();
+    // Start's two, then one prefetched at each stream's close: none at the onset.
+    expect(api.calls).toBe(4);
+    expect(vendor.streams.map((s) => [s.label, s.options.accessToken])).toEqual([
+      ['mic', 'tok-1'],
+      ['system', 'tok-2'],
+      ['mic#1', 'tok-3'],
+      ['system#1', 'tok-4'],
     ]);
   });
 

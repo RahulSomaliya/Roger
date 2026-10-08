@@ -69,10 +69,27 @@ export interface SttStream {
   on(listener: SttEventListener): () => void;
 }
 
+/**
+ * How many vendor sessions one access token from the API may open. The adapter's protocol declares
+ * it (SttProtocol.credentialUse, house rule 4); every caller that opens reads it here.
+ * - `reusable`: any number within its TTL (AssemblyAI's temporary token, Deepgram's grant, Soniox's
+ *   key asked with `single_use: false`). One token opens both sources at Start and the silence
+ *   gate keeps one for both, which saves an API call per Start.
+ * - `single-connection`: exactly ONE websocket, ever (xAI's client secret: a second connection with
+ *   it, at the same time or after the first closed, is refused with HTTP 401; the probe of
+ *   2026-10-08 in docs/research/stt-benchmark.md). Every open then gets a token no other open got:
+ *   CaptureSession.open (Start), reopen and connect, GateTokens (the gate's prefetch),
+ *   GapRetranscriber.open and the bench (bench/run/replay.ts). Shared, every Start failed with
+ *   "xAI: rejected with HTTP 401" on one of its two sources.
+ */
+export type SttCredentialUse = 'reusable' | 'single-connection';
+
 export interface SpeechToText {
   readonly provider: string;
   /** For people: the status line and error text, e.g. "AssemblyAI". */
   readonly vendorName: string;
+  /** What one access token may open (SttCredentialUse): read before handing one to an open. */
+  readonly credentialUse: SttCredentialUse;
   openStream(options: OpenStreamOptions): Promise<SttStream>;
   /**
    * What every session this adapter opened has used so far (live ones up to now), or only those

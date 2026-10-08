@@ -56,6 +56,7 @@ function toyProtocol(
     finishedOn: overrides.finishedOn ?? 'finished-message',
     keepAlive: overrides.keepAlive ?? null,
     audioPacing: overrides.audioPacing ?? 'none',
+    credentialUse: 'reusable',
     target: (options) => ({
       url: `${baseUrl}/listen?model=${options.settings.model}`,
       headers: { Authorization: `Bearer ${options.accessToken}` },
