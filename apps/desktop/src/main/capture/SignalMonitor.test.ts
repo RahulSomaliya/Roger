@@ -623,6 +623,7 @@ function slowToClose(stt: SpeechToText, closeMs: number): SpeechToText {
   return {
     provider: stt.provider,
     vendorName: stt.vendorName,
+    credentialUse: stt.credentialUse,
     usage: (label) => stt.usage(label),
     async openStream(options) {
       const stream = await stt.openStream(options);

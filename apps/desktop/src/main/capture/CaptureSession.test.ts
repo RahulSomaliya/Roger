@@ -6,6 +6,7 @@ import {
   type OpenStreamOptions,
   type SpeechToText,
   SttConnectError,
+  type SttCredentialUse,
   SttEventEmitter,
   type SttEventListener,
   type SttStream,
@@ -60,10 +61,15 @@ class ScriptedStream implements SttStream {
   }
 }
 
-/** Streams open when the test says so, in any order. */
+/**
+ * Streams open when the test says so, in any order. As `single-connection` it plays xAI: an open
+ * with a token an earlier open used is refused at once with HTTP 401 (the 2026-10-08 probe).
+ */
 class ControlledSpeechToText implements SpeechToText {
   readonly provider = 'scripted';
   readonly vendorName = 'Scripted';
+  private readonly tokensUsed = new Set<string>();
+  constructor(readonly credentialUse: SttCredentialUse = 'reusable') {}
   usage(): SttUsage {
     return {
       sessionsOpened: 0,
@@ -85,6 +91,11 @@ class ControlledSpeechToText implements SpeechToText {
   openStream(options: OpenStreamOptions): Promise<SttStream> {
     this.opens.push(options.label);
     this.openOptions.push(options);
+    const spent = this.tokensUsed.has(options.accessToken);
+    this.tokensUsed.add(options.accessToken);
+    if (spent && this.credentialUse === 'single-connection') {
+      return Promise.reject(new SttConnectError('Scripted: rejected with HTTP 401', 401));
+    }
     return new Promise((resolve, reject) => {
       this.pending.set(options.label, { resolve, reject });
     });

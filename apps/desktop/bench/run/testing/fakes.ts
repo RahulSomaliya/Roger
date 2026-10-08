@@ -2,6 +2,8 @@ import type { SttTokenApi, SttTokenResponse } from '../../../src/main/api/ApiCli
 import {
   type OpenStreamOptions,
   type SpeechToText,
+  SttConnectError,
+  type SttCredentialUse,
   SttEventEmitter,
   type SttEventListener,
   type SttStream,
@@ -78,6 +80,11 @@ export interface FakeVendorScript {
   onAudio?: (stream: FakeVendorStream, chunkEndMs: number) => void;
   /** Wire records to hand the tap at each connect (the core's `connect` record). */
   connectQuery?: (options: OpenStreamOptions) => string | null;
+  /**
+   * What one token may open; default `reusable`. As `single-connection` it plays xAI: an open
+   * with a token an earlier open used is refused with HTTP 401 (the 2026-10-08 probe).
+   */
+  credentialUse?: SttCredentialUse;
 }
 
 /** One stream of FakeVendor: records what it was sent, emits what the test says. */
@@ -147,6 +154,7 @@ export class FakeVendor {
   readonly streams: FakeVendorStream[] = [];
   readonly providers: string[] = [];
   opens = 0;
+  private readonly tokensUsed = new Set<string>();
 
   constructor(
     private readonly timers: BenchTimers,
@@ -160,12 +168,19 @@ export class FakeVendor {
 
   private adapter(provider: string, wireTap: BenchWireTap): SpeechToText {
     const opened: FakeVendorStream[] = [];
+    const credentialUse = this.script.credentialUse ?? 'reusable';
     return {
       provider,
       vendorName: 'Fake vendor',
+      credentialUse,
       openStream: async (options) => {
         const index = this.opens;
         this.opens += 1;
+        const spent = this.tokensUsed.has(options.accessToken);
+        this.tokensUsed.add(options.accessToken);
+        if (spent && credentialUse === 'single-connection') {
+          throw new SttConnectError('Fake vendor: rejected with HTTP 401', 401);
+        }
         const query = this.script.connectQuery?.(options) ?? null;
         if (query !== null) wireTap({ kind: 'connect', label: options.label, query });
         if (this.script.connectMs !== undefined) await this.timers.sleep(this.script.connectMs);

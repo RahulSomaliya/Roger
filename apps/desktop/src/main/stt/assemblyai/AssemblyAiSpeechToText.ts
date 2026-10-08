@@ -158,6 +158,9 @@ export function assemblyAiProtocol(options: AssemblyAiProtocolOptions = {}): Stt
   return {
     provider: 'assemblyai',
     vendorName: 'AssemblyAI',
+    // "One token may open several sessions" within its expires_in_seconds (the API's issuer,
+    // stt_tokens.py): Start's one token opens both sources.
+    credentialUse: 'reusable',
     target: ({ accessToken, settings }) => ({
       url: buildStreamingUrl(baseUrl, settings, accessToken, inactivityTimeoutMs),
       headers: {},

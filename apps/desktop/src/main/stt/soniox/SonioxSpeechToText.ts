@@ -120,6 +120,9 @@ export function sonioxProtocol(options: SonioxProtocolOptions = {}): SttProtocol
   return {
     provider: 'soniox',
     vendorName: 'Soniox',
+    // The API asks for every key with `single_use: false` (stt_tokens.py): one key opens any number
+    // of streams until it expires.
+    credentialUse: 'reusable',
     // A temporary key from the API (house rule 3). In the header, not the protocols list: an older
     // `temp:` key is not a valid protocols entry, and the header works for both kinds.
     target: ({ accessToken }) => ({

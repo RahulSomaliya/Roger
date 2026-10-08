@@ -42,6 +42,15 @@ export class FakeVendorServer {
   handshakes = 0;
   /** Refuse the handshake with this HTTP status instead of upgrading. */
   rejectWith: number | null = null;
+  /**
+   * Play a vendor whose token opens one connection, ever (SttCredentialUse `single-connection`,
+   * xAI's client secret): a handshake carrying a credential an earlier handshake carried is refused
+   * with HTTP 401, whether that connection is still open or long closed, as xAI refused it in the
+   * 2026-10-08 probe. Read from the `Authorization` header or the `token` query parameter
+   * (handshakeCredential). Off: any credential opens any number of connections.
+   */
+  singleUseCredentials = false;
+  private readonly seenCredentials = new Set<string>();
   /** Whether a new connection answers pings (FakeVendorConnection.answersPings). */
   answersPings = true;
   script: FakeVendorScript = {};
@@ -92,11 +101,13 @@ export class FakeVendorServer {
       host: '127.0.0.1',
       // Pongs are the fake's to give or withhold (FakeVendorConnection.answersPings).
       autoPong: false,
-      verifyClient: (_info, done) => {
+      verifyClient: (info, done) => {
         if (fake !== null) fake.handshakes += 1;
         const status = fake?.rejectWith ?? null;
         if (status !== null) done(false, status, 'refused by the fake vendor');
-        else done(true);
+        else if (fake?.credentialSpent(info.req.url ?? '', info.req.headers) === true) {
+          done(false, 401, 'Unauthorized');
+        } else done(true);
       },
     });
     await new Promise<void>((resolve) => {
@@ -106,6 +117,16 @@ export class FakeVendorServer {
     });
     fake = new FakeVendorServer(server, `ws://127.0.0.1:${(server.address() as AddressInfo).port}`);
     return fake;
+  }
+
+  /** Whether a single-use credential was seen before; records it as spent either way. */
+  private credentialSpent(url: string, headers: IncomingHttpHeaders): boolean {
+    if (!this.singleUseCredentials) return false;
+    const credential = handshakeCredential(url, headers);
+    if (credential === null) return false;
+    if (this.seenCredentials.has(credential)) return true;
+    this.seenCredentials.add(credential);
+    return false;
   }
 
   /** Connections the adapter has not closed yet (from the server's side of the socket). */
@@ -202,6 +223,19 @@ export function manualClock(startMs = 0): { now: () => number; set(ms: number): 
       current = ms;
     },
   };
+}
+
+/**
+ * The credential a handshake carries: the `Authorization` header's value after its scheme
+ * (Deepgram, Soniox, xAI: `Bearer <token>`), else the `token` query parameter (AssemblyAI), else
+ * null.
+ */
+export function handshakeCredential(url: string, headers: IncomingHttpHeaders): string | null {
+  const authorization = headers.authorization;
+  if (authorization !== undefined && authorization !== '') {
+    return authorization.replace(/^\S+\s+/, '');
+  }
+  return new URL(url, 'ws://vendor').searchParams.get('token');
 }
 
 function byteLength(data: Buffer | ArrayBuffer | Buffer[]): number {

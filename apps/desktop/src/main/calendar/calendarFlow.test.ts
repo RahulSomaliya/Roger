@@ -113,6 +113,7 @@ function memoryFiles(): PreferenceFiles {
 class QuietStt implements SpeechToText {
   readonly provider = 'scripted';
   readonly vendorName = 'Scripted';
+  readonly credentialUse = 'reusable';
   readonly streams = new Map<string, QuietStream>();
   /** Nothing is metered here: no billing is under test. */
   usage(): SttUsage {

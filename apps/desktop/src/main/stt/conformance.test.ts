@@ -86,11 +86,16 @@ describe.each(CONFORMANCE_VENDORS)('$provider conforms', (vendor) => {
   let answersFinish: boolean;
   /** When false the fake vendor never sends its ready message. */
   let sendsReady: boolean;
+  /** Tokens handed out so far: every open() gets one of its own, as every caller must give it. */
+  let tokens: number;
 
   beforeEach(async () => {
     answersFinish = true;
     sendsReady = true;
+    tokens = 0;
     server = await FakeVendorServer.start();
+    // A single-connection vendor's fake refuses a token it has seen (HTTP 401), as xAI does.
+    server.singleUseCredentials = vendor.credentialUse === 'single-connection';
     server.script = {
       onConnect: (connection) => {
         if (vendor.readyMessage !== null && sendsReady) {
@@ -128,7 +133,12 @@ describe.each(CONFORMANCE_VENDORS)('$provider conforms', (vendor) => {
     adapter = stt(),
     settings: SttStreamSettings = vendor.settings,
   ): Promise<{ stream: SttStream; events: SttEvent[] }> {
-    const stream = await adapter.openStream({ accessToken: 'token', settings, label: 'mic' });
+    tokens += 1;
+    const stream = await adapter.openStream({
+      accessToken: `token-${tokens}`,
+      settings,
+      label: 'mic',
+    });
     const events: SttEvent[] = [];
     stream.on((event) => events.push(event));
     return { stream, events };
@@ -806,6 +816,72 @@ describe.each(CONFORMANCE_VENDORS)('$provider conforms', (vendor) => {
         expect(error).toBeInstanceOf(SttConnectError);
         expect((error as SttConnectError).keytermsRejected).toBe(false);
         expect(server.handshakes).toBe(1);
+      },
+    );
+  });
+
+  /**
+   * What one token may open (SttCredentialUse). xAI's client secret opens one websocket, ever: the
+   * 2026-10-08 probe saw a second connection with it refused with HTTP 401, at once or after the
+   * first closed, and every Start failed while Roger shared Start's token between its two sources.
+   * The fake plays the declaration (FakeVendorServer.singleUseCredentials), so an adapter that
+   * declares `reusable` for a single-use vendor fails here, and so does any test above that
+   * reuses a token.
+   */
+  describe('its access token', () => {
+    it('declares credentialUse as its entry says', () => {
+      expect(stt().protocol.credentialUse).toBe(vendor.credentialUse);
+      expect(stt().credentialUse).toBe(vendor.credentialUse);
+    });
+
+    itIf(vendor.credentialUse === 'single-connection')(
+      'opens one connection, ever: a second with it is refused with HTTP 401, at once or later',
+      async () => {
+        const adapter = stt();
+        const first = await adapter.openStream({
+          accessToken: 'secret-1',
+          settings: vendor.settings,
+          label: 'mic',
+        });
+        const atOnce = await adapter
+          .openStream({ accessToken: 'secret-1', settings: vendor.settings, label: 'system' })
+          .catch((e: unknown) => e);
+        await first.close();
+        const later = await adapter
+          .openStream({ accessToken: 'secret-1', settings: vendor.settings, label: 'mic' })
+          .catch((e: unknown) => e);
+
+        for (const error of [atOnce, later]) {
+          expect(error).toBeInstanceOf(SttConnectError);
+          expect((error as SttConnectError).statusCode).toBe(401);
+        }
+        // A token of its own opens the second source.
+        const second = await adapter.openStream({
+          accessToken: 'secret-2',
+          settings: vendor.settings,
+          label: 'system',
+        });
+        await second.close();
+      },
+    );
+
+    itIf(vendor.credentialUse === 'reusable')(
+      'opens both sources with one token, at once and after a close',
+      async () => {
+        const adapter = stt();
+        const opened = await Promise.all(
+          (['mic', 'system'] as const).map((label) =>
+            adapter.openStream({ accessToken: 'shared', settings: vendor.settings, label }),
+          ),
+        );
+        await Promise.all(opened.map((stream) => stream.close()));
+        const again = await adapter.openStream({
+          accessToken: 'shared',
+          settings: vendor.settings,
+          label: 'mic',
+        });
+        await again.close();
+        expect(server.handshakes).toBe(3);
       },
     );
   });
