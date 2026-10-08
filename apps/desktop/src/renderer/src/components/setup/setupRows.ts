@@ -241,19 +241,37 @@ const failing = (view: SetupRowView): boolean =>
   view.tone === 'problem' || view.tone === 'attention';
 
 /**
- * The rows for the default view and the ones folded under "N checks pass". A row not yet tested
- * stays in view (its test is the fix); only a confirmed pass is folded away.
+ * The rows for the default view, the ones folded under "N checks pass", and the untested ones
+ * folded with them. A row not yet tested stays in view (its test is the fix), with one exception
+ * (R12): the notification test. It checks nothing Roger needs to record, so "Not tested" is not a
+ * reason to hold the screen open above the passes; it folds with them, counted apart ("5 checks
+ * pass, 1 not tested") so a pass is never claimed for it, and Show lists it with its test button.
+ * A notification that FAILED, or an untested row that carries a message, is not neutral
+ * (fromCheck) and stays in view.
  */
 export function splitRows(rows: readonly SetupRowView[]): {
   open: SetupRowView[];
   passing: SetupRowView[];
+  untested: SetupRowView[];
 } {
-  return { open: rows.filter(isOpen), passing: rows.filter((view) => !isOpen(view)) };
+  const untested = rows.filter(isFoldableUntested);
+  return {
+    open: rows.filter((view) => isOpen(view) && !isFoldableUntested(view)),
+    passing: rows.filter((view) => !isOpen(view)),
+    untested,
+  };
 }
 
-/** The line that folds the passing rows away. */
-export function passingLine(count: number): string {
-  return count === 1 ? '1 check passes' : `${count} checks pass`;
+/** The one untested row that folds away: see splitRows. */
+const isFoldableUntested = (view: SetupRowView): boolean =>
+  view.id === 'notifications' && view.tone === 'neutral';
+
+/** The line that folds the passing rows away; `untested` rows are said apart from the passes. */
+export function passingLine(passing: number, untested = 0): string {
+  const passes = passing === 1 ? '1 check passes' : `${passing} checks pass`;
+  if (untested === 0) return passes;
+  if (passing === 0) return untested === 1 ? '1 check not tested' : `${untested} checks not tested`;
+  return `${passes}, ${untested} not tested`;
 }
 
 /**

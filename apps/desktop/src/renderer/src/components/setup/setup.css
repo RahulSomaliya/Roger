@@ -31,6 +31,8 @@
 }
 
 .setup-list {
+  /* The page column is 880 px in the landscape window; the rows read at 640 (sweep section 4). */
+  max-width: 640px;
   display: flex;
   flex-direction: column;
   margin: 0;
@@ -106,6 +108,7 @@
 /* "5 checks pass" then Show: the folded rows, one click away. The ghost button's own padding
    carries the line to 32 px, so the line is not taller than a row's actions. */
 .setup-passing {
+  max-width: 640px;
   display: flex;
   align-items: center;
   gap: var(--space-1);
