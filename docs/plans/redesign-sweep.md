@@ -491,8 +491,10 @@ that report instead.
   page but the live meeting's own), Settings (ghost icon). On Settings the gear shows the selected look
   (`fill`, `ink`, `aria-current="page"`), not only a colour (V1, V2).
 - **Home at 960 and up (D2).** Two columns in the 880 px content, top-aligned, 64 px apart: the left
-  (a bounded column, `minmax(280px, 340px)`) holds the hero (overline, the 24 px title, hours, **Start notes** `lg`) and under it the
-  calendar line or Connect with its helper; the right (`minmax(0, 1fr)`, 476 px in the 880 px content: the lists are the wide column) holds Today, then Earlier (10, Show
+  (a bounded column, `minmax(280px, 340px)`) holds the hero (overline, the 24 px title, hours,
+  **Start notes** `lg`) and under it the calendar line or Connect with its helper; the right
+  (`minmax(0, 1fr)`, 476 px in the 880 px content: the lists are the wide column, so titles are cut
+  late) holds Today, then Earlier (10, Show
   more), rows of a 88 px time column and the title, the row's action in a fixed right column on hover
   and focus. With no rows in either list the right column is absent and the hero stands alone at the
   left of the content, not centred. Under 960 it stacks as today.

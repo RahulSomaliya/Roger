@@ -198,6 +198,10 @@ before you start.
   retry without the jargon list, the re-run, the bench), and every `SpeechToText` test double
   declares it too. Probe a new vendor with two connections on one token, at once and after a
   close, before declaring `'reusable'`.
+- Never run Prettier (or any formatter) over `docs/`: it pads every Markdown table, which breaks
+  `apps/api/tests/test_errors.py` (each error class must have the exact row ``| 401 | `unauthorized` |``
+  in `docs/api-contract.md`) and churned 2,000 lines across 16 docs in one commit (redesign sweep,
+  2026-10-08). `make format` and `format:check` cover `apps/desktop` only; edit docs by hand.
 - Merging does not update `/Applications/Roger.app` or a running API: after the redesign merged,
   Rahul still saw the old UI and the API on 8010 ran without the xAI code (2026-10-08). After
   landing desktop or API changes, run `make install-desktop` and restart the API.

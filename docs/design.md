@@ -45,28 +45,28 @@ property, in three blocks: light (`:root`), macOS dark (`@media (prefers-color-s
 are identical. Components read `var(--name)`; a literal colour anywhere else in the renderer is a
 bug, and `noLiteralColours.test.ts` fails on it.
 
-| Token                              | Light                  | Dark                                         | Role                                                                                                                     |
-| ---------------------------------- | ---------------------- | -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| `canvas`                           | `0.985 0.004 80`       | `0.17 0.006 70`                              | page background                                                                                                          |
-| `surface`                          | `0.995 0.002 80`       | `0.21 0.007 70`                              | inputs, the rare card. Dark: lighter = higher                                                                            |
-| `raised`                           | `0.995 0.002 80`       | `0.25 0.008 70`                              | menus, dialogs, the prompt panel's card                                                                                  |
-| `fill`                             | `0.955 0.006 80`       | `0.26 0.008 70`                              | hover wash, citation chips, the tab track                                                                                |
-| `sunken`                           | `0.955 0.006 80`       | `0.20 0.007 70`                              | a recessed panel inside a dialog. Dark: darker than `raised`, or it vanishes                                             |
-| `control`                          | `0.995 0.002 80`       | `0.34 0.008 70`                              | the selected tab in the tab track                                                                                        |
-| `line`                             | `0.90 0.008 80`        | `0.30 0.008 70`                              | hairlines (low contrast on purpose)                                                                                      |
-| `ink`                              | `0.22 0.01 70`         | `0.93 0.008 80`                              | primary text, problem text                                                                                               |
-| `ink-muted`                        | `0.45 0.012 70`        | `0.72 0.01 75`                               | secondary text, icons, ghost buttons                                                                                     |
-| `ink-subtle`                       | `0.52 0.012 70`        | `0.66 0.01 75`                               | tertiary TEXT: times, offsets, interim words, echo lines                                                                 |
-| `accent`                           | `0.56 0.17 42`         | `0.72 0.16 50`                               | FILL only: the primary button, the recording dot, focus                                                                  |
-| `accent-hover`                     | `0.52 0.165 41`        | `0.76 0.15 52`                               | the primary button under the pointer                                                                                     |
-| `on-accent`                        | `0.99 0.005 80`        | `0.18 0.02 50`                               | text and icons on an accent fill. Dark: DARK ink                                                                         |
-| `accent-ink`                       | `0.48 0.15 40`         | `0.80 0.13 55`                               | accent-hued TEXT: a link, the "check" mark on a cited AI line                                                            |
-| `accent-soft`                      | `0.95 0.035 55`        | `0.29 0.05 50`                               | the one tint: the transcript line a chip revealed, text selection                                                        |
-| `ring`                             | = `accent`             | = `accent`                                   | focus ring                                                                                                               |
-| `scrim`                            | `0.22 0.01 70 / 0.4`   | `0.08 0.004 70 / 0.6`                        | dialog backdrop                                                                                                          |
-| `e1`, `e2`, `e3`                   | shadows, see Elevation |                                              | they hold colour, so they live here                                                                                      |
-| `fill-raised` (sweep, built by T0) | = `fill`               | lighter than `raised`, about `0.31 0.008 70` | hover and pressed wash on a `raised` surface (menu rows, the prompt card's ghost buttons): `fill` vanishes there in dark |
-| `edge` (sweep, built by T0)        | = `line`               | about `0.36 0.008 70`                        | the 1 px edge of a floating surface over another app (the prompt card), where the system shadow cannot show in dark      |
+| Token | Light | Dark | Role |
+| --- | --- | --- | --- |
+| `canvas` | `0.985 0.004 80` | `0.17 0.006 70` | page background |
+| `surface` | `0.995 0.002 80` | `0.21 0.007 70` | inputs, the rare card. Dark: lighter = higher |
+| `raised` | `0.995 0.002 80` | `0.25 0.008 70` | menus, dialogs, the prompt panel's card |
+| `fill` | `0.955 0.006 80` | `0.26 0.008 70` | hover wash, citation chips, the tab track |
+| `sunken` | `0.955 0.006 80` | `0.20 0.007 70` | a recessed panel inside a dialog. Dark: darker than `raised`, or it vanishes |
+| `control` | `0.995 0.002 80` | `0.34 0.008 70` | the selected tab in the tab track |
+| `line` | `0.90 0.008 80` | `0.30 0.008 70` | hairlines (low contrast on purpose) |
+| `ink` | `0.22 0.01 70` | `0.93 0.008 80` | primary text, problem text |
+| `ink-muted` | `0.45 0.012 70` | `0.72 0.01 75` | secondary text, icons, ghost buttons |
+| `ink-subtle` | `0.52 0.012 70` | `0.66 0.01 75` | tertiary TEXT: times, offsets, interim words, echo lines |
+| `accent` | `0.56 0.17 42` | `0.72 0.16 50` | FILL only: the primary button, the recording dot, focus |
+| `accent-hover` | `0.52 0.165 41` | `0.76 0.15 52` | the primary button under the pointer |
+| `on-accent` | `0.99 0.005 80` | `0.18 0.02 50` | text and icons on an accent fill. Dark: DARK ink |
+| `accent-ink` | `0.48 0.15 40` | `0.80 0.13 55` | accent-hued TEXT: a link, the "check" mark on a cited AI line |
+| `accent-soft` | `0.95 0.035 55` | `0.29 0.05 50` | the one tint: the transcript line a chip revealed, text selection |
+| `ring` | = `accent` | = `accent` | focus ring |
+| `scrim` | `0.22 0.01 70 / 0.4` | `0.08 0.004 70 / 0.6` | dialog backdrop |
+| `e1`, `e2`, `e3` | shadows, see Elevation | | they hold colour, so they live here |
+| `fill-raised` (sweep, built by T0) | = `fill` | lighter than `raised`, about `0.31 0.008 70` | hover and pressed wash on a `raised` surface (menu rows, the prompt card's ghost buttons): `fill` vanishes there in dark |
+| `edge` (sweep, built by T0) | = `line` | about `0.36 0.008 70` | the 1 px edge of a floating surface over another app (the prompt card), where the system shadow cannot show in dark |
 
 Added by the redesign sweep (2026-10-08, `docs/plans/redesign-sweep.md`): the two rows above, built by T0
 with the values shown (both dark blocks), `ink` and `ink-muted` on `fill-raised` pinned in the pairings table.
@@ -84,64 +84,65 @@ A good state is words ("Saved on this Mac"), never a green dot.
 `tokens.test.ts` computes every one of these from the OKLCH values and fails under 4.5:1 for text
 or 3:1 for the non-text rows. Add a row before you paint a new pairing.
 
-| Text                             | On                                                                | Light                                          | Dark                                          |
-| -------------------------------- | ----------------------------------------------------------------- | ---------------------------------------------- | --------------------------------------------- |
-| `ink`                            | canvas · surface · raised · fill · sunken · control · accent-soft | 16.5 · 17.0 · 17.0 · 15.1 · 15.1 · 17.0 · 14.7 | 15.5 · 14.4 · 13.0 · 12.6 · 14.7 · 9.5 · 11.6 |
-| `ink-muted`                      | the same seven                                                    | 7.1 · 7.3 · 7.3 · 6.5 · 6.5 · 7.3 · 6.3        | 7.7 · 7.1 · 6.4 · 6.2 · 7.2 · 4.7 · 5.7       |
-| `ink-subtle`                     | canvas · surface · raised · fill · sunken · accent-soft           | 5.2 · 5.4 · 5.4 · 4.8 · 4.8 · 4.7              | 6.1 · 5.6 · 5.1 · 4.9 · 5.8 · 4.5             |
-| `ink`                            | fill-raised (sweep)                                               | 15.2                                           | 10.7                                          |
-| `ink-muted`                      | fill-raised (sweep)                                               | 6.5                                            | 5.3                                           |
-| `accent-ink`                     | canvas · surface · raised · fill · accent-soft                    | 6.7 · 6.9 · 6.9 · 6.1 · 5.9                    | 9.8 · 9.1 · 8.2 · 8.0 · 7.4                   |
-| `on-accent`                      | accent · accent-hover                                             | 4.8 · 5.7                                      | 7.2 · 8.4                                     |
-| `accent`, `ring` (3:1, non-text) | canvas · surface · raised · fill                                  | 4.7 · 4.9 · 4.9 · 4.3                          | 7.3 · 6.7 · 6.1 · 5.9                         |
+| Text | On | Light | Dark |
+| --- | --- | --- | --- |
+| `ink` | canvas · surface · raised · fill · sunken · control · accent-soft | 16.5 · 17.0 · 17.0 · 15.1 · 15.1 · 17.0 · 14.7 | 15.5 · 14.4 · 13.0 · 12.6 · 14.7 · 9.5 · 11.6 |
+| `ink-muted` | the same seven | 7.1 · 7.3 · 7.3 · 6.5 · 6.5 · 7.3 · 6.3 | 7.7 · 7.1 · 6.4 · 6.2 · 7.2 · 4.7 · 5.7 |
+| `ink-subtle` | canvas · surface · raised · fill · sunken · accent-soft | 5.2 · 5.4 · 5.4 · 4.8 · 4.8 · 4.7 | 6.1 · 5.6 · 5.1 · 4.9 · 5.8 · 4.5 |
+| `ink` | fill-raised (sweep) | 15.2 | 10.7 |
+| `ink-muted` | fill-raised (sweep) | 6.5 | 5.3 |
+| `accent-ink` | canvas · surface · raised · fill · accent-soft | 6.7 · 6.9 · 6.9 · 6.1 · 5.9 | 9.8 · 9.1 · 8.2 · 8.0 · 7.4 |
+| `on-accent` | accent · accent-hover | 4.8 · 5.7 | 7.2 · 8.4 |
+| `accent`, `ring` (3:1, non-text) | canvas · surface · raised · fill | 4.7 · 4.9 · 4.9 · 4.3 | 7.3 · 6.7 · 6.1 · 5.9 |
 
 `line` is decorative (1.3:1) and never the only edge of a control: an input's border is `line`
 plus its own `surface` against `canvas`, and focus adds `ring`.
 
 ### Rename table (old token → new; mechanical, then the screen tasks finish)
 
-| Old             | Reads | Becomes now                                                                                                                         | Then                                         |
-| --------------- | ----- | ----------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------- |
-| `--bg`          | 6     | `--canvas`                                                                                                                          |                                              |
-| `--panel`       | 21    | `--surface`                                                                                                                         | most cards go; inputs, menus keep it         |
-| `--ink`         | 44    | `--ink`                                                                                                                             |                                              |
-| `--muted`       | 66    | `--ink-muted`                                                                                                                       | times and offsets move to `--ink-subtle`     |
-| `--line`        | 42    | `--line`                                                                                                                            |                                              |
-| `--accent`      | 21    | `--accent` (burnt orange)                                                                                                           | fills only                                   |
-| `--on-accent`   | 8     | `--on-accent`                                                                                                                       | dark value is dark ink now                   |
-| `--accent-ink`  | 6     | `--accent-ink`                                                                                                                      |                                              |
-| `--focus-ring`  | 12    | `--ring`                                                                                                                            |                                              |
-| `--danger`      | 11    | `--accent`                                                                                                                          | Stop is the primary; nothing else is filled  |
-| `--danger-ink`  | 15    | `--ink`                                                                                                                             | plus an icon (Components, Problem line)      |
-| `--danger-bg`   | 10    | `--fill`                                                                                                                            | deleted: problems have no box                |
-| `--warn`        | 11    | `--ink-muted`                                                                                                                       | deleted with the words that replace it       |
-| `--warn-bg`     | 8     | `--fill`                                                                                                                            | deleted                                      |
-| `--ok`          | 6     | `--ink-muted`                                                                                                                       | deleted: a good state is words               |
-| `--ok-bg`       | 2     | `--fill`                                                                                                                            | deleted                                      |
-| `--interim-ink` | 1     | `--ink-subtle`                                                                                                                      |                                              |
-| `--hidden-ink`  | 2     | `--ink-subtle`                                                                                                                      | echo lines also carry the word "echo"        |
-| `--cited-bg`    | 1     | `--accent-soft`                                                                                                                     |                                              |
-| `--recording`   | 2     | `--accent`                                                                                                                          | a static dot plus the word "Recording"       |
-| `--sidebar-bg`  | 1     | `--fill`                                                                                                                            | deleted with the sidebar                     |
-| `--chip-bg`     | 15    | `--fill`                                                                                                                            |                                              |
-| `--conflict-bg` | 1     | `--fill`                                                                                                                            | deleted: the conflict line is a problem line |
-| (new)           |       | `--raised`, `--fill`, `--sunken`, `--control`, `--ink-subtle`, `--accent-hover`, `--accent-soft`, `--scrim`, `--e1`, `--e2`, `--e3` |                                              |
+| Old | Reads | Becomes now | Then |
+| --- | --- | --- | --- |
+| `--bg` | 6 | `--canvas` | |
+| `--panel` | 21 | `--surface` | most cards go; inputs, menus keep it |
+| `--ink` | 44 | `--ink` | |
+| `--muted` | 66 | `--ink-muted` | times and offsets move to `--ink-subtle` |
+| `--line` | 42 | `--line` | |
+| `--accent` | 21 | `--accent` (burnt orange) | fills only |
+| `--on-accent` | 8 | `--on-accent` | dark value is dark ink now |
+| `--accent-ink` | 6 | `--accent-ink` | |
+| `--focus-ring` | 12 | `--ring` | |
+| `--danger` | 11 | `--accent` | Stop is the primary; nothing else is filled |
+| `--danger-ink` | 15 | `--ink` | plus an icon (Components, Problem line) |
+| `--danger-bg` | 10 | `--fill` | deleted: problems have no box |
+| `--warn` | 11 | `--ink-muted` | deleted with the words that replace it |
+| `--warn-bg` | 8 | `--fill` | deleted |
+| `--ok` | 6 | `--ink-muted` | deleted: a good state is words |
+| `--ok-bg` | 2 | `--fill` | deleted |
+| `--interim-ink` | 1 | `--ink-subtle` | |
+| `--hidden-ink` | 2 | `--ink-subtle` | echo lines also carry the word "echo" |
+| `--cited-bg` | 1 | `--accent-soft` | |
+| `--recording` | 2 | `--accent` | a static dot plus the word "Recording" |
+| `--sidebar-bg` | 1 | `--fill` | deleted with the sidebar |
+| `--chip-bg` | 15 | `--fill` | |
+| `--conflict-bg` | 1 | `--fill` | deleted: the conflict line is a problem line |
+| (new) | | `--raised`, `--fill`, `--sunken`, `--control`, `--ink-subtle`, `--accent-hover`, `--accent-soft`, `--scrim`, `--e1`, `--e2`, `--e3` | |
 
 ## Type
 
 System stack: `-apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif` (SF Pro,
-no font files; the prompt panel uses the same). Weights 400 and 600; 500 for buttons. No 650 or 700. Times, offsets and counters that tick or sit in a column use `font-variant-numeric:
+no font files; the prompt panel uses the same). Weights 400 and 600; 500 for buttons. No 650 or
+700. Times, offsets and counters that tick or sit in a column use `font-variant-numeric:
 tabular-nums`. Reading text (notes, AI notes, transcript, chat) is capped at 68ch.
 
-| Step          | px / line-height      | Use                                                                                         |
-| ------------- | --------------------- | ------------------------------------------------------------------------------------------- |
-| `--text-xs`   | 12 / 16, +0.06em caps | overlines (TODAY, EARLIER, NEXT), Details labels; uncapped for transcript offsets and chips |
-| `--text-sm`   | 14 / 20               | UI text, list rows, transcript lines, chat, helper text, small buttons                      |
-| `--text-base` | 16 / 24               | the notes editors, buttons, dialog body                                                     |
-| `--text-lg`   | 18 / 28               | headings inside notes, Settings section titles                                              |
-| `--text-xl`   | 20 / 28               | dialog titles                                                                               |
-| `--text-2xl`  | 24 / 30, −0.015em     | the meeting title, Home's next meeting                                                      |
-| `--text-3xl`  | 30 / 36, −0.02em      | page titles: Settings, Set up Roger                                                         |
+| Step | px / line-height | Use |
+| --- | --- | --- |
+| `--text-xs` | 12 / 16, +0.06em caps | overlines (TODAY, EARLIER, NEXT), Details labels; uncapped for transcript offsets and chips |
+| `--text-sm` | 14 / 20 | UI text, list rows, transcript lines, chat, helper text, small buttons |
+| `--text-base` | 16 / 24 | the notes editors, buttons, dialog body |
+| `--text-lg` | 18 / 28 | headings inside notes, Settings section titles |
+| `--text-xl` | 20 / 28 | dialog titles |
+| `--text-2xl` | 24 / 30, −0.015em | the meeting title, Home's next meeting |
+| `--text-3xl` | 30 / 36, −0.02em | page titles: Settings, Set up Roger |
 
 ## Space, size, radius
 
@@ -159,11 +160,11 @@ side by side.
 
 ## Elevation (role-based; dark mode leans on lighter surfaces)
 
-| Token  | Light                                   | Dark                             | Role                                 |
-| ------ | --------------------------------------- | -------------------------------- | ------------------------------------ |
-| `--e1` | `0 1px 2px ink/6%, 0 1px 3px ink/10%`   | `0 1px 2px oklch(0 0 0 / 0.3)`   | the primary button, the selected tab |
-| `--e2` | `0 4px 8px ink/8%, 0 2px 4px ink/6%`    | `0 4px 12px oklch(0 0 0 / 0.35)` | menus, the prompt card               |
-| `--e3` | `0 16px 32px ink/14%, 0 4px 8px ink/6%` | `0 16px 40px oklch(0 0 0 / 0.5)` | dialogs                              |
+| Token | Light | Dark | Role |
+| --- | --- | --- | --- |
+| `--e1` | `0 1px 2px ink/6%, 0 1px 3px ink/10%` | `0 1px 2px oklch(0 0 0 / 0.3)` | the primary button, the selected tab |
+| `--e2` | `0 4px 8px ink/8%, 0 2px 4px ink/6%` | `0 4px 12px oklch(0 0 0 / 0.35)` | menus, the prompt card |
+| `--e3` | `0 16px 32px ink/14%, 0 4px 8px ink/6%` | `0 16px 40px oklch(0 0 0 / 0.5)` | dialogs |
 
 `ink` above is `oklch(0.22 0.01 70 / a)`.
 
@@ -178,21 +179,21 @@ screenshot catches it mid-fade. Under `prefers-reduced-motion: reduce`, `styles.
 duration and delay, and JS smooth scrolling asks `matchMedia` first. Success stays until read;
 it is never a sub-second flash.
 
-| Moment                                        | What moves                                              | Spec                                                                                        |
-| --------------------------------------------- | ------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
-| Hover, press on buttons and rows              | background, opacity                                     | 150 ms ease-out                                                                             |
-| A menu opens (⋯, Write again as)              | opacity + 4 px rise from 0.98 scale                     | `pop-in` 200 ms; closes 140 ms ease-in                                                      |
-| The Details or a confirm dialog               | card rises (opacity + 12 px + 0.985 scale), scrim fades | `rise` 260 ms; `leave` 180 ms ease-in                                                       |
-| A problem line arrives                        | opacity from 40 % + 4 px                                | `arrive` 300 ms; leaves 200 ms ease-in                                                      |
-| A transcript line or streamed AI text arrives | nothing                                                 | text arrives at speaking pace; motion would never stop                                      |
-| An interim word turns final                   | nothing                                                 | `ink-subtle` → `ink` at once                                                                |
-| A tab is picked                               | nothing                                                 | panes swap at once; they stay mounted (Traps)                                               |
-| A chip reveals its transcript line            | scroll to centre; a static `accent-soft` tint           | smooth scroll unless reduced motion; the tint never fades                                   |
-| Copy notice → "Copied"                        | the label swaps                                         | stays until the line is dismissed                                                           |
-| Recording                                     | nothing                                                 | the dot is static                                                                           |
-| A prompt card arrives (sweep)                 | opacity 0 → 1, `translateX(12px)` → 0                   | `slide-in` 240 ms ease-out, after the window shows                                          |
-| A prompt card leaves (sweep)                  | opacity → 0, `translateX(12px)`                         | 170 ms ease-in; main hides the window only after the page reports height 0, 400 ms fallback |
-| A page changes (sweep)                        | nothing                                                 | pages swap at once; focus moves to the new page's `h1`                                      |
+| Moment | What moves | Spec |
+| --- | --- | --- |
+| Hover, press on buttons and rows | background, opacity | 150 ms ease-out |
+| A menu opens (⋯, Write again as) | opacity + 4 px rise from 0.98 scale | `pop-in` 200 ms; closes 140 ms ease-in |
+| The Details or a confirm dialog | card rises (opacity + 12 px + 0.985 scale), scrim fades | `rise` 260 ms; `leave` 180 ms ease-in |
+| A problem line arrives | opacity from 40 % + 4 px | `arrive` 300 ms; leaves 200 ms ease-in |
+| A transcript line or streamed AI text arrives | nothing | text arrives at speaking pace; motion would never stop |
+| An interim word turns final | nothing | `ink-subtle` → `ink` at once |
+| A tab is picked | nothing | panes swap at once; they stay mounted (Traps) |
+| A chip reveals its transcript line | scroll to centre; a static `accent-soft` tint | smooth scroll unless reduced motion; the tint never fades |
+| Copy notice → "Copied" | the label swaps | stays until the line is dismissed |
+| Recording | nothing | the dot is static |
+| A prompt card arrives (sweep) | opacity 0 → 1, `translateX(12px)` → 0 | `slide-in` 240 ms ease-out, after the window shows |
+| A prompt card leaves (sweep) | opacity → 0, `translateX(12px)` | 170 ms ease-in; main hides the window only after the page reports height 0, 400 ms fallback |
+| A page changes (sweep) | nothing | pages swap at once; focus moves to the new page's `h1` |
 
 ## Components (one primary per view)
 
@@ -239,7 +240,7 @@ it is never a sub-second flash.
   of every doc already stored, and the renderer does not rewrite it.
 - **Inputs.** 40 px, `surface`, 1 px `line`, `--radius-md`, `ring` on focus. Settings save on
   change or blur: no Save buttons. Checkboxes and radios are native with `accent-color:
-var(--accent)`.
+  var(--accent)`.
 - **Empty states are absent.** An empty list is no list. A placeholder in an input may say what
   goes there. No "Nothing here yet" panels.
 - **Loading.** Nothing for a read that answers within a frame or two (main's reads do); a quiet
@@ -247,27 +248,27 @@ var(--accent)`.
 
 ### The one primary, per screen and moment
 
-| Screen         | Moment                                                    | Primary                                                                                                                                 | The rest                                                                                         |
-| -------------- | --------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
-| Home           | idle                                                      | **Start notes** (`lg`); for the next meeting when it starts within 10 minutes or is on now, else a blank note                           | Connect Google Calendar (secondary), a row's Start notes on hover (ghost), Settings (ghost icon) |
-| Home           | recording                                                 | **Stop** (the live meeting shown above it)                                                                                              | the meeting title opens it                                                                       |
-| Meeting        | starting                                                  | **Starting…** (busy)                                                                                                                    |                                                                                                  |
-| Meeting        | recording                                                 | **Stop**                                                                                                                                | Copy notice (secondary), Details (ghost)                                                         |
-| Meeting        | stopping                                                  | **Stopping…** (busy)                                                                                                                    |                                                                                                  |
-| Meeting        | stopped, no AI notes                                      | **Write notes**                                                                                                                         | Details (ghost); the ⋯ menu only once AI notes exist                                             |
-| Meeting        | writing                                                   | **Writing notes…** (busy)                                                                                                               | Cancel (ghost)                                                                                   |
-| Meeting        | AI notes written                                          | none: the notes are the loud thing                                                                                                      | ⋯ menu: Write again as, Restore previous notes                                                   |
-| Meeting        | a past meeting while another records                      | none                                                                                                                                    |                                                                                                  |
-| Settings       | calendar not connected                                    | **Connect Google Calendar**                                                                                                             |                                                                                                  |
-| Settings       | connected, Google refused or is about to expire the grant | **Reconnect**                                                                                                                           | Disconnect (ghost)                                                                               |
-| Settings       | otherwise                                                 | none                                                                                                                                    | Disconnect (ghost)                                                                               |
-| Set up Roger   | a check fails                                             | **the first failing check's fix** (Allow microphone, Open Microphone settings, Open System Audio settings, Check again, Relaunch Roger) | other fixes secondary; **Later** (ghost) is the way out, there is no header                      |
-| Set up Roger   | all pass                                                  | **Done**                                                                                                                                | Later is gone                                                                                    |
-| Prompt panel   | a meeting with a video link                               | **Join and start notes**                                                                                                                | Start notes (ghost), Dismiss (× icon, top right; sweep)                                          |
-| Prompt panel   | no link, or a call detected                               | **Start notes**                                                                                                                         | Dismiss (× icon, top right; sweep)                                                               |
-| Prompt panel   | taking notes                                              | none                                                                                                                                    | Open Roger (ghost)                                                                               |
-| Settings       | Appearance (sweep)                                        | none                                                                                                                                    | System · Light · Dark, a segmented control                                                       |
-| Details dialog |                                                           | none                                                                                                                                    | Transcribe again (secondary), Delete audio (ghost, confirms)                                     |
+| Screen | Moment | Primary | The rest |
+| --- | --- | --- | --- |
+| Home | idle | **Start notes** (`lg`); for the next meeting when it starts within 10 minutes or is on now, else a blank note | Connect Google Calendar (secondary), a row's Start notes on hover (ghost), Settings (ghost icon) |
+| Home | recording | **Stop** (the live meeting shown above it) | the meeting title opens it |
+| Meeting | starting | **Starting…** (busy) | |
+| Meeting | recording | **Stop** | Copy notice (secondary), Details (ghost) |
+| Meeting | stopping | **Stopping…** (busy) | |
+| Meeting | stopped, no AI notes | **Write notes** | Details (ghost); the ⋯ menu only once AI notes exist |
+| Meeting | writing | **Writing notes…** (busy) | Cancel (ghost) |
+| Meeting | AI notes written | none: the notes are the loud thing | ⋯ menu: Write again as, Restore previous notes |
+| Meeting | a past meeting while another records | none | |
+| Settings | calendar not connected | **Connect Google Calendar** | |
+| Settings | connected, Google refused or is about to expire the grant | **Reconnect** | Disconnect (ghost) |
+| Settings | otherwise | none | Disconnect (ghost) |
+| Set up Roger | a check fails | **the first failing check's fix** (Allow microphone, Open Microphone settings, Open System Audio settings, Check again, Relaunch Roger) | other fixes secondary; **Later** (ghost) is the way out, there is no header |
+| Set up Roger | all pass | **Done** | Later is gone |
+| Prompt panel | a meeting with a video link | **Join and start notes** | Start notes (ghost), Dismiss (× icon, top right; sweep) |
+| Prompt panel | no link, or a call detected | **Start notes** | Dismiss (× icon, top right; sweep) |
+| Prompt panel | taking notes | none | Open Roger (ghost) |
+| Settings | Appearance (sweep) | none | System · Light · Dark, a segmented control |
+| Details dialog | | none | Transcribe again (secondary), Delete audio (ghost, confirms) |
 
 ## Window and layout (added by the redesign sweep, 2026-10-08)
 
@@ -297,7 +298,7 @@ rules below are written with their pre-filled picks and change if he picks other
   margins, not emptiness.
 - **Home at 960 and up (D2).** Two top-aligned columns, 64 px apart: the hero (overline, title,
   hours, Start notes) and the calendar line or Connect on the left, a bounded column (280 to 340
-  px); Today, then Earlier on the right, the wide column (the rest, 476 px in the 880 px content), so
+  px); Today, then Earlier on the right, the wide column (the rest: 476 px in the 880 px content), so
   titles are cut late. With nothing in either list the right column is absent. Under 960 they stack.
 - **The meeting page** keeps one column and one tab row at every width. Its panes span the column, so
   their right edge is the header actions' right edge; reading text is capped at 68ch inside them. A
@@ -408,45 +409,45 @@ never takes focus (a non-activating panel), so its keyboard path is Cmd+N and th
 
 ### Naming list (one word per concept; goes into `CLAUDE.md`)
 
-| Roger says today                                                            | Say                                                                                                                                                                                         |
-| --------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| New note, Take notes, Start notes now, Join and take notes                  | **Start notes**; with a video link **Join and start notes**                                                                                                                                 |
-| Stop, Stop note, Stop recording, Stop current note and start                | **Stop**; a start that ends another note says so once below the button: "Stops notes on Weekly sync"                                                                                        |
-| Recording, Taking notes, Transcribing, "Roger: taking notes"                | **Recording** (the state); Transcribing only inside Details                                                                                                                                 |
-| meeting, call, note (for the record), recording (noun)                      | **meeting** for what Roger keeps; **call** only for the live audio ("call audio", "the call")                                                                                               |
-| My notes, Notes, notepad                                                    | **My notes**                                                                                                                                                                                |
-| AI notes, clean notes, generated notes                                      | **AI notes**                                                                                                                                                                                |
-| Generate notes, Write AI notes                                              | **Write notes**                                                                                                                                                                             |
-| Regenerate, Regenerate as which kind of call                                | **Write again as**                                                                                                                                                                          |
-| kind of call, template, meeting type                                        | **template** (menus only)                                                                                                                                                                   |
-| Jargon list, vocabulary, keyterms, names                                    | **Jargon list**; one entry is a **term**                                                                                                                                                    |
-| Synced, Syncing, Saving…, Saved, Offline: saved on this Mac                 | nothing when saved; **Saved on this Mac** when offline; **Not saved** with the reason when it failed on this Mac; **Not saved to Roger** with the reason when the server refused the upload |
-| Postgres, Roger server, the API                                             | **Roger's server** (Details and Setup only)                                                                                                                                                 |
-| Mic (me), Microphone                                                        | **microphone**; the transcript speaker is **Me**                                                                                                                                            |
-| Call audio (them)                                                           | **call audio**; the transcript speaker is **Them**                                                                                                                                          |
-| Retry, Try again, Ask again                                                 | **Try again**                                                                                                                                                                               |
-| Check again, Test again                                                     | **Check again**                                                                                                                                                                             |
-| Dismiss, Not now; Cancel (to close a notice)                                | **Dismiss** to close a notice; **Cancel** only to back out of something in progress                                                                                                         |
-| Re-run, re-transcribe, gap re-run                                           | **Transcribe again**                                                                                                                                                                        |
-| Capture status, Capture report, capture details                             | **Details**                                                                                                                                                                                 |
-| Recent                                                                      | **Earlier** (Home's past meetings); **Today** (Home's calendar)                                                                                                                             |
-| Untitled meeting, "Meeting 7 Oct 2026 17:01"                                | **Meeting at 5:01 pm**                                                                                                                                                                      |
-| Open Google again, Reconnect Google Calendar                                | **Connect Google Calendar**, **Reconnect**                                                                                                                                                  |
-| Delete this meeting's audio                                                 | **Delete audio**                                                                                                                                                                            |
-| Set up Roger, setup, permissions                                            | **Set up Roger**                                                                                                                                                                            |
-| system audio (permission prompt), Mic (me), "the call audio helper" (sweep) | **call audio**, **microphone**; the helper is never named outside Details                                                                                                                   |
-| the recording, a recording (noun) (sweep)                                   | **the meeting**, or **notes** ("Roger stopped the notes on Weekly sync")                                                                                                                    |
-| Start (in "press Stop, then Start again") (sweep)                           | **Start notes**                                                                                                                                                                             |
-| clean notes (sweep)                                                         | **AI notes**                                                                                                                                                                                |
-| Back, Go back, the wordmark as the way Home (sweep)                         | **‹ Home**                                                                                                                                                                                  |
-| Theme, Dark mode, Light mode (sweep)                                        | **Appearance**: **System**, **Light**, **Dark**                                                                                                                                             |
-| Untitled meeting, for an invite with no title (sweep)                       | **Meeting at 3:27 pm**, the title the meeting will get                                                                                                                                      |
+| Roger says today | Say |
+| --- | --- |
+| New note, Take notes, Start notes now, Join and take notes | **Start notes**; with a video link **Join and start notes** |
+| Stop, Stop note, Stop recording, Stop current note and start | **Stop**; a start that ends another note says so once below the button: "Stops notes on Weekly sync" |
+| Recording, Taking notes, Transcribing, "Roger: taking notes" | **Recording** (the state); Transcribing only inside Details |
+| meeting, call, note (for the record), recording (noun) | **meeting** for what Roger keeps; **call** only for the live audio ("call audio", "the call") |
+| My notes, Notes, notepad | **My notes** |
+| AI notes, clean notes, generated notes | **AI notes** |
+| Generate notes, Write AI notes | **Write notes** |
+| Regenerate, Regenerate as which kind of call | **Write again as** |
+| kind of call, template, meeting type | **template** (menus only) |
+| Jargon list, vocabulary, keyterms, names | **Jargon list**; one entry is a **term** |
+| Synced, Syncing, Saving…, Saved, Offline: saved on this Mac | nothing when saved; **Saved on this Mac** when offline; **Not saved** with the reason when it failed on this Mac; **Not saved to Roger** with the reason when the server refused the upload |
+| Postgres, Roger server, the API | **Roger's server** (Details and Setup only) |
+| Mic (me), Microphone | **microphone**; the transcript speaker is **Me** |
+| Call audio (them) | **call audio**; the transcript speaker is **Them** |
+| Retry, Try again, Ask again | **Try again** |
+| Check again, Test again | **Check again** |
+| Dismiss, Not now; Cancel (to close a notice) | **Dismiss** to close a notice; **Cancel** only to back out of something in progress |
+| Re-run, re-transcribe, gap re-run | **Transcribe again** |
+| Capture status, Capture report, capture details | **Details** |
+| Recent | **Earlier** (Home's past meetings); **Today** (Home's calendar) |
+| Untitled meeting, "Meeting 7 Oct 2026 17:01" | **Meeting at 5:01 pm** |
+| Open Google again, Reconnect Google Calendar | **Connect Google Calendar**, **Reconnect** |
+| Delete this meeting's audio | **Delete audio** |
+| Set up Roger, setup, permissions | **Set up Roger** |
+| system audio (permission prompt), Mic (me), "the call audio helper" (sweep) | **call audio**, **microphone**; the helper is never named outside Details |
+| the recording, a recording (noun) (sweep) | **the meeting**, or **notes** ("Roger stopped the notes on Weekly sync") |
+| Start (in "press Stop, then Start again") (sweep) | **Start notes** |
+| clean notes (sweep) | **AI notes** |
+| Back, Go back, the wordmark as the way Home (sweep) | **‹ Home** |
+| Theme, Dark mode, Light mode (sweep) | **Appearance**: **System**, **Light**, **Dark** |
+| Untitled meeting, for an invite with no title (sweep) | **Meeting at 3:27 pm**, the title the meeting will get |
 
 ## Traps
 
 - `theme/tokens.test.ts` reads only `#rrggbb` values and `rgb(r g b / a)` tints: an OKLCH token
   makes its `colour()` throw. Port JS Journey's `oklchToLinearRgb` (`~/Developer/js-journey/
-tests/theme-contrast.test.ts`); its output is already linear light, so luminance takes it with
+  tests/theme-contrast.test.ts`); its output is already linear light, so luminance takes it with
   no gamma step. Its `PLANNED_TOKENS` pins the old names: replace it with this file's list. Its
   "hold nothing but colours" check allows any `--` property, so keep only colour tokens and the
   shadows (they hold colour) in `tokens.css`; space, type, radius and motion go in `styles.css`.
@@ -475,7 +476,7 @@ tests/theme-contrast.test.ts`); its output is already linear light, so luminance
 - Tabs hide panes with `hidden`, never unmount them: the editor keeps unsaved text and save
   timers, and the citation navigator finds a chip's line in a hidden transcript (`regions.tsx`).
   CSS that sets `display` on an element with `hidden` overrides it: add `[hidden] { display:
-none }` beside it. A pane that is a grid row scrolls inside itself (M4-T20).
+  none }` beside it. A pane that is a grid row scrolls inside itself (M4-T20).
 - Busy Stop today is `disabled={busy}` with `opacity: 0.55`: it reads as "can't". Busy is
   `aria-disabled` with full colour.
 - Times: `formatClockTime` follows the Mac's 12 or 24 hour setting, and six more formatters
