@@ -26,8 +26,8 @@ The exit check from `docs/roadmap.md`, word for word, plus how it is run on a re
 The decisions that are hard to undo. For each: the choice, the alternative considered, why.
 
 | Decision | Choice | Alternative | Why |
-| --- | --- | --- | --- |
-| | | | |
+| -------- | ------ | ----------- | --- |
+|          |        |             |     |
 
 Diagrams or data model changes go here. Changes to `docs/api-contract.md` are listed here too.
 
@@ -42,14 +42,14 @@ Small, ordered, each one a commit or two.
 The tests that prove each work item, by file. Exit checks are tests where they can be.
 
 | What | Test |
-| --- | --- |
-| | |
+| ---- | ---- |
+|      |      |
 
 ## Risks
 
 | Risk | Signal | Response |
-| --- | --- | --- |
-| | | |
+| ---- | ------ | -------- |
+|      |        |          |
 
 ## Exit check log
 

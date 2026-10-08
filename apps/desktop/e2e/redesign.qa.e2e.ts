@@ -679,7 +679,7 @@ const LONG_TITLE =
 
 /**
  * Home's grid (D2, docs/plans/redesign-sweep.md section 4): from 960 px two columns in at most 880
- * px, the hero on the left and Today and Earlier on the right (360 px, 64 px apart), their tops
+ * px, the hero on the left (a bounded column, at most 340 px) and Today and Earlier on the right (the wide column, at least 440 px), 64 px apart, their tops
  * level; under 960 one column, the right one stacked under the left. R1: at 1080 the hero must not
  * float alone in a centred 360 px column.
  */
@@ -697,6 +697,10 @@ async function expectHomeColumns(page: Page, width: number): Promise<void> {
         side === null
           ? null
           : { left: side.left, right: side.right, top: side.top, width: side.width },
+      // A title short enough to fit must not be cut: its text is wider than its box only if cut.
+      cutShort: [...document.querySelectorAll<HTMLElement>('.today-title, .earlier-title')]
+        .filter((el) => el.textContent.length <= 20 && el.scrollWidth > el.clientWidth)
+        .map((el) => el.textContent),
       titleTop: title?.top ?? null,
       todayTop: today?.top ?? null,
     };
@@ -708,8 +712,18 @@ async function expectHomeColumns(page: Page, width: number): Promise<void> {
         `at ${width} px the columns overlap or stack: side starts at ${read.side.left}`,
       );
     }
-    if (Math.round(read.side.width) !== 360) {
-      throw new Error(`the right column is ${read.side.width} px, not 360`);
+    // The lists are the wide column (D2): at least 440 px, wider than the bounded hero column.
+    if (read.side.width < 440) {
+      throw new Error(`the lists column is ${read.side.width} px, under 440`);
+    }
+    if (read.side.width <= read.main.right - read.main.left) {
+      throw new Error('the hero column is as wide as the lists');
+    }
+    if (read.main.right - read.main.left > 340 + 1) {
+      throw new Error(`the hero column is ${read.main.right - read.main.left} px, over 340`);
+    }
+    if (read.cutShort.length > 0) {
+      throw new Error(`titles cut though they fit: ${read.cutShort.join(', ')}`);
     }
     const gap = read.side.left - read.main.right;
     if (gap < 40 || gap > 400) throw new Error(`the columns are ${Math.round(gap)} px apart`);
