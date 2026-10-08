@@ -57,3 +57,7 @@ Extends the root `CLAUDE.md`, whose house rules and repo-wide failure log apply 
 - A CLI that calls `configure_logging` inside the function its tests call leaves the root handler
   on pytest's captured stderr after that test ends, and later tests log into a closed stream.
   Configure logging only on the `__main__` path (`evals/notes_eval._cli`) (M4-T12).
+- A default that stands in for a vendor must never look like a person's data: the fake calendar was
+  the default, and an installed Mac showed "Connected as you@example.com" with fake meetings raising
+  real alerts all day. A dev-only provider is opt-in (`CALENDAR_PROVIDER=fake`, then "Demo
+  calendar"); with none set the API answers `calendar_not_configured` (sweep T8).

@@ -71,3 +71,25 @@ when you hit a new one.
 - Set up Roger has no header, so its only exit is the button at the foot of `SetupScreen`: Later
   while a check needs you, Done when all pass. Never hide both behind `needsYou()`, or a person who
   cannot pass a check yet is stuck on `#/setup` (redesign R11).
+- The header is a drag region (`-webkit-app-region: drag`, `app/app.css`); only `button` is
+  covered by the no-drag rule, so a new clickable non-button in it needs its own `no-drag` or it
+  drags the window. The window title is `document.title`, set in `AppLayout`'s arrival effect: a
+  `page-title-updated` handler in main that calls `preventDefault` stops it following the page.
+  Every page needs one h1 for focus on arrival and the title, Home a hidden `h1.sr-only` while no
+  meeting is named, never two (sweep T4).
+- In `MeetingPage` keep `activeTab(...)` inline in the JSX and the hook call: a hoisted
+  `const shownTab` makes the React Compiler skip the page and lint fails (sweep T5).
+- A notes editor's save state is portalled into the tab row (`notes/saveStatusSlot.ts`). Every pane
+  stays mounted, so a closed tab may show only the loud state, never the quiet one. The left-edge
+  focus line on the logs and the chat is an inset `box-shadow`, not an outline: the scrolling pane
+  clips an outline (sweep T5, R13).
+- The renderer learns "no Google client" only from the failure's text (the IPC carries a message,
+  no code): `isGoogleNotSetUp` in `calendar/calendarFormat.ts` matches the sentence or
+  `calendar_not_configured`. `describeError` likewise matches the wording of `CalendarAccount.ts`
+  and `main/api/http.ts`: reword one and its matcher and test together. Settings rows go through
+  `settings/SettingsRow.tsx`, or a section loses the 240 px label column (sweep T6, T9).
+- Hover on a raised surface (menu rows, the prompt card's ghost buttons) reads `--fill-raised`,
+  never `--fill` (0.01 apart in dark: the hover vanishes); the prompt card's edge reads `--edge`. A
+  new token goes into all three blocks of `tokens.css`, `tokens.test.ts`'s list and a pinned row,
+  and `prompt/prompt.css`'s copied rules change in the same commit; rules there that must beat the
+  copied `.btn` or `.problem` sit at the end of the file (sweep T0, T1).
