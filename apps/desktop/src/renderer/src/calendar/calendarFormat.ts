@@ -204,13 +204,28 @@ export type OpenAtLoginHintStatus = Extract<LoginItemStatus, 'requires-approval'
  * The line under Settings' "Open at login", said only when there is something to do or to know:
  * a packaged build that waits for the user (`requires-approval`) says where to allow it, since
  * until then Roger is not running for the first calls of the day; `unavailable` says this copy
- * cannot register a login item. Every other state is the switch alone (OpenAtLoginField).
+ * cannot register a login item (W11: said as what to do, not how the copy was made). Every other state is the switch alone (OpenAtLoginField).
  */
 export function openAtLoginHint(status: OpenAtLoginHintStatus): string {
   switch (status) {
     case 'unavailable':
-      return 'Not available in this copy of Roger (a development build, or Roger is not in Applications).';
+      return 'Not available here. Install Roger in your Applications folder and open it from there.';
     case 'requires-approval':
       return `Allow Roger in ${LOGIN_ITEMS_SETTINGS_PATH} so it can open at login. Until then reminders for your first calls are missed.`;
   }
+}
+
+/** D4: Connect's reason when Roger's server has no Google client. T8's API code names it. */
+export const GOOGLE_NOT_SET_UP = "Google Calendar is not set up on Roger's server yet";
+
+/**
+ * True when a failed Connect means the server has no Google client (D4): Connect is then disabled
+ * with GOOGLE_NOT_SET_UP beside it, since pressing it again cannot help. The page learns it from
+ * the failure text because the IPC carries a message only, so main's words for the API's
+ * `calendar_not_configured` (CalendarAccount.failure, T8) must hold this sentence or the code;
+ * calendarFormat.test.ts pins both, and a reworded message there turns Connect back into a
+ * button that fails the same way each press.
+ */
+export function isGoogleNotSetUp(message: string | null): boolean {
+  return message !== null && /calendar_not_configured|not set up on Roger's server/i.test(message);
 }

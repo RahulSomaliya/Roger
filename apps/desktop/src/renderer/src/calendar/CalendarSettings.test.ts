@@ -2,7 +2,6 @@ import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
 import { DEFAULT_NOTICE_TEXT } from '../../../shared/calendarPrefs';
-import { LOGIN_ITEMS_SETTINGS_PATH } from '../../../shared/ipc/loginItem';
 import { CalendarSettingsSection, type CalendarSettingsActions } from './CalendarSettings';
 import type { CalendarSettingsState } from './calendarSettingsStore';
 import type { CalendarState } from './calendarStore';
@@ -22,6 +21,7 @@ function actions(): CalendarSettingsActions {
 function render(
   calendar: CalendarState = calendarState(),
   settings: CalendarSettingsState = settingsState(),
+  confirmingDisconnect = false,
 ): string {
   return plain(
     renderToStaticMarkup(
@@ -30,6 +30,7 @@ function render(
         settings,
         nowMs: NOW_MS,
         actions: actions(),
+        confirmingDisconnect,
       }),
     ),
   );
@@ -50,6 +51,12 @@ function primaries(html: string): number {
 }
 
 describe('the Calendar section of Settings', () => {
+  it('lays its fields out as label and control rows, which stack under 720 px (settings.css)', () => {
+    const html = render();
+    expect(html.match(/class="settings-row"/g)?.length).toBeGreaterThanOrEqual(3);
+    expect(html).toMatch(/class="settings-row-label"[\s\S]*Google account/);
+  });
+
   it('is a titled section: space and a hairline, not a card', () => {
     const html = render();
     expect(html).toMatch(/<section[^>]*aria-labelledby="([^"]+)"/);
@@ -85,11 +92,51 @@ describe('the Calendar section of Settings', () => {
       expect(html).not.toMatch(/<button[^>]*disabled=""[^>]*>Disconnecting…</);
     });
 
-    it('offers Connect while none is connected', () => {
+    it('offers Connect while none is connected, with no "No calendar connected." beside it (W11)', () => {
       const html = render(calendarState({ connection: null }));
-      expect(html).toContain('No calendar connected.');
+      expect(html).not.toContain('No calendar connected');
       expect(html).toContain('Connect Google Calendar</button>');
       expect(html).not.toContain('Disconnect');
+    });
+
+    // D4: pressing Connect against a server with no Google client can only fail again.
+    it("disables Connect, with the reason beside it, when Roger's server has no Google client", () => {
+      const html = render(
+        calendarState({
+          connection: null,
+          connectError:
+            "Could not connect Google Calendar: Google Calendar is not set up on Roger's server yet",
+        }),
+      );
+      expect(tag(html, /Connect Google Calendar|data-variant="primary"/)).toMatch(/\sdisabled/);
+      expect(html).toContain('Google Calendar is not set up on Roger&#x27;s server yet');
+      // The reason replaces the failure line; it is not said twice.
+      expect(html).not.toContain('Roger could not connect Google Calendar');
+      expect(html).not.toContain('role="alert"');
+    });
+
+    it('names a developer-enabled fake calendar "Demo calendar", not an address', () => {
+      const html = render(
+        calendarState({
+          connection: { ...CONNECTION, provider: 'fake', accountEmail: 'you@example.com' },
+        }),
+      );
+      expect(html).toContain('Connected as <strong>Demo calendar</strong>');
+      expect(html).not.toContain('you@example.com');
+    });
+
+    // D4 of the sweep: Disconnect ends every reminder, so it asks in place, where the person is.
+    it('asks before it disconnects: the question, Cancel and Disconnect replace the account line', () => {
+      const html = render(calendarState(), settingsState(), true);
+      expect(html).toContain('Disconnect Google Calendar? Reminders stop.');
+      expect(html).toMatch(/data-variant="ghost"[^>]*>Cancel</);
+      expect(html).toMatch(/data-variant="secondary"[^>]*>Disconnect</);
+      expect(html).not.toContain('Connected as');
+      expect(primaries(html)).toBe(0);
+    });
+
+    it('shows the question on no other state', () => {
+      expect(render()).not.toContain('Reminders stop');
     });
 
     it('offers Reconnect once Google refused the grant', () => {
@@ -191,50 +238,9 @@ describe('the Calendar section of Settings', () => {
     });
   });
 
-  describe('open at login', () => {
-    it('is a checkbox that is on for "on" and off for "off"', () => {
-      const on = render(
-        calendarState(),
-        settingsState({ openAtLogin: 'on', loginItem: 'enabled' }),
-      );
-      const off = render(calendarState(), settingsState({ openAtLogin: 'off' }));
-      expect(on).toMatch(
-        /<input type="checkbox" checked=""[^>]*\/><span[^>]*><span>Open Roger at login/,
-      );
-      expect(off).toMatch(/<input type="checkbox"[^>]*\/><span[^>]*><span>Open Roger at login/);
-      expect(off).not.toMatch(/checked=""[^>]*\/><span[^>]*><span>Open Roger at login/);
-    });
-
-    it('says where to allow Roger when macOS waits for approval', () => {
-      const html = render(
-        calendarState(),
-        settingsState({ openAtLogin: 'on', loginItem: 'requires-approval' }),
-      );
-      expect(html).toContain(LOGIN_ITEMS_SETTINGS_PATH.replace('&', '&amp;'));
-      expect(html).toContain('data-login-item="requires-approval"');
-    });
-
-    // The long helper is for the one case that needs it (redesign R6): macOS waiting on a click.
-    it('says nothing under the switch when macOS has nothing to ask', () => {
-      for (const loginItem of ['enabled', 'disabled', null] as const) {
-        const html = render(calendarState(), settingsState({ openAtLogin: 'on', loginItem }));
-        expect(html).not.toContain('data-login-item');
-        expect(html).not.toContain('Roger opens when you log in');
-        expect(html).not.toContain('Roger opens only when you open it');
-      }
-    });
-
-    it('is switched off, with the reason, in a build that never registers a login item', () => {
-      const html = render(calendarState(), settingsState({ loginItem: 'unavailable' }));
-      expect(html).toMatch(/<input type="checkbox"[^>]*disabled=""/);
-      expect(html).toContain('Not available in this copy of Roger');
-    });
-
-    it('says why macOS could not be asked', () => {
-      expect(
-        render(calendarState(), settingsState({ loginItemError: 'macOS did not answer' })),
-      ).toContain('Roger could not ask macOS about it: macOS did not answer');
-    });
+  // The login item moved to the Mac section (settings/MacSettings.tsx).
+  it('no longer holds the login switch', () => {
+    expect(render()).not.toContain('Open Roger at login');
   });
 
   describe('when the settings are not there yet', () => {

@@ -1,8 +1,8 @@
 /*
  * What every Settings section shares (docs/design.md): sections are space and a hairline, never a
  * card; the section title is the Settings title step; a control is 40 px on `surface` with a 1 px
- * `line` border. VocabularySettings.tsx and calendar/CalendarSettings.tsx both import this sheet,
- * and each adds only its own rules. `.problem` itself is styles.css's. Colours only from
+ * `line` border. VocabularySettings.tsx, calendar/CalendarSettings.tsx, MacSettings.tsx and
+ * AppearanceSetting.tsx all import this sheet, and each adds only its own rules. `.problem` itself is styles.css's. Colours only from
  * theme/tokens.css (noLiteralColours.test.ts fails on a literal one).
  *
  * The container is `.settings-list`, not app.css's older `.settings-sections`, which this page no
@@ -44,6 +44,33 @@
   overflow-wrap: anywhere;
 }
 
+/* A row (SettingsRow.tsx): the label and its helper beside the control. 720 px and up the label
+   column is 240 px and the control takes the rest; under it they stack. The window is the
+   viewport, so the media query is the window's width, the same 720 as the page grid (app.css). */
+.settings-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-2) var(--space-6);
+  min-width: 0;
+}
+
+@media (min-width: 720px) {
+  .settings-row {
+    grid-template-columns: 240px minmax(0, 1fr);
+  }
+}
+
+.settings-row-label {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.settings-row-control {
+  min-width: 0;
+}
+
 .settings-field {
   display: flex;
   flex-direction: column;
@@ -74,4 +101,67 @@
 
 .settings-input:disabled {
   opacity: 0.5;
+}
+
+.settings-check {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  cursor: pointer;
+}
+
+.settings-check input {
+  flex: none;
+  /* The 16 px box centred on the first 20 px line of text. */
+  margin: 2px 0 0;
+  accent-color: var(--accent);
+}
+
+.settings-check-text {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.settings-hint {
+  color: var(--ink-muted);
+  overflow-wrap: anywhere;
+}
+
+/* A choice of two to four short words in the tab track's look (docs/design.md, Tabs): a `fill`
+   track, the checked option raised on `control` with `--e1`. Used as a radiogroup (Appearance);
+   the tab row (styles.css .tabs) is the same look for tabs. No transition on the checked state: a
+   screenshot would catch it mid-change. */
+.segmented {
+  display: inline-flex;
+  gap: var(--space-1);
+  padding: var(--space-1);
+  border-radius: var(--radius-lg);
+  background: var(--fill);
+}
+
+.segmented-option {
+  height: 32px;
+  min-width: 72px;
+  padding: 0 var(--space-3);
+  border: 0;
+  /* Concentric with the track: 12 px minus its 4 px padding. */
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--ink-muted);
+  font: inherit;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.segmented-option:hover {
+  color: var(--ink);
+}
+
+.segmented-option[aria-checked='true'] {
+  background: var(--control);
+  color: var(--ink);
+  box-shadow: var(--e1);
 }
