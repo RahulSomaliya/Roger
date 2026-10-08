@@ -91,17 +91,15 @@ describe('followPromptState', () => {
     expect(fake.calls).toContain('unsubscribe');
   });
 
-  it('reports a failed read with the reason, and keeps listening for changes', async () => {
+  it('reports a failed read as a flag, never as the error text, and keeps listening', async () => {
     const fake = fakeApi();
     const { feed, onFeed } = record();
     followPromptState(fake.api, onFeed);
-    fake.fail(new Error('untrusted sender'));
+    fake.fail(new Error("Error invoking remote method 'prompt:get-state': untrusted sender"));
     await Promise.resolve();
-    expect(feed).toEqual([
-      { state: null, error: 'Could not read the prompt panel: untrusted sender' },
-    ]);
+    expect(feed).toEqual([{ state: null, readFailed: true }]);
     fake.push(state(['a']));
-    expect(feed[1]?.error).toBeNull();
+    expect(feed[1]?.readFailed).toBe(false);
     expect(feed[1]?.state?.cards).toHaveLength(1);
   });
 });

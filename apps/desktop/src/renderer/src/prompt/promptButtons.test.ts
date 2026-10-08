@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { callDetectedButtons, eventButtons, footerButtons, openRogerButton } from './promptButtons';
+import { callDetectedButtons, dismissButton, eventButtons, openRogerButton } from './promptButtons';
 import { callDetectedCard, calendarCard, calendarEvent } from './promptTesting';
 
 const labels = (buttons: { label: string }[]): string[] => buttons.map((button) => button.label);
@@ -72,13 +72,31 @@ describe('callDetectedButtons', () => {
   });
 });
 
-describe('footerButtons', () => {
-  it('is Dismiss, a ghost, on every card: there is no Copy notice any more', () => {
+describe('dismissButton', () => {
+  it('is an x icon button named Dismiss, a ghost, on every card', () => {
     for (const card of [calendarCard(), callDetectedCard()]) {
-      expect(footerButtons(card)).toEqual([
-        { label: 'Dismiss', variant: 'ghost', request: { cardId: card.id, action: 'dismiss' } },
-      ]);
+      expect(dismissButton(card)).toEqual({
+        label: 'Dismiss',
+        icon: 'x',
+        variant: 'ghost',
+        request: { cardId: card.id, action: 'dismiss' },
+      });
     }
+  });
+});
+
+describe('one primary across the panel', () => {
+  it('is the first meeting of the first card, whatever else is up', () => {
+    const first = calendarEvent({ id: 'a' });
+    const second = calendarEvent({ id: 'b', videoLink: null });
+    const upper = calendarCard([first, second], { id: 'card-1' });
+    const lower = callDetectedCard({ id: 'card-2' });
+    const variants = [
+      ...eventButtons(upper, first, true),
+      ...eventButtons(upper, second, false),
+      ...callDetectedButtons(lower, false),
+    ].map(({ variant }) => variant);
+    expect(variants.filter((variant) => variant === 'primary')).toHaveLength(1);
   });
 });
 

@@ -6,6 +6,7 @@ import {
 } from '../src/renderer/src/prompt/promptButtons';
 import {
   PROMPT_SCENARIO_IDS,
+  parsePromptBackdrop,
   parsePromptQuery,
   promptStateFor,
   type PromptScenarioId,
@@ -14,9 +15,32 @@ import {
 const NOW = Date.parse('2026-10-07T09:00:00.000Z');
 
 describe('promptStateFor', () => {
-  it.each(PROMPT_SCENARIO_IDS)('%s holds a card the panel can draw', (id) => {
-    const state = promptStateFor(id, NOW);
-    expect(state.cards.length).toBeGreaterThan(0);
+  it.each(PROMPT_SCENARIO_IDS.filter((id) => id !== 'read-failed'))(
+    '%s holds a card the panel can draw',
+    (id) => {
+      expect(promptStateFor(id, NOW).cards.length).toBeGreaterThan(0);
+    },
+  );
+
+  it('has a scenario for every kind of card in the sweep brief', () => {
+    expect([...PROMPT_SCENARIO_IDS].sort()).toEqual(
+      [
+        'meeting-link',
+        'meeting-no-link',
+        'two-meetings',
+        'call-detected',
+        'stops-other-note',
+        'taking-notes',
+        'start-failed',
+        'stop-failed',
+        'meeting-blank-title',
+        'two-cards',
+        'taking-notes-call',
+        'taking-notes-two',
+        'read-failed',
+        'click-failed',
+      ].sort(),
+    );
   });
 
   it('starts the calendar cards a minute after the clock it is given', () => {
@@ -47,9 +71,34 @@ describe('promptStateFor', () => {
     expect(state.recordingTitle).toBe('Weekly sync');
   });
 
-  it('fails a start with a reason on the card', () => {
-    const [card] = promptStateFor('start-failed', NOW).cards;
-    expect(card?.error).toContain('microphone');
+  it('fails a start with a plain reason on the card, never a vendor or an errno', () => {
+    for (const id of ['start-failed', 'stop-failed'] as const) {
+      const [card] = promptStateFor(id, NOW).cards;
+      expect(card?.error).toMatch(/^Roger could not /);
+      expect(card?.error).not.toMatch(/HTTP|xAI|ECONN|SQLITE/);
+    }
+  });
+
+  it('puts the newest card first when two are up', () => {
+    const [newest, older] = promptStateFor('two-cards', NOW).cards;
+    if (newest?.kind !== 'calendar' || older?.kind !== 'calendar') throw new Error('two cards');
+    expect(Date.parse(newest.events[0].start)).toBeGreaterThan(Date.parse(older.events[0].start));
+  });
+
+  it('names the call that started on a card of two', () => {
+    const [card] = promptStateFor('taking-notes-two', NOW).cards;
+    expect(card).toMatchObject({ phase: 'taking_notes', startedEventId: 'event-standup' });
+  });
+});
+
+describe('parsePromptBackdrop', () => {
+  it('defaults to a dark call and takes light', () => {
+    expect(parsePromptBackdrop('')).toBe('dark');
+    expect(parsePromptBackdrop('?backdrop=light')).toBe('light');
+  });
+
+  it('refuses anything else', () => {
+    expect(() => parsePromptBackdrop('?backdrop=red')).toThrow(/dark or light/);
   });
 });
 

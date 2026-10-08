@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
-import type { PromptActionRequest, PromptApi } from '../../../shared/ipc/prompt';
-import { describeError } from '../app/describeError';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { PromptActionRequest, PromptApi, PromptPanelState } from '../../../shared/ipc/prompt';
+import { forgetCard, forgetLeaving, reconcileCards, type ShownCard } from './leavingCards';
 import { panelHeightTitle } from './panelHeight';
 import { PromptPanel } from './PromptPanel';
 import { followPromptState, type PromptFeed } from './promptState';
@@ -9,13 +9,26 @@ import { followPromptState, type PromptFeed } from './promptState';
 const TICK_MS = 5000;
 
 /**
+ * The most a card may take to slide out before the page forgets it anyway: the exit is 170 ms
+ * (prompt.css `slide-out`), and `animationend` can fail to come (a page that was hidden when the
+ * card left). Below main's 400 ms fallback (PromptWindow `EXIT_FALLBACK_MS`), so the page reports
+ * height 0 first and the window hides on the report, not on the backstop.
+ */
+const EXIT_BACKSTOP_MS = 300;
+
+/**
  * The prompt panel page (M5-T10): follows main's state, draws the cards, sends clicks back, and
  * reports its height so main can size the window. `api` is `window.rogerPrompt` in the app and a
  * fake in the QA preview (T13).
+ *
+ * A card main removes is kept drawn until its exit animation ends (leavingCards.ts), so the height
+ * the page reports stays up for the exit and falls to 0 only after the last card has left: main
+ * hides the window on that report.
  */
 export function PromptApp({ api }: { api: PromptApi }) {
-  const [feed, setFeed] = useState<PromptFeed>({ state: null, error: null });
-  const [failures, setFailures] = useState<Readonly<Record<string, string>>>({});
+  const [feed, setFeed] = useState<PromptFeed>({ state: null, readFailed: false });
+  const [shown, setShown] = useState<readonly ShownCard[]>([]);
+  const [failed, setFailed] = useState<ReadonlySet<string>>(new Set());
   const nowMs = useNow(TICK_MS);
   const content = useRef<HTMLDivElement>(null);
 
@@ -23,32 +36,60 @@ export function PromptApp({ api }: { api: PromptApi }) {
     () =>
       followPromptState(api, (next) => {
         setFeed(next);
+        if (next.state !== null) {
+          const { cards } = next.state;
+          setShown((previous) => reconcileCards(previous, cards));
+        }
         // A refused click leaves the card as main last sent it (PromptApi.act); the next state
         // is news about the card, so the note about the refusal goes.
-        setFailures({});
+        setFailed(new Set());
       }),
     [api],
   );
   useReportedHeight(content);
 
+  const leaving = useMemo(
+    () => new Set(shown.filter((entry) => entry.leaving).map((entry) => entry.card.id)),
+    [shown],
+  );
+  useEffect(() => {
+    if (leaving.size === 0) return;
+    const backstop = setTimeout(() => {
+      setShown(forgetLeaving);
+    }, EXIT_BACKSTOP_MS);
+    return () => {
+      clearTimeout(backstop);
+    };
+  }, [leaving]);
+
   const act = useCallback(
     (request: PromptActionRequest): void => {
-      api.act(request).catch((error: unknown) => {
-        setFailures((current) => ({ ...current, [request.cardId]: describeError(error) }));
+      // The rejection's text is an IPC error, not for the card: the card only learns that it failed.
+      api.act(request).catch(() => {
+        setFailed((current) => new Set(current).add(request.cardId));
       });
     },
     [api],
   );
+  const left = useCallback((cardId: string): void => {
+    setShown((current) => forgetCard(current, cardId));
+  }, []);
+
+  // Main's counts (`recording`, its title) with the cards as drawn, leaving ones included.
+  const state: PromptPanelState | null =
+    feed.state === null ? null : { ...feed.state, cards: shown.map((entry) => entry.card) };
 
   return (
     <div className="prompt-scroll">
       <div ref={content}>
         <PromptPanel
-          state={feed.state}
-          error={feed.error}
+          state={state}
+          readFailed={feed.readFailed}
           nowMs={nowMs}
-          failures={failures}
+          failed={failed}
+          leaving={leaving}
           onAct={act}
+          onLeft={left}
         />
       </div>
     </div>
