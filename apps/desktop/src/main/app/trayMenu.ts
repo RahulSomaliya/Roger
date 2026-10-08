@@ -15,10 +15,15 @@ import { formatClock } from '../../shared/clock';
  * attendees or link (a menu bar can be screen-shared).
  */
 
-export type TrayIconState = 'idle' | 'recording' | 'warning';
+/**
+ * `recording-warning` is the recording dot with a mark: a loud capture warning ("Roger can't hear
+ * the call") while notes are being taken. It is the one warning that may sit on the recording
+ * icon, because the person is relying on a recording that is not working.
+ */
+export type TrayIconState = 'idle' | 'recording' | 'recording-warning' | 'warning';
 
 /** What a click does; tray.ts maps each to a call. */
-export type TrayAction = 'start' | 'stop' | 'reconnect' | 'open' | 'quit';
+export type TrayAction = 'start' | 'stop' | 'reconnect' | 'open' | 'settings' | 'quit';
 
 export type TrayMenuEntry =
   | { kind: 'label'; text: string }
@@ -66,6 +71,8 @@ export function createTrayFormat(timeZone?: string): TrayFormat {
 export interface TrayInputs {
   /** A note is being taken (the capture phase is `recording`). */
   recording: boolean;
+  /** The capture status holds a loud warning (CaptureWarning.loud). Only read while recording. */
+  loudWarning: boolean;
   nowMs: number;
   /** This Mac's copy of the calendar; [] when none is connected. */
   events: readonly CalendarEvent[];
@@ -81,14 +88,16 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 
 /**
  * Trap: `recording` outranks `warning`. The icon is the user's cue that notes are being taken,
- * and a reconnect nag must never hide it; the warning still shows as a menu line.
+ * and a reconnect nag must never hide it; the warning still shows as a menu line. A loud capture
+ * warning is the exception that rides on the recording icon (`recording-warning`), and it outranks
+ * the calendar's.
  *
  * A stale calendar says nothing here: Home says it (docs/plans/redesign.md), and a warning icon
  * for it would point at a menu with no line to explain it. Only a refused or expiring grant, which
  * has a Reconnect to press, turns the icon to warning.
  */
 export function buildTrayModel(inputs: TrayInputs): TrayModel {
-  const { recording, connection, nowMs, format } = inputs;
+  const { recording, loudWarning, connection, nowMs, format } = inputs;
   // A disconnect clears the copy, but a health still on its way can arrive after the connection
   // went: with no account there is nothing to be stale or to reconnect.
   const sync = connection === null ? null : inputs.sync;
@@ -104,13 +113,21 @@ export function buildTrayModel(inputs: TrayInputs): TrayModel {
       ? { kind: 'action', action: 'stop', text: 'Stop' }
       : { kind: 'action', action: 'start', text: 'Start notes' },
     { kind: 'action', action: 'open', text: 'Open Roger' },
+    { kind: 'action', action: 'settings', text: 'Settings' },
     { kind: 'separator' },
     { kind: 'action', action: 'quit', text: 'Quit Roger' },
   );
 
+  if (recording && loudWarning) {
+    return {
+      icon: 'recording-warning',
+      tooltip: 'Roger: recording, but something is wrong',
+      entries,
+    };
+  }
   if (recording) return { icon: 'recording', tooltip: 'Roger: recording', entries };
   if (reconnect !== null) {
-    return { icon: 'warning', tooltip: 'Roger: calendar needs attention', entries };
+    return { icon: 'warning', tooltip: 'Roger: reconnect Google Calendar', entries };
   }
   return { icon: 'idle', tooltip: 'Roger', entries };
 }
@@ -129,15 +146,16 @@ function nextMeetingText({ events, nowMs, format }: TrayInputs): string {
     if (next === null || startMs < next.startMs) next = { event, startMs };
   }
   if (next === null) return 'No upcoming meetings';
-  const title = shortTitle(next.event.title);
+  const title = shortTitle(next.event.title, next.startMs, format);
   return next.startMs <= nowMs
     ? `Now: ${title}`
     : `Next: ${title}, ${format.when(next.startMs, nowMs)}`;
 }
 
-function shortTitle(title: string): string {
+/** An invite with no title reads as the title the meeting will get: "Meeting at 3:30 pm". */
+function shortTitle(title: string, startMs: number, format: TrayFormat): string {
   const chars = Array.from(title.trim());
-  if (chars.length === 0) return 'Untitled meeting';
+  if (chars.length === 0) return `Meeting at ${format.time(startMs)}`;
   if (chars.length <= MAX_TITLE_CHARS) return chars.join('');
   return `${chars.slice(0, MAX_TITLE_CHARS - 1).join('')}…`;
 }

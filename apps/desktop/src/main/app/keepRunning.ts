@@ -88,6 +88,11 @@ export function startKeepRunning(deps: KeepRunningDeps): { stop(): void } {
     resourcesPath: deps.resourcesPath,
     appPath: deps.appPath,
   };
+  const openSettings = (): void => {
+    deps.navigate('settings');
+    const window = getWindow();
+    if (window !== null && !window.isDestroyed()) revealWindow(window);
+  };
   const tray = new MenuBarTray({
     view: createElectronTrayView(deps.electron, trayIconPath('idle', iconContext)),
     iconPath: (state) => trayIconPath(state, iconContext),
@@ -98,11 +103,8 @@ export function startKeepRunning(deps: KeepRunningDeps): { stop(): void } {
         const window = getWindow();
         if (window !== null && !window.isDestroyed()) revealWindow(window);
       },
-      reconnect: () => {
-        deps.navigate('settings');
-        const window = getWindow();
-        if (window !== null && !window.isDestroyed()) revealWindow(window);
-      },
+      reconnect: openSettings,
+      settings: openSettings,
       quit: () => {
         // Nothing else: RecordingLifecycle stops the recording and runs the quit hooks.
         app.quit();
