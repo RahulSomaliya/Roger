@@ -751,7 +751,9 @@ export class CaptureSession {
     const attempt = (link.attempt += 1);
     const stale = (): boolean => this.closing || link.attempt !== attempt;
     this.setState(source, 'connecting', null);
-    // No await for Start's token: its open starts in this very turn, as it always has.
+    // No await for Start's token: its open starts in this very turn, as it always has. An await
+    // here, even on a resolved promise, leaves no open pending when a test calls
+    // stt.succeed('mic') right after s.open(), and every such test hangs at Stop.
     const credentials = startToken ?? (await this.options.refreshCredentials());
     // The other source failed, or the source closed, while its token came: open nothing.
     if (stale()) return;

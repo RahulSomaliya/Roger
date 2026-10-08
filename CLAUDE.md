@@ -89,7 +89,7 @@ milestone plan.
 | To find | Look in `apps/desktop/src/main/` |
 | --- | --- |
 | Start, Stop, the status the window reads | `capture/CaptureService.ts`; per-source sessions and reopens: `capture/CaptureSession.ts` |
-| Vendor sockets, the open budget, the cost numbers | `stt/core/SttConnection.ts`, `capture/SttOpenBudget.ts`, `costGuards.ts` |
+| Vendor sockets, the open budget, the cost numbers | `stt/core/SttConnection.ts`, `capture/SttOpenBudget.ts`, `capture/GateTokens.ts`, `costGuards.ts` |
 | Loud warnings and notifications | `capture/SignalMonitor.ts`, `capture/warnings.ts`, `notify/Notifier.ts` |
 | Mic lines that repeat call audio | `capture/echo/` (`EchoFilter` pure, `EchoSink` stores, hides and holds) |
 | Call audio, the monitor, the helper's place | `native/HelperProcess.ts`, `native/helperPath.ts`, `detect/MeetingAppMonitor.ts` |
@@ -191,6 +191,16 @@ before you start.
   lockfile version's publish date (`npm view <pkg> time`). `@tiptap/react` pulls its bubble and
   floating menus with `^` while they need the exact same `@tiptap/core`: the overrides in
   `pnpm-workspace.yaml` pin them, so bump them together with the five TipTap packages.
+- A speech-to-text token may open only one connection: a second websocket on one xAI client secret,
+  at once or after a close, is HTTP 401, so every two-stream Start failed while the one-stream
+  canary passed (2026-10-08). Each adapter declares `credentialUse`; a single-connection vendor's
+  token never reaches two opens (Start's two sources, the gate's prefetch in `GateTokens.ts`, the
+  retry without the jargon list, the re-run, the bench), and every `SpeechToText` test double
+  declares it too. Probe a new vendor with two connections on one token, at once and after a
+  close, before declaring `'reusable'`.
+- Merging does not update `/Applications/Roger.app` or a running API: after the redesign merged,
+  Rahul still saw the old UI and the API on 8010 ran without the xAI code (2026-10-08). After
+  landing desktop or API changes, run `make install-desktop` and restart the API.
 - AssemblyAI's session cap, `max_session_duration_seconds`, is a parameter of the temporary-token
   request (the API sets it), not of the websocket URL; `inactivity_timeout` is the other way round
   (the desktop sets it). Its streaming page lists only the second (2026-10-06).
