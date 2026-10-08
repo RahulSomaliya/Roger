@@ -20,11 +20,9 @@ import {
   type SttStreamSettings,
 } from '../stt/SpeechToText';
 import { AudioTimeline } from './AudioTimeline';
+import { GateTokens } from './GateTokens';
 import {
   GATE_MIN_OPEN_MS,
-  GATE_TOKEN_MIN_INTERVAL_MS,
-  GATE_TOKEN_MIN_LEFT_MS,
-  GATE_TOKEN_REFRESH_LEAD_MS,
   type GateChunk,
   type Heard,
   SilenceGate,
@@ -68,13 +66,19 @@ export interface CaptureSessionOptions {
   /** Epoch ms of the meeting start; all offsets are relative to it. */
   meetingStartedAtMs: number;
   stt: SpeechToText;
+  /**
+   * Start's token. It opens both sources only when `stt.credentialUse` is `reusable`; a
+   * single-connection one opens the first source alone, and the other fetches its own (open()).
+   */
   accessToken: string;
   settings: SttStreamSettings;
   /** Start's token's price without the jargon list (StreamCredentials). */
   pricePerHourUsdWithoutKeyterms?: number | null;
   /**
    * A fresh token for a reopen. Start's token is only good for opening within its TTL (AssemblyAI:
-   * 30 s by default), so a source that reopens minutes later needs a new one from the API.
+   * 30 s by default), so a source that reopens minutes later needs a new one from the API. For a
+   * single-connection vendor it is also every source's token but the first at Start, and the
+   * open without the jargon list's (connect).
    */
   refreshCredentials: () => Promise<StreamCredentials>;
   /** Audio held while a source reopens (costGuards: sttReopenBufferMs). */
@@ -129,7 +133,7 @@ export interface StreamCredentials {
  * jargon list, which each caller handles as it handles its own refusals.
  */
 type Connected =
-  | { ok: true; stream: SttStream }
+  | { ok: true; stream: SttStream; credentials: StreamCredentials }
   | { ok: false; refusal: Exclude<SttOpenDecision, { ok: true }>; rejection: string };
 
 /**
@@ -368,12 +372,11 @@ export class CaptureSession {
    * closed can always reopen on speech; once they reach reopensPerMeeting the gate is spent.
    */
   private gateCloses = 0;
-  /** The gate's token for a speech reopen, fetched at a close and kept fresh while gated. */
-  private prefetched: StreamCredentials | null = null;
-  /** The prefetch in flight: a reopen at the onset waits for it rather than fetch twice. */
-  private prefetching: Promise<StreamCredentials | null> | null = null;
-  /** No prefetch before this clock time (GATE_TOKEN_MIN_INTERVAL_MS after the last one began). */
-  private prefetchNotBeforeMs = 0;
+  /**
+   * The gate's tokens for a speech reopen, fetched at a close and kept fresh while gated: one for
+   * both sources, or one per gated source for a single-connection vendor (GateTokens).
+   */
+  private readonly gateTokens: GateTokens<StreamCredentials>;
   /** The suspend reasons in force, each with the clock time it began (suspendStreams). */
   private readonly suspended = new Map<SuspendReason, number>();
   private readonly watermarkListeners = new Set<WatermarkListener>();
@@ -386,6 +389,18 @@ export class CaptureSession {
   constructor(private readonly options: CaptureSessionOptions) {
     this.meetingId = options.meetingId;
     this.clock = options.clock ?? (() => Date.now());
+    this.gateTokens = new GateTokens({
+      credentialUse: options.stt.credentialUse,
+      fetch: () => this.options.refreshCredentials(),
+      leftMs: (token) => tokenLeftMs(token, this.clock()),
+      now: this.clock,
+      onPrefetchFailed: (error, retryInMs) => {
+        this.options.logger.warn('speech-to-text token prefetch failed', {
+          error: errorMessage(error),
+          retryInMs,
+        });
+      },
+    });
     this.sampleRate = options.settings.sampleRate || PCM_SAMPLE_RATE;
     // Checked here, before any socket: track() builds each stream's AudioTimeline only once its
     // socket is open, and the timeline's own refusal there would leave that socket open.
@@ -456,13 +471,26 @@ export class CaptureSession {
    * minute on a free account, and each Start opens two); a refusal throws before any socket. A
    * source whose jargon list the vendor refuses takes one more, right before its open without the
    * list (connect), so a Start can take four, and a refusal of that one fails the Start too.
+   *
+   * Start's token (CaptureService.doStart fetched it) opens both sources only for a reusable
+   * vendor. A single-connection token (xAI: one websocket, ever; the 2026-10-08 probe) opens the
+   * first source alone, and every other source fetches its own here, beside the first one's open,
+   * so a Start waits one token fetch longer at most. Shared, the second open was refused with
+   * HTTP 401 and every Start failed. The rule holds at every open: reopen() and connect() fetch
+   * per open, GateTokens keeps one per gated source, and the gap re-run fetches per session
+   * (rerun/GapRetranscriber.open).
    */
   async open(): Promise<void> {
     // Both or neither: a Start with one source would look like a working meeting.
     const grant = this.options.budget.acquire(AUDIO_SOURCES.length);
     if (!grant.ok) throw new Error(`Speech-to-text was not started: ${grant.message}`);
+    const { accessToken, settings, pricePerHourUsdWithoutKeyterms = null } = this.options;
+    const startToken: StreamCredentials = { accessToken, settings, pricePerHourUsdWithoutKeyterms };
+    const shared = this.options.stt.credentialUse === 'reusable';
     const results = await Promise.allSettled(
-      AUDIO_SOURCES.map((source) => this.openStream(source)),
+      AUDIO_SOURCES.map((source, index) =>
+        this.openStream(source, index === 0 || shared ? startToken : null),
+      ),
     );
     const failed = results.find((result) => result.status === 'rejected');
     if (failed) {
@@ -714,30 +742,28 @@ export class CaptureSession {
     }
   }
 
-  private async openStream(source: AudioSource): Promise<void> {
-    const { accessToken, settings, pricePerHourUsdWithoutKeyterms = null } = this.options;
-    const credentials: StreamCredentials = {
-      accessToken,
-      settings,
-      pricePerHourUsdWithoutKeyterms,
-    };
+  /** One of Start's opens: with Start's token, or with one of its own when it is null (open()). */
+  private async openStream(
+    source: AudioSource,
+    startToken: StreamCredentials | null,
+  ): Promise<void> {
     const link = this.links[source];
     const attempt = (link.attempt += 1);
+    const stale = (): boolean => this.closing || link.attempt !== attempt;
     this.setState(source, 'connecting', null);
-    const connected = await this.connect(
-      source,
-      credentials,
-      () => this.closing || link.attempt !== attempt,
-      'meeting',
-    );
+    // No await for Start's token: its open starts in this very turn, as it always has.
+    const credentials = startToken ?? (await this.options.refreshCredentials());
+    // The other source failed, or the source closed, while its token came: open nothing.
+    if (stale()) return;
+    const connected = await this.connect(source, credentials, stale, 'meeting');
     if (!connected.ok) {
       // Start takes its opens before any socket and fails whole when refused (open()): so here.
       throw new Error(
         `${connected.rejection}; not opened again without the jargon list: ${connected.refusal.message}`,
       );
     }
-    const handle = this.track(source, connected.stream, credentials, false);
-    if (this.closing || link.attempt !== attempt) {
+    const handle = this.track(source, connected.stream, connected.credentials, false);
+    if (stale()) {
       // Another stream failed, or the source closed, while this one was connecting: do not leak it.
       await this.retire(handle);
       return;
@@ -774,8 +800,10 @@ export class CaptureSession {
     this.setState(source, 'connecting', null);
     let handle: StreamHandle;
     try {
+      // A token per open: the gate's prefetched one is spent here when the vendor's token opens one
+      // connection only (GateTokens, CaptureSession.open), and any other reopen fetches its own.
       const credentials = gateReopen
-        ? await this.gateCredentials()
+        ? await this.gateTokens.take(source)
         : await this.options.refreshCredentials();
       if (stale()) return;
       // Taken right before the open, the only place an open happens: an adapter never opens one.
@@ -790,7 +818,7 @@ export class CaptureSession {
         this.budgetRefused(source, connected.refusal);
         return;
       }
-      handle = this.track(source, connected.stream, credentials, gateReopen);
+      handle = this.track(source, connected.stream, connected.credentials, gateReopen);
     } catch (error) {
       if (stale()) return;
       const reason = `could not reconnect: ${errorMessage(error)}`;
@@ -826,12 +854,16 @@ export class CaptureSession {
    * without its list is never retried. A retry anywhere else (the core, an adapter) would open a
    * billed session the budget never saw (house rule 9).
    *
-   * Answers the stream, or the budget's refusal of the second open. When the second open fails,
-   * the error carries both reasons. `stale` (the session closed, or the source moved on) skips the
-   * second open: the first failure is rethrown, and the caller drops it as it drops any. Asked
-   * before listRejected, whose warn line, capture event and warning each say the source reopens
-   * without the list: after Stop nothing reopens. The list stays on, so an open that is refused
-   * again later says so then.
+   * The open without the list gets a token of its own from a single-connection vendor (xAI): the
+   * first one was spent on the refused handshake (SttCredentialUse; the token comes before the
+   * budget's slot, as at every open).
+   *
+   * Answers the stream and the credentials it opened with, or the budget's refusal of the second
+   * open. When the second open fails, the error carries both reasons. `stale` (the session closed,
+   * or the source moved on) skips the second open: the first failure is rethrown, and the caller
+   * drops it as it drops any. Asked before listRejected, whose warn line, capture event and warning
+   * each say the source reopens without the list: after Stop nothing reopens. The list stays on, so
+   * an open that is refused again later says so then.
    */
   private async connect(
     source: AudioSource,
@@ -840,14 +872,23 @@ export class CaptureSession {
     scope: SttOpenScope,
   ): Promise<Connected> {
     try {
-      return { ok: true, stream: await this.openVendorStream(source, credentials) };
+      return { ok: true, stream: await this.openVendorStream(source, credentials), credentials };
     } catch (error) {
       if (stale() || !this.listRejected(source, credentials, error)) throw error;
+      const again =
+        this.options.stt.credentialUse === 'reusable'
+          ? credentials
+          : await this.options.refreshCredentials();
+      if (stale()) throw error;
       // On the scope of the open it repeats: a gate reopen's second try stays in the minute only.
       const grant = this.options.budget.acquire(1, scope);
       if (!grant.ok) return { ok: false, refusal: grant, rejection: errorMessage(error) };
       try {
-        return { ok: true, stream: await this.openVendorStream(source, credentials) };
+        return {
+          ok: true,
+          stream: await this.openVendorStream(source, again),
+          credentials: again,
+        };
       } catch (retryError) {
         throw new Error(
           `${errorMessage(error)}; and without the jargon list: ${errorMessage(retryError)}`,
@@ -1150,51 +1191,20 @@ export class CaptureSession {
   }
 
   /**
-   * Keeps the gate's prefetched token fresh while any source is gated (M3-T20): fetched at a close,
-   * fetched again GATE_TOKEN_REFRESH_LEAD_MS before it expires, so speech after a silence opens
-   * with no API call at the onset (one token serves both sources, as at Start). Driven by the gated
-   * chunks that keep arriving, not a timer: with no chunk there is no onset to be ready for. Never
-   * while suspended: no token is fetched until resumeStreams() (M2-T6). Fetches are at least
-   * GATE_TOKEN_MIN_INTERVAL_MS apart, so a failed one is tried again then (logged; meanwhile a
-   * reopen fetches at the onset, as before) and a token shorter-lived than the lead is not fetched
-   * at every chunk.
+   * Keeps the gate's prefetched tokens fresh while any source is gated (M3-T20, GateTokens):
+   * fetched at a close and again before each expires, so speech after a silence opens with no API
+   * call at the onset. One token serves both sources for a reusable vendor, as at Start; a
+   * single-connection one gets a token per gated source, each spent on its one reopen (reopen()).
+   * Driven by the gated chunks that keep arriving, not a timer: with no chunk there is no onset to
+   * be ready for. Never while suspended: no token is fetched until resumeStreams() (M2-T6). A
+   * failed prefetch is logged and tried again GATE_TOKEN_MIN_INTERVAL_MS after it began; meanwhile
+   * a reopen fetches at the onset.
    */
   private keepTokenFresh(): void {
-    if (this.closing || this.suspended.size > 0 || this.prefetching !== null) return;
-    if (!AUDIO_SOURCES.some((source) => this.links[source].pauseCause === 'silence')) return;
-    const now = this.clock();
-    if (now < this.prefetchNotBeforeMs) return;
-    const token = this.prefetched;
-    if (token !== null && tokenLeftMs(token, now) > GATE_TOKEN_REFRESH_LEAD_MS) return;
-    this.prefetchNotBeforeMs = now + GATE_TOKEN_MIN_INTERVAL_MS;
-    const fetching = this.options.refreshCredentials().then(
-      (credentials) => {
-        this.prefetched = credentials;
-        return credentials;
-      },
-      (error: unknown) => {
-        this.options.logger.warn('speech-to-text token prefetch failed', {
-          error: errorMessage(error),
-          retryInMs: Math.max(0, this.prefetchNotBeforeMs - this.clock()),
-        });
-        return null;
-      },
+    if (this.closing || this.suspended.size > 0) return;
+    this.gateTokens.keepFresh(
+      AUDIO_SOURCES.filter((source) => this.links[source].pauseCause === 'silence'),
     );
-    this.prefetching = fetching;
-    void fetching.finally(() => {
-      if (this.prefetching === fetching) this.prefetching = null;
-    });
-  }
-
-  /**
-   * The token a gate reopen opens with: the prefetched one (waiting for a prefetch still on its
-   * way) while it has GATE_TOKEN_MIN_LEFT_MS or more left, else a fetch now, as any reopen does.
-   */
-  private async gateCredentials(): Promise<StreamCredentials> {
-    const fetched = this.prefetching === null ? null : await this.prefetching;
-    const token = fetched ?? this.prefetched;
-    if (token !== null && tokenLeftMs(token, this.clock()) >= GATE_TOKEN_MIN_LEFT_MS) return token;
-    return this.options.refreshCredentials();
   }
 
   private dropHeld(link: SourceLink): void {

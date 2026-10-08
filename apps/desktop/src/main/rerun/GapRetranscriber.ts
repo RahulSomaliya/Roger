@@ -430,7 +430,10 @@ export class GapRetranscriber {
   /**
    * A token, a slot, an open: in that order, the slot taken right before `openStream` (house rule
    * 9). A vendor that refuses the jargon list is opened once more without it, through the budget
-   * like any open (CaptureSession.connect does the same for a recording, M3-T4b).
+   * like any open (CaptureSession.connect does the same for a recording, M3-T4b). Each pass of the
+   * loop fetches its own token, so no two opens share one: a single-connection vendor's (xAI,
+   * SttCredentialUse) opens one websocket, ever. Never hoist the fetch out of the loop
+   * (rerunStt.ts says the same).
    */
   private async open(gap: TranscriptGap, signal: AbortSignal): Promise<Opened> {
     const { budget, logger } = this.options;

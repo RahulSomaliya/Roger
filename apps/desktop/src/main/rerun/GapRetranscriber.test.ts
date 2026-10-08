@@ -669,6 +669,29 @@ describe('GapRetranscriber', () => {
     expect(h.store.listUnrecoveredGaps(MEETING)).toEqual([]);
   });
 
+  it('gives every session a token of its own, the open without the jargon list too', async () => {
+    // xAI's client secret opens one websocket, ever (SttCredentialUse): a token handed to a
+    // second open would be refused with HTTP 401 and the gap would never fill.
+    const h = harness({ perMinute: 10 });
+    h.vendor.credentialUse = 'single-connection';
+    h.gap('system', 3_000, 4_000);
+    h.gap('mic', 6_000, 7_000);
+    h.keep('system', 0, 10_000);
+    h.keep('mic', 0, 10_000);
+    h.vendor.openErrors = [
+      new SttConnectError('keyterms refused', 400, { keytermsRejected: true }),
+    ];
+
+    await h.rerun.rerunMeeting(MEETING);
+
+    expect(h.vendor.opens.map((open) => [open.label, open.token, open.keyterms])).toEqual([
+      ['system', 'token-1', ['Roger']],
+      ['system', 'token-2', []],
+      ['mic', 'token-3', ['Roger']],
+    ]);
+    expect(h.store.listUnrecoveredGaps(MEETING)).toEqual([]);
+  });
+
   it('keeps the lines a failing session sent and records why the gap was not filled', async () => {
     const h = harness();
     const gap = h.gap('system', 3_000, 6_000);

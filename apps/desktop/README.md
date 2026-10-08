@@ -285,8 +285,16 @@ Desktop:
    that refuses nothing while it connects (Soniox) declares none, and its entry says
    `refusal: null`. Configuration that must reach the vendor before any audio goes in
    `openingMessages`, never in `encodeAudio` or the keep-alive.
-3. One line in `src/main/stt/registry.ts`.
-4. One entry in `src/main/stt/testing/conformanceVendors.ts`: what it must hear first, how the
+3. Declare `credentialUse`: `reusable` when one token from the API opens any number of sessions
+   within its TTL (AssemblyAI, Deepgram, Soniox), `single-connection` when it opens one websocket,
+   ever (xAI's client secret, the 2026-10-08 probe in `docs/research/stt-benchmark.md`). Read it
+   from the vendor's token docs or probe it with two connections on one token; never assume
+   `reusable`: Roger then hands Start's one token to both sources, and every Start fails with
+   HTTP 401 on the second. Say the same in its conformance entry (`credentialUse`); the fake then
+   refuses a token it has seen. Callers read it (`SpeechToText.credentialUse`); the adapter never
+   fetches a token itself.
+4. One line in `src/main/stt/registry.ts`.
+5. One entry in `src/main/stt/testing/conformanceVendors.ts`: what it must hear first, how the
    vendor says ready, its finish messages and answer, a final line, a real mid-call close. The
    answer must match the protocol's `finishedOn`: the fake closes the socket itself exactly when
    it declares `vendor-close`. Then `pnpm test`: the conformance suite fails until the vendor
@@ -294,17 +302,18 @@ Desktop:
 
 API:
 
-5. One `SttTokenIssuer` in `apps/api/src/roger_api/services/stt_tokens.py` that mints a
+6. One `SttTokenIssuer` in `apps/api/src/roger_api/services/stt_tokens.py` that mints a
    short-lived token (the vendor key never leaves the API), with tests on `httpx.MockTransport`.
-6. The provider id in `SttProvider` (`apps/api/src/roger_api/domain.py`), its key setting
+   Its docstring says how many sessions one token opens, which step 3's `credentialUse` declares.
+7. The provider id in `SttProvider` (`apps/api/src/roger_api/domain.py`), its key setting
    (`<VENDOR>_API_KEY`) and a case in `Settings.stt_vendor_key` (`config.py`).
-7. One entry in `STT_VENDORS` (`apps/api/src/roger_api/stt_vendors.py`): issuer, the vendor's
+8. One entry in `STT_VENDORS` (`apps/api/src/roger_api/stt_vendors.py`): issuer, the vendor's
    token TTL limit, and the list price per stream-hour by model, with the pricing URL and the date
    read. Say whether the vendor bills open time or audio sent. Then at least one `STT_PRESETS` row
    (a preset id, the vendor, and the model spelt as the vendor spells it), its id added to
    `SttPresetId`: `STT_PROVIDER` names a preset, never a vendor, and a test fails on a vendor no
    preset names.
-8. `.env.example`, and the preset tables in `apps/api/README.md` and `docs/api-contract.md` (the
+9. `.env.example`, and the preset tables in `apps/api/README.md` and `docs/api-contract.md` (the
    contract's list of `provider` ids too).
 
 Before relying on it: know the vendor's sessions-per-minute limit (every Start opens two), what it

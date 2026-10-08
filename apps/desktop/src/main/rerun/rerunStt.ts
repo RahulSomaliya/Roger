@@ -26,10 +26,16 @@ const FAKE_STREAM_SETTINGS: SttStreamSettings = {
 /**
  * How the gap re-run gets each session's credentials: a fresh token from the API per session, as a
  * recording's reopen does (CaptureService.resolveStt, private to that file), so the vendor is the
- * one the API names now and the jargon list is the one as edited since. With `sttProviderOverride`
- * "fake" (development, e2e), the fake adapter and no token. A token for another audio format is
- * refused before any open: the backup holds PCM_SAMPLE_RATE PCM_ENCODING, and a vendor told
- * another format transcribes garbage with no error (stt/streamSettings.ts).
+ * one the API names now and the jargon list is the one as edited since. With
+ * `sttProviderOverride` "fake" (development, e2e), the fake adapter and no token. A token for
+ * another audio format is refused before any open: the backup holds PCM_SAMPLE_RATE PCM_ENCODING,
+ * and a vendor told another format transcribes garbage with no error (stt/streamSettings.ts).
+ *
+ * Never cache or share what this returns: a single-connection vendor's token (xAI's client secret,
+ * SttCredentialUse) opens one websocket, ever, and a second open with it is refused with HTTP 401,
+ * which leaves the gap unfilled. GapRetranscriber.open asks once per open, the open without the
+ * jargon list included; a recording keeps the same rule in CaptureSession.open,
+ * CaptureSession.reopen and GateTokens.
  */
 export function rerunCredentials(
   api: SttTokenApi,
