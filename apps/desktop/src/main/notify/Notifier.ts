@@ -1,5 +1,6 @@
 import { app, BrowserWindow, Notification } from 'electron';
 import { type CaptureWarning, WARNING_NOTIFY_INTERVAL_MS } from '../../shared/capture';
+import { parseAppRoute, type AppRoute } from '../../shared/ipc/app';
 import { warningTitle } from '../capture/warnings';
 import type { LogFields, Logger } from '../logger';
 
@@ -7,6 +8,11 @@ export interface NotificationContent {
   title: string;
   /** For people. Never transcript text: macOS shows it on the lock screen and in its history. */
   body: string;
+  /**
+   * Where a click on the notification goes (the meeting it is about). Left out: Roger's window
+   * opens where it was, which is Home when nothing else is open.
+   */
+  route?: AppRoute;
 }
 
 /**
@@ -14,8 +20,11 @@ export interface NotificationContent {
  * a real macOS notification.
  */
 export interface NotifierPorts {
-  /** Posts a macOS notification; `onFailed` runs if macOS refuses it or cannot show it. */
-  show(content: NotificationContent, onFailed: (error: string) => void): void;
+  /**
+   * Posts a macOS notification; `onFailed` runs if macOS refuses it or cannot show it, `onClick`
+   * when the person clicks it.
+   */
+  show(content: NotificationContent, onFailed: (error: string) => void, onClick: () => void): void;
   /** Bounces the dock icon until Roger is activated. */
   bounceDock(): void;
   /** Badges the dock icon; '' clears it. */
@@ -28,6 +37,11 @@ export interface NotifierOptions {
   ports: NotifierPorts;
   logger: Logger;
   clock?: () => number;
+  /**
+   * Brings Roger's window forward on `route` (index.ts: navigation plus show and focus). Left out,
+   * a click does nothing; a notification Roger posted must never be a dead end (sweep N-gap).
+   */
+  open?: (route: AppRoute) => void;
 }
 
 /** The dock badge while a notification could not be posted (BadgeCause says which). */
@@ -78,8 +92,9 @@ export class Notifier {
    * status. A loud spell posts once, the first time it is seen while Roger is not in focus; a
    * spell that began while Roger was in focus posts when Roger leaves focus, if it still lasts.
    * It is also when the Notifier looks at focus to clear the dock badge (BadgeCause).
+   * `meetingId` is the live meeting: a click on a warning's notification opens its page.
    */
-  updateWarnings(warnings: readonly CaptureWarning[]): void {
+  updateWarnings(warnings: readonly CaptureWarning[], meetingId: string | null = null): void {
     const { ports, logger } = this.options;
     const live = new Set<string>();
     for (const warning of warnings) {
@@ -101,7 +116,7 @@ export class Notifier {
       }
       this.lastPostedAtMs.set(key, now);
       this.post(
-        { title: warningTitle(warning), body: warning.message },
+        { title: warningTitle(warning), body: warning.message, ...meetingRoute(meetingId) },
         { kind: warning.kind, source: warning.source },
         'warning',
       );
@@ -121,16 +136,24 @@ export class Notifier {
   private post(content: NotificationContent, fields: LogFields, cause: BadgeCause): void {
     const { ports, logger } = this.options;
     logger.info('posting a notification', { ...fields, title: content.title });
-    ports.show(content, (error) => {
-      logger.warn('notification failed; bouncing the dock instead', {
-        ...fields,
-        title: content.title,
-        error,
-      });
-      ports.bounceDock();
-      if (this.badgedFor.size === 0) ports.setDockBadge(FAILED_BADGE);
-      this.badgedFor.add(cause);
-    });
+    const route = content.route ?? 'home';
+    ports.show(
+      content,
+      (error) => {
+        logger.warn('notification failed; bouncing the dock instead', {
+          ...fields,
+          title: content.title,
+          error,
+        });
+        ports.bounceDock();
+        if (this.badgedFor.size === 0) ports.setDockBadge(FAILED_BADGE);
+        this.badgedFor.add(cause);
+      },
+      () => {
+        logger.info('notification clicked', { ...fields, route });
+        this.options.open?.(route);
+      },
+    );
   }
 
   /** The badge goes once no cause is left. */
@@ -139,6 +162,12 @@ export class Notifier {
       this.options.ports.setDockBadge('');
     }
   }
+}
+
+/** The live meeting's page, or nothing when none runs (or its id is not one: never throw here). */
+function meetingRoute(meetingId: string | null): { route: AppRoute } | Record<string, never> {
+  const route = meetingId === null ? null : parseAppRoute(`meeting/${meetingId}`);
+  return route === null ? {} : { route };
 }
 
 function limitKey({ kind, source }: Pick<CaptureWarning, 'kind' | 'source'>): string {
@@ -160,7 +189,7 @@ export function electronNotifierPorts(getMainWindow: () => FocusableWindow | nul
   // before the answer comes.
   const pending = new Set<Notification>();
   return {
-    show(content, onFailed) {
+    show(content, onFailed, onClick) {
       if (!Notification.isSupported()) {
         onFailed('this Mac does not support notifications for Roger');
         return;
@@ -172,6 +201,10 @@ export function electronNotifierPorts(getMainWindow: () => FocusableWindow | nul
       };
       notification.on('show', settle);
       notification.on('close', settle);
+      notification.on('click', () => {
+        settle();
+        onClick();
+      });
       notification.on('failed', (_event, error) => {
         settle();
         onFailed(error);

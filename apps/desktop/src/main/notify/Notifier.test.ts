@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { type CaptureWarning, WARNING_NOTIFY_INTERVAL_MS } from '../../shared/capture';
 import { PCM_SAMPLE_RATE } from '../../shared/ipc';
+import type { AppRoute } from '../../shared/ipc/app';
 import { ApiClient } from '../api/ApiClient';
 import { createCaptureRuntime } from '../capture/createCaptureRuntime';
 import { loadConfig } from '../config';
@@ -107,6 +108,7 @@ function warning(overrides: Partial<CaptureWarning> = {}): CaptureWarning {
 function fakePorts() {
   const ports = {
     posted: [] as NotificationContent[],
+    clicks: [] as (() => void)[],
     bounces: 0,
     badges: [] as string[],
     focused: false,
@@ -114,8 +116,9 @@ function fakePorts() {
     failWith: null as string | null,
   };
   const api: NotifierPorts = {
-    show: (content, onFailed) => {
+    show: (content, onFailed, onClick) => {
       ports.posted.push(content);
+      ports.clicks.push(onClick);
       if (ports.failWith !== null) onFailed(ports.failWith);
     },
     bounceDock: () => {
@@ -132,9 +135,16 @@ function fakePorts() {
 function harness() {
   let now = T0;
   const { ports, api } = fakePorts();
-  const notifier = new Notifier({ ports: api, logger, clock: () => now });
+  const opened: AppRoute[] = [];
+  const notifier = new Notifier({
+    ports: api,
+    logger,
+    clock: () => now,
+    open: (route) => opened.push(route),
+  });
   return {
     notifier,
+    opened,
     ports,
     at(ms: number): void {
       now = T0 + ms;
@@ -142,6 +152,32 @@ function harness() {
     titles: () => ports.posted.map(({ title }) => title),
   };
 }
+
+describe('Notifier: a click', () => {
+  const MEETING = '0b9f3c1e-5d2a-4c7e-8f10-3a6b9d2e4c11';
+
+  it("opens the live meeting from a warning's notification", () => {
+    const h = harness();
+    h.notifier.updateWarnings([warning()], MEETING);
+    expect(h.ports.posted[0]?.route).toBe(`meeting/${MEETING}`);
+    h.ports.clicks[0]?.();
+    expect(h.opened).toEqual([`meeting/${MEETING}`]);
+  });
+
+  it('opens Home from a notification about no meeting in particular', () => {
+    const h = harness();
+    h.notifier.notify({ title: 'T', body: 'B' });
+    h.ports.clicks[0]?.();
+    expect(h.opened).toEqual(['home']);
+  });
+
+  it('does not throw on a meeting id that is not one: the click opens Home', () => {
+    const h = harness();
+    h.notifier.updateWarnings([warning()], 'not-an-id');
+    h.ports.clicks[0]?.();
+    expect(h.opened).toEqual(['home']);
+  });
+});
 
 describe('Notifier: warnings', () => {
   it('posts one notification per loud spell, however often the status repeats it', () => {
@@ -332,9 +368,13 @@ describe('electronNotifierPorts', () => {
   it('posts an Electron notification with the title and body, and hands its failure on', () => {
     const ports = electronNotifierPorts(() => mainWindow);
     const failures: string[] = [];
-    ports.show({ title: 'Your mic is silent', body: 'Check the mic.' }, (error) => {
-      failures.push(error);
-    });
+    ports.show(
+      { title: 'Your mic is silent', body: 'Check the mic.' },
+      (error) => {
+        failures.push(error);
+      },
+      () => undefined,
+    );
     expect(electron.shown.map(({ options }) => options)).toEqual([
       { title: 'Your mic is silent', body: 'Check the mic.' },
     ]);
@@ -342,12 +382,29 @@ describe('electronNotifierPorts', () => {
     expect(failures).toEqual(['UNErrorDomain error 1']);
   });
 
+  it('runs onClick when macOS reports a click on the notification', () => {
+    let clicks = 0;
+    electronNotifierPorts(() => mainWindow).show(
+      { title: 'T', body: 'B' },
+      () => undefined,
+      () => {
+        clicks += 1;
+      },
+    );
+    electron.shown[0]?.emit('click');
+    expect(clicks).toBe(1);
+  });
+
   it('fails at once where notifications are not supported, posting nothing', () => {
     electron.state.supported = false;
     const failures: string[] = [];
-    electronNotifierPorts(() => mainWindow).show({ title: 'T', body: 'B' }, (error) => {
-      failures.push(error);
-    });
+    electronNotifierPorts(() => mainWindow).show(
+      { title: 'T', body: 'B' },
+      (error) => {
+        failures.push(error);
+      },
+      () => undefined,
+    );
     expect(electron.shown).toEqual([]);
     expect(failures).toHaveLength(1);
   });
