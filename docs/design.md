@@ -205,7 +205,11 @@ it is never a sub-second flash.
   ("Stopping…"), sets `aria-disabled="true"` and takes no clicks. `disabled` only means "nothing to
   do", and then the reason shows once, beside it.
 - **Focus.** `outline: 2px solid var(--ring); outline-offset: 2px` on `:focus-visible`; inset
-  (`-2px`) inside anything that scrolls or clips (the transcript, the chat log, menus).
+  (`-2px`) inside anything that scrolls or clips (menus, the tab track). Large reading and writing
+  regions (the transcript log, the chat log, My notes) never draw a box: keyboard focus there is a
+  2 px `--ring` line along the region's left edge, and My notes shows its caret and nothing else
+  (added by the redesign sweep; Rahul, 2026-10-08, on the orange box around the transcript: "that
+  weird highlight ring, lets remove it").
 - **Recording chip.** `--radius-full`, secondary look: a static 8 px accent dot, the word
   "Recording" and the elapsed time ("12m", tabular, updated every 15 s: a seconds counter is
   motion that never stops). In the app header on every page but the live meeting's own; a click
