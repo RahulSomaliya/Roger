@@ -33,10 +33,6 @@ when you hit a new one.
   (`hasShadow`, transparent), which clips a CSS `box-shadow`: the card sits on a 1 px line. Across
   stacked cards only the panel's first start is primary (`promptButtons.ts` `leading`)
   (redesign R8).
-- The consent line shows its text as an out-of-flow popover (opacity, not `display: none`) on hover
-  and focus: a line that grows would move the notes under the cursor, and `display: none` hides the
-  text from screen readers. Its buttons are `.calendar-notice-buttons`; `.calendar-notice-actions`
-  is the settings editor's (redesign R9).
 - A regex word boundary matches inside a hyphenated class name, and `toContain` matches a longer
   one: assert a removed class with `/class="(?:[^"]* )?notice[" ]/`, not `\bnotice\b` (it matched
   `calendar-notice`) or `toContain('capture-warning')` (the wrapper is `capture-warnings`)

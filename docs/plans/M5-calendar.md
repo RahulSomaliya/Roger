@@ -2,12 +2,15 @@
 
 **Phase:** 2 · **Status:** draft · **Owner:** Rahul · **Plan written:** 2026-10-06 · **Closed:** -
 
+2026-10-08: Rahul removed the call notice end to end. Wherever this plan says "notice" (the Copy notice
+button, the meeting page line, `notice.enabled`, `notice.text`, D3), read it as removed, not as a
+requirement; Roger keeps the calendar reminder and nothing for the other people on the call.
+
 ## Goal
 
 Roger knows the user's day. After one Google Calendar sign-in, the home screen lists today's
 meetings, a small prompt appears a minute before each call, and one click starts a note whose title
-and attendees come from the invite. The same prompt reminds the user to tell the other people on the
-call and copies a ready message for the meeting chat.
+and attendees come from the invite.
 
 ## Done when
 
@@ -88,14 +91,14 @@ the milestone closes when the streak is logged. It runs alongside Gate 2.
 - Home "Today" section: today's meetings, the next meeting, Start notes per meeting, a connect card.
 - A prompt panel just before each call: title, time, attendees, Take notes, Join and take notes,
   Copy notice, Dismiss. The same panel shows M2's "call detected" offer (D5).
-- Notice to others on by default, with an editable message copied in one click.
+- ~~Notice to others on by default, with an editable message copied in one click.~~ Removed 2026-10-08.
 - Each meeting started for an event stores its title, attendee list, event ids, scheduled times
   and how it was started (`start_source`) in Postgres.
 - A durable prompt log: every prompt-worthy event and its outcome, including missed ones.
 - Roger keeps running: closing the window hides it, a menu bar item, launch at login, and a dev
   build that never collides with the installed app.
 - A fake calendar provider so every screen and test runs with no Google client.
-- A Calendar section in Settings: account, reminder lead time, notice on/off and text, open at login.
+- A Calendar section in Settings: account, reminder lead time, open at login (the notice on/off and text were removed 2026-10-08).
 - The requirements for SHELL-0 (preferences store, `app:navigate`), built by M4-S2 and M4-S1 (D4).
 
 ## Out of scope
@@ -136,7 +139,7 @@ the milestone closes when the streak is logged. It runs alongside Gate 2.
 | Roger keeps running | Closing the window hides it; the renderer and any recording keep running (`backgroundThrottling: false`). Roger lives in the menu bar; Cmd+Q or the menu's Quit ends it. Open at login turns on when the calendar first connects (packaged builds only, once real-Mac check 1 passes), with a toggle in Settings. A login launch is detected with `app.getLoginItemSettings().wasOpenedAtLogin` and starts with the window hidden; when that reads false the window shows, which is only cosmetic. A dev build sets `userData` to "Roger Dev" before `requestSingleInstanceLock`. | Quit when the last window closes (today); `openAsHidden` | A prompt needs a running app, and today closing the window quits and ends a recording (the landed cost guard G4 stops it on the window's `close`; T11 moves that stop to a real close). `openAsHidden` does nothing on macOS 13+ and is gone from Electron 44's `Settings` type; openwhispr `autoStartPolicy.js` reads `wasOpenedAtLogin` for the same reason. macOS 13+ registers login items through SMAppService, and registration from a build signed without an Apple team id is unverified here, hence check 1. A login item can wait for approval: Settings shows `requires-approval` with the path System Settings → General → Login Items & Extensions (macOS 15+). `productName` is "Roger" in dev and packaged builds, so both used the same `userData` and the same single-instance lock (Electron keys it on `userData`): with Roger.app always in the menu bar, `make dev-desktop` would quit at once, and two copies would share `roger.sqlite` and `calendar.sqlite`. A dev build must never register Electron.app as a login item. |
 | Linking a meeting to its event | The meeting create carries `start_source` and an optional `calendar_event` (event id, iCal UID, recurring event id, scheduled start and end, attendees). The API stores the ids on `meetings` and attendees in `meeting_attendees`. `start_source` includes `call_detected` for M2. | A JSON snapshot column; linking after the fact | One create keeps idempotency simple (house rule 7). A table lets M7 and M8 filter by person and M9 attach a speaker name per attendee. The iCal UID is the same for every invitee, so from M6 two teammates' notes of one call can be matched. `start_source` turns the exit check into a query. M5 owns the `meetings` column and its check constraint, so M2's value lands in the same migration rather than a second one. |
 | Manual start near a meeting | A start from Home "New note", the menu bar or a call-detected card links to an event only when exactly one prompt-worthy event is running or starts within 5 min. Applied by a `StartRequestEnricher` that T9c injects into `CaptureService.start`. | Never link a manual start | Title and attendees still come from the invite when the prompt was missed. Two overlapping calls link nothing rather than the wrong one. `CaptureService` cannot see the calendar cache, so the rule reaches it through one injected port. |
-| Notice to others | On by default. The prompt has "Copy notice"; the meeting page shows a banner with the same button until copied or dismissed. The text is a setting. Copy goes through Electron `clipboard` in main, which works from the unfocused panel. | Post it into the Meet chat for the user | The roadmap asks M5 for a reminder and a one-click message; posting into Meet is M9's extension. **Owner decision D3** for the wording. |
+| Notice to others | **Removed 2026-10-08.** On by default. The prompt has "Copy notice"; the meeting page shows a banner with the same button until copied or dismissed. The text is a setting. Copy goes through Electron `clipboard` in main, which works from the unfocused panel. | Post it into the Meet chat for the user | The roadmap asks M5 for a reminder and a one-click message; posting into Meet is M9's extension. **Owner decision D3** for the wording. |
 | Fake provider | `CALENDAR_PROVIDER=fake` (the default). Its authorization URL is the desktop's own redirect with `code=fake`, so the whole browser round trip runs with no Google. Its events are anchored to the API's start time (stable between polls): a call 2 min after start with three attendees and a Meet link, an all-day item, a declined call, a solo block with an auto-added Meet link, a solo block with a Zoom link in the location, a moved recurring instance, one tomorrow. `FAKE_CALENDAR_FILE` replaces them with a JSON file. | Mocks in tests only | C4: build, QA and demo every screen with no Google client. Restart the API for a fresh "call in 2 minutes". |
 | Who owns the prompt panel | M5 builds one `PromptService` and one panel. Every source feeds it through `PromptService.offer` (see "Prompt feed shared with M2"); M2's call detection builds no card or notification of its own. | M2 and M5 each build a prompt | Two panels for one call is the obvious bug, and an M2 click would store the call as `call_detected` and break the streak. openwhispr routes calendar and audio detection through one engine (`meetingDetectionEngine.js` `_handleDetection`) that attaches the running or imminent calendar event to an audio detection (`_findCalendarEvent`). **Owner decision D5.** |
 | Who owns the app shell | M4-S1 to M4-S4b (M4 D6), in waves 1 to 3. This plan's SHELL-0 spec is folded in: `app:navigate` is M4-S1's and the `PreferencesStore` is M4-S2's. "SHELL" here means M4-S1 to M4-S4b. | Two foundation tasks outside the milestones (this plan's first draft) | Every Phase 2 plan said the shell was owned elsewhere, so nobody would build it. M4's ids are numbered and land in waves 1 to 3, before any M5 task that needs them (`phase-2-build-order.md`). **Owner decision D4 (OD-19).** |
@@ -371,7 +374,7 @@ WHERE action IN ('started', 'joined_and_started')
 | API | `CALENDAR_TOKEN_KEY` | required when `google`, at least 32 characters (`openssl rand -hex 32`) |
 | API | `FAKE_CALENDAR_FILE` | empty: built-in fake events |
 | Desktop prefs | `calendar.reminderLeadMinutes` | 1 |
-| Desktop prefs | `notice.enabled`, `notice.text` | on, the text above |
+| Desktop prefs | ~~`notice.enabled`, `notice.text`~~ removed 2026-10-08 (a stored value stays in the file and is ignored) | |
 | Desktop prefs | `app.openAtLogin` | `auto` (on at first connect); `on`, `off` once the user chooses |
 
 The preference keys, defaults and validators live once in `src/shared/calendarPrefs.ts` (T8) and are
@@ -447,7 +450,7 @@ What M5 needs from each:
 | --- | --- | --- | --- |
 | D1 | Where does the Google refresh token live? | The API, pgcrypto-encrypted, so the desktop keeps holding only the Roger token and M6 reuses the store. Phase 2 cost: `make dev-api` must run; Roger says loudly when the calendar goes stale | Desktop Keychain via `safeStorage`: no API hop and no stale risk, but bends house rule 3 and has to move to the server in M6 |
 | D2 | Consent screen audience | **Decided by the owner 2026-10-06:** External, open to any Google account. Testing first (test users, reconnect every 7 days, warned from day 6), In production after Google verification | Internal under the linkt.ai org (no expiry, linkt.ai accounts only) |
-| D3 | Notice wording | The default above, on by default, reviewed by Linkt's legal view before Gate 2. M2 keeps call audio on the Mac for 7 days; legal may want the notice to say so. | Wait for legal before shipping any text |
+| D3 | Notice wording | **Moot since 2026-10-08: the notice was removed.** The default above, on by default, reviewed by Linkt's legal view before Gate 2. M2 keeps call audio on the Mac for 7 days; legal may want the notice to say so. | Wait for legal before shipping any text |
 | D4 | Who owns the app shell | M4-S1 to M4-S4b (M4 D6), with SHELL-0's spec folded into M4-S1 and M4-S2; M5 only mounts a Home section, a Settings section and a meeting banner (T13). Revised 2026-10-06 in `phase-2-build-order.md` (OD-19) | Two foundation tasks outside the milestones (this plan's first draft) |
 | D5 | Who owns the prompt panel | M5, with `PromptService.offer` that M2's call detection feeds, and M2-T17 and M2-T20 changed to match | M2 owns it and M5 feeds it |
 
