@@ -196,6 +196,9 @@ describe('Home, while a call records', () => {
     const html = render();
     expect(html).not.toContain('home-hero-link');
     expect(html).toMatch(/data-variant="primary"[^>]*>Stop</);
+    // Still exactly one h1, so focus and the window title have a page to land on.
+    expect(html.match(/<h1/g)).toHaveLength(1);
+    expect(html).toContain('<h1 class="sr-only">Home</h1>');
   });
 });
 

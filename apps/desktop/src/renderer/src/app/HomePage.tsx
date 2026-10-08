@@ -124,7 +124,11 @@ export function HomeHero({
           {stopping ? PHASE_LABEL.stopping : PHASE_LABEL.recording}
           {live.startedAt === null ? '' : ` · started ${formatClockTime(live.startedAt)}`}
         </p>
-        {live.title === null ? null : (
+        {live.title === null ? (
+          // Until the list answers (or if it never does) Home still needs its one h1, for focus
+          // and the window title; a guessed meeting title would flip to the real one.
+          <h1 className="sr-only">Home</h1>
+        ) : (
           <h1 className="home-hero-title">
             <button type="button" className="home-hero-link" onClick={onOpenLive}>
               {live.title}
