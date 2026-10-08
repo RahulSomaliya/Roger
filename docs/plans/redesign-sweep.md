@@ -1,6 +1,6 @@
 # Redesign sweep: every surface Roger shows a person
 
-**Phase:** after 2 · **Status:** draft, waiting on the decisions in section 6 · **Owner:** Rahul ·
+**Phase:** after 2 · **Status:** signed off 2026-10-08 (D1 to D6 as pre-filled) · **Owner:** Rahul ·
 **Plan written:** 2026-10-08 · **Closed:** -
 
 ## Goal
@@ -579,6 +579,8 @@ Notes for the builders:
 - T8 is the only API task; its contract change goes in `docs/api-contract.md` in the same commit.
 
 ## 6. Decisions for Rahul (pick pre-filled)
+
+Signed off by Rahul on 2026-10-08 ("ok"): D1 to D6 stand as written below.
 
 - D1 Title bar: **the slim header moves into the title bar row (traffic lights inset), one "Roger"**. Else: keep the system title bar and drop the header's wordmark.
 - D2 Home in the landscape window: **two columns, the next meeting and Start notes left, Today and Earlier right**; one column under 960 px. Else: one 720 px column, as today.
