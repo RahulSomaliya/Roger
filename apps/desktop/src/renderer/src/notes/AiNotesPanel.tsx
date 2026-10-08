@@ -181,8 +181,13 @@ function RunFailure({ failure, cancelled, busy, actions }: RunFailureProps) {
       {cancelled ? null : <Icon name="circle-alert" />}
       <div className="problem-text">
         <p className="ai-notes-failure-title">{failure.title}</p>
+        {/* What main or the API said is raw text (routes, vendor words): closed, for whoever
+            reports the problem, never part of the sentence a person reads. */}
         {failure.detail === null ? null : (
-          <p className="ai-notes-failure-detail">{failure.detail}</p>
+          <details className="ai-notes-failure-details">
+            <summary>Details</summary>
+            <p className="ai-notes-failure-detail">{failure.detail}</p>
+          </details>
         )}
         <div className="ai-notes-actions">
           {retryTemplateId === null ? null : (

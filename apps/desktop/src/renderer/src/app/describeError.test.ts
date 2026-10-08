@@ -52,6 +52,41 @@ describe('describeError on the API client messages', () => {
     );
   });
 
+  it('turns the calendar flows wrapped form into plain words, keeping the action', () => {
+    const line = describeError(
+      new Error(
+        "Error invoking remote method 'calendar:connect': Error: Could not reach the Roger API to connect Google Calendar. Is it running? (POST /v1/calendar/google/authorization failed: connect ECONNREFUSED 127.0.0.1:8000)",
+      ),
+    );
+    expect(line).toBe(
+      'Roger could not reach its server to connect Google Calendar. Check the connection and try again.',
+    );
+    expect(line).not.toMatch(/\/v1|ECONN|127\.0|Is it running|POST/);
+  });
+
+  it('turns a vendor failure into plain words with the next step', () => {
+    for (const text of [
+      'xAI: rejected with HTTP 401',
+      'AssemblyAI: socket closed before the session opened',
+      'OpenRouter: model overloaded',
+    ]) {
+      const line = describeError(new Error(text));
+      expect(line).toBe('A service Roger relies on had a problem. Try again in a moment.');
+    }
+  });
+
+  it('never lets a route, an address, an errno or an HTTP code through', () => {
+    for (const text of [
+      'something at /v1/meetings broke',
+      'connect ECONNREFUSED',
+      'listening on 127.0.0.1:8000',
+      'returned HTTP 502 today',
+      'SQLITE_FULL while writing',
+    ]) {
+      expect(describeError(text)).toBe('Something went wrong. Try again in a moment.');
+    }
+  });
+
   it('leaves a plain sentence from main alone', () => {
     expect(describeError(new Error('the notes of meeting m-1 are still being written'))).toBe(
       'the notes of meeting m-1 are still being written',
