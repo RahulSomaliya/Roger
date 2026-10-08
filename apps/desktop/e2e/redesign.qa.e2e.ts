@@ -4,15 +4,31 @@ import { afterAll, beforeAll, describe, it } from 'vitest';
 import type { ForcedTheme } from '../preview/control';
 import { previewCalendarDay } from '../preview/fakes/calendar';
 import { LIVE_CALL, PAST_MEETING, segmentIdForLine } from '../preview/scenarios';
+import { START_FAILURE_SENTENCES, unsavedLinesWords } from '../src/main/capture/errorWords';
+import { stopNotice } from '../src/main/capture/stopReasons';
+import {
+  detectWarnings,
+  KEYTERMS_REJECTED_MESSAGE,
+  type SignalFacts,
+  type SourceSignal,
+} from '../src/main/capture/warnings';
+import { ApiError } from '../src/main/api/http';
+import { describeServerFailure } from '../src/main/setup/connectionChecks';
+import { SETTINGS_PANES } from '../src/main/settingsPanes';
+import { GOOGLE_NOT_SET_UP } from '../src/renderer/src/calendar/calendarFormat';
+import { wordsOutsideDetails } from '../src/shared/captureWords';
 import { meetingDayLabel } from '../src/renderer/src/app/labels';
 import * as qa from '../qa/driver';
 import type { CalendarEvent } from '../src/shared/calendar';
-import type {
-  CaptureReport,
-  CaptureStatus,
-  CaptureWarning,
-  UploadStatus,
+import {
+  CALL_AUDIO_SILENT_LOUD_MS,
+  type CaptureReport,
+  type CaptureStatus,
+  type CaptureWarning,
+  MIC_DEAD_WARNING_MS,
+  type UploadStatus,
 } from '../src/shared/capture';
+import { appChannels } from '../src/shared/ipc/app';
 import { calendarChannels } from '../src/shared/ipc/calendar';
 import { captureChannels } from '../src/shared/ipc/capture';
 import { chatChannels } from '../src/shared/ipc/chat';
@@ -29,9 +45,12 @@ import type {
 import type { PromptScenarioId } from '../preview/promptScenarios';
 
 /**
- * The redesign's QA (docs/plans/redesign.md, R10): every screen in its states, in both themes at
- * 1440 and 390 wide, on the browser preview (qa/README.md). It replaces the per-milestone QA
- * scripts, which selected classes the redesign deleted.
+ * The redesign sweep's QA (docs/plans/redesign-sweep.md, T10): every view in its states, in both
+ * themes, at the window's two real sizes (1080 x 730, the default, and 420 x 760, the narrow one;
+ * qa/driver.ts QA_WIDTHS) on the browser preview (qa/README.md). The prompt panel is checked on its
+ * own 1440 x 900 stage, at the place main puts it. Words come from main's own modules
+ * (capture/errorWords.ts, capture/warnings.ts, shared/captureWords.ts), never invented copy: a
+ * page checked against copy the QA made up proves nothing about what main writes.
  *
  * Every shot is first checked, because a screenshot of a wrong screen is still a screenshot:
  *  - at most ONE visible primary button, and it is the one docs/design.md names for that moment
@@ -39,24 +58,33 @@ import type { PromptScenarioId } from '../preview/promptScenarios';
  *    computed background, so an accent-filled control that skipped `.btn` is still counted;
  *    `document.elementFromPoint` at its centre must be the button, so nothing covers it;
  *  - every problem line the state has is on screen: a person can see it, not just the DOM;
+ *  - no word a person reads outside Details is a vendor, an HTTP code, a route, an address, an
+ *    errno or an internal word (`wordsOutsideDetails`, the same list main's tests use);
+ *  - the header: "Home" on every page but Home, clear of the traffic lights, the gear current on
+ *    Settings only;
  *  - no sideways page scroll, no console error, and no running animation (nothing pulses).
  *
- * Run it in pieces (a 10-minute stall limit kills one long call):
+ * The behaviours the sweep promises are their own pieces (`nav`, `appearance`, `focus`): Back,
+ * Escape, what main's Cmd+[ sends, focus on the page's h1, Appearance switching the window at once,
+ * and no box around the transcript, the chat or My notes.
+ *
+ * Run it in pieces (a 10-minute stall limit kills one long call; each is well under 8 minutes):
  *   pnpm exec vitest run --config vitest.e2e.config.ts e2e/redesign.qa.e2e.ts -t "^home"
- * The pieces are `home`, `live`, `past`, `chat`, `settings`, `setup`, `prompt` and `offline`. Each
- * adds its shots to one gallery folder (ROGER_QA_OUT); clear it before a full run.
+ * The pieces are `home`, `live`, `past`, `chat`, `settings`, `setup`, `prompt`, `offline`, `nav`,
+ * `appearance`, `focus` and `words`. Each adds its shots to one gallery folder (ROGER_QA_OUT);
+ * clear it before a full run.
  */
 
 const PIECE_TIMEOUT_MS = 240_000;
 
 let run: qa.QaRun;
-const gallery = new qa.Gallery('Roger redesign: Course Player style', 'redesign');
+const gallery = new qa.Gallery('Roger redesign sweep: every surface', 'sweep');
 beforeAll(async () => {
   run = await qa.startQa();
 });
 afterAll(async () => {
   await run.close();
-  await gallery.write({ Branch: 'rd/r13', Date: '2026-10-07' });
+  await gallery.write({ Branch: 'sw/t10', Date: '2026-10-08', Sizes: '1080 x 730 and 420 x 760' });
 });
 
 interface Combo {
@@ -85,6 +113,12 @@ interface Spec {
   hides?: string[];
   /** The prompt panel's page: no shell to grow. */
   prompt?: boolean;
+  /**
+   * Set up Roger only: the visible controls that leave the page (D6), sorted. A failing check has
+   * "Home" alone; once everything passes "Done" joins it, as the primary that finishes. Never
+   * "Later", which the sweep removed.
+   */
+  exits?: string[];
 }
 
 /** Checks and shoots the state on screen now; the third argument of a walk's body. */
@@ -147,7 +181,13 @@ interface KnownFailure {
   /** The file and what the screen shows. */
   reason: string;
 }
-const KNOWN_FAILURES: readonly KnownFailure[] = [];
+const KNOWN_FAILURES: readonly KnownFailure[] = [
+  {
+    slug: 'past-details',
+    reason:
+      'components/capture/CaptureDetails.tsx (T5): `showEcho` is true for every report (counts is never null) though EchoLines draws nothing for zero counts, so `nothing` is never true and StoredFacts never shows: Details of a past meeting with no gaps, events or kept audio opens an empty dialog (D3)',
+  },
+];
 
 async function verifyAndShoot(preview: qa.PreviewPage, combo: Combo, spec: Spec): Promise<void> {
   const failure = await checkView(preview, spec).then(
@@ -202,7 +242,9 @@ async function checkView(preview: qa.PreviewPage, spec: Spec): Promise<void> {
     throw new Error(`${label(primary)} is covered by ${primary.covered}`);
   }
   await expectMenuInWindow(page);
-  await expectNoRawApiText(page);
+  if (spec.prompt !== true) await expectHeader(page);
+  await expectNoInternals(page);
+  if (spec.exits !== undefined) await expectExits(page, spec.exits);
   for (const text of spec.problems ?? []) await expectProblem(page, text);
   for (const text of spec.shows ?? []) await expectTextVisible(page, text);
   for (const text of spec.hides ?? []) await expectTextHidden(page, text);
@@ -257,7 +299,8 @@ function visiblePrimaries(page: Page): Promise<PrimaryRead[]> {
       if (!filled) continue;
       const words = element.textContent.replace(/\s+/g, ' ').trim();
       const named = words === '' ? (element.ariaLabel ?? '') : words;
-      const busy = element.getAttribute('aria-disabled') === 'true';
+      // `disabled` too: Connect with no Google client on the server (D4) is a primary that is off.
+      const busy = element.getAttribute('aria-disabled') === 'true' || element.matches(':disabled');
       // A busy button has `pointer-events: none` (styles.css), so elementFromPoint skips it.
       const top = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
       const hit = top !== null && (top === element || element.contains(top));
@@ -297,19 +340,142 @@ async function expectNoRunningAnimation(page: Page): Promise<void> {
  */
 
 /**
- * No request path, address or errno on the page outside Details (docs/design.md, Copy): every
- * error line goes through `describeError` (R13). An open dialog is Details, the one place that may
- * name them.
+ * What a person types or a model writes, which no rule of ours governs: the transcript's lines, My
+ * notes and the AI notes, the questions and answers of the chat, and the jargon list's terms (the
+ * preview's holds vendor names on purpose: they are jargon).
  */
-async function expectNoRawApiText(page: Page): Promise<void> {
-  const found = await page.evaluate(() => {
-    const raw =
-      /\/v1\/|\bECONN[A-Z]*\b|\b127\.0\.0\.1\b|\b(?:GET|PUT|POST|DELETE) \/\S* (?:failed|returned)/;
-    const visible = (document.body.innerText || '').split('\n');
-    if (document.querySelector('dialog[open]') !== null) return null;
-    return visible.find((line) => raw.test(line)) ?? null;
+const USER_CONTENT =
+  '.live-transcript-lines, .note-editor-content, .meeting-chat-question, .meeting-chat-text, .vocabulary-terms';
+
+/**
+ * Every piece of text a person reads on the page, outside Details and outside what they wrote: the
+ * visible text nodes, and the `aria-label` and `title` of visible elements (a screen reader and a
+ * hover read them too). An open Details dialog is the one place that may name a vendor, a route or
+ * an errno, so it is left out; any other dialog is read.
+ */
+function readPageWords(page: Page): Promise<{ text: string; where: string }[]> {
+  return page.evaluate((contentSelector) => {
+    const place = (element: Element | null): string => {
+      const names: string[] = [];
+      for (let at = element; at !== null && names.length < 5; at = at.parentElement) {
+        names.push(
+          at.tagName.toLowerCase() + (at.className ? `.${at.className.split(' ')[0]}` : ''),
+        );
+      }
+      return names.join(' < ');
+    };
+    const skipped = (element: Element): boolean =>
+      element.closest(contentSelector) !== null ||
+      [...document.querySelectorAll('dialog[open]')].some(
+        (dialog) =>
+          // `startsWith`, not a word boundary: the title runs into the first row ("DetailsMicrophone").
+          dialog.contains(element) && dialog.textContent.trimStart().startsWith('Details'),
+      );
+    const found: { text: string; where: string }[] = [];
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+      const parent = node.parentElement;
+      const text = (node.textContent ?? '').replace(/\s+/g, ' ').trim();
+      if (parent === null || text === '' || skipped(parent) || !parent.checkVisibility()) continue;
+      if (parent.closest('script, style') !== null) continue;
+      found.push({ text, where: place(parent) });
+    }
+    for (const element of document.querySelectorAll('[aria-label], [title]')) {
+      if (skipped(element) || !element.checkVisibility()) continue;
+      for (const name of ['aria-label', 'title']) {
+        const value = element.getAttribute(name);
+        if (value !== null && value.trim() !== '') {
+          found.push({ text: value.trim(), where: `${name} of ${place(element)}` });
+        }
+      }
+    }
+    return found;
+  }, USER_CONTENT);
+}
+
+/**
+ * Nothing a person reads is a vendor's name, an HTTP code, a route, an address, an errno, a setting's
+ * variable, "helper", "stream", "Postgres", "API" or any other word `wordsOutsideDetails` names
+ * (docs/design.md, "Words from main"; docs/plans/redesign-sweep.md, Done when). It is the list
+ * main's own tests run every sentence through, so the page and main cannot disagree.
+ */
+async function expectNoInternals(page: Page): Promise<void> {
+  for (const { text, where } of await readPageWords(page)) {
+    const pieces = wordsOutsideDetails(text);
+    if (pieces.length > 0) {
+      throw new Error(
+        `text outside Details holds ${pieces.map((piece) => `"${piece}"`).join(', ')}: "${text.slice(0, 120)}" (${where})`,
+      );
+    }
+  }
+}
+
+/**
+ * The header (docs/plans/redesign-sweep.md, section 4): 52 px, the window's full width; on Home the
+ * wordmark and no way back, on every other page "Home" as a button that is on top at its centre;
+ * every control clear of the traffic lights' 80 px; the gear current on Settings (aria-current and
+ * a drawn difference, V2) and nowhere else. Skipped while a modal dialog covers the page.
+ */
+async function expectHeader(page: Page): Promise<void> {
+  const problem = await page.evaluate(() => {
+    const shell = document.querySelector<HTMLElement>('.shell');
+    const header = document.querySelector<HTMLElement>('.app-header');
+    if (shell === null || header === null) return 'the page has no shell or header';
+    const route = shell.dataset.route ?? '';
+    const box = header.getBoundingClientRect();
+    if (Math.round(box.height) !== 52) return `the header is ${box.height} px tall, not 52`;
+    if (Math.round(box.width) !== window.innerWidth) {
+      return `the header is ${box.width} px wide in a ${window.innerWidth} px window`;
+    }
+    const modal = document.querySelector('dialog[open]') !== null;
+    const back = header.querySelector<HTMLElement>('.app-back');
+    if (route === 'home') {
+      if (back !== null) return 'Home has a "Home" button';
+      if (header.querySelector('.app-brand')?.textContent !== 'Roger')
+        return 'Home has no wordmark';
+    } else {
+      if (back === null) return `${route} has no "Home" button`;
+      if (back.textContent.trim() !== 'Home')
+        return `${route}'s back button reads "${back.textContent}"`;
+      const at = back.getBoundingClientRect();
+      if (at.width === 0 || !back.checkVisibility()) return '"Home" is not visible';
+      if (!modal) {
+        const top = document.elementFromPoint(at.left + at.width / 2, at.top + at.height / 2);
+        if (top === null || !back.contains(top)) return '"Home" is covered';
+      }
+    }
+    for (const control of header.querySelectorAll<HTMLElement>('button')) {
+      const at = control.getBoundingClientRect();
+      if (at.left < 80) {
+        return `a header control starts at ${Math.round(at.left)} px, under the traffic lights`;
+      }
+    }
+    const gear = header.querySelector<HTMLElement>('button[aria-label="Settings"]');
+    if (gear === null) return 'the header has no Settings button';
+    const current = gear.getAttribute('aria-current') === 'page';
+    if (current !== (route === 'settings')) {
+      return `the gear is ${current ? '' : 'not '}current on ${route}`;
+    }
+    if (current && getComputedStyle(gear).backgroundColor === 'rgba(0, 0, 0, 0)') {
+      return 'the current gear is marked by aria-current alone, not drawn';
+    }
+    return null;
   });
-  if (found !== null) throw new Error(`raw API text on the page: "${found.trim().slice(0, 100)}"`);
+  if (problem !== null) throw new Error(`header: ${problem}`);
+}
+
+/** The visible buttons that leave Set up Roger, by name: "Home" in the header, "Done", "Later". */
+async function expectExits(page: Page, expected: string[]): Promise<void> {
+  const seen = await page.evaluate(() =>
+    [...document.querySelectorAll<HTMLElement>('button')]
+      .filter((button) => button.checkVisibility())
+      .map((button) => button.textContent.replace(/\s+/g, ' ').trim())
+      .filter((name) => name === 'Home' || name === 'Done' || name === 'Later')
+      .sort(),
+  );
+  if (seen.join() !== [...expected].sort().join()) {
+    throw new Error(`the exits are [${seen.join(', ')}], not [${expected.join(', ')}]`);
+  }
 }
 
 /** An open menu lies wholly inside the window: a list cut off at an edge hides its items (R13). */
@@ -392,7 +558,7 @@ const openScenario =
 /** Main's capture status with `patch` laid over it, sent as main sends a change. */
 async function patchStatus(
   page: Page,
-  patch: Partial<Pick<CaptureStatus, 'phase' | 'error' | 'notice'>> & {
+  patch: Partial<Pick<CaptureStatus, 'phase' | 'error' | 'errorDetail' | 'notice'>> & {
     warnings?: CaptureWarning[];
     upload?: Partial<UploadStatus>;
   },
@@ -412,13 +578,45 @@ async function patchStatus(
 const minutesAgo = (minutes: number): string =>
   new Date(Date.now() - minutes * 60_000).toISOString();
 
-const NO_CALL_AUDIO: CaptureWarning = {
-  kind: 'call-audio-silent',
-  source: 'system',
-  since: minutesAgo(2),
-  message: "Roger can't hear the call. Check the call plays on this Mac.",
-  loud: true,
-};
+/**
+ * Warnings as main raises them: the facts SignalMonitor measures go through `detectWarnings`, so
+ * the message on the page is main's own sentence (capture/warnings.ts MESSAGES), not one the QA
+ * wrote. A rule that changes its words changes the shots; one that stops being loud fails here.
+ */
+function sourceSignal(changes: Partial<SourceSignal> = {}): SourceSignal {
+  return { stopped: null, noChunkForMs: 0, silentForMs: 0, heard: true, ...changes };
+}
+
+function warningsFor(facts: {
+  mic?: Partial<SourceSignal>;
+  system?: Partial<SourceSignal>;
+  offline?: boolean;
+}): CaptureWarning[] {
+  const signal: SignalFacts = {
+    sources: { mic: sourceSignal(facts.mic), system: sourceSignal(facts.system) },
+    micBluetooth: false,
+    micSpokeSinceCallSilence: false,
+    systemAudioVerified: true,
+    offline: facts.offline ?? false,
+  };
+  return detectWarnings(signal).map(({ heldForMs, ...warning }) => ({
+    ...warning,
+    since: new Date(Date.now() - Math.max(heldForMs, 60_000)).toISOString(),
+  }));
+}
+
+function onlyLoud(warnings: CaptureWarning[]): CaptureWarning {
+  const [warning] = warnings;
+  if (warning?.loud !== true || warnings.length !== 1) {
+    throw new Error(`Main's rules raised ${JSON.stringify(warnings)}, not one loud warning`);
+  }
+  return warning;
+}
+
+/** Call audio silent for 3 minutes: main's "Roger can't hear the call". */
+const NO_CALL_AUDIO: CaptureWarning = onlyLoud(
+  warningsFor({ system: { silentForMs: CALL_AUDIO_SILENT_LOUD_MS } }),
+);
 
 async function goToSettings(page: Page): Promise<void> {
   await page.getByRole('button', { name: 'Settings' }).click();
@@ -485,6 +683,59 @@ const LONG_TITLE =
 
 // Home -------------------------------------------------------------------------------------------
 
+/**
+ * Home's grid (D2, docs/plans/redesign-sweep.md section 4): from 960 px two columns in at most 880
+ * px, the hero on the left and Today and Earlier on the right (360 px, 64 px apart), their tops
+ * level; under 960 one column, the right one stacked under the left. R1: at 1080 the hero must not
+ * float alone in a centred 360 px column.
+ */
+async function expectHomeColumns(page: Page, width: number): Promise<void> {
+  const read = await page.evaluate(() => {
+    const box = (selector: string): DOMRect | null =>
+      document.querySelector(selector)?.getBoundingClientRect() ?? null;
+    const main = box('.home-main');
+    const side = box('.home-side');
+    const title = box('.home-hero-title');
+    const today = box('.home-side .overline');
+    return {
+      main: main === null ? null : { left: main.left, right: main.right, bottom: main.bottom },
+      side:
+        side === null
+          ? null
+          : { left: side.left, right: side.right, top: side.top, width: side.width },
+      titleTop: title?.top ?? null,
+      todayTop: today?.top ?? null,
+    };
+  });
+  if (read.main === null || read.side === null) throw new Error('Home has no main or side column');
+  if (width >= 960) {
+    if (read.side.left < read.main.right) {
+      throw new Error(
+        `at ${width} px the columns overlap or stack: side starts at ${read.side.left}`,
+      );
+    }
+    if (Math.round(read.side.width) !== 360) {
+      throw new Error(`the right column is ${read.side.width} px, not 360`);
+    }
+    const gap = read.side.left - read.main.right;
+    if (gap < 40 || gap > 400) throw new Error(`the columns are ${Math.round(gap)} px apart`);
+    if (read.side.right - read.main.left > 880 + 1) {
+      throw new Error(
+        `the content is ${Math.round(read.side.right - read.main.left)} px wide, not at most 880`,
+      );
+    }
+    if (
+      read.titleTop !== null &&
+      read.todayTop !== null &&
+      Math.abs(read.titleTop - read.todayTop) > 48
+    ) {
+      throw new Error(`the columns' tops are ${Math.abs(read.titleTop - read.todayTop)} px apart`);
+    }
+  } else if (read.side.top < read.main.bottom - 1) {
+    throw new Error(`at ${width} px the right column sits beside the left, not under it`);
+  }
+}
+
 describe('home', () => {
   it(
     'an empty Mac: Start notes, and one line to connect the calendar',
@@ -515,9 +766,11 @@ describe('home', () => {
           shows: ['Weekly sync', 'Northwind Traders', 'Earlier'],
         },
         openScenario('past-meeting'),
-        async ({ page }) => {
+        async ({ page }, { width }) => {
           await connectCalendar(page);
           await qa.emitEvent(page, calendarChannels.CalendarEventsChanged, dayInTheNextHalfHour());
+          await qa.settle(page);
+          await expectHomeColumns(page, width);
         },
       );
     },
@@ -568,7 +821,8 @@ describe('home', () => {
           slug: 'home-recording-warning',
           caption: 'Loud warning while recording, away from the meeting: a line at the top',
           primary: 'Stop',
-          problems: ["Roger can't hear the call"],
+          // The banner reads main's message; the status line on the meeting page its headline.
+          problems: ['Call audio has been silent for 3 minutes'],
         },
         openScenario('live-call'),
         ({ page }) => patchStatus(page, { warnings: [NO_CALL_AUDIO] }),
@@ -605,6 +859,36 @@ describe('home', () => {
   );
 });
 
+describe('home, calendar not set up', () => {
+  it(
+    "Google Calendar is not set up on Roger's server: Connect is off and the reason sits beside it",
+    async () => {
+      await inEveryView(
+        {
+          group: 'Home',
+          slug: 'home-calendar-not-set-up',
+          caption:
+            'The server has no Google client (D4): Connect cannot work, so it is off and says why; Start notes stays the one primary',
+          primary: 'Start notes',
+          shows: [GOOGLE_NOT_SET_UP],
+        },
+        openScenario('empty-mac'),
+        async ({ page }) => {
+          await qa.failNextRequest(page, GOOGLE_NOT_SET_UP);
+          await page.getByRole('button', { name: 'Connect Google Calendar' }).click();
+          await page.getByText(GOOGLE_NOT_SET_UP).waitFor();
+          await qa.settle(page);
+          const off = await page
+            .getByRole('button', { name: 'Connect Google Calendar' })
+            .isDisabled();
+          if (!off) throw new Error('Connect is still pressable with no Google client');
+        },
+      );
+    },
+    PIECE_TIMEOUT_MS,
+  );
+});
+
 // The live meeting -------------------------------------------------------------------------------
 
 /** Opens the recording meeting from Home. */
@@ -614,20 +898,17 @@ const liveMeeting = async (combo: Combo): Promise<qa.PreviewPage> => {
   return preview;
 };
 
-const NO_MIC_AUDIO: CaptureWarning = {
-  kind: 'mic-dead',
-  source: 'mic',
-  since: minutesAgo(1),
-  message: "Roger can't hear your microphone. Check it is not muted.",
-  loud: true,
-};
+/** The microphone sending only silence: main's "Roger can't hear you". */
+const NO_MIC_AUDIO: CaptureWarning = onlyLoud(
+  warningsFor({ mic: { silentForMs: MIC_DEAD_WARNING_MS } }),
+);
 
 /** Quiet: on screen only in Details, never in the status line (docs/plans/redesign.md). */
 const KEYTERMS_REFUSED: CaptureWarning = {
   kind: 'keyterms-rejected',
   source: 'system',
   since: minutesAgo(30),
-  message: 'The speech service did not take the jargon list, so this call runs without it.',
+  message: KEYTERMS_REJECTED_MESSAGE,
   loud: false,
 };
 
@@ -695,14 +976,14 @@ describe('live', () => {
           slug: 'live-not-saved',
           caption: 'House rule 1: a call that is not being saved, as a line at the top',
           primary: 'Stop',
-          problems: ['Roger could not save this call on this Mac'],
+          problems: ['12 lines could not be saved on this Mac'],
         },
         liveMeeting,
-        ({ page }) =>
-          patchStatus(page, {
-            error:
-              'Roger could not save this call on this Mac: the disk is full. Free some space; Roger keeps trying.',
-          }),
+        ({ page }) => {
+          // Main's sentence for the page, and the store's own text for Details only.
+          const words = unsavedLinesWords(12, 'SQLITE_FULL: database or disk is full');
+          return patchStatus(page, { error: words.sentence, errorDetail: words.detail });
+        },
       );
     },
     PIECE_TIMEOUT_MS,
@@ -1023,9 +1304,51 @@ describe('past', () => {
         await shoot({
           group: 'Past meeting',
           slug: 'past-menu',
-          caption: 'The ⋯ menu: Write again as each template; used rarely, so not on the page',
+          caption:
+            'The ⋯ menu: Copy notes, then Write again as each template; used rarely, so not on the page',
           primary: null,
-          shows: ['Write again as General', 'Write again as Standup'],
+          shows: ['Copy notes', 'Write again as General', 'Write again as Standup'],
+        });
+
+        // D5: Copy notes puts the AI notes on the clipboard as plain text, chip times left out,
+        // and says "Notes copied" beside the buttons, not in the tab row (it must not move it).
+        await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
+        await page.getByRole('menuitem', { name: 'Copy notes' }).click();
+        await page.getByText('Notes copied').waitFor();
+        await qa.settle(page);
+        const copied = await page.evaluate(() => navigator.clipboard.readText());
+        if (!copied.includes('Priyanka finished the uploader')) {
+          throw new Error(`Copy notes copied "${copied.slice(0, 80)}", not the AI notes`);
+        }
+        if (/\b0\d:\d\d\b/.test(copied)) throw new Error('the copied notes hold chip times');
+        await shoot({
+          group: 'Past meeting',
+          slug: 'past-notes-copied',
+          caption:
+            'Copy notes was chosen: "Notes copied" beside the buttons, the clipboard holds the notes',
+          primary: null,
+          shows: ['Notes copied'],
+        });
+
+        await pickTab(page, 'Transcript');
+        await page.waitForSelector('.live-transcript-lines [data-segment-id]');
+        await shoot({
+          group: 'Past meeting',
+          slug: 'past-transcript',
+          caption: 'The Transcript tab of a past meeting: every line, who said it, when',
+          primary: null,
+          shows: ['Priyanka', 'Transcript'],
+        });
+
+        await page.getByRole('button', { name: 'Details' }).click();
+        await page.waitForSelector('dialog[open] .dialog-body');
+        await qa.settle(page);
+        await shoot({
+          group: 'Past meeting',
+          slug: 'past-details',
+          caption: 'Details of a past meeting is never empty (D3): the stored facts of the call',
+          primary: null,
+          shows: ['Saved on this Mac'],
         });
         await page.keyboard.press('Escape');
         await qa.settle(page);
@@ -1298,10 +1621,10 @@ describe('settings', () => {
           group: 'Settings',
           slug: 'settings-not-connected',
           caption:
-            'Nothing connected: the jargon list, and Connect Google Calendar as the one primary',
+            'Nothing connected: Appearance first, the jargon list, and Connect Google Calendar as the one primary',
           primary: 'Connect Google Calendar',
-          shows: ['Jargon list', 'Calendar'],
-          hides: ['Save', 'Notes'],
+          shows: ['Appearance', 'System', 'Light', 'Dark', 'Jargon list', 'Calendar'],
+          hides: ['Save', 'No calendar connected'],
         },
         openScenario('empty-mac'),
         ({ page }) => goToSettings(page),
@@ -1318,10 +1641,10 @@ describe('settings', () => {
           group: 'Settings',
           slug: 'settings-connected',
           caption:
-            'Connected: account, Remind me, the notice and its text, Open at login; no Save, no counters',
+            'The demo calendar (a developer set CALENDAR_PROVIDER=fake): the account says so, then Remind me, the notice and its text, Open at login; no Save, no counters',
           primary: null,
-          shows: ['Connected as you@example.com', 'Notice text', 'Open Roger at login'],
-          hides: ['Save notice', 'of 100 terms'],
+          shows: ['Connected as Demo calendar', 'Notice text', 'Open Roger at login'],
+          hides: ['Save notice', 'of 100 terms', 'you@example.com'],
         },
         connectedSettings,
         async ({ page }) => {
@@ -1331,6 +1654,82 @@ describe('settings', () => {
             .fill('Linkt Courseware Platform Services Incorporated');
           await page.getByRole('button', { name: 'Add' }).click();
           await qa.settle(page);
+        },
+      );
+    },
+    PIECE_TIMEOUT_MS,
+  );
+
+  it(
+    'a Google account: the address, Disconnect asks before it ends every reminder',
+    async () => {
+      await walkEveryView(connectedSettings, async ({ page }, _combo, shoot) => {
+        await qa.emitEvent(page, calendarChannels.CalendarConnectionChanged, {
+          provider: 'google',
+          accountEmail: 'rahul@linkt.ai',
+          status: 'active',
+          connectedAt: minutesAgo(600),
+          expiresHint: null,
+          lastError: null,
+        });
+        await qa.settle(page);
+        await shoot({
+          group: 'Settings',
+          slug: 'settings-google-account',
+          caption: 'A real Google account: its address, nothing primary, Disconnect a ghost',
+          primary: null,
+          shows: ['Connected as rahul@linkt.ai', 'Disconnect'],
+          hides: ['Demo calendar'],
+        });
+        await page.getByRole('button', { name: 'Disconnect' }).click();
+        await page.getByText('Disconnect Google Calendar? Reminders stop.').waitFor();
+        await qa.settle(page);
+        const onCancel = await page.evaluate(
+          () => document.activeElement?.textContent.trim() ?? '',
+        );
+        if (onCancel !== 'Cancel') throw new Error(`the question's focus is on "${onCancel}"`);
+        await shoot({
+          group: 'Settings',
+          slug: 'settings-disconnect-confirm',
+          caption:
+            'Disconnect was pressed: "Disconnect Google Calendar? Reminders stop." in place, focus on Cancel (D4)',
+          primary: null,
+          problems: ['Disconnect Google Calendar? Reminders stop.'],
+          shows: ['Cancel', 'Disconnect'],
+        });
+        // Escape closes the question only: it must not also leave Settings for Home.
+        await page.keyboard.press('Escape');
+        await qa.settle(page);
+        await page.getByRole('heading', { name: 'Settings', level: 1 }).waitFor();
+        await page.getByRole('button', { name: 'Disconnect' }).waitFor();
+      });
+    },
+    PIECE_TIMEOUT_MS,
+  );
+
+  it(
+    "Google Calendar is not set up on Roger's server: Connect is off in Settings too",
+    async () => {
+      await inEveryView(
+        {
+          group: 'Settings',
+          slug: 'settings-not-set-up',
+          caption:
+            'The server has no Google client: Connect is off with the reason beside it, nothing offers a retry that cannot work',
+          // Still the view's one primary, drawn off: pressing it can only fail again.
+          primary: 'Connect Google Calendar',
+          shows: [GOOGLE_NOT_SET_UP, 'Appearance'],
+        },
+        openScenario('empty-mac'),
+        async ({ page }) => {
+          await goToSettings(page);
+          await qa.failNextRequest(page, GOOGLE_NOT_SET_UP);
+          await page.getByRole('button', { name: 'Connect Google Calendar' }).click();
+          await page.getByText(GOOGLE_NOT_SET_UP).waitFor();
+          await qa.settle(page);
+          if (await page.getByRole('button', { name: 'Connect Google Calendar' }).isEnabled()) {
+            throw new Error('Connect is still pressable with no Google client');
+          }
         },
       );
     },
@@ -1452,7 +1851,7 @@ const openSetup =
 
 describe('setup', () => {
   it(
-    'a first run: Allow microphone leads, Later is a quiet way out',
+    'a first run: Allow microphone leads, ‹ Home is the one way out',
     async () => {
       await inEveryView(
         {
@@ -1460,9 +1859,10 @@ describe('setup', () => {
           slug: 'setup-first-run',
           caption:
             'Microphone not asked yet: its fix is the one primary; the passing rows are one line',
+          exits: ['Home'],
           primary: 'Allow microphone',
-          shows: ['Later', 'checks pass'],
-          hides: ['Done'],
+          shows: ['checks pass'],
+          hides: ['Later', 'Done'],
         },
         openSetup(setupMac({ microphone: fine('not-determined'), systemAudio: fine('unknown') })),
       );
@@ -1479,16 +1879,18 @@ describe('setup', () => {
           slug: 'setup-mic-denied',
           caption:
             'Microphone refused in System Settings: what is wrong, and the button that opens it',
+          exits: ['Home'],
           primary: 'Open Microphone settings',
-          shows: ['Microphone access is off for Roger', 'Later'],
+          shows: ['Roger is not allowed to use the microphone'],
+          hides: ['Later'],
         },
         openSetup(
           setupMac({
             microphone: {
               state: 'denied',
-              message:
-                'Microphone access is off for Roger. Turn it on under System Settings → Privacy & Security → Microphone.',
-              relaunchNeeded: false,
+              // PermissionService.microphoneCheck's words for a denied microphone, with its pane.
+              message: `Roger is not allowed to use the microphone. Turn on Roger under ${SETTINGS_PANES.microphone.where}, then relaunch Roger.`,
+              relaunchNeeded: true,
             },
           }),
         ),
@@ -1505,16 +1907,18 @@ describe('setup', () => {
           group: 'Set up Roger',
           slug: 'setup-call-audio',
           caption:
-            'The call audio test heard nothing: why, the button to the pane that fixes it, Later stays',
+            'The call audio test heard nothing: why, and the button to the pane that fixes it; ‹ Home is the one way out',
+          exits: ['Home'],
           primary: 'Open System Audio settings',
-          shows: ['Later', 'Test again'],
+          shows: ['Test again'],
+          hides: ['Later'],
         },
         openSetup(
           setupMac({
             systemAudio: {
               state: 'not-heard',
-              message:
-                'Roger heard no call audio during the test. Play a video or join a call, then test again.',
+              // PermissionService.systemAudioCheck's words for a test that heard nothing.
+              message: `Roger heard nothing: it is not allowed to record system audio, or this Mac is muted. Turn on Roger under ${SETTINGS_PANES.systemAudio.where} and turn the sound up, then press Test again.`,
               relaunchNeeded: false,
             },
           }),
@@ -1533,15 +1937,16 @@ describe('setup', () => {
           slug: 'setup-server',
           caption:
             "Roger's server is away: a failing check is shown even though it is not a permission",
+          exits: ['Home'],
           primary: 'Check again',
-          shows: ['Later'],
+          hides: ['Later'],
         },
         openSetup(
           setupMac({
             api: {
               state: 'failed',
-              message: "Roger's server did not answer. Check the connection, then check again.",
-              relaunchNeeded: false,
+              // main/setup/connectionChecks.ts: the words for a server that does not answer.
+              ...describeServerFailure(new ApiError(0, 'unreachable', 'fetch failed')),
             },
           }),
         ),
@@ -1551,24 +1956,25 @@ describe('setup', () => {
   );
 
   it(
-    'a permission that needs a new process: Relaunch Roger',
+    'a fix that needs a new process: Relaunch Roger is offered last',
     async () => {
       await inEveryView(
         {
           group: 'Set up Roger',
           slug: 'setup-relaunch',
           caption:
-            'macOS applies the new setting on the next launch: Relaunch Roger is the primary',
-          primary: 'Relaunch Roger',
-          shows: ['Later'],
+            "The server refused this copy's access key: a fix only a new process reads, so Relaunch Roger is offered after Check again",
+          exits: ['Home'],
+          primary: 'Check again',
+          shows: ['Relaunch Roger'],
+          hides: ['Later'],
         },
         openSetup(
           setupMac({
-            microphone: {
-              state: 'granted',
-              message:
-                'Microphone was allowed after Roger started. macOS applies it after a relaunch.',
-              relaunchNeeded: true,
+            api: {
+              state: 'failed',
+              // The server turned this copy's access key down: only a new process reads a fixed one.
+              ...describeServerFailure(new ApiError(401, 'unauthorized', 'unauthorized')),
             },
           }),
         ),
@@ -1578,13 +1984,14 @@ describe('setup', () => {
   );
 
   it(
-    'everything passes: Done is the one primary, Later is gone',
+    'everything passes: Done is the one primary, and it only goes Home',
     async () => {
       await inEveryView(
         {
           group: 'Set up Roger',
           slug: 'setup-all-pass',
           caption: 'All checks pass: Done, and the passing rows folded into one line',
+          exits: ['Done', 'Home'],
           primary: 'Done',
           shows: ['checks pass'],
           hides: ['Later'],
@@ -1598,89 +2005,291 @@ describe('setup', () => {
 
 // The prompt panel -------------------------------------------------------------------------------
 
-/** The panel's own page, on one card: it has no shell, so its states are `?card=` values. */
-const promptCard =
-  (card: PromptScenarioId) =>
-  ({ theme, width }: Combo): Promise<qa.PreviewPage> =>
-    // One card is short: a window the height of the panel, not of a laptop.
-    run.openPrompt({ card, theme, width, height: 420 });
+/**
+ * The panel on its stage: a 1440 x 900 screen with a menu bar strip and a call behind it, the panel
+ * where main puts it (top right of the work area, 16 px in: promptBounds.ts). `theme` is the Mac's
+ * appearance, which the panel's own page follows (it has no useTheme; main sets nativeTheme from
+ * Appearance), and `backdrop` the call behind it: a dark Meet or a light Zoom. All four pairings
+ * matter: the card's edge must read on a call of the other brightness, which is where the dark
+ * card's edge was lost before the sweep (P5).
+ */
+const PROMPT_SCREEN = { width: 1440, height: 900 } as const;
+const MENU_BAR_PX = 25;
+const PANEL_MARGIN = 16;
+const PANEL_WIDTH = 360;
+
+type Backdrop = 'dark' | 'light';
+const BACKDROPS: readonly Backdrop[] = ['dark', 'light'];
+
+const openPrompt = (card: PromptScenarioId, theme: ForcedTheme, backdrop: Backdrop) =>
+  run.openPrompt({ card, theme, backdrop, ...PROMPT_SCREEN });
+
+/** What a card must show: its words, its one primary, the problem line it carries, if any. */
+interface PromptCase {
+  card: PromptScenarioId;
+  caption: string;
+  primary: string | null;
+  shows: string[];
+  problems?: string[];
+  /** What a person does first (a click main refuses), before the card is checked. */
+  act?: (page: Page) => Promise<void>;
+}
+
+const PROMPT_CASES: PromptCase[] = [
+  {
+    card: 'meeting-link',
+    caption:
+      'A meeting with a video link: "Roger · Starting in 1 min", the title, hours, Join and start notes as the one primary, Start notes a ghost, × to dismiss',
+    primary: 'Join and start notes',
+    shows: ['Roger', 'Starting in', 'Northwind renewal', '1 min', 'Start notes', 'Dismiss'],
+  },
+  {
+    card: 'meeting-no-link',
+    caption: 'No video link: Start notes is the one primary',
+    primary: 'Start notes',
+    shows: ['Design review', 'Dismiss'],
+  },
+  {
+    card: 'meeting-blank-title',
+    caption: 'An invite with no title reads "Meeting at ...", the title the meeting will get',
+    primary: 'Start notes',
+    shows: ['Meeting at'],
+  },
+  {
+    card: 'two-meetings',
+    caption: 'Two meetings starting together: Roger named once, one primary, a hairline between',
+    primary: 'Join and start notes',
+    shows: ['Daily standup', 'Northwind renewal'],
+  },
+  {
+    card: 'two-cards',
+    caption: 'Two cards in one column, the newest on top, one primary across both',
+    primary: 'Start notes',
+    shows: ['Quarterly review', 'Northwind renewal'],
+  },
+  {
+    card: 'call-detected',
+    caption: 'A call Roger noticed: an offer to take notes, not a privacy warning',
+    primary: 'Start notes',
+    shows: ['Zoom', 'Dismiss'],
+  },
+  {
+    card: 'stops-other-note',
+    caption: 'Another meeting is recording: one helper line says which notes this stops',
+    primary: 'Join and start notes',
+    shows: ['Stops notes on Weekly sync'],
+  },
+  {
+    card: 'taking-notes',
+    caption: 'After a start: "Recording" and the meeting it is for, Open Roger a ghost, no primary',
+    primary: null,
+    shows: ['Recording', 'Northwind renewal', 'Open Roger'],
+  },
+  {
+    card: 'taking-notes-call',
+    caption: 'After a start from a call Roger noticed: it names the call',
+    primary: null,
+    shows: ['Recording', 'Open Roger'],
+  },
+  {
+    card: 'taking-notes-two',
+    caption: 'After a start with two meetings on the card: it says which one started',
+    primary: null,
+    shows: ['Recording', 'Open Roger'],
+  },
+  {
+    card: 'start-failed',
+    caption:
+      "The start failed: main's plain sentence between the hours and the buttons, the buttons still there",
+    primary: 'Join and start notes',
+    shows: ['Dismiss'],
+    problems: ['Roger could not start notes from here. Try again.'],
+  },
+  {
+    card: 'stop-failed',
+    caption: 'Stopping the other meeting failed: what happened, then what to do',
+    primary: 'Join and start notes',
+    shows: ['Dismiss'],
+    problems: [
+      'Roger could not stop the notes on Weekly sync. Stop them in Roger, then try again.',
+    ],
+  },
+  {
+    card: 'read-failed',
+    caption: 'The panel could not read main: one plain line on a card of its own, no IPC text',
+    primary: null,
+    shows: [],
+    problems: ['Roger could not show this reminder.'],
+  },
+  {
+    card: 'click-failed',
+    caption: 'A click main refused: "Roger could not do that. Try again." on the card',
+    primary: 'Join and start notes',
+    shows: ['Dismiss'],
+    problems: ['Roger could not do that. Try again.'],
+    act: async (page) => {
+      await page.getByRole('button', { name: 'Join and start notes' }).click();
+      await page.getByText('Roger could not do that. Try again.').waitFor();
+    },
+  },
+];
+
+/**
+ * The card sits where promptBounds puts it, 360 px wide, under the menu bar, 16 px from the right;
+ * its primary and × are on top at their centres (a transparent window's stack must not cover its
+ * own buttons); nothing scrolls inside it at this height.
+ */
+async function expectPanelInPlace(page: Page, spec: { primary: string | null }): Promise<void> {
+  const problem = await page.evaluate(
+    ({ screen, menuBar, margin, width, primary }) => {
+      const stack = document.querySelector<HTMLElement>('.prompt-stack');
+      if (stack === null) return 'no panel is drawn';
+      const first = stack.querySelector<HTMLElement>('.prompt-card');
+      if (first === null) return 'the panel has no card';
+      const box = first.getBoundingClientRect();
+      const close = (a: number, b: number): boolean => Math.abs(a - b) <= 1;
+      if (!close(box.right, screen - margin))
+        return `the card ends at ${box.right}, not ${screen - margin}`;
+      if (!close(box.top, menuBar + margin))
+        return `the card starts at ${box.top}, not ${menuBar + margin}`;
+      if (!close(box.width, width)) return `the card is ${box.width} px wide, not ${width}`;
+      const hit = (element: HTMLElement | null, name: string): string | null => {
+        if (element === null) return `no ${name}`;
+        const at = element.getBoundingClientRect();
+        const top = document.elementFromPoint(at.left + at.width / 2, at.top + at.height / 2);
+        return top !== null && element.contains(top) ? null : `${name} is covered`;
+      };
+      // Not every card has a ×: the "Recording" line and a read failure have none.
+      const dismiss = stack.querySelector<HTMLElement>('button[aria-label="Dismiss"]');
+      if (dismiss !== null) {
+        const covered = hit(dismiss, 'the ×');
+        if (covered !== null) return covered;
+      }
+      if (primary !== null) {
+        const named = [...stack.querySelectorAll<HTMLElement>('button')].find(
+          (button) => button.textContent.trim() === primary,
+        );
+        const covered = hit(named ?? null, `"${primary}"`);
+        if (covered !== null) return covered;
+      }
+      if (stack.scrollHeight > stack.clientHeight + 1) return 'the stack scrolls inside itself';
+      return null;
+    },
+    {
+      screen: PROMPT_SCREEN.width,
+      menuBar: MENU_BAR_PX,
+      margin: PANEL_MARGIN,
+      width: PANEL_WIDTH,
+      primary: spec.primary,
+    },
+  );
+  if (problem !== null) throw new Error(`prompt panel: ${problem}`);
+}
 
 describe('prompt', () => {
-  const cases: {
-    card: PromptScenarioId;
-    caption: string;
-    primary: string | null;
-    shows: string[];
-    problems?: string[];
-  }[] = [
-    {
-      card: 'meeting-link',
-      caption:
-        'A meeting with a video link: Join and start notes is the one primary, Start notes and Dismiss ghosts',
-      primary: 'Join and start notes',
-      shows: ['Starting in', 'Start notes', 'Dismiss'],
-    },
-    {
-      card: 'meeting-no-link',
-      caption: 'No video link: Start notes is the one primary',
-      primary: 'Start notes',
-      shows: ['Design review', 'Dismiss'],
-    },
-    {
-      card: 'two-meetings',
-      caption: 'Two calls starting together: still one primary, the first start',
-      primary: 'Join and start notes',
-      shows: ['Daily standup', 'Northwind renewal'],
-    },
-    {
-      card: 'call-detected',
-      caption: 'A call Roger noticed: Start notes, Dismiss; no meeting, no guests',
-      primary: 'Start notes',
-      shows: ['Zoom', 'Dismiss'],
-    },
-    {
-      card: 'stops-other-note',
-      caption:
-        'Another note is recording: the label stays Start notes, one line says which it stops',
-      primary: 'Join and start notes',
-      shows: ['Stops notes on Weekly sync'],
-    },
-    {
-      card: 'taking-notes',
-      caption: 'After a start: Recording, and Open Roger, a ghost; no primary',
-      primary: null,
-      shows: ['Recording', 'Open Roger'],
-    },
-    {
-      card: 'start-failed',
-      caption: 'The start failed: the reason as a line on the card, the buttons still there',
-      primary: 'Join and start notes',
-      shows: ['Dismiss'],
-      problems: ['could not start notes'],
-    },
-  ];
-
-  for (const { card, caption, primary, shows, problems } of cases) {
+  for (const { card, caption, primary, shows, problems, act } of PROMPT_CASES) {
     it(
       `${card}: ${caption}`,
       async () => {
-        await inEveryView(
-          {
-            group: 'Prompt panel',
-            slug: `prompt-${card}`,
-            caption,
-            primary,
-            shows,
-            hides: ['Copy notice', 'Take notes'],
-            ...(problems === undefined ? {} : { problems }),
-            prompt: true,
-          },
-          promptCard(card),
-        );
+        for (const theme of qa.QA_THEMES) {
+          for (const backdrop of BACKDROPS) {
+            const preview = await openPrompt(card, theme, backdrop);
+            const at = `${card} (${theme} Mac, ${backdrop} call)`;
+            try {
+              if (act !== undefined) await act(preview.page);
+              await qa.settle(preview.page);
+              const spec: Spec = {
+                group: 'Prompt panel',
+                slug: `prompt-${card}`,
+                caption,
+                primary,
+                shows,
+                hides: ['Copy notice', 'Take notes', 'Untitled meeting'],
+                ...(problems === undefined ? {} : { problems }),
+                prompt: true,
+              };
+              await checkView(preview, spec);
+              await expectPanelInPlace(preview.page, spec);
+              const height = await preview.page.evaluate(
+                () => document.querySelector('.prompt-stack')?.getBoundingClientRect().bottom ?? 0,
+              );
+              const clipLeft = PROMPT_SCREEN.width - PANEL_WIDTH - PANEL_MARGIN - 32;
+              await gallery.shootClip(
+                preview.page,
+                {
+                  x: clipLeft,
+                  y: 0,
+                  width: PROMPT_SCREEN.width - clipLeft,
+                  height: Math.ceil(height) + 32,
+                },
+                'Prompt panel',
+                `prompt-${card}-${theme}-${backdrop}`,
+                `${caption} (${theme} Mac, over a ${backdrop} call)`,
+                'pass',
+                `At its real place: 16 px from the right, under the menu bar. ${
+                  primary === null ? 'No primary button.' : `One primary: ${primary}.`
+                } No raw text, no console errors.`,
+              );
+            } catch (error) {
+              throw new Error(`${at}: ${reasonOf(error)}`, { cause: error });
+            } finally {
+              await preview.close();
+            }
+          }
+        }
       },
       PIECE_TIMEOUT_MS,
     );
   }
+
+  it(
+    'in place: the whole screen, the panel over a call, in both themes and over both calls',
+    async () => {
+      for (const theme of qa.QA_THEMES) {
+        for (const backdrop of BACKDROPS) {
+          const preview = await openPrompt('meeting-link', theme, backdrop);
+          try {
+            await qa.settle(preview.page);
+            await expectPanelInPlace(preview.page, { primary: 'Join and start notes' });
+            await gallery.shoot(
+              preview.page,
+              'Prompt panel in place',
+              `prompt-frame-${theme}-${backdrop}`,
+              `The panel over a ${backdrop} call on a ${theme} Mac: top right, under the menu bar, the card's edge readable on both`,
+              'pass',
+              "A 1440 x 900 screen as the preview stands in for it; the call behind is another app's pixels.",
+            );
+            qa.expectNoConsoleErrors(preview);
+          } finally {
+            await preview.close();
+          }
+        }
+      }
+    },
+    PIECE_TIMEOUT_MS,
+  );
+
+  it(
+    'the buttons do what they say: × dismisses, the primary starts the meeting named on the card',
+    async () => {
+      const preview = await openPrompt('meeting-link', 'light', 'dark');
+      try {
+        const { page } = preview;
+        await page.getByRole('button', { name: 'Dismiss' }).click();
+        await page.getByRole('button', { name: 'Join and start notes' }).click();
+        await page.getByRole('button', { name: 'Start notes', exact: true }).click();
+        const acts = await page.evaluate(() => window.__rogerPromptPreview?.acts ?? []);
+        const kinds = acts.map((act) => act.action).join(',');
+        if (kinds !== 'dismiss,join_and_take_notes,take_notes') {
+          throw new Error(`the panel sent [${kinds}], not a dismiss, a join and a start`);
+        }
+        qa.expectNoConsoleErrors(preview);
+      } finally {
+        await preview.close();
+      }
+    },
+    PIECE_TIMEOUT_MS,
+  );
 });
 
 // The API is away, or refuses ---------------------------------------------------------------------
@@ -1903,6 +2512,677 @@ describe('offline', () => {
             'Roger could not start writing the notes: Roger could not reach its server.',
             'Dismiss',
           ],
+        });
+      });
+    },
+    PIECE_TIMEOUT_MS,
+  );
+});
+
+// Navigation: Back, Escape, what main's Cmd+[ sends, focus on arrival --------------------------------
+
+/** Behaviours, not looks: one theme is enough, at both widths. */
+const LIGHT_COMBOS: Combo[] = qa.QA_WIDTHS.map((width) => ({ theme: 'light', width }));
+
+async function eachWidth(
+  open: (combo: Combo) => Promise<qa.PreviewPage>,
+  body: (preview: qa.PreviewPage, combo: Combo) => Promise<void>,
+): Promise<void> {
+  for (const combo of LIGHT_COMBOS) {
+    const preview = await open(combo);
+    try {
+      await body(preview, combo);
+      qa.expectNoConsoleErrors(preview);
+    } catch (error) {
+      throw new Error(`(${combo.theme}, ${combo.width}): ${reasonOf(error)}`, { cause: error });
+    } finally {
+      await preview.close();
+    }
+  }
+}
+
+/**
+ * The page has just been arrived at (R11, V5): focus is on its h1 and the window is titled for it.
+ * Focus waits on the page's own observer, so this polls instead of reading once.
+ */
+async function expectArrival(page: Page, heading: string, title: string): Promise<void> {
+  await page
+    .waitForFunction(
+      (expected) =>
+        document.activeElement?.tagName === 'H1' &&
+        document.activeElement.textContent.trim() === expected.heading &&
+        document.title === expected.title,
+      { heading, title },
+      { timeout: 3000 },
+    )
+    .catch(async (error: unknown) => {
+      const seen = await page.evaluate(() => ({
+        focus: `${document.activeElement?.tagName}: ${document.activeElement?.textContent.trim()}`,
+        title: document.title,
+      }));
+      throw new Error(
+        `arrival at ${heading}: focus is on ${seen.focus}, the window is titled "${seen.title}" (wanted the h1 and "${title}")`,
+        { cause: error },
+      );
+    });
+  await qa.settle(page);
+}
+
+/** What a click on the header's "Home" does: Home, with focus on its h1, in one step. */
+async function backHome(page: Page, heading = 'Home'): Promise<void> {
+  await page.locator('.app-header .app-back').click();
+  await expectArrival(page, heading, 'Roger');
+  if ((await page.locator('.app-header .app-back').count()) !== 0) {
+    throw new Error('Home still has a "Home" button');
+  }
+}
+
+/** The current page's h1 text, for "Escape left it" and "Escape stayed". */
+const headingNow = (page: Page): Promise<string> =>
+  page.evaluate(() => document.querySelector('h1')?.textContent.trim() ?? '');
+
+describe('nav', () => {
+  it(
+    'every page but Home has "Home", it goes Home, and focus lands on the next page\'s h1',
+    async () => {
+      await eachWidth(openScenario('past-meeting'), async ({ page }) => {
+        await expectHeader(page);
+
+        await page.getByRole('button', { name: 'Settings' }).click();
+        await expectArrival(page, 'Settings', 'Settings');
+        await expectHeader(page);
+        await backHome(page);
+
+        await openEarlier(page, /Daily standup/);
+        await expectArrival(page, 'Daily standup', 'Daily standup');
+        await expectHeader(page);
+        await backHome(page);
+
+        await page.getByRole('button', { name: 'Settings' }).click();
+        await expectArrival(page, 'Settings', 'Settings');
+        await page.getByRole('button', { name: 'Open Set up Roger' }).click();
+        await expectArrival(page, 'Set up Roger', 'Set up Roger');
+        await expectHeader(page);
+        await backHome(page);
+      });
+    },
+    PIECE_TIMEOUT_MS,
+  );
+
+  it(
+    'Escape goes back from Settings and Set up Roger, and never leaves a meeting or a field',
+    async () => {
+      await eachWidth(openScenario('past-meeting'), async ({ page }) => {
+        await page.getByRole('button', { name: 'Settings' }).click();
+        await expectArrival(page, 'Settings', 'Settings');
+        await page.keyboard.press('Escape');
+        await expectArrival(page, 'Home', 'Roger');
+
+        await page.evaluate(() => {
+          window.location.hash = '#/setup';
+        });
+        await expectArrival(page, 'Set up Roger', 'Set up Roger');
+        await page.keyboard.press('Escape');
+        await expectArrival(page, 'Home', 'Roger');
+
+        // A text field keeps its Escape: leaving mid-word would lose the term being typed.
+        await page.getByRole('button', { name: 'Settings' }).click();
+        await expectArrival(page, 'Settings', 'Settings');
+        await page.getByPlaceholder(/Add names/).fill('Anneliese');
+        await page.keyboard.press('Escape');
+        if ((await headingNow(page)) !== 'Settings')
+          throw new Error('Escape in a field left Settings');
+        const kept = await page.getByPlaceholder(/Add names/).inputValue();
+        if (kept !== 'Anneliese') throw new Error(`the typed term became "${kept}"`);
+        await page.keyboard.press('Tab');
+        await backHome(page);
+
+        // The meeting page is not left by Escape: it would drop the person out of their notes.
+        await openEarlier(page, /Daily standup/);
+        await expectArrival(page, 'Daily standup', 'Daily standup');
+        await page.keyboard.press('Escape');
+        await qa.settle(page);
+        if ((await headingNow(page)) !== 'Daily standup')
+          throw new Error('Escape left the meeting');
+        await page.locator('section[aria-label="My notes"] .note-editor-content').click();
+        await page.keyboard.press('Escape');
+        await qa.settle(page);
+        if ((await headingNow(page)) !== 'Daily standup') {
+          throw new Error('Escape in My notes left the meeting');
+        }
+      });
+    },
+    PIECE_TIMEOUT_MS,
+  );
+
+  it(
+    "Cmd+[ is main's Go > Home: what it sends takes any page to Home",
+    async () => {
+      // The accelerator is a native menu item (main/appMenu.ts, pinned by appMenu.test.ts): the
+      // page never sees the key. Main answers it with app:navigate 'home', which is what is sent.
+      await eachWidth(openScenario('past-meeting'), async ({ page }) => {
+        await page.getByRole('button', { name: 'Settings' }).click();
+        await expectArrival(page, 'Settings', 'Settings');
+        await qa.emitEvent(page, appChannels.AppNavigate, 'home');
+        await expectArrival(page, 'Home', 'Roger');
+
+        await openEarlier(page, /Daily standup/);
+        await expectArrival(page, 'Daily standup', 'Daily standup');
+        await qa.emitEvent(page, appChannels.AppNavigate, 'home');
+        await expectArrival(page, 'Home', 'Roger');
+
+        await qa.emitEvent(page, appChannels.AppNavigate, 'setup');
+        await expectArrival(page, 'Set up Roger', 'Set up Roger');
+        await qa.emitEvent(page, appChannels.AppNavigate, 'home');
+        await expectArrival(page, 'Home', 'Roger');
+      });
+    },
+    PIECE_TIMEOUT_MS,
+  );
+
+  it(
+    'while a call records, the header chip is the way to it from every other page',
+    async () => {
+      await walkEveryView(openScenario('live-call'), async ({ page }, _combo, shoot) => {
+        await page.getByRole('button', { name: 'Settings' }).click();
+        await expectArrival(page, 'Settings', 'Settings');
+        await shoot({
+          group: 'Navigation',
+          slug: 'nav-settings-recording',
+          caption:
+            'Settings while a call records: ‹ Home on the left, the Recording chip and the current gear on the right',
+          primary: 'Connect Google Calendar',
+          shows: ['Home', 'Recording'],
+        });
+        await page.locator('.recording-chip').click();
+        await expectArrival(page, LIVE_CALL.title, LIVE_CALL.title);
+        if ((await page.locator('.app-header .recording-chip').count()) !== 0) {
+          throw new Error("the chip is on the meeting's own page, where it opens nothing");
+        }
+        await shoot({
+          group: 'Navigation',
+          slug: 'nav-live-meeting',
+          caption:
+            "The live meeting's own page: ‹ Home on the left, no chip (it would open this page), Stop the one primary",
+          primary: 'Stop',
+          shows: ['Home'],
+        });
+        // While a call records Home's h1 is the live meeting's title (the hero, HomePage.tsx).
+        await backHome(page, LIVE_CALL.title);
+      });
+    },
+    PIECE_TIMEOUT_MS,
+  );
+});
+
+// Appearance --------------------------------------------------------------------------------------
+
+/** The window's canvas colour: what the whole page is drawn on. */
+const canvasOf = (page: Page): Promise<string> =>
+  page.evaluate(() => getComputedStyle(document.body).backgroundColor);
+
+describe('appearance', () => {
+  it(
+    'System, Light and Dark switch this window at once, and the choice is saved',
+    async () => {
+      for (const width of qa.QA_WIDTHS) {
+        for (const start of qa.QA_THEMES) {
+          const other = start === 'light' ? 'dark' : 'light';
+          const preview = await openScenario('empty-mac')({ theme: start, width });
+          const { page } = preview;
+          try {
+            await goToSettings(page);
+            const before = await canvasOf(page);
+            const radio = (name: string) => page.getByRole('radio', { name });
+            const chosen = (name: string): Promise<string | null> =>
+              radio(name).getAttribute('aria-checked');
+
+            // The other look, from the click to the drawn page in one frame: no waiting on main.
+            // Main's answer is the PrefsChanged it sends once it has saved (the preview's
+            // getPreferences always reports the forced theme, so it cannot be read back).
+            const option = other === 'dark' ? 'Dark' : 'Light';
+            const announced = page.evaluate(
+              () =>
+                new Promise<string>((resolve) => {
+                  const stop = window.roger.onPreferenceChanged((change) => {
+                    if (change.key !== 'theme') return;
+                    stop();
+                    resolve(change.value);
+                  });
+                }),
+            );
+            await radio(option).click();
+            await page.waitForFunction(
+              (theme) => document.documentElement.dataset.theme === theme,
+              other,
+              { timeout: 1000 },
+            );
+            const after = await canvasOf(page);
+            if (after === before) throw new Error(`choosing ${option} left the canvas ${before}`);
+            if ((await chosen(option)) !== 'true') throw new Error(`${option} is not checked`);
+            if ((await announced) !== other)
+              throw new Error(`main saved a look other than ${other}`);
+            await qa.settle(page);
+            await expectHeader(page);
+            await expectNoInternals(page);
+            await gallery.shoot(
+              page,
+              'Appearance',
+              `appearance-${option.toLowerCase()}-from-${start}-${width}`,
+              `${option} chosen in a ${start} window: the page switched at once, ${option} checked, nothing to save or confirm`,
+              'pass',
+              `Canvas ${before} became ${after}, with no wait on main. ${width} px wide.`,
+            );
+
+            // System goes back to what the Mac says, the forced scheme of this page.
+            await radio('System').click();
+            await page.waitForFunction(
+              () => !document.documentElement.hasAttribute('data-theme'),
+              undefined,
+              { timeout: 1000 },
+            );
+            const system = await canvasOf(page);
+            if (system !== before) {
+              throw new Error(`System left the canvas ${system}, the Mac's own is ${before}`);
+            }
+            if ((await chosen('System')) !== 'true') throw new Error('System is not checked');
+            qa.expectNoConsoleErrors(preview);
+          } finally {
+            await preview.close();
+          }
+        }
+      }
+    },
+    PIECE_TIMEOUT_MS,
+  );
+
+  it(
+    'arrow keys move between the looks and choose as they go',
+    async () => {
+      // The page opens on Light (the forced theme is the stored preference): Right is Dark.
+      await eachWidth(openScenario('empty-mac'), async ({ page }) => {
+        await goToSettings(page);
+        const theme = (): Promise<string | undefined> =>
+          page.evaluate(() => document.documentElement.dataset.theme);
+        await page.getByRole('radio', { name: 'Light' }).focus();
+        await page.keyboard.press('ArrowRight');
+        await page.waitForFunction(
+          () => document.documentElement.dataset.theme === 'dark',
+          undefined,
+          { timeout: 1000 },
+        );
+        const onDark = await page.evaluate(() => document.activeElement?.textContent.trim());
+        if (onDark !== 'Dark') throw new Error(`focus is on "${onDark}" after Right`);
+        await page.keyboard.press('ArrowLeft');
+        await page.keyboard.press('ArrowLeft');
+        await page.waitForFunction(
+          () => !document.documentElement.hasAttribute('data-theme'),
+          undefined,
+          { timeout: 1000 },
+        );
+        const onSystem = await page.evaluate(() => document.activeElement?.textContent.trim());
+        if (onSystem !== 'System' || (await theme()) !== undefined) {
+          throw new Error(
+            `after Left, Left focus is on "${onSystem}" and the theme is ${String(await theme())}`,
+          );
+        }
+      });
+    },
+    PIECE_TIMEOUT_MS,
+  );
+
+  it(
+    'a look that could not be saved goes back and says why',
+    async () => {
+      await walkEveryView(openScenario('empty-mac'), async ({ page }, { theme }, shoot) => {
+        await goToSettings(page);
+        const before = await canvasOf(page);
+        await qa.failNextRequest(page, 'the preferences file is read-only');
+        await page.getByRole('radio', { name: theme === 'light' ? 'Dark' : 'Light' }).click();
+        await page.getByText('Roger could not save the look').waitFor();
+        await qa.settle(page);
+        if ((await canvasOf(page)) !== before)
+          throw new Error('the look stayed switched after a refusal');
+        await shoot({
+          group: 'Appearance',
+          slug: 'appearance-save-failed',
+          caption:
+            'Main refused to save the look: the page went back to what it was and says why, in words',
+          primary: 'Connect Google Calendar',
+          problems: ['Roger could not save the look'],
+        });
+      });
+    },
+    PIECE_TIMEOUT_MS,
+  );
+});
+
+// Focus: no box around the transcript, the chat or My notes (R13) -------------------------------------
+
+interface FocusLook {
+  outlineStyle: string;
+  outlineWidth: string;
+  boxShadow: string;
+  border: string;
+  focusVisible: boolean;
+  focused: boolean;
+}
+
+/** How `selector` is drawn now, for the "no box" rule. */
+function focusLook(page: Page, selector: string): Promise<FocusLook> {
+  return page.evaluate((target) => {
+    const element = document.querySelector<HTMLElement>(target);
+    if (element === null) throw new Error(`no ${target}`);
+    const style = getComputedStyle(element);
+    return {
+      outlineStyle: style.outlineStyle,
+      outlineWidth: style.outlineWidth,
+      boxShadow: style.boxShadow,
+      border: `${style.borderTopWidth} ${style.borderRightWidth} ${style.borderBottomWidth} ${style.borderLeftWidth} ${style.borderTopColor} ${style.borderRightColor} ${style.borderBottomColor} ${style.borderLeftColor}`,
+      focusVisible: element.matches(':focus-visible'),
+      focused: element === document.activeElement || element.contains(document.activeElement),
+    };
+  }, selector);
+}
+
+/** The 2 px --ring line along the left edge: an inset shadow with one offset and no blur. */
+const LEFT_EDGE_LINE =
+  /^(?:rgba?\([^)]*\)|oklch\([^)]*\)|color\([^)]*\)|\S+) 2px 0px 0px 0px inset$/;
+
+/**
+ * No box: no outline, no border that changed, and a shadow only if it is the 2 px line at the left
+ * edge (keyboard focus, docs/design.md Focus). `before` is the look before focus: a border may not
+ * change colour or width when focus arrives.
+ */
+function expectNoFocusBox(selector: string, now: FocusLook, before: FocusLook | null): void {
+  if (now.outlineStyle !== 'none' && now.outlineWidth !== '0px') {
+    throw new Error(`${selector} has an outline (${now.outlineStyle} ${now.outlineWidth})`);
+  }
+  if (now.boxShadow !== 'none' && !LEFT_EDGE_LINE.test(now.boxShadow)) {
+    throw new Error(
+      `${selector} has a box shadow that is not the left-edge line: ${now.boxShadow}`,
+    );
+  }
+  if (before !== null && now.border !== before.border) {
+    throw new Error(`${selector}'s border changed on focus: ${before.border} to ${now.border}`);
+  }
+}
+
+/** The active element sits inside `selector` (the focus really is in that region). */
+async function expectFocusIn(page: Page, selector: string): Promise<void> {
+  const inside = await page.evaluate(
+    (target) => document.querySelector(target)?.contains(document.activeElement) ?? false,
+    selector,
+  );
+  if (!inside) throw new Error(`focus is not in ${selector}`);
+}
+
+const TRANSCRIPT_LOG = '.live-transcript-lines';
+const CHAT_LOG = '.meeting-chat-log';
+const NOTES_BOX = 'section[aria-label="My notes"] .note-editor-content';
+
+describe('focus', () => {
+  it(
+    'the transcript: by a click, by Jump to live, by a citation, then a key: no box, ever',
+    async () => {
+      await walkEveryView(liveMeeting, async ({ page }, _combo, shoot) => {
+        await pickTab(page, 'Transcript');
+        await page.waitForSelector(`${TRANSCRIPT_LOG} [data-segment-id]`);
+        const before = await focusLook(page, TRANSCRIPT_LOG);
+
+        // By a click on a line, then a key.
+        await page.locator(`${TRANSCRIPT_LOG} [data-segment-id]`).last().click();
+        await page.keyboard.press('ArrowUp');
+        await expectFocusIn(page, TRANSCRIPT_LOG);
+        expectNoFocusBox(TRANSCRIPT_LOG, await focusLook(page, TRANSCRIPT_LOG), before);
+
+        // By Jump to live: scroll away so the button comes, press it, then a key.
+        await page.evaluate((log) => {
+          const element = document.querySelector(log);
+          if (element !== null) element.scrollTop = 0;
+        }, TRANSCRIPT_LOG);
+        await page.getByRole('button', { name: 'Jump to live' }).click();
+        await page.keyboard.press('ArrowUp');
+        await expectFocusIn(page, TRANSCRIPT_LOG);
+        expectNoFocusBox(TRANSCRIPT_LOG, await focusLook(page, TRANSCRIPT_LOG), before);
+        await qa.stopScenario(page);
+        await shoot({
+          group: 'Focus',
+          slug: 'focus-transcript-clicked',
+          caption:
+            'Focus in the transcript after Jump to live and a key: no outline, no orange frame, no border change',
+          primary: 'Stop',
+        });
+
+        // By the keyboard: a 2 px line at the left edge, and still no box.
+        await page.getByRole('tab', { name: 'Chat' }).focus();
+        await page.getByRole('tab', { name: 'Transcript' }).focus();
+        for (let step = 0; step < 12; step += 1) {
+          await page.keyboard.press('Tab');
+          if (
+            await page.evaluate(
+              (log) => document.querySelector(log) === document.activeElement,
+              TRANSCRIPT_LOG,
+            )
+          )
+            break;
+        }
+        const keyboard = await focusLook(page, TRANSCRIPT_LOG);
+        if (!keyboard.focusVisible || keyboard.boxShadow === 'none') {
+          throw new Error(
+            `Tab reached no focusable transcript with a left-edge line (visible ${String(keyboard.focusVisible)}, shadow ${keyboard.boxShadow})`,
+          );
+        }
+        expectNoFocusBox(TRANSCRIPT_LOG, keyboard, before);
+        await shoot({
+          group: 'Focus',
+          slug: 'focus-transcript-keyboard',
+          caption: 'Keyboard focus in the transcript: a 2 px line at the left edge, no box',
+          primary: 'Stop',
+        });
+      });
+    },
+    PIECE_TIMEOUT_MS,
+  );
+
+  it(
+    'a citation puts focus in the transcript with no box; the chat log and My notes are as quiet',
+    async () => {
+      await walkEveryView(pastMeeting, async ({ page }, _combo, shoot) => {
+        await page.getByRole('button', { name: 'Write notes' }).click();
+        await page.waitForSelector(AI_PANE);
+        await finishWritingNotes(page);
+
+        // A chip reveals its transcript line and puts focus in the log: then a key.
+        await page.locator('.ai-notes-editor .citation-chip').first().click();
+        await page.waitForSelector('[data-cited]');
+        await page.keyboard.press('ArrowDown');
+        await expectFocusIn(page, TRANSCRIPT_LOG);
+        expectNoFocusBox(TRANSCRIPT_LOG, await focusLook(page, TRANSCRIPT_LOG), null);
+        await shoot({
+          group: 'Focus',
+          slug: 'focus-transcript-citation',
+          caption:
+            'Focus after a citation chip and a key: the cited line tinted, the log with no outline or frame',
+          primary: null,
+        });
+
+        // The chat log: a click, then a key.
+        await pickTab(page, 'Chat');
+        const first = await askInChat(page, 'Who owns the seat list?');
+        await answerInChat(page, first, 'Anneliese owns the seat export [L22].', [22]);
+        const chatBefore = await focusLook(page, CHAT_LOG);
+        await page.locator('.meeting-chat-answer').first().click();
+        await page.keyboard.press('PageUp');
+        expectNoFocusBox(CHAT_LOG, await focusLook(page, CHAT_LOG), chatBefore);
+        await shoot({
+          group: 'Focus',
+          slug: 'focus-chat-clicked',
+          caption: 'Focus in the chat log after a click and a key: no outline, no frame',
+          primary: null,
+        });
+
+        // My notes: typing shows the caret and nothing else.
+        await pickTab(page, 'My notes');
+        const notesBefore = await focusLook(page, NOTES_BOX);
+        await page.locator(NOTES_BOX).click();
+        await page.keyboard.type('Ask Anneliese');
+        expectNoFocusBox(NOTES_BOX, await focusLook(page, NOTES_BOX), notesBefore);
+        const now = await focusLook(page, NOTES_BOX);
+        if (now.boxShadow !== 'none') {
+          throw new Error(`My notes draws a shadow while typing: ${now.boxShadow}`);
+        }
+        await shoot({
+          group: 'Focus',
+          slug: 'focus-my-notes-typing',
+          caption: 'Typing in My notes: the caret only, the box keeps its own border',
+          primary: null,
+        });
+      });
+    },
+    PIECE_TIMEOUT_MS,
+  );
+});
+
+// Main's words, whatever fails -------------------------------------------------------------------------
+
+/** Every sentence a failed Start can show: START_FAILURE_SENTENCES, as the banner draws them. */
+const START_SENTENCES = Object.entries(START_FAILURE_SENTENCES);
+
+describe('words', () => {
+  it(
+    'every failed Start reads as a plain sentence, and its raw text stays in Details',
+    async () => {
+      await walkEveryView(openScenario('empty-mac'), async ({ page }, _combo, shoot) => {
+        for (const [name, sentence] of START_SENTENCES) {
+          await patchStatus(page, { error: sentence, errorDetail: 'xAI: rejected with HTTP 401' });
+          try {
+            await expectProblem(page, sentence);
+            await expectNoInternals(page);
+          } catch (error) {
+            throw new Error(`START_FAILURE_SENTENCES.${name}: ${reasonOf(error)}`, {
+              cause: error,
+            });
+          }
+        }
+        await patchStatus(page, {
+          error: START_FAILURE_SENTENCES.serviceRefused,
+          errorDetail: 'xAI: rejected with HTTP 401',
+        });
+        await shoot({
+          group: "Main's words",
+          slug: 'words-start-refused',
+          caption:
+            "Start failed because the speech service refused: main's sentence and what to do, no vendor, no HTTP code",
+          primary: 'Start notes',
+          problems: [START_FAILURE_SENTENCES.serviceRefused],
+        });
+        await patchStatus(page, {
+          error: START_FAILURE_SENTENCES.serverAway,
+          errorDetail: 'POST /v1/stt/token failed: connect ECONNREFUSED 127.0.0.1:8000',
+        });
+        await shoot({
+          group: "Main's words",
+          slug: 'words-start-server-away',
+          caption: "Start failed because Roger's server is away: no route, no address, no errno",
+          primary: 'Start notes',
+          problems: [START_FAILURE_SENTENCES.serverAway],
+        });
+      });
+    },
+    PIECE_TIMEOUT_MS,
+  );
+
+  it(
+    'every warning main raises, as the banner and the status line read it',
+    async () => {
+      const facts = {
+        micSilent: { mic: { silentForMs: MIC_DEAD_WARNING_MS } },
+        micNoChunks: { mic: { noChunkForMs: 6_000 } },
+        micEnded: { mic: { stopped: { message: 'AbortError: Starting audio source failed' } } },
+        callNoChunks: { system: { noChunkForMs: 6_000 } },
+        callEnded: { system: { stopped: { message: 'spawn EACCES' } } },
+        callSilent: { system: { silentForMs: CALL_AUDIO_SILENT_LOUD_MS } },
+        offline: { offline: true },
+      };
+      const warnings = Object.entries(facts).flatMap(([name, change]) =>
+        warningsFor(change).map((warning) => ({ name, warning })),
+      );
+      if (warnings.length < 7) throw new Error(`main raised only ${warnings.length} warnings`);
+      for (const combo of LIGHT_COMBOS) {
+        const preview = await liveMeeting(combo);
+        try {
+          for (const { name, warning } of warnings) {
+            await patchStatus(preview.page, { warnings: [warning] });
+            try {
+              await expectNoInternals(preview.page);
+              if (warning.loud) await expectProblem(preview.page, warning.message.slice(0, 40));
+            } catch (error) {
+              throw new Error(`${name} (${warning.kind}): ${reasonOf(error)}`, { cause: error });
+            }
+          }
+          qa.expectNoConsoleErrors(preview);
+        } finally {
+          await preview.close();
+        }
+      }
+    },
+    PIECE_TIMEOUT_MS,
+  );
+
+  it(
+    'every stop notice reads as a sentence, on Home after Roger stopped a call itself',
+    async () => {
+      const guards = { noSpeechStopMs: 900_000, maxRecordingMs: 14_400_000 };
+      const reasons = [
+        'no-speech',
+        'max-duration',
+        'renderer-gone',
+        'system-sleep',
+        'call-ended',
+      ] as const;
+      await walkEveryView(openScenario('empty-mac'), async ({ page }, _combo, shoot) => {
+        for (const reason of reasons) {
+          const notice = stopNotice(reason, new Date(), guards, 'Zoom');
+          if (notice === null) throw new Error(`${reason} leaves no notice`);
+          await patchStatus(page, { notice });
+          await expectProblem(page, notice);
+          await expectNoInternals(page);
+        }
+        const notice = stopNotice('call-ended', new Date(), guards, 'Zoom');
+        await patchStatus(page, { notice });
+        await shoot({
+          group: "Main's words",
+          slug: 'words-stop-notice',
+          caption:
+            "Roger stopped because the call ended: one quiet line above Home, in main's words",
+          primary: 'Start notes',
+          problems: [notice ?? ''],
+        });
+      });
+    },
+    PIECE_TIMEOUT_MS,
+  );
+
+  it(
+    "Details is the one place raw text may show: the vendor's own reason, on the meeting page",
+    async () => {
+      await walkEveryView(liveMeeting, async ({ page }, _combo, shoot) => {
+        await patchStatus(page, {
+          error: START_FAILURE_SENTENCES.serviceRefused,
+          errorDetail: 'xAI: rejected with HTTP 401',
+        });
+        await expectNoInternals(page);
+        await page.getByRole('button', { name: 'Details' }).click();
+        await page.waitForSelector('dialog[open] .dialog-panel');
+        await qa.settle(page);
+        await shoot({
+          group: "Main's words",
+          slug: 'words-details-raw',
+          caption:
+            'Details shows the raw reason ("xAI: rejected with HTTP 401") that the banner behind it never does',
+          primary: null,
+          shows: ['xAI: rejected with HTTP 401'],
         });
       });
     },
