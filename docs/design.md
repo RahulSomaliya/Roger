@@ -68,9 +68,8 @@ bug, and `noLiteralColours.test.ts` fails on it.
 | `fill-raised` (sweep, built by T0) | = `fill` | lighter than `raised`, about `0.31 0.008 70` | hover and pressed wash on a `raised` surface (menu rows, the prompt card's ghost buttons): `fill` vanishes there in dark |
 | `edge` (sweep, built by T0) | = `line` | about `0.36 0.008 70` | the 1 px edge of a floating surface over another app (the prompt card), where the system shadow cannot show in dark |
 
-Added by the redesign sweep (2026-10-08, `docs/plans/redesign-sweep.md`): the two rows above. T0
-measures them, pins `ink` and `ink-muted` on `fill-raised` in the pairings table and writes both dark
-blocks; the values here are its starting point.
+Added by the redesign sweep (2026-10-08, `docs/plans/redesign-sweep.md`): the two rows above, built by T0
+with the values shown (both dark blocks), `ink` and `ink-muted` on `fill-raised` pinned in the pairings table.
 
 Hand-tuned from Course Player, each for a pairing Roger paints and Course Player does not:
 light `ink-subtle` 0.53 → 0.52 (a timestamp on the revealed line read 4.51:1 on `accent-soft`);
@@ -90,6 +89,8 @@ or 3:1 for the non-text rows. Add a row before you paint a new pairing.
 | `ink` | canvas · surface · raised · fill · sunken · control · accent-soft | 16.5 · 17.0 · 17.0 · 15.1 · 15.1 · 17.0 · 14.7 | 15.5 · 14.4 · 13.0 · 12.6 · 14.7 · 9.5 · 11.6 |
 | `ink-muted` | the same seven | 7.1 · 7.3 · 7.3 · 6.5 · 6.5 · 7.3 · 6.3 | 7.7 · 7.1 · 6.4 · 6.2 · 7.2 · 4.7 · 5.7 |
 | `ink-subtle` | canvas · surface · raised · fill · sunken · accent-soft | 5.2 · 5.4 · 5.4 · 4.8 · 4.8 · 4.7 | 6.1 · 5.6 · 5.1 · 4.9 · 5.8 · 4.5 |
+| `ink` | fill-raised (sweep) | 15.2 | 10.7 |
+| `ink-muted` | fill-raised (sweep) | 6.5 | 5.3 |
 | `accent-ink` | canvas · surface · raised · fill · accent-soft | 6.7 · 6.9 · 6.9 · 6.1 · 5.9 | 9.8 · 9.1 · 8.2 · 8.0 · 7.4 |
 | `on-accent` | accent · accent-hover | 4.8 · 5.7 | 7.2 · 8.4 |
 | `accent`, `ring` (3:1, non-text) | canvas · surface · raised · fill | 4.7 · 4.9 · 4.9 · 4.3 | 7.3 · 6.7 · 6.1 · 5.9 |

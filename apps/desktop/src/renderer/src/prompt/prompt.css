@@ -254,6 +254,7 @@ body {
 }
 
 .btn[data-variant='ghost']:hover:not(:disabled, [aria-disabled='true']) {
+  background: var(--fill-raised);
   color: var(--ink);
 }
 

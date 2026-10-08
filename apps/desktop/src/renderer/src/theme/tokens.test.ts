@@ -23,6 +23,8 @@ const TOKENS = [
   '--accent-ink',
   '--accent-soft',
   '--ring',
+  '--fill-raised',
+  '--edge',
   '--scrim',
   '--e1',
   '--e2',
@@ -178,6 +180,20 @@ const PINNED: readonly Pinned[] = [
     min: 4.5,
   },
   {
+    text: '--ink',
+    on: ['--fill-raised'],
+    light: [15.2],
+    dark: [10.7],
+    min: 4.5,
+  },
+  {
+    text: '--ink-muted',
+    on: ['--fill-raised'],
+    light: [6.5],
+    dark: [5.3],
+    min: 4.5,
+  },
+  {
     text: '--accent',
     on: ['--canvas', '--surface', '--raised', '--fill'],
     light: [4.7, 4.9, 4.9, 4.3],
@@ -251,6 +267,23 @@ describe('the theme tokens', () => {
   // --line plus its own --surface against --canvas, and focus adds --ring. Not a pinned text pairing.
   it.each(THEMES)('keep --line a hairline, under 2:1 on --canvas (%s)', (_, block) => {
     expect(contrast(block, '--line', '--canvas')).toBeLessThan(2);
+  });
+
+  // WHY: in dark --fill (0.26) on --raised (0.25) is invisible, so a hover on a menu row or the
+  // prompt card's ghost button needs its own wash; and the card's 1 px edge over a dark call must
+  // read where --line (a hairline on --canvas) does not. In light both equal their old tokens.
+  it.each(THEMES)('keep a hover wash and a card edge that show on --raised (%s)', (name, block) => {
+    const dark = name !== 'light';
+    expect(contrast(block, '--fill-raised', '--raised')).toBeGreaterThan(dark ? 1.15 : 1.05);
+    expect(contrast(block, '--edge', '--raised')).toBeGreaterThan(dark ? 1.3 : 1.1);
+    if (dark) {
+      expect(contrast(block, '--edge', '--raised')).toBeGreaterThan(
+        contrast(block, '--line', '--raised'),
+      );
+    } else {
+      expect(block.get('--fill-raised')).toBe(block.get('--fill'));
+      expect(block.get('--edge')).toBe(block.get('--line'));
+    }
   });
 
   it('never colour text with a fill: `color` reads an ink token, --accent-ink or --on-accent', () => {

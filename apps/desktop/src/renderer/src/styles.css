@@ -276,6 +276,7 @@ body {
 }
 
 .btn[data-variant='ghost']:hover:not(:disabled, [aria-disabled='true']) {
+  background: var(--fill-raised);
   color: var(--ink);
 }
 
@@ -433,7 +434,7 @@ body {
 
 .menu-item:hover,
 .menu-item:focus-visible {
-  background: var(--fill);
+  background: var(--fill-raised);
   color: var(--ink);
 }
 
