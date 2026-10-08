@@ -60,6 +60,7 @@ function setup(options: { enabled?: boolean; bindPrompts?: boolean } = {}) {
   const stops: StopOptions[] = [];
   const capture = {
     phase: 'idle' as CapturePhase,
+    meetingId: null as string | null,
     stopError: null as Error | null,
     refreshed: 0,
     onRecording: (listener: (typeof recordingListeners)[number]) => {
@@ -68,6 +69,8 @@ function setup(options: { enabled?: boolean; bindPrompts?: boolean } = {}) {
     },
     stop(stopOptions: StopOptions): Promise<unknown> {
       stops.push(stopOptions);
+      // As the real service: the session, and so the meeting id, is gone once the stop lands.
+      capture.meetingId = null;
       return capture.stopError === null
         ? Promise.resolve(undefined)
         : Promise.reject(capture.stopError);
@@ -91,7 +94,7 @@ function setup(options: { enabled?: boolean; bindPrompts?: boolean } = {}) {
       return () => dismissListeners.delete(listener);
     },
   };
-  const notices: { title: string; body: string }[] = [];
+  const notices: NotificationContent[] = [];
   const powerListeners: { event: string; listener: () => void }[] = [];
   const callOffer = new CallOffer({
     enabled: options.enabled ?? true,
@@ -277,6 +280,18 @@ describe('CallOffer', () => {
         'Roger stopped your notes: the call in Zoom ended',
       ]);
       expect(t.notices.map((notice) => notice.body)).toEqual(['Your notes are in Roger.']);
+    });
+
+    it('opens the meeting that was stopped when the notice is clicked, not Home', async () => {
+      const t = setup();
+      t.setApps([zoom]);
+      t.start();
+      t.capture.meetingId = '0d8a8f0e-5b0c-4c1e-9d0a-3f2b6c7a9e11';
+      t.setApps([]);
+      await vi.advanceTimersByTimeAsync(CALL_NATIVE_RELEASE_MS);
+      expect(t.notices.map((notice) => notice.route)).toEqual([
+        'meeting/0d8a8f0e-5b0c-4c1e-9d0a-3f2b6c7a9e11',
+      ]);
     });
 
     it('does not stop when the mic returns within the debounce (AirPods connecting)', async () => {

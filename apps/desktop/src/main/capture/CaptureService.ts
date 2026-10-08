@@ -449,6 +449,11 @@ export class CaptureService {
     return this.currentPhase;
   }
 
+  /** The live meeting's id, or null while starting and idle. Cheap, like `phase`. */
+  get meetingId(): string | null {
+    return this.session?.meetingId ?? null;
+  }
+
   getStatus(): CaptureStatus {
     return this.withContributions(this.landedStatus());
   }
