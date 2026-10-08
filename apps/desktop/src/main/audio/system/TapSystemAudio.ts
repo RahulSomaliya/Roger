@@ -139,7 +139,7 @@ export class TapSystemAudio implements SystemAudioSource {
     const { selection } = this.options;
     if (selection.helper === null) {
       this.event(recording, 'helper-missing', { reason: selection.missing });
-      this.fail(recording, `there is no call audio helper: ${selection.missing}`);
+      this.fail(recording, `Roger's call audio capture is missing: ${selection.missing}`);
       return;
     }
     const helper = new HelperProcess({
@@ -174,7 +174,7 @@ export class TapSystemAudio implements SystemAudioSource {
           const last = recording.lastErrorCode === null ? '' : `, ${recording.lastErrorCode}`;
           this.fail(
             recording,
-            `the call audio helper stopped ${end.restarts + 1} times in a row (last: ${end.detail}${last})`,
+            `call audio capture stopped ${end.restarts + 1} times in a row (last: ${end.detail}${last})`,
           );
         },
       },
@@ -300,7 +300,7 @@ export class TapSystemAudio implements SystemAudioSource {
       });
       this.fail(
         recording,
-        `the call audio helper sends ${got}; Roger takes only ${PCM_SAMPLE_RATE} Hz ${PCM_ENCODING} mono`,
+        `call audio capture sends ${got}; Roger takes only ${PCM_SAMPLE_RATE} Hz ${PCM_ENCODING} mono`,
       );
       return;
     }
@@ -348,7 +348,7 @@ export class TapSystemAudio implements SystemAudioSource {
         recording.restartPending = false;
         const times = recording.restarts === 1 ? 'once' : `${recording.restarts} times`;
         recording.notice = this.notice(
-          `Roger restarted the call audio helper (${times} this recording); call audio is back.`,
+          `Call audio is back: Roger restarted it ${times} in this meeting.`,
         );
       }
       capture.refreshStatus();
@@ -359,16 +359,13 @@ export class TapSystemAudio implements SystemAudioSource {
     this.event(recording, 'helper-restarted', runEndDetail(end));
     recording.restarts += 1;
     recording.restartPending = true;
+    // Plain words: these reach the banner and a macOS notification's body. How the run ended
+    // (`end.detail`: an exit code, a signal, a spawn errno) is in the capture event above and the
+    // log, never here (docs/design.md, Words from main; sweep W2).
     recording.warning =
       end.cause === 'hung'
-        ? this.warning(
-            'helper-hung',
-            'Call audio stopped: the call audio helper stopped responding, so Roger restarted it.',
-          )
-        : this.warning(
-            'source-ended',
-            `Call audio stopped: the call audio helper quit (${end.detail}). Roger is restarting it.`,
-          );
+        ? this.warning('helper-hung', 'Call audio stopped responding, so Roger is restarting it.')
+        : this.warning('source-ended', 'Call audio stopped, so Roger is restarting it.');
     this.options.capture.refreshStatus();
   }
 
@@ -382,9 +379,10 @@ export class TapSystemAudio implements SystemAudioSource {
     recording.restartPending = false;
     // No warning of its own, and the restart spell's is over. M2-T11's SignalMonitor
     // (capture/warnings.ts) turns this source's `error` health into the loud `source-ended`
-    // warning, "Call audio (them) stopped: <reason>. Press Stop, then Start again.", and
-    // CaptureService adds up every contributor's warnings as they come: a second one here showed
-    // the cut twice in the banner. Each caller's `reason` is read inside that sentence.
+    // warning, "Call audio stopped, so Roger can't hear the call. Press Stop, then Start notes
+    // again.", and CaptureService adds up every contributor's warnings as they come: a second one
+    // here showed the cut twice in the banner. Each caller's `reason` is the source's message,
+    // which Details and the log show; the warning never quotes it.
     recording.warning = null;
     void recording.helper?.stop();
     this.options.logger.error('call audio failed', { meetingId: recording.meetingId, reason });

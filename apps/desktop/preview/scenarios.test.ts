@@ -73,10 +73,13 @@ describe('preview scenarios', () => {
       "Error invoking remote method 'vocabulary:get': ApiError: vocabulary:get failed: connect ECONNREFUSED 127.0.0.1:8000",
     );
 
-    // Start asks the API for a speech-to-text token first: main reports that ApiError in the status.
+    // Start asks the API for a speech-to-text token first: main reports that ApiError in the status,
+    // in plain words, with the request's text kept for Details.
     await expect(offline.roger.startCapture()).resolves.toMatchObject({
       phase: 'idle',
-      error: 'POST /v1/stt/token failed: connect ECONNREFUSED 127.0.0.1:8000',
+      error:
+        'Roger could not reach its server, so notes did not start. Check the Mac is online, then Start notes again.',
+      errorDetail: 'POST /v1/stt/token failed: connect ECONNREFUSED 127.0.0.1:8000',
     });
 
     // The meeting recorded while offline waits on this Mac, and the uploader says why.

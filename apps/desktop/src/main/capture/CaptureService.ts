@@ -1,6 +1,5 @@
 import { randomUUID } from 'node:crypto';
 import {
-  AUDIO_SOURCE_LABEL,
   emptySourceStatus,
   fitMeetingTitle,
   idleCaptureStatus,
@@ -23,7 +22,6 @@ import { PCM_ENCODING, PCM_SAMPLE_RATE } from '../../shared/ipc';
 import { pcmBytesToMs } from '../../shared/pcm';
 import {
   AUDIO_SOURCES,
-  SPEAKER_FOR_SOURCE,
   type AudioSource,
   type InterimTranscript,
   type TranscriptSegment,
@@ -43,9 +41,22 @@ import { Emitter } from '../util/emitter';
 import { withTimeout } from '../util/time';
 import { AudioFanout, type AudioSink } from './AudioFanout';
 import { CaptureSession, type StreamCredentials } from './CaptureSession';
+import {
+  type CaptureErrorWords,
+  configurationWords,
+  MicrophoneDeniedError,
+  ResumeRefusedError,
+  startFailureWords,
+  stopFailureWords,
+  streamFailureWords,
+  StreamFormatError,
+  SttProviderChangedError,
+  unsavedLinesWords,
+} from './errorWords';
 import type { SilenceGateSettings } from './SilenceGate';
 import { SttOpenBudget } from './SttOpenBudget';
 import { type StopReason, stopNotice } from './stopReasons';
+import { KEYTERMS_REJECTED_MESSAGE } from './warnings';
 
 export interface CaptureServiceOptions {
   store: TranscriptStore;
@@ -61,7 +72,10 @@ export interface CaptureServiceOptions {
   logger: Logger;
   /** Only "fake" is honoured: it skips the vendor token and transcribes audio energy (development). */
   sttProviderOverride: string | null;
-  /** A configuration problem found at startup. Start fails with this message until it is fixed. */
+  /**
+   * A configuration problem found at startup. Start fails with it until it is fixed: the status
+   * says it in plain words (errorWords.ts configurationWords), this text is its `errorDetail`.
+   */
   startupError: string | null;
   /** How long Stop waits for the uploader to drain before giving up (lines stay local). */
   stopFlushTimeoutMs?: number;
@@ -126,7 +140,11 @@ export interface StopOptions {
   flushUploads?: boolean;
   /** Why it stops (default `user`): logged and kept with the meeting's usage; see stopNotice. */
   reason?: StopReason;
-  /** Extra words for the notice, e.g. how the renderer crashed. */
+  /**
+   * Extra words for the notice: the call app's name for `call-ended` ("the call in Zoom ended").
+   * Never an error's text: the notice is on the page (docs/design.md, Words from main), so a crash's
+   * reason stays in the caller's log line (lifecycle.ts stopFor).
+   */
   detail?: string;
 }
 
@@ -281,8 +299,6 @@ const MONITOR_SUSPENDED_GAP_MS = 5_000;
  */
 const OPEN_NOTES_SAVE_TIMEOUT_MS = 1_000;
 
-const SPEAKER_TITLE: Record<AudioSource, string> = { mic: 'Me', system: 'Them' };
-
 /** A token as the session takes it, and the vendor it is for (resolveStt). */
 interface ResolvedStt extends StreamCredentials {
   provider: string;
@@ -293,12 +309,6 @@ interface ResolvedStt extends StreamCredentials {
 interface GateFigures {
   gatedMs: number;
   estimatedSavedUsd: number | null;
-}
-
-interface StreamRetry {
-  reason: string;
-  /** Clock time the source may reopen, with its next chunk. */
-  retryAtMs: number;
 }
 
 /**
@@ -352,13 +362,15 @@ export class CaptureService {
   };
   private streams: Record<AudioSource, SttStreamState> = { mic: 'closed', system: 'closed' };
   private streamMessages: Record<AudioSource, string | null> = { mic: null, system: null };
-  /** The error text each source's last failure set, so its recovery can clear exactly that. */
-  private streamErrors: Record<AudioSource, string | null> = { mic: null, system: null };
-  /** Each source's failure while it waits to reconnect, so the monitor can count the wait down. */
-  private streamRetries: Record<AudioSource, StreamRetry | null> = { mic: null, system: null };
+  /** The error each source's last failure set, so its recovery can clear exactly that one. */
+  private streamErrors: Record<AudioSource, CaptureErrorWords | null> = { mic: null, system: null };
   /** What the session warned about each source (onWarning), shown until Stop. */
   private sessionWarnings: Record<AudioSource, CaptureWarning | null> = { mic: null, system: null };
-  private error: string | null = null;
+  /**
+   * The status's `error` (the sentence) and `errorDetail` (the raw text), set together from
+   * errorWords.ts so the page never gets one without the other, and never the raw text alone.
+   */
+  private error: CaptureErrorWords | null = null;
   private notice: string | null = null;
   private segmentsUnsaved = 0;
   /** The start or stop under way: a stop waits for either, a Start waits out a stop (start()). */
@@ -383,7 +395,7 @@ export class CaptureService {
         this.clock,
       );
     this.audio = new AudioFanout(options.logger);
-    this.error = options.startupError;
+    this.error = this.startupErrorWords();
     options.uploader.onStatus(() => {
       this.emitStatus();
     });
@@ -447,7 +459,7 @@ export class CaptureService {
     if (this.currentPhase === 'idle' && !this.session) {
       return {
         ...idleCaptureStatus(upload),
-        error: this.error,
+        ...this.errorPart(),
         meter: this.lastMeter,
         notice: this.notice,
       };
@@ -465,11 +477,22 @@ export class CaptureService {
       segmentsStored: this.session?.storedSegmentCount ?? 0,
       segmentsUnsaved: this.segmentsUnsaved,
       upload,
-      error: this.error,
+      ...this.errorPart(),
       meter: this.stt === null ? this.lastMeter : this.meterStatus(this.stt),
       notice: this.notice,
       ...this.sessionWarningsPart(),
     };
+  }
+
+  /** The error as the status carries it: the plain sentence, and the raw text for Details. */
+  private errorPart(): Pick<CaptureStatus, 'error' | 'errorDetail'> {
+    return { error: this.error?.sentence ?? null, errorDetail: this.error?.detail ?? null };
+  }
+
+  /** The startup configuration error in words, or null when there is none. */
+  private startupErrorWords(): CaptureErrorWords | null {
+    const { startupError } = this.options;
+    return startupError === null ? null : configurationWords(startupError);
   }
 
   /**
@@ -521,8 +544,9 @@ export class CaptureService {
 
   /**
    * Starts a recording, or resumes one. Never rejects: a refusal (no microphone access, a request
-   * that does not check, the open budget, the vendor) comes back as the status's `error`, which is
-   * how a requested start's outcome reaches whoever asked (M5-T9b reads the status).
+   * that does not check, the open budget, the vendor) comes back as the status's `error`, a plain
+   * sentence (errorWords.ts startFailureWords) with the raw text in `errorDetail`, which is how a
+   * requested start's outcome reaches whoever asked (M5-T9b reads the status).
    *
    * A Start while a stop is under way starts once that stop is done, as stop() waits out a start:
    * a stop drains uploads for up to 15 s, and answered with its idle status, a prompt's Take notes
@@ -675,17 +699,20 @@ export class CaptureService {
     const meetingId = this.session?.meetingId ?? null;
     this.options.logger.warn('audio source problem', { source, state, message, meetingId });
     // Its vendor session would bill silence until Stop: close it now; the other source goes on.
+    // A track that ends mid-call never comes back; only a new session reopens the device.
+    //
+    // No `error` for it: SignalMonitor turns this health (`ended` or `error`) into the loud
+    // `source-ended` warning (capture/warnings.ts), which the banner, the header's status line and
+    // a macOS notification say. An error set here as well said the same cut twice on every page
+    // but the meeting's, and outlived the recording with "Press Stop" after Stop. `message` stays
+    // the source's own (Details).
     this.session?.closeSource(source, message ?? `the audio source reported ${state}`);
-    if (state === 'ended' && this.currentPhase === 'recording') {
-      // A track that ends mid-call never comes back; only a new session reopens the device.
-      this.error = `${AUDIO_SOURCE_LABEL[source]} stopped: ${message ?? 'the audio track ended'}. Press Stop, then Start again.`;
-    }
     this.emitStatus();
   }
 
   private async doStart({ resume, ...asked }: StartOptions): Promise<CaptureStatus> {
-    if (this.options.startupError) {
-      this.error = this.options.startupError;
+    if (this.options.startupError !== null) {
+      this.error = this.startupErrorWords();
       return this.getStatus();
     }
     const { logger, store } = this.options;
@@ -708,24 +735,23 @@ export class CaptureService {
       if (resume !== undefined) {
         const meeting = store.getMeeting(meetingId);
         if (meeting === null) {
-          throw new Error(`Meeting ${meetingId} cannot be resumed: it is not in the local store.`);
+          throw new ResumeRefusedError(meetingId, 'it is not in the local store.');
         }
         if (meeting.endedAt !== null) {
-          throw new Error(`Meeting ${meetingId} cannot be resumed: it already ended.`);
+          throw new ResumeRefusedError(meetingId, 'it already ended.');
         }
         startedAtMs = Date.parse(meeting.startedAt);
         if (!Number.isFinite(startedAtMs)) {
-          throw new Error(
-            `Meeting ${meetingId} cannot be resumed: its start "${meeting.startedAt}" is not a time.`,
+          throw new ResumeRefusedError(
+            meetingId,
+            `its start "${meeting.startedAt}" is not a time.`,
           );
         }
         this.savedUsage = store.getSttUsage(meetingId);
         this.title = meeting.title;
       }
       if ((await this.options.ensureMicrophoneAccess()) === 'denied') {
-        throw new Error(
-          'Microphone access is denied. Allow Roger under System Settings → Privacy & Security → Microphone.',
-        );
+        throw new MicrophoneDeniedError();
       }
       // ONE token here, which names the vendor. It opens both sources only when the vendor's
       // token is reusable (AssemblyAI); a single-connection one (xAI's client secret: one
@@ -737,7 +763,7 @@ export class CaptureService {
         await this.resolveStt();
       // Checked before the meeting exists: a session on the wrong format would store nonsense lines.
       const mismatch = streamSettingsMismatch(settings);
-      if (mismatch !== null) throw new Error(mismatch);
+      if (mismatch !== null) throw new StreamFormatError(mismatch);
       const stt = this.options.createSpeechToText(provider);
       this.stt = stt;
       this.sttProvider = provider;
@@ -787,7 +813,6 @@ export class CaptureService {
           onStreamState: (source, state, message) => {
             this.streams[source] = state;
             this.streamMessages[source] = message;
-            if (state === 'open') this.streamRetries[source] = null;
             if (
               state === 'open' &&
               this.error !== null &&
@@ -799,8 +824,7 @@ export class CaptureService {
             this.emitStatus();
           },
           onStreamFailure: (source, reason, retryAtMs) => {
-            this.streamRetries[source] = retryAtMs === null ? null : { reason, retryAtMs };
-            this.error = this.streamFailureText(source, reason, retryAtMs);
+            this.error = streamFailureWords(source, reason, retryAtMs !== null);
             this.streamErrors[source] = this.error;
             logger.error('speech-to-text stream failed mid-call', {
               meetingId,
@@ -820,11 +844,14 @@ export class CaptureService {
             // later loud one on the same source (M2-T11's mic-dead) comes on top of it: a view that
             // joins a source's warnings into one row must date a loud row by its loud warnings,
             // not the earliest since, or a mic silent for 8 s reads as silent since Start.
+            //
+            // The session's text names the vendor ("Jargon list rejected by xAI"): it stays in the
+            // session's log line and capture event, and the warning reads the plain words.
             this.sessionWarnings[source] ??= {
               kind: warning.kind,
               source,
               since: new Date(this.clock()).toISOString(),
-              message: warning.message,
+              message: KEYTERMS_REJECTED_MESSAGE,
               loud: false,
             };
             this.emitStatus();
@@ -835,12 +862,9 @@ export class CaptureService {
             // re-transcribe from (that is M2), so stopping would lose every later line as well.
             // The count and this error stay on screen so the person can decide to stop.
             this.segmentsUnsaved += 1;
-            const lines = this.segmentsUnsaved === 1 ? '1 line' : `${this.segmentsUnsaved} lines`;
-            // No meeting id or stream label here: the page shows this text as it is (docs/design.md,
-            // Copy: no internals outside Details), and CaptureSession's 'line not saved locally'
-            // log line has both. Keep the fact and the way out: house rule 1, the person must
-            // always see that lines are not being saved.
-            this.error = `${lines} could not be saved on this Mac: ${reason}. Recording continues; free disk space, or press Stop if this keeps happening.`;
+            // House rule 1: the count and the way out stay on screen (unsavedLinesWords); the
+            // store's reason is the detail, for Details and the log.
+            this.error = unsavedLinesWords(this.segmentsUnsaved, reason);
             this.emitStatus();
           },
         },
@@ -874,8 +898,8 @@ export class CaptureService {
         source: resume === undefined ? (request.source ?? 'manual') : null,
       });
     } catch (error) {
-      this.error = errorMessage(error);
-      logger.error('capture start failed', { meetingId, error: this.error });
+      this.error = startFailureWords(error);
+      logger.error('capture start failed', { meetingId, error: this.error.detail });
       try {
         if (session) await session.close();
         // A failed connect that reached the handshake may be billed: keep its numbers too.
@@ -966,8 +990,8 @@ export class CaptureService {
         });
       }
     } catch (error) {
-      this.error = errorMessage(error);
-      logger.error('capture stop failed', { error: this.error, reason });
+      this.error = stopFailureWords(error);
+      logger.error('capture stop failed', { error: this.error.detail, reason });
     } finally {
       // Also after a stop that failed: a listener holding something for the recording (a power
       // save blocker, the helper's "recording on") must hear that it is over. The try tells the
@@ -1128,13 +1152,9 @@ export class CaptureService {
    */
   private async freshCredentials(provider: string): Promise<StreamCredentials> {
     const { provider: issued, ...credentials } = await this.resolveStt();
-    if (issued !== provider) {
-      throw new Error(
-        `the API now names speech-to-text provider "${issued}", not "${provider}"; press Stop, then Start to switch`,
-      );
-    }
+    if (issued !== provider) throw new SttProviderChangedError(provider, issued);
     const mismatch = streamSettingsMismatch(credentials.settings);
-    if (mismatch !== null) throw new Error(mismatch);
+    if (mismatch !== null) throw new StreamFormatError(mismatch);
     return credentials;
   }
 
@@ -1147,7 +1167,6 @@ export class CaptureService {
     this.streams = { mic: 'closed', system: 'closed' };
     this.streamMessages = { mic: null, system: null };
     this.streamErrors = { mic: null, system: null };
-    this.streamRetries = { mic: null, system: null };
     this.sessionWarnings = { mic: null, system: null };
     this.stt = null;
     this.savedUsage = null;
@@ -1174,7 +1193,6 @@ export class CaptureService {
       this.checkAudioFlow();
       // Not on the tick that finds a sleep: see checkForgottenStop.
       if (suspendedForMs === 0) this.checkForgottenStop();
-      this.refreshRetryCountdowns();
       // Every tick, changed or not. While main records and the window captures no mic (a reload,
       // a start from the tray), M2-T12's followMain opens it on the next status the page gets;
       // besides its first read and the focus read, this tick is what brings one. Sent only on a
@@ -1242,35 +1260,6 @@ export class CaptureService {
         meetingId: this.session?.meetingId ?? null,
         silentForMs,
       });
-    }
-  }
-
-  /** What the banner says about a source's failed stream; `retryAtMs` null: it will not reopen. */
-  private streamFailureText(source: AudioSource, reason: string, retryAtMs: number | null): string {
-    const waitMs = retryAtMs === null ? 0 : retryAtMs - this.clock();
-    const next =
-      retryAtMs === null
-        ? 'Press Stop, then Start again.'
-        : waitMs > 0
-          ? `Reconnecting when its audio flows, in ${Math.ceil(waitMs / 1000)} s.`
-          : 'Reconnecting when its audio flows.';
-    return `Transcription of ${SPEAKER_TITLE[source]} (${SPEAKER_FOR_SOURCE[source]}) stopped: ${reason}. ${next}`;
-  }
-
-  /**
-   * The reconnect wait, counted down while the banner shows it. Written once at the failure, "in
-   * 2 s" (up to "in 60 s" after failures in a row) stayed on screen for as long as the other source
-   * talked, while nothing was being attempted: a source reopens only with its next chunk, never on
-   * a timer (CaptureSession.pushAudio), so once the wait is over it waits for audio, not seconds.
-   */
-  private refreshRetryCountdowns(): void {
-    for (const source of AUDIO_SOURCES) {
-      const retry = this.streamRetries[source];
-      // Another error took the banner since: leave it alone.
-      if (retry === null || this.error !== this.streamErrors[source]) continue;
-      this.error = this.streamFailureText(source, retry.reason, retry.retryAtMs);
-      this.streamErrors[source] = this.error;
-      if (retry.retryAtMs <= this.clock()) this.streamRetries[source] = null; // nothing left to count
     }
   }
 

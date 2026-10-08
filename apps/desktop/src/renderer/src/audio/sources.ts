@@ -38,7 +38,35 @@ export async function openSystemAudioStream(
   return stream;
 }
 
-/** Turn a getUserMedia failure into words a person can act on. */
+/**
+ * Why the microphone did not start, as the banner says it: what happened, then what to do, and
+ * never the browser's own text (the banner once read "Microphone: NotSupportedError: ..."; docs/
+ * design.md, Words from main). The raw text is describeMediaError's, for main's Details row and
+ * the page's reportError.
+ */
+export function describeMicrophoneFailure(error: unknown): string {
+  const name = error instanceof DOMException ? error.name : null;
+  switch (name) {
+    case 'NotAllowedError':
+    case 'SecurityError':
+      return 'Roger may not use the microphone. Allow Roger under System Settings, Privacy & Security, Microphone, then Start notes again.';
+    case 'NotFoundError':
+      return 'Roger found no microphone. Connect one, then Start notes again.';
+    case 'NotReadableError':
+    case 'AbortError':
+      return 'The microphone could not start; another app may be using it. Close that app, then Start notes again.';
+    case 'OverconstrainedError':
+      return 'The microphone does not take the sound settings Roger asks for. Choose another input under System Settings, Sound, then Start notes again.';
+    default:
+      return 'The microphone could not start. Start notes again; if it keeps happening, tell the Roger team.';
+  }
+}
+
+/**
+ * A getUserMedia failure in a few words, the browser's own text included for an unknown one:
+ * what main keeps as the source's message (Details) when the renderer reports it. Never the
+ * banner's words: those are describeMicrophoneFailure's.
+ */
 export function describeMediaError(error: unknown): string {
   if (error instanceof DOMException) {
     switch (error.name) {

@@ -9,9 +9,9 @@ import {
 import { AUDIO_SOURCES, type AudioSource } from '../../shared/transcript';
 
 /**
- * What Details calls each source (docs/design.md, Naming list): the microphone and the call audio.
- * Not `AUDIO_SOURCE_LABEL` ("Mic (me)", "Call audio (them)"): main writes that into its own messages,
- * and the transcript's speakers are Me and Them.
+ * What Details calls each source (docs/design.md, Naming list): the microphone and the call audio,
+ * capitalised as a row's label. `AUDIO_SOURCE_LABEL` is the same words in lower case, for inside
+ * main's sentences; the transcript's speakers are Me and Them.
  */
 export const SOURCE_NAME: Readonly<Record<AudioSource, string>> = {
   mic: 'Microphone',

@@ -1,4 +1,5 @@
 import { describe, expect, expectTypeOf, it } from 'vitest';
+import { wordsOutsideDetails } from '../../shared/captureWords';
 import { DEFAULT_COST_GUARDS } from '../costGuards';
 import { type StopReason, stopNotice } from './stopReasons';
 
@@ -22,15 +23,33 @@ describe('stopNotice', () => {
       stopNotice(reason, at, DEFAULT_COST_GUARDS, detail);
     expect(notice('no-speech')).toBe('Stopped at 2:32 pm after 15 minutes with no speech.');
     expect(notice('max-duration')).toBe('Stopped at 2:32 pm: one meeting is capped at 4 hours.');
-    expect(notice('renderer-gone', 'it crashed again: oom')).toBe(
-      'Stopped at 2:32 pm because the Roger window could not reload (it crashed again: oom).',
-    );
     expect(notice('renderer-gone')).toBe(
-      'Stopped at 2:32 pm because the Roger window could not reload.',
+      'Stopped at 2:32 pm because the Roger window stopped working.',
     );
     expect(notice('system-sleep')).toBe('Stopped at 2:32 pm because the Mac went to sleep.');
     expect(notice('call-ended', 'Zoom')).toBe('Stopped at 2:32 pm: the call in Zoom ended.');
     expect(notice('call-ended')).toBe('Stopped at 2:32 pm: the call ended.');
+  });
+
+  it("never prints a crash's reason: it goes to the log (sweep W3)", () => {
+    expect(stopNotice('renderer-gone', at, DEFAULT_COST_GUARDS, 'it kept crashing: crashed')).toBe(
+      'Stopped at 2:32 pm because the Roger window stopped working.',
+    );
+  });
+
+  it('words every notice for the page, with no internal word', () => {
+    const reasons: StopReason[] = [
+      'no-speech',
+      'max-duration',
+      'renderer-gone',
+      'system-sleep',
+      'call-ended',
+    ];
+    for (const reason of reasons) {
+      const notice = stopNotice(reason, at, DEFAULT_COST_GUARDS, 'Zoom') ?? '';
+      expect(wordsOutsideDetails(notice), reason).toEqual([]);
+      expect(notice).not.toMatch(/\brecording\b/i);
+    }
   });
 
   it('has no notice for a stop that leaves no window to show it: quit and a closed window', () => {

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  AUDIO_SOURCE_LABEL,
   BLUETOOTH_MIC_DEAD_WARNING_MS,
   CALL_AUDIO_SILENT_LOUD_MS,
   CALL_AUDIO_SILENT_LOUD_WITH_SPEECH_MS,
@@ -58,6 +59,7 @@ describe('idleCaptureStatus', () => {
         'segmentsUnsaved',
         'upload',
         'error',
+        'errorDetail',
         'meter',
         'notice',
       ].sort(),
@@ -65,6 +67,23 @@ describe('idleCaptureStatus', () => {
     expect(Object.keys(status.sources.mic).sort()).toEqual(
       ['health', 'chunks', 'lastChunkAt', 'message'].sort(),
     );
+  });
+
+  it('carries no error and no detail: the two are set together, from main/capture/errorWords.ts', () => {
+    const status = idleCaptureStatus({
+      state: 'idle',
+      pending: 0,
+      rejected: 0,
+      lastError: null,
+      nextAttemptAt: null,
+    });
+    expect(status).toMatchObject({ error: null, errorDetail: null });
+  });
+});
+
+describe('AUDIO_SOURCE_LABEL', () => {
+  it("names each stream as the naming list does inside main's sentences", () => {
+    expect(AUDIO_SOURCE_LABEL).toEqual({ mic: 'microphone', system: 'call audio' });
   });
 });
 

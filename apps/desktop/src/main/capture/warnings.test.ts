@@ -8,11 +8,13 @@ import {
   MIC_DEAD_WARNING_MS,
   NO_AUDIO_WARNING_MS,
 } from '../../shared/capture';
+import { warningHeadline, wordsOutsideDetails } from '../../shared/captureWords';
 import type { AudioSource } from '../../shared/transcript';
 import {
   deadSignalAfterMs,
   type DetectedWarning,
   detectWarnings,
+  KEYTERMS_REJECTED_MESSAGE,
   type SignalFacts,
   type SourceSignal,
   warningTitle,
@@ -121,21 +123,30 @@ describe('detectWarnings', () => {
     expect(silent(CALL_AUDIO_SILENT_LOUD_MS)).toEqual(loud);
   });
 
-  it('names a source that stopped, with its reason, over any silence of it', () => {
+  it('names a source that stopped over any silence of it, never quoting its reason', () => {
     const detected = detectWarnings(
       facts({
         mic: {
-          stopped: { message: 'the microphone was unplugged' },
+          stopped: { message: 'spawn EACCES' },
           noChunkForMs: 20_000,
           silentForMs: 20_000,
         },
       }),
     );
     expect(kinds(detected)).toEqual([{ kind: 'source-ended', source: 'mic', loud: true }]);
-    expect(detected[0]?.message).toContain('the microphone was unplugged');
-    expect(
-      detectWarnings(facts({ system: { stopped: { message: null } } }))[0]?.message,
-    ).not.toContain('null');
+    // The reason is the source's own message, which Details shows (sweep W2).
+    expect(detected[0]?.message).toBe(
+      "Your microphone stopped, so Roger can't hear you. Check it is connected, then press Stop and Start notes again.",
+    );
+    const callAudio = detectWarnings(
+      facts({ system: { stopped: { message: 'the call audio helper quit (exit 1)' } } }),
+    )[0]?.message;
+    expect(callAudio).toBe(
+      "Call audio stopped, so Roger can't hear the call. Press Stop, then Start notes again.",
+    );
+    expect(detectWarnings(facts({ system: { stopped: { message: null } } }))[0]?.message).toBe(
+      callAudio,
+    );
   });
 
   it('gives a source that stopped sending chunks one warning, not a silence warning as well', () => {
@@ -165,20 +176,49 @@ describe('detectWarnings', () => {
       ...detectWarnings(facts({ system: { silentForMs: 9_000 } })),
       ...detectWarnings(facts({ system: { silentForMs: CALL_AUDIO_SILENT_LOUD_MS } })),
     ];
-    expect(every).toHaveLength(8);
-    for (const warning of every) {
-      expect(warning.message.length).toBeGreaterThan(20);
-      expect(warning.message).not.toMatch(/undefined|null|NaN|\$\{/);
+    every.push(
+      ...detectWarnings(facts({ mic: { stopped: { message: 'gone' } } })),
+      ...detectWarnings(facts({ system: { stopped: { message: 'gone' } } })),
+      ...detectWarnings(
+        facts(
+          { system: { silentForMs: CALL_AUDIO_SILENT_LOUD_WITH_SPEECH_MS } },
+          {
+            micSpokeSinceCallSilence: true,
+          },
+        ),
+      ),
+    );
+    expect(every).toHaveLength(11);
+    expect(new Set(every.map((warning) => warning.message)).size).toBe(11);
+    for (const warning of [...every.map(({ message }) => message), KEYTERMS_REJECTED_MESSAGE]) {
+      expect(warning.length).toBeGreaterThan(20);
+      expect(warning).not.toMatch(/\$\{/);
+      // The naming list, and no vendor, code or internal word: these reach the banner and a
+      // macOS notification's body (docs/design.md, Words from main).
+      expect(wordsOutsideDetails(warning), warning).toEqual([]);
     }
   });
 });
 
 describe('warningTitle', () => {
+  it("titles a notification with the page's headline for the same warning (sweep N1)", () => {
+    for (const warning of [
+      { kind: 'no-audio', source: 'mic' },
+      { kind: 'no-audio', source: 'system' },
+      { kind: 'source-ended', source: 'mic' },
+      { kind: 'mic-dead', source: 'mic' },
+      { kind: 'offline', source: null },
+      { kind: 'keyterms-rejected', source: 'system' },
+    ] as const) {
+      expect(warningTitle(warning)).toBe(warningHeadline(warning));
+    }
+  });
+
   it('titles a notification by what is wrong and with which stream', () => {
     expect(warningTitle({ kind: 'no-audio', source: 'mic' })).not.toBe(
       warningTitle({ kind: 'no-audio', source: 'system' }),
     );
-    expect(warningTitle({ kind: 'offline', source: null })).toBe('Transcription is offline');
+    expect(warningTitle({ kind: 'offline', source: null })).toBe('The Mac is offline');
     // Kinds other features raise (M2-T10's watchdog, M2-T15's disk guard) are titled here too: the
     // Notifier posts every loud warning in the status, whoever raised it.
     expect(warningTitle({ kind: 'helper-hung', source: 'system' })).toBe('Call audio stalled');

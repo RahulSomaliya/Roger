@@ -2,9 +2,8 @@ import { useCallback, useEffect, useState } from 'react';
 import type { CaptureStatus, StartCaptureRequest } from '../../../shared/capture';
 import type { CaptureApi } from '../../../shared/ipc/capture';
 import type { Unsubscribe } from '../../../shared/ipc/unsubscribe';
-import { describeError } from '../app/describeError';
 import { AudioCaptureController, browserCaptureDevices } from '../audio/AudioCaptureController';
-import { describeMediaError } from '../audio/sources';
+import { describeMicrophoneFailure } from '../audio/sources';
 
 export interface CaptureView {
   status: CaptureStatus | null;
@@ -15,7 +14,10 @@ export interface CaptureView {
    * still shows here, where `status` alone misses it (meeting/recentMeetingsKey.ts).
    */
   lastMeetingId: string | null;
-  /** An error raised on this side (device access), as opposed to `status.error` from main. */
+  /**
+   * An error raised on this side (device access), as opposed to `status.error` from main: a plain
+   * sentence, as main's is. The raw error goes to `reportError`, since the renderer has no logger.
+   */
   localError: string | null;
   busy: boolean;
   /**
@@ -119,7 +121,8 @@ export function useCapture(): CaptureView {
           // Joins the start main's own status may have begun already (followMain).
           await controller.start(started);
         } catch (error) {
-          setLocalError(`Microphone: ${describeMediaError(error)}`);
+          setLocalError(describeMicrophoneFailure(error));
+          reportError(error);
           await controller.stop();
           show(await roger.stopCapture());
         }
@@ -135,7 +138,9 @@ export function useCapture(): CaptureView {
   useEffect(
     () =>
       runStartRequests(roger, start, (error) => {
-        setLocalError(`Roger could not start the note it was asked to: ${describeError(error)}`);
+        // An IPC failure or a request main refused: its text is main's, for the log alone.
+        setLocalError('Roger could not start the notes it was asked to. Start notes again.');
+        reportError(error);
       }),
     [roger, start],
   );

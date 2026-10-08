@@ -1,5 +1,4 @@
 import {
-  AUDIO_SOURCE_LABEL,
   BLUETOOTH_MIC_DEAD_WARNING_MS,
   CALL_AUDIO_NEVER_HEARD_WARNING_MS,
   CALL_AUDIO_SILENT_LOUD_MS,
@@ -10,6 +9,7 @@ import {
   MIC_DEAD_WARNING_MS,
   NO_AUDIO_WARNING_MS,
 } from '../../shared/capture';
+import { warningHeadline } from '../../shared/captureWords';
 import { AUDIO_SOURCES, type AudioSource } from '../../shared/transcript';
 
 /**
@@ -25,7 +25,8 @@ import { AUDIO_SOURCES, type AudioSource } from '../../shared/transcript';
 export interface SourceSignal {
   /**
    * The track or helper ended or failed (CaptureService's source health `ended` or `error`), with
-   * the reason it gave; null while it runs.
+   * the reason it gave; null while it runs. The reason is the source's own message, which Details
+   * shows: the warning never quotes it (it can be "spawn EACCES" or a helper's exit).
    */
   stopped: { message: string | null } | null;
   /** Wall-clock ms since the source's last chunk, or since Start before its first one. */
@@ -104,13 +105,9 @@ function sourceWarning(
   ): DetectedWarning => ({ kind, source, loud, message, heldForMs });
 
   if (signal.stopped !== null) {
-    const reason = signal.stopped.message ?? 'its audio ended';
-    return warn(
-      'source-ended',
-      true,
-      `${AUDIO_SOURCE_LABEL[source]} stopped: ${reason}. Press Stop, then Start again.`,
-      0,
-    );
+    // The only words for a stopped source on the page: CaptureService sets no `error` for it, so
+    // this warning is said once (CaptureService.reportSourceState says why).
+    return warn('source-ended', true, MESSAGES.sourceEnded[source], 0);
   }
   if (signal.noChunkForMs >= NO_AUDIO_WARNING_MS) {
     return warn('no-audio', true, MESSAGES.noAudio[source], signal.noChunkForMs);
@@ -145,49 +142,50 @@ function sourceWarning(
 
 // Fixed per rule, never with a running count ("for 61 s"): SignalMonitor refreshes the status only
 // when a warning changes, and a message that changed every second would refresh it every second.
-// Never transcript text: warnings reach logs, capture events and macOS notifications.
+// Never transcript text: warnings reach logs, capture events and macOS notifications. Plain words
+// from the naming list (microphone, call audio, Start notes), what is wrong and then what to do;
+// "press Stop, then Start notes again" only where nothing plainer helps. A notification shows its
+// headline as the title and this as the body (Notifier), so neither repeats the other.
+// warnings.test.ts runs every message through wordsOutsideDetails.
 const MESSAGES = {
   offline:
-    'The Mac is offline, so transcription stopped. Roger reconnects on its own when the network is back.',
+    'The Mac is offline, so no new lines come in. Roger reconnects on its own when the network is back.',
   noAudio: {
-    mic: 'No audio has come from the mic for 5 seconds: Roger cannot hear you. Check the microphone; if it does not come back, press Stop, then Start again.',
+    mic: "Nothing has come from your microphone for 5 seconds. Check it is connected; if Roger still can't hear you, press Stop, then Start notes again.",
     system:
-      'No call audio has reached Roger for 5 seconds: it cannot hear the call. If it does not come back, press Stop, then Start again.',
+      'No call audio has reached Roger for 5 seconds. If it does not come back, press Stop, then Start notes again.',
+  },
+  sourceEnded: {
+    mic: "Your microphone stopped, so Roger can't hear you. Check it is connected, then press Stop and Start notes again.",
+    system: "Call audio stopped, so Roger can't hear the call. Press Stop, then Start notes again.",
   },
   micDead:
-    'The mic sends only silence: Roger cannot hear you. Check that the input volume is not at 0 and that Roger is on under System Settings, Privacy & Security, Microphone.',
+    'Your microphone sends only silence. Check its input volume is not at 0, and that Roger is on under System Settings, Privacy & Security, Microphone.',
   neverHeardUnverified:
-    'No call audio since Start. If the call is playing, Roger may not be allowed to record it: open Set up Roger and test system audio.',
+    'No call audio since notes started. If the call is playing, Roger may not be allowed to record it: open Set up Roger and test call audio.',
   neverHeard: 'No call audio yet. Roger picks it up as soon as the call plays sound.',
   callSilent:
     'Call audio is silent. That is normal in a pause; if the others are talking, Roger is not hearing them.',
   callSilentWhileYouTalk:
-    'Call audio has been silent for a minute while you talk. If the others are talking, Roger is not hearing them: press Stop, then Start again.',
+    'Call audio has been silent for a minute while you talk. If the others are talking, Roger is not hearing them: press Stop, then Start notes again.',
   callSilentLong:
-    'Call audio has been silent for 3 minutes. If the others are talking, Roger is not hearing them: press Stop, then Start again.',
+    'Call audio has been silent for 3 minutes. If the others are talking, Roger is not hearing them: press Stop, then Start notes again.',
 } as const;
 
-const TITLES: Readonly<
-  Record<CaptureWarningKind, string | Readonly<Record<AudioSource | 'none', string>>>
-> = {
-  'no-audio': { mic: 'No audio from your mic', system: 'No call audio', none: 'No audio' },
-  'source-ended': { mic: 'Your mic stopped', system: 'Call audio stopped', none: 'Audio stopped' },
-  'helper-hung': 'Call audio stalled',
-  'mic-dead': 'Your mic is silent',
-  'call-audio-never-heard': 'No call audio',
-  'call-audio-silent': 'Call audio is silent',
-  offline: 'Transcription is offline',
-  'backup-paused': 'Audio backup paused',
-  'keyterms-rejected': 'Jargon list rejected',
-};
+/**
+ * The quiet `keyterms-rejected` warning's message (CaptureService.onWarning). CaptureSession's own
+ * text names the vendor; it stays in the session's log line and capture event.
+ */
+export const KEYTERMS_REJECTED_MESSAGE =
+  'The speech-to-text service refused the jargon list, so this meeting goes on without it. Check the list in Settings.';
 
 /**
  * A notification's title for a warning, whoever raised it: the Notifier posts every loud warning
- * in the status, M2-T10's and M2-T15's included, and macOS shows "Roger" above it.
+ * in the status, M2-T10's and M2-T15's included, and macOS shows "Roger" above it. The page's
+ * headline for the same warning (shared/captureWords.ts), so the two never disagree (sweep N1).
  */
-export function warningTitle({ kind, source }: Pick<CaptureWarning, 'kind' | 'source'>): string {
-  const title = TITLES[kind];
-  return typeof title === 'string' ? title : title[source ?? 'none'];
+export function warningTitle(warning: Pick<CaptureWarning, 'kind' | 'source'>): string {
+  return warningHeadline(warning);
 }
 
 export interface WarningChanges {

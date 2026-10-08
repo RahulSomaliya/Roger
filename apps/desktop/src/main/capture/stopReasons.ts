@@ -41,7 +41,9 @@ export type StopReason =
 
 /**
  * What the status shows after Roger stopped a recording itself. Null for a Stop someone pressed,
- * and for a stop that leaves no window to show it (quit, window-closed).
+ * and for a stop that leaves no window to show it (quit, window-closed). It is on the page, so it
+ * is plain words: `detail` is read only for `call-ended` (the call app's name), and a crash's
+ * reason ("it kept crashing: crashed") never reaches it (lifecycle.ts logs it; sweep W3).
  */
 export function stopNotice(
   reason: StopReason,
@@ -66,7 +68,7 @@ export function stopNotice(
       // stt_usage.stop_reason have it.
       return null;
     case 'renderer-gone':
-      return `Stopped at ${time} because the Roger window could not reload${detail === null ? '' : ` (${detail})`}.`;
+      return `Stopped at ${time} because the Roger window stopped working.`;
     case 'system-sleep':
       return `Stopped at ${time} because the Mac went to sleep.`;
     case 'call-ended':

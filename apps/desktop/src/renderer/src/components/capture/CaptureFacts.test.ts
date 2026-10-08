@@ -183,6 +183,35 @@ describe('CaptureFacts while recording', () => {
   });
 });
 
+describe("CaptureFacts and main's error", () => {
+  it('shows the raw text behind the plain error here, the one place it may be read', () => {
+    const html = render(
+      recording({
+        error:
+          'The speech-to-text service dropped the connection for the call audio. Roger reconnects on its own.',
+        errorDetail: 'call audio: xAI connection failed: socket hang up',
+      }),
+    );
+    // The sentence is the banner's and the header's; Details adds only what it came from.
+    expect(text(html)).toContain('Problem');
+    expect(text(html)).toContain('call audio: xAI connection failed: socket hang up');
+    expect(text(html)).not.toContain('Roger reconnects on its own');
+  });
+
+  it('keeps it after Stop, as main does until the next Start', () => {
+    const html = render({
+      ...IDLE,
+      error: 'Roger could not finish stopping these notes.',
+      errorDetail: 'database or disk is full',
+    });
+    expect(text(html)).toContain('Problemdatabase or disk is full');
+  });
+
+  it('has no problem row while main reports none', () => {
+    expect(text(render(recording()))).not.toContain('Problem');
+  });
+});
+
 describe('CaptureFacts after Stop', () => {
   it("keeps the last recording's meter and the upload, with no source rows left to read", () => {
     const html = render({ ...IDLE, meter: METER });
