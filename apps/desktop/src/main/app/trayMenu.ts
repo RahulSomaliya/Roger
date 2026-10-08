@@ -71,6 +71,9 @@ export function createTrayFormat(timeZone?: string): TrayFormat {
 export interface TrayInputs {
   /** A note is being taken (the capture phase is `recording`). */
   recording: boolean;
+  /** The recording meeting's title and start (CaptureStatus), read only while recording. */
+  recordingTitle: string | null;
+  recordingStartedMs: number | null;
   /** The capture status holds a loud warning (CaptureWarning.loud). Only read while recording. */
   loudWarning: boolean;
   nowMs: number;
@@ -103,6 +106,7 @@ export function buildTrayModel(inputs: TrayInputs): TrayModel {
   const sync = connection === null ? null : inputs.sync;
   const entries: TrayMenuEntry[] = [];
 
+  if (recording) entries.push({ kind: 'label', text: recordingText(inputs) });
   if (connection !== null) entries.push({ kind: 'label', text: nextMeetingText(inputs) });
   const reconnect = reconnectText(connection, sync, nowMs, format);
   if (reconnect !== null) entries.push({ kind: 'action', action: 'reconnect', text: reconnect });
@@ -152,10 +156,28 @@ function nextMeetingText({ events, nowMs, format }: TrayInputs): string {
     : `Next: ${title}, ${format.when(next.startMs, nowMs)}`;
 }
 
+/**
+ * "Recording: Acme renewal, 1h 23m": which meeting is being taken and for how long (gap M6), since
+ * the icon alone cannot say. The length is read at each refresh (tray.ts ticks every minute).
+ */
+function recordingText({ recordingTitle, recordingStartedMs, nowMs }: TrayInputs): string {
+  const title = recordingTitle === null ? '' : cutTitle(recordingTitle);
+  const head = title === '' ? 'Recording' : `Recording: ${title}`;
+  if (recordingStartedMs === null) return head;
+  const minutes = Math.max(0, Math.floor((nowMs - recordingStartedMs) / 60_000));
+  const length = minutes < 60 ? `${minutes}m` : `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+  return `${head}, ${length}`;
+}
+
 /** An invite with no title reads as the title the meeting will get: "Meeting at 3:30 pm". */
 function shortTitle(title: string, startMs: number, format: TrayFormat): string {
+  const cut = cutTitle(title);
+  return cut === '' ? `Meeting at ${format.time(startMs)}` : cut;
+}
+
+/** The title trimmed and cut to MAX_TITLE_CHARS code points, the ellipsis included. */
+function cutTitle(title: string): string {
   const chars = Array.from(title.trim());
-  if (chars.length === 0) return `Meeting at ${format.time(startMs)}`;
   if (chars.length <= MAX_TITLE_CHARS) return chars.join('');
   return `${chars.slice(0, MAX_TITLE_CHARS - 1).join('')}…`;
 }
