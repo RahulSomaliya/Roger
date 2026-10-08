@@ -12,6 +12,9 @@ files:
 asar: true
 npmRebuild: false
 mac:
+  # build/icon.icns is drawn by scripts/make-icons.py (the accent dot on the canvas paper). Without it
+  # the installed app wears Electron's atom on the Dock, Cmd+Tab, About and every notification.
+  icon: build/icon.icns
   category: public.app-category.productivity
   minimumSystemVersion: '14.2'
   target:
@@ -42,5 +45,5 @@ mac:
       filter:
         - tray*Template*.png
   extendInfo:
-    NSMicrophoneUsageDescription: Roger uses the microphone to transcribe what you say in meetings.
-    NSAudioCaptureUsageDescription: Roger captures system audio to transcribe what other people say on your calls.
+    NSMicrophoneUsageDescription: Roger listens through your microphone to write down what you say in meetings.
+    NSAudioCaptureUsageDescription: Roger listens to the call audio on this Mac to write down what other people say in your meetings.
