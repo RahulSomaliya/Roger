@@ -43,9 +43,20 @@ when you hit a new one.
   (redesign R9, R3).
 - `renderToStaticMarkup` escapes an apostrophe as `&#x27;`: a test helper that strips tags also
   replaces it before matching text that holds one (redesign R3).
-- The banner hides loud capture warnings on the recording meeting's own page, because the header's
-  status line says them there; both decide with `captureStatusFor` (`meeting/liveMeeting.ts`).
-  Change both in one commit, or a warning shows twice or not at all (redesign R3).
+- The banner hides loud capture warnings and the refused-lines line on the page of the meeting whose
+  `captureStatusFor` (`meeting/liveMeeting.ts`) is non-null, because its header says them there
+  (`CaptureWarnings`, `RefusedLines`). Change all three in one commit, or a warning shows twice or
+  not at all (redesign R3, R13).
+- Every error line goes through `app/describeError.ts`, which turns the API client's messages
+  ("PUT /v1/x failed: ECONNREFUSED ...") into plain words: never print `error.message` raw. It reads
+  the message shapes `main/api/http.ts` writes, so rewording those makes the page fall back to
+  "Something went wrong." (`describeError.test.ts` fails first). A preview fake that fails a request
+  goes through `fromApi` with the real "METHOD /v1/path" route, or the page shows that fallback
+  (redesign R12, R13).
+- A menu hung off one edge of its trigger leaves the window when the trigger sits at the other edge
+  (at 390 px the header's actions wrap and the more-actions list opened 142 px off screen): `Menu`
+  flips edge with `menuPlacement.ts`, and the QA script fails any `[role=menu]` outside the window
+  (redesign R13).
 - The renderer has no logger and `no-console` is an error: report an error the page shows on
   purpose nowhere with `reportError(new Error(...))` in an effect (`AppLayout`, the theme
   preference), never `console` (redesign R3).
