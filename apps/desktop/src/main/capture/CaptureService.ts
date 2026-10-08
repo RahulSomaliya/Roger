@@ -775,7 +775,15 @@ export class CaptureService {
         // of U+001C to U+001F (which the stored text keeps and Python's strip() trims), stayed an
         // invisible title here while the server named the meeting "Untitled meeting".
         const title = storedMeetingText(request.title ?? '');
-        this.title = isApiBlank(title) ? defaultMeetingTitle(new Date(startedAtMs)) : title;
+        // A blank invite is named from the INVITE's start, as the prompt card and the Recording row
+        // read it (renderer prompt/promptFormat.ts eventTitle): starting a 3:27 pm invite at 3:31
+        // must not give "Meeting at 3:27 pm" on the card and "Meeting at 3:31 pm" for the meeting.
+        // A manual Start has no event and keeps the click time.
+        const namedFrom = request.calendarEvent?.scheduledStart;
+        const nameTime = namedFrom === undefined ? startedAtMs : Date.parse(namedFrom);
+        this.title = isApiBlank(title)
+          ? defaultMeetingTitle(new Date(Number.isFinite(nameTime) ? nameTime : startedAtMs))
+          : title;
         store.createMeeting({
           id: meetingId,
           title: this.title,
