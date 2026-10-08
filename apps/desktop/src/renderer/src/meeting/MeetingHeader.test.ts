@@ -5,6 +5,8 @@ import type { Slots } from '../app/slotRegistry';
 import type { HeaderAction } from './headerAction';
 import { MeetingHeader } from './MeetingHeader';
 import { ReplaceNotesDialog } from './MeetingProblems';
+import { cssDeclarations } from '../theme/cssDeclarations';
+import { rendererSource } from '../theme/rendererSources';
 
 // No slot files: the header's own markup is under test, not what the capture slots draw in it.
 vi.mock('../app/slots', () => {
@@ -179,5 +181,16 @@ describe('the replace notes question', () => {
     expect(restore).toMatch(/<button[^>]*>Restore<\/button>/);
     expect(primaries(again)).toEqual([]);
     expect(primaries(restore)).toEqual([]);
+  });
+});
+
+describe('the Copy notes message never widens the action row', () => {
+  // At 420 px "No notes to copy yet" beside Cancel, Writing notes... and Details pushed the row to
+  // 493 px in a 404 px column. It must stay out of the row's flow.
+  it('is absolutely placed, so the buttons neither overflow nor move when it shows', () => {
+    const css = rendererSource('src/meeting/meeting.css').replace(/\/\*[\s\S]*?\*\//g, '');
+    const body = /\.meeting-copied \{([^}]*)\}/.exec(css)?.[1] ?? '';
+    const declared = new Map(cssDeclarations(`x{${body}}`).map((d) => [d.property, d.value]));
+    expect(declared.get('position')).toBe('absolute');
   });
 });
