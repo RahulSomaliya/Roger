@@ -213,4 +213,22 @@ describe('the meeting page with every region mounted', () => {
     expect(html).not.toContain('meeting-pane-button');
     expect(html.match(/role="tablist"/g)).toHaveLength(1);
   });
+
+  // R2: the save state shares the tab row (one row, no band between the tabs and the editor); the
+  // notes editors draw into it by a portal (notes/saveStatusSlot.ts).
+  it('ends the tab row with the place the open note draws its save state, and no band under it', () => {
+    fakes.state = null;
+    const html = page();
+    expect(html).toContain('class="meeting-tabbar"');
+    expect(html.indexOf('class="meeting-tabbar-status"')).toBeGreaterThan(
+      html.indexOf('role="tablist"'),
+    );
+    expect(html).not.toContain('note-editor-bar');
+  });
+
+  // D5: Copy notes lives in the more-actions menu while My notes or the AI notes are open.
+  it('offers the more-actions menu with My notes open, where Copy notes lives', () => {
+    fakes.state = null;
+    expect(page()).toContain('aria-label="More actions"');
+  });
 });

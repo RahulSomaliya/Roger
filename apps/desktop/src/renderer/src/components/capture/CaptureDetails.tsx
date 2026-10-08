@@ -3,6 +3,8 @@ import type { CaptureReport as Report, CaptureStatus } from '../../../../shared/
 import { describeError } from '../../app/describeError';
 import { meetingPhase } from '../../app/captureMeeting';
 import { useShell } from '../../app/ShellContext';
+import { meetingHours } from '../../../../shared/clock';
+import type { StoredMeeting } from '../../../../shared/meetings';
 import { captureStatusFor } from '../../meeting/liveMeeting';
 import { useMeetingView } from '../../meeting/useMeeting';
 import { type AudioBusy, GapLine, KeptAudio, RERUN_BLOCKED_WHILE_RECORDING } from './AudioKept';
@@ -150,7 +152,7 @@ export function MeetingGapLine({ meetingId }: { meetingId: string }) {
 export function MeetingCaptureDetails({ meetingId }: { meetingId: string }) {
   const { capture, captureMeeting } = useShell();
   const { status } = capture;
-  const { showHidden, setShowHidden } = useMeetingView();
+  const { showHidden, setShowHidden, meeting } = useMeetingView();
   const phase = meetingPhase(captureMeeting?.id === meetingId ? captureMeeting : null, status);
   const epoch = useReportsEpoch();
   const read = useCaptureReport(meetingId, readKey(epoch, status, phase));
@@ -213,8 +215,8 @@ export function MeetingCaptureDetails({ meetingId }: { meetingId: string }) {
   const mine = actions.state.busy?.meetingId === meetingId ? actions.state.busy.action : null;
   const showEcho = counts !== null || lines.size > 0;
   const showReport = phase === 'idle' && hasReport;
-  // A meeting from before any of this existed has nothing to show: say so rather than open an
-  // empty dialog that reads as broken.
+  // A meeting from before any of this existed has no capture report. Details still holds what the
+  // store knows (StoredFacts), never an empty dialog that reads as broken (redesign D3).
   const nothing =
     read.error === null &&
     !recording &&
@@ -258,9 +260,7 @@ export function MeetingCaptureDetails({ meetingId }: { meetingId: string }) {
         />
       ) : null}
       {showReport ? <CaptureReport report={report} /> : null}
-      {nothing ? (
-        <p className="details-empty">Nothing was kept about this meeting&apos;s capture.</p>
-      ) : null}
+      {nothing ? <StoredFacts meeting={meeting} /> : null}
       {audio === null ? null : (
         <KeptAudio
           view={audio}
@@ -282,6 +282,34 @@ export function MeetingCaptureDetails({ meetingId }: { meetingId: string }) {
         />
       )}
     </div>
+  );
+}
+
+/**
+ * What Roger's store holds about a meeting that has no capture report: the lines saved on this
+ * Mac and when it ran. The dialog always opens onto something (redesign D3); the page offers
+ * Details only for a meeting on this Mac, so `meeting` is null only in a read that just failed.
+ */
+function StoredFacts({ meeting }: { meeting: StoredMeeting | null }) {
+  if (meeting === null) {
+    return <p className="details-empty">Roger has nothing stored for this meeting.</p>;
+  }
+  const lines = meeting.segments.length;
+  return (
+    <section className="dialog-panel capture-facts" aria-label="Stored on this Mac">
+      <dl className="facts">
+        <div className="fact">
+          <dt>Saved on this Mac</dt>
+          <dd>{lines === 1 ? '1 line' : `${lines} lines`}</dd>
+        </div>
+        {meeting.endedAt === null ? null : (
+          <div className="fact">
+            <dt>Ran</dt>
+            <dd>{meetingHours(Date.parse(meeting.startedAt), Date.parse(meeting.endedAt))}</dd>
+          </div>
+        )}
+      </dl>
+    </section>
   );
 }
 

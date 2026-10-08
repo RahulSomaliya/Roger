@@ -56,7 +56,7 @@ describe('StatusLine', () => {
   it('is one line while recording: "Recording · 12m", whole minutes', () => {
     const html = line();
     expect(text(html)).toBe('Recording · 12m');
-    expect(html).toContain('aria-label="Capture status"');
+    expect(html).toContain('aria-label="Meeting status"');
     // Not a live region: it changes every 15 s and a screen reader would read it out each time.
     expect(html).not.toContain('role=');
   });
@@ -69,13 +69,23 @@ describe('StatusLine', () => {
   it('says a loud problem in words, in the status line’s place, with when it began', () => {
     const html = line({ warnings: [NO_CALL_AUDIO] });
     expect(html).toContain('role="alert"');
-    expect(text(html)).toBe(
+    expect(text(html)).toContain(
       `Roger can't hear the call · since ${formatClockTime(NO_CALL_AUDIO.since)}`,
     );
     // The editor below must not move: the line is replaced, never added to.
     expect(html).not.toContain('Recording');
     // Main's long message (what to do) is the tooltip and Details' text, not a second line.
     expect(html).toContain(`title="${NO_CALL_AUDIO.message}"`);
+  });
+
+  // R8: a tooltip is hover only. The line takes focus and shows the whole message on it too;
+  // aria-describedby hands the same text to a screen reader while the box stays closed.
+  it('takes keyboard focus and holds the full message for focus and hover, not only a tooltip', () => {
+    const html = line({ warnings: [NO_CALL_AUDIO] });
+    const id = /aria-describedby="([^"]+)"/.exec(html)?.[1];
+    expect(id).toBeDefined();
+    expect(html).toMatch(/class="problem meeting-status-problem"[^>]*tabindex="0"/);
+    expect(html).toContain(`id="${id}" class="meeting-status-full">${NO_CALL_AUDIO.message}<`);
   });
 
   it('keeps to one line when two streams have a problem: the first, and how many more', () => {

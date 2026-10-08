@@ -2,6 +2,7 @@ import { createElement, type ComponentType } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { type CaptureStatus, idleCaptureStatus } from '../../../../shared/capture';
+import type { StoredMeeting } from '../../../../shared/meetings';
 import type { CaptureMeeting } from '../captureMeeting';
 import type { Shell } from '../ShellContext';
 import type { MeetingSlotProps } from '../slotRegistry';
@@ -19,8 +20,9 @@ vi.mock('../ShellContext', () => ({
 }));
 
 // The Details container reads the meeting page's view; its echo toggle is all it takes from it.
+const view = vi.hoisted(() => ({ meeting: null as StoredMeeting | null }));
 vi.mock('../../meeting/useMeeting', () => ({
-  useMeetingView: () => ({ showHidden: false, setShowHidden: vi.fn() }),
+  useMeetingView: () => ({ showHidden: false, setShowHidden: vi.fn(), meeting: view.meeting }),
 }));
 
 const A = '5c1d7a4e-2f3b-4c8a-9e61-0d2b7f4a9c13';
@@ -166,6 +168,35 @@ describe('the Details dialog content', () => {
   it('keeps the last recording’s cost after Stop, and says so plainly for a meeting with nothing', () => {
     fakes.shell = shell(IDLE, LIVE(A));
     expect(details(A)).toContain("Roger's server");
-    expect(details(B)).toContain('Nothing was kept about this meeting');
+  });
+
+  // D3: a past meeting with no capture report still opens onto something, never an empty dialog.
+  it('holds the stored facts for a meeting with no capture report', () => {
+    view.meeting = {
+      id: B,
+      title: 'Daily standup',
+      startedAt: '2026-10-07T09:30:00.000Z',
+      endedAt: '2026-10-07T09:57:00.000Z',
+      segments: Array.from({ length: 12 }, (_, index) => ({
+        id: `s${String(index)}`,
+        meetingId: B,
+        source: 'system' as const,
+        speaker: 'them' as const,
+        startMs: index * 1000,
+        endMs: index * 1000 + 900,
+        text: 'hello',
+        confidence: 0.9,
+        words: null,
+        createdAt: '2026-10-07T09:30:10.000Z',
+      })),
+      attendees: [],
+    };
+    fakes.shell = shell(IDLE, LIVE(A));
+    const html = details(B);
+    expect(html).toContain('Saved on this Mac');
+    expect(html).toContain('12 lines');
+    expect(html).toMatch(/\d:\d\d [ap]m to \d+:\d\d [ap]m/);
+    expect(html).not.toContain('Nothing was kept');
+    view.meeting = null;
   });
 });

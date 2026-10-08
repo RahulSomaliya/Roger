@@ -13,7 +13,11 @@
   flex-direction: column;
   gap: var(--space-4);
   height: 100%;
-  /* 68ch of 16 px reading text plus its room (docs/design.md, Space). */
+  /*
+   * The column of the page grid (docs/plans/redesign-sweep.md, section 4): 760 px from 720 up, the
+   * header's title block and actions, the tab row and the panes all share its two edges. Reading
+   * text stays at 68ch inside it (--measure, on the text).
+   */
   max-width: 760px;
   margin: 0 auto;
 }
@@ -66,6 +70,32 @@
 }
 
 /*
+ * What Copy notes just did ("Notes copied"), for 3 s. Out of the row's flow, right-aligned under the
+ * buttons: beside them it widened `.meeting-actions` (flex: none, no wrap) past the column at 420 px
+ * ("No notes to copy yet" next to Cancel, Writing notes... and Details ran to 493 px in a 404 px
+ * column) and moved the buttons when it came and went. It fills the gap above the tab row, so
+ * nothing shifts either way.
+ */
+.meeting-actions {
+  position: relative;
+}
+
+.meeting-copied {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  margin: 0;
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
+  line-height: var(--leading-xs);
+  white-space: nowrap;
+}
+
+.meeting-copied:empty {
+  display: none;
+}
+
+/*
  * The status line (the meetingCaptureStatus slot). While recording it always holds one line, so
  * a loud problem that takes the line's place never moves the editor under the person's cursor
  * (docs/design.md, Traps); with nothing in it and nothing recording it takes no room.
@@ -103,9 +133,25 @@
   min-height: 0;
 }
 
-/* `.tabs` is inline-flex; as a flex item it would stretch across the page. */
-.meeting-body > .tabs {
-  align-self: flex-start;
+/*
+ * The tab row: the tabs at the left, the open note's save state at the right end (notes/
+ * saveStatusSlot.ts). One row, so no band sits between the tabs and the editor (redesign R2). The
+ * tabs set its height; the state never changes it, and a wrapped "Not saved" line is the one
+ * exception, rare and loud on purpose.
+ */
+.meeting-tabbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2) var(--space-4);
+}
+
+.meeting-tabbar-status {
+  display: flex;
+  flex: 1 1 0;
+  justify-content: flex-end;
+  min-width: 0;
 }
 
 /*
