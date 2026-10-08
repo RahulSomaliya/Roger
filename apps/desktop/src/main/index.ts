@@ -9,6 +9,7 @@ import {
   ipcMain,
   Menu,
   nativeImage,
+  nativeTheme,
   Notification,
   powerMonitor,
   powerSaveBlocker,
@@ -18,6 +19,7 @@ import {
   Tray,
   type BrowserWindow,
 } from 'electron';
+import type { AppRoute } from '../shared/ipc/app';
 import { APP_PREFERENCES } from '../shared/preferences';
 import { startKeepRunning } from './app/keepRunning';
 import { userDataOverride } from './app/userDataPath';
@@ -26,6 +28,8 @@ import type { ApiConnection } from './api/http';
 import { NotesClient } from './api/notesClient';
 import { createStreamRequest } from './api/streamRequest';
 import { VocabularyClient } from './api/vocabularyClient';
+import { aboutPanelOptions, fatalStartText } from './app/startupText';
+import { canvasColor, startAppearance } from './app/appearance';
 import { buildAppMenu } from './appMenu';
 import { CALENDAR_QUIT_TIMEOUT_MS, createCalendarRuntime } from './calendar/createCalendarRuntime';
 import { SqliteCalendarCache } from './calendar/SqliteCalendarCache';
@@ -121,6 +125,19 @@ async function main(): Promise<void> {
   }
   // Set by the window creation below; the main window's IPC registrars trust only its page.
   let window: BrowserWindow | null = null;
+  // Brings the window forward: the app menu, the prompt panel's Open Roger and a notification click.
+  const showWindow = (): void => {
+    if (window === null) return;
+    if (window.isMinimized()) window.restore();
+    window.show();
+    window.focus();
+  };
+  // Opens a route and shows the window. `navigation` is built further down (after the runtime that
+  // needs this); every caller runs long after, so the closure reads it when called.
+  const openRoute = (route: AppRoute): void => {
+    navigation.navigate(route);
+    showWindow();
+  };
   // Every Roger API client's connection (api/http.ts). Without a token each call is refused, and
   // the runtime below reports why and blocks Start.
   const apiConnection: ApiConnection = { baseUrl: config.apiUrl, token: config.apiToken ?? '' };
@@ -134,6 +151,13 @@ async function main(): Promise<void> {
     logger: logger.child({ component: 'preferences' }),
   });
   preferences.register(APP_PREFERENCES);
+  // The theme preference drives nativeTheme (the prompt panel, menus and dialogs follow) and the
+  // window's background; the window below is built after this, so it opens in the right colour.
+  startAppearance({
+    preferences,
+    nativeTheme,
+    setWindowBackground: (color) => window?.setBackgroundColor(color),
+  });
   registerPreferencesIpc({
     ipcMain,
     store: preferences,
@@ -242,6 +266,7 @@ async function main(): Promise<void> {
     userData,
     ipcMain,
     getWindow: () => window,
+    openRoute,
     logger,
   });
 
@@ -309,15 +334,22 @@ async function main(): Promise<void> {
   });
   const appMenu = buildAppMenu({
     appName: app.name,
-    open: (route) => {
-      navigation.navigate(route);
-      if (window === null) return;
-      if (window.isMinimized()) window.restore();
-      window.show();
-      window.focus();
+    open: openRoute,
+    // The page opens the microphone, so main asks it to start (a hidden window still captures).
+    startNotes: () => {
+      capture.requestStart({});
+      showWindow();
     },
+    stopNotes: () => {
+      if (capture.phase !== 'recording') return;
+      capture.stop().catch((error: unknown) => {
+        logger.error('stop from the app menu failed', { error: errorMessage(error) });
+      });
+    },
+    isPackaged: app.isPackaged,
   });
   Menu.setApplicationMenu(Menu.buildFromTemplate(appMenu));
+  app.setAboutPanelOptions(aboutPanelOptions(app.getVersion()));
 
   // [slot M4-S4b] meetings IPC
 
@@ -431,12 +463,7 @@ async function main(): Promise<void> {
     ipcMain,
     getWindow: () => window,
     // What the app menu's `open` does, for the prompt panel's "Open Roger".
-    openWindow: () => {
-      if (window === null) return;
-      if (window.isMinimized()) window.restore();
-      window.show();
-      window.focus();
-    },
+    openWindow: showWindow,
     electron: { app, powerMonitor, powerSaveBlocker, shell },
     logger: logger.child({ component: 'calendar' }),
   });
@@ -481,7 +508,12 @@ async function main(): Promise<void> {
     join(__dirname, '../preload/index.js'),
     page,
     logger.child({ component: 'window' }),
-    { lifecycle, openedAtLogin },
+    {
+      lifecycle,
+      openedAtLogin,
+      boundsPath: join(userData, 'window-bounds.json'),
+      backgroundColor: canvasColor(nativeTheme.shouldUseDarkColors),
+    },
   );
   watchWindow(lifecycle, window);
   window.on('closed', () => {
@@ -532,6 +564,6 @@ void main().catch((error: unknown) => {
   const message = errorMessage(error);
   process.stderr.write(`fatal: ${message}\n`);
   // A packaged app opened from Finder has no terminal; without this it would just vanish.
-  dialog.showErrorBox('Roger could not start', message);
+  dialog.showErrorBox('Roger could not start', fatalStartText(message));
   app.exit(1);
 });

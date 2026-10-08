@@ -6,16 +6,31 @@ export interface AppMenuOptions {
   appName: string;
   /** Opens a route in the main window and brings the window forward (main/navigation.ts). */
   open: (route: AppRoute) => void;
+  /** File > Start notes: asks the window to start (audio capture runs in the page). */
+  startNotes: () => void;
+  /** File > Stop: stops a recording; does nothing while none runs. */
+  stopNotes: () => void;
+  /**
+   * The shipped app has no Reload, Force Reload or Developer Tools: Cmd+R mid-call reloads the page
+   * that records the audio and the call is lost from that point. A development build keeps them.
+   */
+  isPackaged: boolean;
 }
 
 /**
- * The menu bar: Electron's default menus, plus "Settings…" and "Set up Roger…" in the app menu.
- * Setting a menu replaces the whole default one, so every default role is listed again: without
- * the Edit menu's roles, Cmd+C, Cmd+V and Cmd+Z do nothing in any text field on macOS, and
- * without the View menu there is no reload. Index.ts builds it with Menu.buildFromTemplate; no
- * Electron import here, so this tests under Node.
+ * The menu bar names every place (redesign sweep): Roger > Settings…, Set up Roger…; File > Start
+ * notes (Cmd+N), Stop; Go > Home (Cmd+[), Settings, Set up Roger. Setting a menu replaces the whole
+ * default one, so every default role is listed again: without the Edit menu's roles, Cmd+C, Cmd+V
+ * and Cmd+Z do nothing in any text field on macOS. Index.ts builds it with Menu.buildFromTemplate;
+ * no Electron import here, so this tests under Node.
  */
-export function buildAppMenu({ appName, open }: AppMenuOptions): MenuItemConstructorOptions[] {
+export function buildAppMenu({
+  appName,
+  open,
+  startNotes,
+  stopNotes,
+  isPackaged,
+}: AppMenuOptions): MenuItemConstructorOptions[] {
   return [
     {
       label: appName,
@@ -45,9 +60,57 @@ export function buildAppMenu({ appName, open }: AppMenuOptions): MenuItemConstru
         { role: 'quit' },
       ],
     },
-    { role: 'fileMenu' },
+    {
+      label: 'File',
+      submenu: [
+        { label: 'Start notes', accelerator: 'CmdOrCtrl+N', click: startNotes },
+        // No shortcut: ending a recording is a click, never a stray keystroke.
+        { label: 'Stop', click: stopNotes },
+        { type: 'separator' },
+        { role: 'close' },
+      ],
+    },
     { role: 'editMenu' },
-    { role: 'viewMenu' },
+    // A page is one step under Home, so Back is Home: one item, no history.
+    {
+      label: 'Go',
+      submenu: [
+        {
+          label: 'Home',
+          accelerator: 'CmdOrCtrl+[',
+          click: () => {
+            open('home');
+          },
+        },
+        {
+          label: 'Settings',
+          // Shown, not registered: Roger > Settings… owns Cmd+, and two owners would both fire.
+          accelerator: 'CmdOrCtrl+,',
+          registerAccelerator: false,
+          click: () => {
+            open('settings');
+          },
+        },
+        {
+          label: 'Set up Roger',
+          click: () => {
+            open('setup');
+          },
+        },
+      ],
+    },
+    isPackaged
+      ? {
+          label: 'View',
+          submenu: [
+            { role: 'resetZoom' },
+            { role: 'zoomIn' },
+            { role: 'zoomOut' },
+            { type: 'separator' },
+            { role: 'togglefullscreen' },
+          ],
+        }
+      : { role: 'viewMenu' },
     { role: 'windowMenu' },
   ];
 }

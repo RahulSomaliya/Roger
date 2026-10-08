@@ -1,6 +1,7 @@
 import { app, net, powerMonitor, powerSaveBlocker } from 'electron';
 import type { BackupStatus, CaptureReport, EchoStatus } from '../../shared/capture';
 import { IpcChannel } from '../../shared/ipc';
+import type { AppRoute } from '../../shared/ipc/app';
 import type { ApiClient } from '../api/ApiClient';
 import { createSystemAudio } from '../audio/system/createSystemAudio';
 import { AudioBackup } from '../backup/AudioBackup';
@@ -55,6 +56,12 @@ export interface CaptureRuntimeDeps {
   userData: string;
   ipcMain: IpcMainLike;
   getWindow: () => CaptureWindow | null;
+  /**
+   * Brings Roger's window forward on a route: what a click on a notification does (the Notifier).
+   * index.ts builds the navigator after this runtime, so it passes a closure that reads it when
+   * called, never at construction.
+   */
+  openRoute?: (route: AppRoute) => void;
   logger: Logger;
   clock?: () => number;
 }
@@ -223,6 +230,7 @@ export function createCaptureRuntime(deps: CaptureRuntimeDeps): CaptureRuntime {
   // tells `signalMonitor` when the default input is Bluetooth (setMicBluetooth, owner's D4).
   const notifier = new Notifier({
     ports: electronNotifierPorts(deps.getWindow),
+    ...(deps.openRoute === undefined ? {} : { open: deps.openRoute }),
     logger: logger.child({ component: 'notifier' }),
     clock,
   });
@@ -238,7 +246,7 @@ export function createCaptureRuntime(deps: CaptureRuntimeDeps): CaptureRuntime {
   // Every feature's warnings, not only the monitor's: M2-T10's hung helper and M2-T15's paused
   // backup reach the user the same way.
   capture.on('status', (status) => {
-    notifier.updateWarnings(status.warnings ?? []);
+    notifier.updateWarnings(status.warnings ?? [], status.meetingId);
   });
 
   // [slot M2-T14b] the echo sink, T3b's beforeFirstTick, unhide and the echo report

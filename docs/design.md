@@ -152,8 +152,7 @@ groups than inside them. Fewer containers: whitespace and 1 px `line` hairlines,
 inside a card. The window opens landscape, about 1080 × 730 (min 420 × 520): design at 1080
 first, then check 420. The page grid has three widths (Window and layout, below); the meeting
 page's column is 760 px (68ch of 16 px text plus its gutters) at every width above 720. (Changed by
-the redesign sweep, 2026-10-08: the rule was "520 × 760, design at 520 first". Until task T3 of
-`docs/plans/redesign-sweep.md` lands, `main/window.ts` still opens 520 × 760.)
+the redesign sweep, 2026-10-08: the rule was "520 × 760, design at 520 first".)
 
 Radius: `--radius-md` 8 px (buttons, inputs, chips, menu items), `--radius-lg` 12 px (menus,
 dialogs, the prompt card), `--radius-full` (the recording chip, dots). Never square and rounded
@@ -284,6 +283,14 @@ rules below are written with their pre-filled picks and change if he picks other
 - **Title bar (D1).** No system title bar row: `hiddenInset`, the traffic lights inside the header
   row. The header is the window's drag region; every control in it is `no-drag`; its left 80 px hold
   nothing but the lights.
+  The numbers main builds against (`TRAFFIC_LIGHT_POSITION` in `main/window.ts`): header row 52 px
+  high, traffic lights at x 16, y 18 (three 12 px circles 8 px apart, 52 px wide, centred on the
+  header's middle line, y 26), so the header reserves 80 px at the left. Change one side, change the
+  other. The window's `title` stays "Roger"; the page sets `document.title` per page and Electron
+  follows it.
+- **Remembered bounds.** `userData/window-bounds.json` (`main/app/windowBounds.ts`), written once a
+  move or resize rests and on close; restored only when the whole window lies inside a connected
+  display's work area, else the default above.
 - **Page grid.** Three widths: 960 px and up (the landscape window): 48 px gutter, Home, Settings and
   Set up Roger 880 px, the meeting page 760 px; 720 to 959: 32 px gutter, 720 px and 760 px; under
   720: 16 px gutter, full width. Content starts at the column's left edge; a column narrower than
