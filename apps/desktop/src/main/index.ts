@@ -4,7 +4,6 @@ import { join, resolve } from 'node:path';
 import { parseEnv } from 'node:util';
 import {
   app,
-  clipboard,
   desktopCapturer,
   dialog,
   ipcMain,
@@ -28,11 +27,7 @@ import { NotesClient } from './api/notesClient';
 import { createStreamRequest } from './api/streamRequest';
 import { VocabularyClient } from './api/vocabularyClient';
 import { buildAppMenu } from './appMenu';
-import {
-  CALENDAR_QUIT_TIMEOUT_MS,
-  createCalendarRuntime,
-  meetingAttendees,
-} from './calendar/createCalendarRuntime';
+import { CALENDAR_QUIT_TIMEOUT_MS, createCalendarRuntime } from './calendar/createCalendarRuntime';
 import { SqliteCalendarCache } from './calendar/SqliteCalendarCache';
 import { createCaptureRuntime } from './capture/createCaptureRuntime';
 import { loadConfig, readConfigFile } from './config';
@@ -326,7 +321,7 @@ async function main(): Promise<void> {
 
   // [slot M4-S4b] meetings IPC
 
-  // The sidebar's recent meetings and the meeting page read roger.sqlite, never the API: both work
+  // Home's Earlier list and the meeting page read roger.sqlite, never the API: both work
   // offline. A read after the quit hook closed the store rejects, and the page shows why.
   registerMeetingsIpc({
     ipcMain,
@@ -379,14 +374,8 @@ async function main(): Promise<void> {
     transcripts: store,
     uploads: uploader,
     recordings: capture,
-    preferences: {
-      autoGenerate: () => preferences.get('notes.autoGenerate'),
-      whenUnsure: () => preferences.get('notes.whenUnsure'),
-    },
     // The same webContents object at every call: LlmStreams tracks a window by identity.
     window: () => (window === null || window.isDestroyed() ? null : window.webContents),
-    // M4's template rule reads an invitee outside the user's domain as a client call.
-    attendees: meetingAttendees(store),
     logger: notesLogger,
   });
   // Stop keeps a meeting nobody spoke in when the windows did not save their notes in time (every
@@ -448,7 +437,7 @@ async function main(): Promise<void> {
       window.show();
       window.focus();
     },
-    electron: { app, powerMonitor, powerSaveBlocker, shell, clipboard },
+    electron: { app, powerMonitor, powerSaveBlocker, shell },
     logger: logger.child({ component: 'calendar' }),
   });
   // The call offer was built with the capture runtime, before this PromptService existed: until

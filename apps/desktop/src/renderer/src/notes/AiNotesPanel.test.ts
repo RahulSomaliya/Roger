@@ -5,7 +5,6 @@ import type {
   LlmRun,
   LocalNote,
   NoteDoc,
-  NoteTemplate,
   PendingGenerateState,
   PendingGenerateStatus,
 } from '../../../shared/notes';
@@ -35,13 +34,6 @@ const doc = (text: string): NoteDoc => ({
   content: [{ type: 'paragraph', content: [{ type: 'text', text }] }],
 });
 
-const TEMPLATES: NoteTemplate[] = [
-  { id: 'general', name: 'General', description: 'Any call.', sections: [] },
-  { id: 'client_call', name: 'Client call', description: 'Their goals.', sections: [] },
-  { id: 'standup', name: 'Standup', description: 'Done, next, blockers.', sections: [] },
-  { id: 'one_on_one', name: '1:1', description: 'Updates.', sections: [] },
-];
-
 function aiNote(overrides: Partial<LocalNote> = {}): LocalNote {
   return {
     meetingId: MEETING,
@@ -64,8 +56,8 @@ function pending(status: PendingGenerateStatus): PendingGenerateState {
   return {
     meetingId: MEETING,
     runId: NEXT_RUN,
-    templateId: status.phase === 'needs_template' ? null : 'client_call',
-    reason: 'after_stop',
+    templateId: 'client_call',
+    reason: 'button',
     createdAt: '2026-10-06T11:10:00.000Z',
     status,
   };
@@ -145,9 +137,8 @@ function state(overrides: Partial<AiNotesState> = {}): AiNotesState {
     note: null,
     stream: null,
     lastRun: { status: 'none' },
-    templates: { status: 'ready', value: TEMPLATES },
+    templates: { status: 'ready', value: [] },
     confirm: null,
-    picker: null,
     busy: null,
     cancelling: false,
     actionError: null,
@@ -156,100 +147,92 @@ function state(overrides: Partial<AiNotesState> = {}): AiNotesState {
 }
 
 const ACTIONS: AiNotesPanelActions = {
-  openPicker: () => undefined,
-  closePicker: () => undefined,
-  pick: () => Promise.resolve(true),
   generate: () => Promise.resolve(true),
-  regenerate: () => Promise.resolve(true),
-  restorePrevious: () => Promise.resolve(true),
-  confirmAction: () => Promise.resolve(true),
-  dismissConfirm: () => undefined,
   cancel: () => undefined,
   dismissFailure: () => undefined,
   dismissError: () => undefined,
   reload: () => undefined,
-  reloadTemplates: () => undefined,
   reloadRun: () => undefined,
 };
 
-function render(given: AiNotesState, suggested: string | null = null): string {
+function render(given: AiNotesState): string {
   return renderToStaticMarkup(
     createElement(
       CitationNavigatorProvider,
       null,
-      createElement(AiNotesView, { meetingId: MEETING, state: given, actions: ACTIONS, suggested }),
+      createElement(AiNotesView, { meetingId: MEETING, state: given, actions: ACTIONS }),
     ),
   ).replaceAll('<!-- -->', '');
 }
 
 describe('AiNotesView', () => {
-  it('offers Generate when there are no AI notes and nothing is pending', () => {
+  it('has no empty state and no action of its own to start notes: the header owns Write notes', () => {
+    // The tab exists only once notes exist, a generate is pending or a run failed
+    // (aiNotesTabExists); a stand-in for the state before that draws nothing.
     const html = render(state());
-    expect(html).toMatch(/^<div class="ai-notes">/);
-    expect(html).toContain('No AI notes yet');
-    expect(html).toContain('>Generate notes</button>');
-    expect(html).not.toContain('data-editor');
+    expect(html).toBe('<div class="ai-notes"></div>');
+    for (const gone of [
+      'No AI notes yet',
+      'Generate notes',
+      'Which kind of call',
+      'template-picker',
+      'Regenerate',
+      'Restore previous notes',
+      'ai-notes-bar',
+      'ai-notes-meta',
+      'empty-state',
+    ]) {
+      expect(html, gone).not.toContain(gone);
+    }
   });
 
-  it('shows the template picker the user opened, in place of the empty state', () => {
-    const generate = render(state({ picker: 'generate' }), 'client_call');
-    expect(generate).toContain('>Which kind of call was this?</p>');
-    expect(generate).toContain('Roger writes the AI notes in the shape of the call.');
-    expect(generate).toContain('Suggested');
-    expect(generate).toContain('>Cancel</button>');
-    expect(generate).not.toContain('No AI notes yet');
+  it('says nothing while main answers, and why it could not open when it did not', () => {
+    expect(render(state({ status: 'loading' }))).toBe(
+      '<div class="ai-notes" aria-busy="true"></div>',
+    );
 
-    const regenerate = render(state({ note: aiNote(), picker: 'regenerate' }));
-    expect(regenerate).toContain('>Regenerate as which kind of call?</p>');
-    expect(regenerate).toContain('Restore previous notes brings them back.');
+    const failed = render(state({ status: 'failed', loadError: 'database closed' }));
+    expect(failed).toMatch(/<div class="problem" role="alert"><svg/);
+    expect(failed).toContain('Roger could not open the AI notes: database closed');
+    expect(failed).toContain('>Try again</button>');
   });
 
-  it('asks which kind of call it was, with Not now', () => {
-    const html = render(state({ pending: pending({ phase: 'needs_template' }) }), 'standup');
-    expect(html).toContain('>Which kind of call was this?</p>');
-    expect(html.match(/class="template-option[ "]/g)).toHaveLength(4);
-    // Roger could not tell at Stop: the picker suggests nothing of its own here.
-    expect(html).not.toContain('Suggested');
-    expect(html).toContain('>Not now</button>');
-    expect(html).not.toContain('No AI notes yet');
-  });
-
-  it('says what a pending generate waits for, with Cancel', () => {
+  it('says what a pending generate waits for, and leaves Cancel to the header', () => {
     const html = render(
       state({ pending: pending({ phase: 'waiting_for_lines', waitingLines: 12 }) }),
     );
-    // The line and the Cancel that ends its wait share the bar.
     expect(html).toContain(
-      '<div class="ai-notes-bar"><div class="ai-notes-bar-text"><p class="ai-notes-progress" role="status">Notes will generate when 12 lines finish uploading.</p></div><div class="ai-notes-actions"><button type="button" class="note-button">Cancel</button></div></div>',
+      '<p class="ai-notes-waiting" role="status">Roger will write the notes when 12 lines finish uploading.</p>',
     );
-    expect(html).not.toContain('Generate notes');
+    expect(html).not.toContain('Cancel');
+    expect(html).not.toContain('Stop');
   });
 
-  it("streams a run's lines over the hidden, read-only editor", () => {
+  it("streams a run's lines over the hidden, read-only editor, and says nothing of the run itself", () => {
     const html = render(
       state({ note: aiNote(), pending: pending({ phase: 'running' }), stream: LIVE }),
     );
-    expect(html).toContain(
-      '<p class="ai-notes-progress ai-notes-progress-running" role="status">Writing your notes...</p>',
-    );
+    // "Writing notes…" is the header's button; saying it here too would say it twice.
+    expect(html).not.toContain('Writing notes');
+    expect(html).not.toContain('ai-notes-waiting');
     expect(html).toContain('<div class="ai-notes-stream ai-notes-stream-live" aria-busy="true">');
     expect(html).toContain('<h2>Their goals</h2>');
     expect(html).toContain('<h2>Decisions</h2>');
     expect(html).toContain('<li><p>Finance needs BI exports before rollout ');
     expect(html).toContain('aria-label="Show the transcript at 03:12"');
-    expect(html).toContain('class="citation-chip citation-chip-weak"');
+    // A flagged line marks itself with the word "check", on the shared chip.
+    expect(html).toContain('<span class="chip-flag">check</span>');
     expect(html).toContain('<h2>From your notes</h2><p><em>Not said on the call</em></p>');
     expect(html).toContain('<li><p>Ask about the Q3 renewal date</p></li>');
     // The old notes stay mounted under the lines, so nothing typed is lost, and nobody types.
     expect(html).toContain(
       '<div class="ai-notes-editor" hidden=""><div data-editor="ai" data-label="AI notes" data-read-only="true"></div></div>',
     );
-    expect(html).toContain('>Stop</button>');
-    expect(html).toContain('Removed lines (1)');
-    expect(html).not.toContain('Regenerate');
+    expect(html).not.toContain('>Stop</button>');
+    expect(html).toContain('1 line left out');
   });
 
-  it('keeps the partial notes under the error banner, with Retry', () => {
+  it('keeps the partial notes under the problem line, with Try again', () => {
     const failed: AiNotesStreamView = {
       ...LIVE,
       phase: 'failed',
@@ -265,14 +248,29 @@ describe('AiNotesView', () => {
         }),
       }),
     );
+    // An icon and words, never a red or tinted box (docs/design.md, Problem line).
     expect(html).toMatch(
-      /<div class="error ai-notes-failure" role="alert"><p class="ai-notes-failure-title">The AI service could not write the notes\.<\/p><p class="ai-notes-failure-detail">Provider returned 503\.<\/p>/,
+      /<div class="problem ai-notes-failure" role="alert"><svg[^>]*><[^]*<\/svg><div class="problem-text"><p class="ai-notes-failure-title">The AI service could not write the notes\.<\/p><p class="ai-notes-failure-detail">Provider returned 503\.<\/p>/,
     );
-    expect(html).toContain('>Retry</button>');
-    expect(html).toContain('>Dismiss</button>');
+    expect(html).not.toMatch(/class="(?:[^"]* )?(?:error|notice)[" ]/);
+    expect(html).toMatch(/data-variant="secondary" data-size="sm">Try again<\/button>/);
+    expect(html).not.toContain('>Retry<');
+    expect(html).toMatch(/data-variant="ghost" data-size="sm">Dismiss<\/button>/);
+    expect(html).not.toContain('data-variant="primary"');
     expect(html).toContain('<div class="ai-notes-stream ai-notes-stream-partial">');
     expect(html).toContain('Written before the run stopped. Not saved.');
     expect(html).toContain('Finance needs BI exports before rollout');
+  });
+
+  it('shows Try again as busy, not disabled, while it starts', () => {
+    const html = render(
+      state({
+        busy: 'generate',
+        pending: pending({ phase: 'failed', code: 'llm_provider_error', message: 'x' }),
+      }),
+    );
+    expect(html).toMatch(/aria-disabled="true">Trying again…<\/button>/);
+    expect(html).not.toContain(' disabled=');
   });
 
   it('offers Cancel, not Dismiss, for a failed generate main tries again by itself', () => {
@@ -281,50 +279,52 @@ describe('AiNotesView', () => {
         pending: pending({
           phase: 'failed',
           code: 'internal_error',
-          message: 'Roger could not generate the notes. It will try again.',
+          message: 'Roger could not write the notes. It will try again.',
         }),
       }),
     );
     expect(html).toContain(
-      '<p class="ai-notes-failure-title">Roger could not generate the notes.</p><p class="ai-notes-failure-detail">It will try again.</p>',
+      '<p class="ai-notes-failure-title">Roger could not write the notes.</p><p class="ai-notes-failure-detail">It will try again.</p>',
     );
-    expect(html).toContain('>Retry</button>');
+    expect(html).toContain('>Try again</button>');
     expect(html).toContain('>Cancel</button>');
     expect(html).not.toContain('>Dismiss</button>');
   });
 
-  it('shows a cancelled run as a notice, not an error', () => {
+  it('shows a cancelled run as a quiet line, not a problem', () => {
     const cancelled: AiNotesStreamView = {
       ...LIVE,
       phase: 'cancelled',
-      error: { code: 'cancelled', message: 'Notes generation was cancelled.' },
+      error: { code: 'cancelled', message: 'Writing the notes was cancelled.' },
     };
     const html = render(state({ note: aiNote(), stream: cancelled }));
-    expect(html).toContain('<div class="notice ai-notes-failure" role="status">');
-    expect(html).toContain('Notes generation was cancelled.');
-    expect(html).not.toContain('Retry');
+    expect(html).toContain('<div class="problem ai-notes-failure" role="status">');
+    expect(html).toContain('Writing the notes was cancelled.');
+    expect(html).not.toContain('Try again');
     expect(html).toContain('data-read-only="false"');
   });
 
-  it('shows the saved notes with their template, lines to check, removed lines and actions', () => {
+  it('shows the saved notes and the lines left out, closed, with no meta line or action bar', () => {
     const html = render(
       state({
         note: aiNote(),
         lastRun: { status: 'ready', runId: RUN, run: run() },
       }),
     );
-    expect(html).toContain('<p class="ai-notes-meta">Client call template, 2 lines to check</p>');
-    expect(html).toContain('>Regenerate</button>');
-    expect(html).toContain('>Restore previous notes</button>');
     expect(html).toContain(
       '<div class="ai-notes-editor"><div data-editor="ai" data-label="AI notes" data-read-only="false"></div></div>',
     );
-    expect(html).toContain('<summary>Removed lines (2)</summary>');
+    expect(html).toContain('<summary>2 lines left out</summary>');
+    // The closed disclosure holds the list, not an intro paragraph.
+    expect(html).not.toContain('Every AI line links');
     expect(html).toContain(
       '<span class="ai-notes-removed-text">Everyone agreed it went well</span> <span class="ai-notes-removed-reason">(cited no transcript line)</span>',
     );
     expect(html).toContain('(cited lines that are not in the transcript)');
-    expect(html).not.toContain('No AI notes yet');
+    // The menu names the template and a flagged line marks itself: no "template, 2 lines to check".
+    expect(html).not.toContain('template');
+    expect(html).not.toContain('to check');
+    expect(html).not.toContain('<details open');
   });
 
   it('says when the run behind the notes cannot be read, with Try again', () => {
@@ -335,50 +335,29 @@ describe('AiNotesView', () => {
       }),
     );
     expect(html).toContain(
-      'Roger could not read the run that wrote these notes (Roger is offline), so it cannot list the lines it removed.',
+      'Roger could not read the run that wrote these notes (Roger is offline), so it cannot list the lines it left out.',
     );
     expect(html).toContain('>Try again</button>');
   });
 
-  it('asks before replacing AI notes edited since their run', () => {
-    const regenerate = render(
+  it('draws no question over edited notes: the header asks (ReplaceNotesDialog)', () => {
+    const html = render(
       state({
         note: aiNote({ dirty: true }),
         confirm: { action: 'regenerate', templateId: 'standup' },
       }),
     );
-    expect(regenerate).toContain('Replace your edited AI notes?');
-    expect(regenerate).toContain('Restore previous notes brings this version back');
-    expect(regenerate).toContain('>Regenerate as Standup</button>');
-    expect(regenerate).toContain('>Keep my edits</button>');
-
-    const restore = render(
-      state({ note: aiNote({ dirty: true }), confirm: { action: 'restore' } }),
-    );
-    expect(restore).toContain('Replace your edited AI notes with the previous version?');
-    expect(restore).toContain('no run holds your edits');
-    expect(restore).toContain('>Restore previous notes</button>');
+    expect(html).not.toContain('Replace your edited AI notes');
+    expect(html).not.toContain('Keep my edits');
   });
 
-  it('says why it could not open, or why an action failed', () => {
-    const failed = render(state({ status: 'failed', loadError: 'database closed' }));
-    expect(failed).toContain('Roger could not open the AI notes: database closed');
-    expect(failed).toContain('>Try again</button>');
-    expect(render(state({ status: 'loading' }))).toContain('Opening the AI notes...');
-
+  it("shows why Try again or Cancel failed, as a problem line: the header's session cannot see it", () => {
     const refused = render(
-      state({ note: aiNote(), actionError: 'Roger could not start the notes: busy' }),
+      state({ note: aiNote(), actionError: 'Roger could not start writing the notes: busy' }),
     );
-    expect(refused).toContain('<div class="error ai-notes-error" role="alert">');
-    expect(refused).toContain('Roger could not start the notes: busy');
-  });
-
-  it('waits on Stop while main stops the run', () => {
-    const html = render(
-      state({ note: aiNote(), pending: pending({ phase: 'running' }), cancelling: true }),
-    );
-    expect(html).toMatch(
-      /<button type="button" class="note-button" disabled="">Stopping\.\.\.<\/button>/,
-    );
+    expect(refused).toMatch(/<div class="problem" role="alert"><svg/);
+    expect(refused).toContain('Roger could not start writing the notes: busy');
+    expect(refused).toContain('>Dismiss</button>');
+    expect(refused).not.toContain('class="error');
   });
 });

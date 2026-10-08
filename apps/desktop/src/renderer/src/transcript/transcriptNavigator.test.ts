@@ -160,7 +160,7 @@ class FakeLine implements RevealLine {
 
 /**
  * The chip that had keyboard focus when it was pressed, as the page's `activeElement`: it has a
- * box until the page hides the pane it sits in (a narrow window showing the transcript instead).
+ * box until the page hides the pane it sits in (the transcript tab replacing the notes or chat tab).
  */
 class FakeChip {
   shown = true;
@@ -228,13 +228,17 @@ function fakeLog(count: number, scrollTop = 0): FakeLog {
 }
 
 /**
- * The navigator over one transcript, with a page that records when it shows the transcript. A
- * narrow page shows one pane at a time, so showing the transcript hides the chip's pane.
+ * The navigator over one transcript, with a page that records when it shows the transcript. The
+ * meeting page shows one tab at a time, so from the notes or chat tab (`'tab switch'`) showing the
+ * transcript hides the chip's pane; `'same view'` (the default) keeps the chip in view.
  */
-function navigatorOver(log: FakeLog, page: 'wide' | 'narrow' = 'wide'): CitationNavigator {
+function navigatorOver(
+  log: FakeLog,
+  page: 'same view' | 'tab switch' = 'same view',
+): CitationNavigator {
   return createCitationNavigator({ current: () => log.transcript }, () => {
     log.steps.push('show transcript');
-    if (page === 'narrow') log.chip.shown = false;
+    if (page === 'tab switch') log.chip.shown = false;
   });
 }
 
@@ -247,7 +251,7 @@ describe('reveal', () => {
     const log = fakeLog(20);
 
     expect(navigatorOver(log).reveal(['removed-1', 'removed-2'])).toBe('not_loaded');
-    // Nothing moved: following goes on, a narrow page keeps showing the notes, nothing is marked.
+    // Nothing moved: following goes on, the open tab stays open, nothing is marked.
     expect(log.steps).toEqual([]);
     expect(log.cited()).toEqual([]);
   });
@@ -269,7 +273,7 @@ describe('reveal', () => {
   it('moves keyboard focus to the log when showing the transcript hid the chip', () => {
     const log = fakeLog(20, 300);
 
-    expect(navigatorOver(log, 'narrow').reveal(['s6'])).toBe('shown');
+    expect(navigatorOver(log, 'tab switch').reveal(['s6'])).toBe('shown');
     // Left on a chip in a hidden pane, focus would fall to <body>, and the next Tab would start
     // over at the top of the page.
     expect(log.steps).toEqual([
@@ -284,7 +288,7 @@ describe('reveal', () => {
   it('leaves keyboard focus on a chip that stays in view', () => {
     const log = fakeLog(20, 300);
 
-    navigatorOver(log, 'wide').reveal(['s6']);
+    navigatorOver(log).reveal(['s6']);
     expect(log.steps.filter((step) => step.startsWith('focus'))).toEqual([]);
   });
 
@@ -348,7 +352,7 @@ function ruleIn(css: string, selector: string, file: string): Map<string, string
   return new Map(cssDeclarations(body).map(({ property, value }) => [property, value]));
 }
 
-/** A length in px: the first one of a shorthand such as `padding: 6px 14px`. */
+/** A length in px: the first one of a value such as `height: 32px`. */
 function px(rule: Map<string, string>, property: string): number {
   const value = /^(\d+(?:\.\d+)?)px\b/.exec(rule.get(property) ?? '')?.[1];
   if (value === undefined) throw new Error(`${property} is not a length in px`);
@@ -362,18 +366,19 @@ describe('transcriptNavigator.css', () => {
       '.jump-to-live',
       'transcript.css',
     );
-    const root = ruleIn(rendererSource('src/styles.css'), ':root', 'styles.css');
+    // The pill is a small button (styles.css), whose height is its size.
+    const smallButton = ruleIn(
+      rendererSource('src/styles.css'),
+      ".btn[data-size='sm']",
+      'styles.css',
+    );
     const room = ruleIn(
       rendererSource('src/transcript/transcriptNavigator.css'),
       '.live-transcript:has(> .jump-to-live) > .live-transcript-lines',
       'transcriptNavigator.css',
     );
-    // The pill's top, up from the log's bottom: its offset, its block padding twice, and its line
-    // (`font: inherit`, so the root's unitless line height times its own font size).
-    const lineHeight = Number(root.get('line-height'));
-    expect(lineHeight).toBeGreaterThan(0);
-    const pillTop =
-      px(pill, 'bottom') + 2 * px(pill, 'padding') + px(pill, 'font-size') * lineHeight;
+    // The pill's top, up from the log's bottom: its offset plus its height.
+    const pillTop = px(pill, 'bottom') + px(smallButton, 'height');
     // Scrolled to its end, the log's last line sits the room above its bottom: clear of the pill.
     expect(px(room, 'padding-bottom') - pillTop).toBeGreaterThanOrEqual(6);
   });

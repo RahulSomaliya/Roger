@@ -11,7 +11,7 @@ import { parsePromptActionRequest, registerPromptIpc, type PromptPanelWindow } f
 const PROMPT_PANEL = 9;
 const MAIN_PAGE = 7;
 
-const EMPTY: PromptPanelState = { cards: [], recording: false, noticeEnabled: true };
+const EMPTY: PromptPanelState = { cards: [], recording: false, recordingTitle: null };
 
 type Handler = (event: SenderEvent, payload: unknown) => unknown;
 
@@ -159,8 +159,8 @@ describe('parsePromptActionRequest', () => {
       { cardId: 'prompt-2', action: 'join_and_take_notes', eventId: 'e1' },
     ],
     [
-      { cardId: 'prompt-3', action: 'copy_notice', eventId: 'ignored' },
-      { cardId: 'prompt-3', action: 'copy_notice' },
+      { cardId: 'prompt-3', action: 'dismiss', eventId: 'ignored' },
+      { cardId: 'prompt-3', action: 'dismiss' },
     ],
     [
       { cardId: 'prompt-3', action: 'dismiss' },
@@ -180,6 +180,8 @@ describe('parsePromptActionRequest', () => {
     [{ cardId: '', action: 'dismiss' }, 'cardId is not a card id'],
     [{ cardId: 'x'.repeat(65), action: 'dismiss' }, 'cardId is not a card id'],
     [{ cardId: 'prompt-1', action: 'start' }, 'action is not a prompt action'],
+    // Copy notice left the panel with the redesign: a stale page must not reach the service.
+    [{ cardId: 'prompt-1', action: 'copy_notice' }, 'action is not a prompt action'],
     [{ cardId: 'prompt-1', action: 'join_and_take_notes' }, 'eventId is not an event id'],
     [{ cardId: 'prompt-1', action: 'take_notes', eventId: 7 }, 'eventId is not an event id'],
     [

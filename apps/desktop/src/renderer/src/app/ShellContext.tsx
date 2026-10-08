@@ -1,4 +1,5 @@
 import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from 'react';
+import type { StartCaptureRequest } from '../../../shared/capture';
 import { useCapture, type CaptureView } from '../state/useCapture';
 import { captureMeetingAfter, type CaptureMeeting } from './captureMeeting';
 import { describeError } from './describeError';
@@ -18,12 +19,17 @@ export interface Shell {
    * starts. Whether it is recording: meetingPhase (captureMeeting.ts), never main's phase alone.
    */
   readonly captureMeeting: CaptureMeeting | null;
-  /** "New note": starts a recording and, once it records, opens its meeting. */
-  readonly startNewNote: () => void;
+  /**
+   * Start notes: starts a recording and, once it records, opens its meeting. With a `request`
+   * (a calendar meeting's title and event, startRequestForEvent) it starts that meeting's notes;
+   * without, a blank note. Home's hero button and each Today row call this one function, so a
+   * start that fails reaches the user the same way from both (`actionError`, in the banner).
+   */
+  readonly startNewNote: (request?: StartCaptureRequest) => void;
   /** Stops the recording. */
   readonly stopRecording: () => void;
   /**
-   * Why the last New note or Stop failed before main could answer (an IPC rejection), or null.
+   * Why the last Start notes or Stop failed before main could answer (an IPC rejection), or null.
    * Errors main reports are in `capture.status.error`; BannerSlot shows both.
    */
   readonly actionError: string | null;
@@ -55,21 +61,24 @@ export function ShellProvider({ route, navigate, children }: ShellProviderProps)
 
   const [actionError, setActionError] = useState<string | null>(null);
 
-  const startNewNote = useCallback(() => {
-    setActionError(null);
-    const run = async (): Promise<void> => {
-      await start();
-      // start() resolves after the microphone started, or after main refused or the microphone
-      // failed (both shown by the banner); only a recording opens the meeting.
-      const now = await window.roger.getCaptureStatus();
-      if (now.phase === 'recording' && now.meetingId !== null) {
-        navigate({ name: 'meeting', meetingId: now.meetingId });
-      }
-    };
-    run().catch((error: unknown) => {
-      setActionError(`Roger could not start recording: ${describeError(error)}`);
-    });
-  }, [start, navigate]);
+  const startNewNote = useCallback(
+    (request?: StartCaptureRequest) => {
+      setActionError(null);
+      const run = async (): Promise<void> => {
+        await start(request);
+        // start() resolves after the microphone started, or after main refused or the microphone
+        // failed (both shown by the banner); only a recording opens the meeting.
+        const now = await window.roger.getCaptureStatus();
+        if (now.phase === 'recording' && now.meetingId !== null) {
+          navigate({ name: 'meeting', meetingId: now.meetingId });
+        }
+      };
+      run().catch((error: unknown) => {
+        setActionError(`Roger could not start notes: ${describeError(error)}`);
+      });
+    },
+    [start, navigate],
+  );
 
   const stopRecording = useCallback(() => {
     setActionError(null);

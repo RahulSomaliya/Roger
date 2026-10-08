@@ -128,8 +128,8 @@ export interface NotesApi {
   resolveNoteConflict(request: ResolveNoteConflictRequest): Promise<LocalNote>;
   listNoteTemplates(): Promise<NoteTemplate[]>;
   /**
-   * The Generate button, Retry, or the answer to "Which kind of call was this?". A pending
-   * generate that has not failed (waiting for a template, lines or notes) takes this template and
+   * Write notes, Write again as, or Retry. A pending generate that has not failed (waiting for
+   * lines or notes) takes this template and
    * keeps its run id and reason: an attempt may already have reached the API, and a new id would
    * start a second paid run. A failed one, or none, gets a new run id with reason `button`: the
    * API replays a finished run's result to a re-sent id, the same failure again. Rejects while a

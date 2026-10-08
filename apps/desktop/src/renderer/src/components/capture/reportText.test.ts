@@ -84,17 +84,19 @@ describe('audioNote', () => {
     expect(note?.canRerun).toBe(false);
   });
 
-  it('says kept for a re-run, and counts the gaps still to fill', () => {
+  it('says what is not transcribed yet, in the naming list’s words', () => {
     const note = audioNote(backup({ keptForRerun: true }), 2, now);
     expect(note?.text).toBe(
-      `Audio kept for a re-run until ${date} (12.4 MB): 2 gaps are not filled yet.`,
+      `Audio kept on this Mac until ${date} (12.4 MB). 2 parts are not transcribed yet.`,
     );
     expect(note?.canRerun).toBe(true);
     expect(note?.canDelete).toBe(true);
   });
 
-  it('reads one gap in the singular', () => {
-    expect(audioNote(backup({ keptForRerun: true }), 1, now)?.text).toContain('1 gap is not');
+  it('reads one part in the singular', () => {
+    expect(audioNote(backup({ keptForRerun: true }), 1, now)?.text).toContain(
+      '1 part is not transcribed yet',
+    );
   });
 
   it('keeps the audio without a date while main names none', () => {
@@ -110,25 +112,25 @@ describe('audioNote', () => {
     expect(note?.canRerun).toBe(false);
   });
 
-  it('warns when the backup paused or failed, in main’s words when it has them', () => {
+  it('says when the backup paused or failed, in main’s words when it has them', () => {
     const paused = audioNote(backup({ state: 'paused', message: 'Disk is nearly full.' }), 0, now);
-    expect(paused).toMatchObject({ tone: 'warn', text: 'Disk is nearly full.' });
+    expect(paused).toMatchObject({ text: 'Disk is nearly full.' });
     expect(audioNote(backup({ state: 'paused', message: null }), 0, now)?.text).toContain('paused');
     const failed = audioNote(
       backup({ state: 'error', message: 'Roger could not write it' }),
       0,
       now,
     );
-    expect(failed).toMatchObject({ tone: 'warn', text: 'Roger could not write it' });
+    expect(failed).toMatchObject({ text: 'Roger could not write it' });
   });
 
-  it('says the audio is gone, and that its gaps can no longer be re-run', () => {
+  it('says the audio is gone, and that its parts can no longer be transcribed again', () => {
     const gone = audioNote(backup({ state: 'deleted', bytes: 0, keepUntil: null }), 0, now);
     expect(gone?.text).toBe('This meeting’s audio is deleted. Its lines stay.');
     expect(gone?.canDelete).toBe(false);
     const withGaps = audioNote(backup({ state: 'deleted', bytes: 0, keepUntil: null }), 3, now);
     expect(withGaps?.text).toBe(
-      'This meeting’s audio is deleted. Its lines stay, and its 3 unfilled gaps cannot be re-run.',
+      'This meeting’s audio is deleted. Its lines stay, and its 3 untranscribed parts cannot be transcribed again.',
     );
   });
 
@@ -149,23 +151,23 @@ describe('describeStopReason', () => {
 });
 
 describe('describeGap', () => {
-  it('gives the span, the stream, why audio was lost, and where the re-run stands', () => {
+  it('gives the span, the stream, why audio was lost, and where transcribing it again stands', () => {
     expect(describeGap(gap())).toEqual({
-      span: '00:01:01 to 00:02:05',
-      source: 'Call audio (them)',
+      span: '1:01 to 2:05',
+      source: 'Call audio',
       reason: 'the Mac was offline',
       status: 'waiting',
-      statusText: 'Waiting for a re-run',
+      statusText: 'Waiting to be transcribed again',
     });
   });
 
-  it('says a recovered gap was filled, and a failed re-run why, so it can be tried again', () => {
+  it('says a recovered gap was transcribed again, and a failure why, so it can be tried again', () => {
     const recovered = describeGap(gap({ recoveredAt: '2026-10-07T10:30:00.000Z' }));
     expect(recovered.status).toBe('recovered');
-    expect(recovered.statusText).toMatch(/^Filled by a re-run at /);
+    expect(recovered.statusText).toMatch(/^Transcribed again at /);
     const failed = describeGap(gap({ recoverError: 'the audio for it is gone' }));
     expect(failed.status).toBe('failed');
-    expect(failed.statusText).toBe('Re-run failed: the audio for it is gone');
+    expect(failed.statusText).toBe('Transcribing again failed: the audio for it is gone');
   });
 
   it.each<[CaptureGapReason, string]>([
@@ -180,15 +182,15 @@ describe('describeGap', () => {
 });
 
 describe('summarizeGaps', () => {
-  it('counts the gaps, and those a re-run filled', () => {
+  it('counts the gaps, and those transcribed again', () => {
     expect(summarizeGaps([])).toBe('No gaps: Roger recorded no audio it failed to transcribe.');
-    expect(summarizeGaps([gap()])).toBe('1 gap, none filled yet.');
+    expect(summarizeGaps([gap()])).toBe('1 gap, none transcribed again yet.');
     expect(summarizeGaps([gap({ recoveredAt: 'x' }), gap({ id: 'g2' })])).toBe(
-      '2 gaps, 1 filled by a re-run.',
+      '2 gaps, 1 transcribed again.',
     );
-    expect(summarizeGaps([gap({ recoveredAt: 'x' })])).toBe('1 gap, filled by a re-run.');
+    expect(summarizeGaps([gap({ recoveredAt: 'x' })])).toBe('1 gap, transcribed again.');
     expect(summarizeGaps([gap({ recoveredAt: 'x' }), gap({ id: 'g2', recoveredAt: 'y' })])).toBe(
-      '2 gaps, all filled by a re-run.',
+      '2 gaps, all transcribed again.',
     );
   });
 });

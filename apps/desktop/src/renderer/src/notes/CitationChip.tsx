@@ -14,6 +14,10 @@ import { citationAttrsOf } from './citationNode';
  * the meeting page's one navigator (transcript/transcriptNavigator.ts) to show those lines; the
  * chip never scrolls the transcript itself. When none of them is in the transcript any more (echo
  * removal, a re-run), the navigator says `not_loaded` and the chip says "Line removed".
+ *
+ * The chip is the shared `.chip` (styles.css: `fill`, `ink-muted`, 12 px tabular time). A line the
+ * model flagged adds the word "check": the word says it, never a colour. `citation-chip` stays
+ * beside it as the hook for the editor's `stopEvent` and for QA.
  */
 
 export interface CitationChipButtonProps {
@@ -26,11 +30,7 @@ export interface CitationChipButtonProps {
 /** The chip as drawn: a button, so it works with the keyboard and in read-only notes. */
 export function CitationChipButton({ attrs, removed, onReveal }: CitationChipButtonProps) {
   const weak = attrs.support === 'weak';
-  const className = [
-    'citation-chip',
-    weak ? 'citation-chip-weak' : null,
-    removed ? 'citation-chip-removed' : null,
-  ]
+  const className = ['chip', 'citation-chip', removed ? 'citation-chip-removed' : null]
     .filter(Boolean)
     .join(' ');
   const where = `Show the transcript at ${attrs.label}`;
@@ -43,9 +43,9 @@ export function CitationChipButton({ attrs, removed, onReveal }: CitationChipBut
     <button type="button" className={className} aria-label={label} title={label} onClick={onReveal}>
       <span className="citation-chip-time">{attrs.label}</span>
       {removed ? (
-        <span className="citation-chip-flag">Line removed</span>
+        <span className="chip-flag">Line removed</span>
       ) : weak ? (
-        <span className="citation-chip-flag">check this</span>
+        <span className="chip-flag">check</span>
       ) : null}
     </button>
   );

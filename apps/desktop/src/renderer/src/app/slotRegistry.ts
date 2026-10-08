@@ -22,27 +22,34 @@ export interface MeetingSlotProps {
 export interface SlotPropsByName {
   /** Above every page, the setup route included: M2's capture warnings. */
   banner: NoProps;
-  /** Home's sections and cards: M2's kept-audio card, M5's Today. */
-  home: NoProps;
   /** Settings sections, each with its own heading: M3's jargon list, M4's notes, M5's calendar. */
   settings: NoProps;
   /** The full-window setup route: M2's permission setup. */
   setup: NoProps;
-  /** Meeting page: a notice above the meeting (M5's calendar notice). */
+  /** Meeting page: lines under the header (M5's consent notice, M2's refused lines and resume). */
   meetingBanner: MeetingSlotProps;
-  /** Meeting page: capture status (M2-T20a). */
+  /**
+   * Meeting page: the header's status line ("Recording · 12m", or a loud problem in its place).
+   * It keeps one line while recording, so keep it to one line (meeting/meeting.css).
+   */
   meetingCaptureStatus: MeetingSlotProps;
-  /** Meeting page: the note about this meeting's kept audio (M2-T20b). */
+  /** Meeting page: a note under the header about this meeting's audio (the gap line). */
   meetingAudioNote: MeetingSlotProps;
-  /** Meeting page: the capture report after Stop (M2-T20b). */
+  /**
+   * Meeting page: the content of the Details dialog (the capture report, sources, counts, echo
+   * lines, kept audio). Mounted only while the dialog is open.
+   */
   meetingCaptureReport: MeetingSlotProps;
-  /** Meeting page: the transcript (M3-T9's live transcript panel). */
+  /** Meeting page: the "Transcript" tab (M3-T9's live transcript panel). */
   meetingTranscript: MeetingSlotProps;
   /** Meeting page: the "My notes" tab (M4-T20). */
   meetingMyNotes: MeetingSlotProps;
-  /** Meeting page: the "AI notes" tab (M4-T20). */
+  /**
+   * Meeting page: the "AI notes" tab, which the page shows once AI notes exist or are being
+   * written (meeting/MeetingPage.tsx), not before.
+   */
   meetingAiNotes: MeetingSlotProps;
-  /** Meeting page: chat with the meeting (M4-T20). */
+  /** Meeting page: the "Chat" tab (M4-T20). */
   meetingChat: MeetingSlotProps;
 }
 
@@ -88,7 +95,6 @@ export function mergeSlots(files: Readonly<Record<string, SlotContributions>>): 
   };
   return {
     banner: merge('banner'),
-    home: merge('home'),
     settings: merge('settings'),
     setup: merge('setup'),
     meetingBanner: merge('meetingBanner'),

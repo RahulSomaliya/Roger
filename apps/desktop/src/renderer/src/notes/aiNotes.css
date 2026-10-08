@@ -1,145 +1,73 @@
 /*
- * The AI notes panel (AiNotesPanel.tsx), the template picker (TemplatePicker.tsx) and the notes
- * section of Settings (NotesSettings.tsx). They reuse notes.css (.note-button, and
- * .note-editor-content for a run's streamed lines, so they read as the doc that replaces them),
- * styles.css (.error, .notice) and app.css (.empty-state, .card). Colours only from
- * theme/tokens.css (noLiteralColours.test.ts fails on a literal one); text reads the ink tokens
- * (--ink, --muted, --danger-ink), never a fill (tokens.test.ts).
+ * The AI notes panel (AiNotesPanel.tsx). It reuses notes.css (.note-editor-content, for a run's
+ * streamed lines, so they read as the doc that replaces them) and styles.css (.btn, .problem,
+ * .chip). Colours only from theme/tokens.css (noLiteralColours.test.ts fails on a literal one);
+ * text reads the ink tokens, never a fill (tokens.test.ts). There is no bar, card or empty state
+ * here: the header owns the actions, and the AI notes tab exists only once notes do.
  */
 
 .ai-notes {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: var(--space-4);
   min-width: 0;
 }
 
-.ai-notes-message {
-  margin: 0;
-  color: var(--muted);
-}
-
-/* The template of the notes on show, and what can be done with them. */
-.ai-notes-bar {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px 12px;
-  min-height: 30px;
-}
-
-.ai-notes-meta {
-  margin: 0;
-  font-size: 13px;
-  color: var(--muted);
+/* Problems sit at the reading measure, like the notes under them. */
+.ai-notes > .problem {
+  max-width: var(--measure);
 }
 
 .ai-notes-actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: var(--space-2);
 }
 
-/* Where a generate stands, over the template line: beside the Stop or Cancel they go with. */
-.ai-notes-bar-text {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-}
-
-/* Right-aligned, with or without the text beside them. */
-.ai-notes-bar .ai-notes-actions {
-  margin-left: auto;
-}
-
-/* Where a pending generate stands: waiting, or writing. A dot, never an animation. */
-.ai-notes-progress {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
+/* Why a generate has not started: the one thing the header's "Writing notes…" cannot say. */
+.ai-notes-waiting {
   margin: 0;
-  color: var(--ink);
+  max-width: var(--measure);
+  color: var(--ink-muted);
 }
 
-.ai-notes-progress::before {
-  content: '';
-  flex: none;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--warn);
-}
-
-.ai-notes-progress-running::before {
-  background: var(--accent);
-}
-
-/* A failed or cancelled run, and a failed action: .error or .notice gives the tint and the ink. */
-.ai-notes-failure,
-.ai-notes-error {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  overflow-wrap: anywhere;
-}
-
+/* A failed or cancelled run: the sentence, what the provider said, and the way out. */
 .ai-notes-failure-title,
 .ai-notes-failure-detail {
   margin: 0;
 }
 
-.ai-notes-failure-title {
-  font-weight: 600;
-}
-
 .ai-notes-failure-detail {
-  color: var(--ink);
-  font-size: 13px;
+  color: var(--ink-muted);
+  font-weight: 400;
 }
 
-/* The question before AI notes edited since their run are replaced. */
-.ai-notes-confirm {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 12px 14px;
-  border-radius: 10px;
-  background: var(--warn-bg);
-  color: var(--ink);
-}
-
-.ai-notes-confirm-title,
-.ai-notes-confirm-text {
-  margin: 0;
-}
-
-.ai-notes-confirm-title {
-  font-weight: 600;
+.ai-notes-failure .ai-notes-actions {
+  margin-top: var(--space-2);
 }
 
 /* A run's lines as they arrive, drawn as the editor draws the doc that replaces them. */
 .ai-notes-stream {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-2);
   min-width: 0;
 }
 
 .ai-notes-stream-caption {
   margin: 0;
-  font-size: 12px;
-  color: var(--muted);
+  max-width: var(--measure);
+  color: var(--ink-subtle);
+  font-size: var(--text-xs);
+  line-height: var(--leading-xs);
 }
 
 .ai-notes-stream-partial .note-editor-content {
   border-style: dashed;
 }
 
-.ai-notes-stream-waiting,
-.ai-notes-stream-muted {
-  color: var(--muted);
+.ai-notes-stream-waiting {
+  color: var(--ink-subtle);
 }
 
 /* The editor stays mounted under a run's live lines, so its text and save timers survive. */
@@ -147,231 +75,26 @@
   display: none;
 }
 
-.ai-notes-empty {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 12px;
-}
-
-/* Lines the API left out: no transcript line backs them (M4 D4). */
+/* Lines the API left out: no transcript line backs them (M4 D4). Closed by default. */
 .ai-notes-removed {
-  font-size: 13px;
-  color: var(--muted);
+  max-width: var(--measure);
+  color: var(--ink-muted);
 }
 
 .ai-notes-removed summary {
-  color: var(--ink);
-  font-weight: 600;
   cursor: pointer;
 }
 
-.ai-notes-removed-intro {
-  margin: 6px 0 0;
-}
-
 .ai-notes-removed-list {
-  margin: 6px 0 0;
-  padding-left: 1.3em;
+  margin: var(--space-2) 0 0;
+  padding-left: var(--space-6);
 }
 
 .ai-notes-removed-list li + li {
-  margin-top: 4px;
+  margin-top: var(--space-1);
 }
 
 .ai-notes-removed-text {
   color: var(--ink);
-  overflow-wrap: anywhere;
-}
-
-.ai-notes-run-problem {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
-  margin: 0;
-  font-size: 13px;
-  color: var(--muted);
-}
-
-/* The template picker. */
-.template-picker {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  min-width: 0;
-  padding: 14px;
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  background: var(--panel);
-}
-
-.template-picker-question {
-  margin: 0;
-  font-size: 15px;
-  font-weight: 650;
-}
-
-.template-picker-hint {
-  margin: 0;
-  font-size: 13px;
-  color: var(--muted);
-}
-
-.template-picker-error {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
-  margin: 0;
-  overflow-wrap: anywhere;
-}
-
-.template-picker-options {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(min(100%, 200px), 1fr));
-  gap: 8px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.template-picker-options li {
-  display: flex;
-  min-width: 0;
-}
-
-.template-option {
-  display: flex;
-  flex: 1;
-  flex-wrap: wrap;
-  align-content: flex-start;
-  align-items: center;
-  gap: 2px 8px;
-  min-width: 0;
-  padding: 10px 12px;
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  background: var(--bg);
-  color: var(--ink);
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
-}
-
-.template-option:hover {
-  border-color: var(--accent);
-}
-
-.template-option:focus-visible {
-  outline: 2px solid var(--focus-ring);
-  outline-offset: 2px;
-}
-
-.template-option:disabled {
-  opacity: 0.55;
-  cursor: default;
-}
-
-.template-option-suggested {
-  border-color: var(--accent);
-  background: var(--chip-bg);
-}
-
-.template-option-name {
-  font-weight: 650;
-}
-
-.template-option-badge {
-  padding: 0 7px;
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  background: var(--panel);
-  color: var(--ink);
-  font-size: 11px;
-  font-weight: 600;
-  line-height: 17px;
-}
-
-.template-option-description {
-  flex-basis: 100%;
-  font-size: 13px;
-  color: var(--muted);
-  overflow-wrap: anywhere;
-}
-
-.template-picker-actions {
-  display: flex;
-  justify-content: flex-end;
-}
-
-/* Settings: the notes section. */
-.notes-settings {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  min-width: 0;
-}
-
-.notes-settings-title {
-  margin: 0;
-  font-size: 16px;
-  font-weight: 650;
-}
-
-.notes-settings-intro,
-.notes-settings-hint,
-.notes-settings-status {
-  margin: 0;
-  color: var(--muted);
-}
-
-.notes-settings-hint {
-  font-size: 13px;
-}
-
-.notes-settings-option {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-  cursor: pointer;
-}
-
-.notes-settings-text {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-}
-
-.notes-settings-option input {
-  flex: none;
-  margin: 3px 0 0;
-  accent-color: var(--accent);
-}
-
-.notes-settings-group {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  min-width: 0;
-  margin: 0;
-  padding: 0;
-  border: none;
-}
-
-.notes-settings-group legend {
-  margin-bottom: 4px;
-  padding: 0;
-  font-weight: 600;
-}
-
-.notes-settings-group:disabled .notes-settings-option {
-  color: var(--muted);
-  cursor: default;
-}
-
-.notes-settings-error {
-  margin: 0;
   overflow-wrap: anywhere;
 }

@@ -1,17 +1,23 @@
-import { createElement } from 'react';
+import { createElement, isValidElement, type ReactElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
-import { LOGIN_ITEMS_SETTINGS_PATH } from '../../../shared/ipc/loginItem';
 import {
   allDayEvent,
   at,
   attendee,
   calendarState,
+  CONNECTION,
   NOW_MS,
   plain,
   timedEvent,
 } from './calendarTesting';
-import { OpenAtLoginLine, TodaySectionView, type TodaySectionViewProps } from './TodaySection';
+import {
+  MeetingAction,
+  TodaySectionView,
+  type MeetingActions,
+  type TodaySectionViewProps,
+} from './TodaySection';
+import { todayGroups, type TimedEntry } from './todayGroups';
 
 function view(fields: Partial<TodaySectionViewProps> = {}): string {
   return plain(
@@ -19,15 +25,12 @@ function view(fields: Partial<TodaySectionViewProps> = {}): string {
       createElement(TodaySectionView, {
         state: calendarState(),
         nowMs: NOW_MS,
-        startError: null,
+        heroEventId: null,
         startBlocked: false,
-        openAtLogin: null,
         onStart: vi.fn(),
         onOpen: vi.fn(),
         onConnect: vi.fn(),
         onReload: vi.fn(),
-        onUndoOpenAtLogin: vi.fn(),
-        onDismissOpenAtLogin: vi.fn(),
         ...fields,
       }),
     ),
@@ -52,21 +55,24 @@ const DAY = [
 describe('Home, before a calendar is connected', () => {
   const notConnected = calendarState({ connection: null, sync: null, events: [] });
 
-  it('offers to connect, and says what Roger does with the calendar', () => {
+  it('offers one secondary button and one helper line, with no heading or card', () => {
     const html = view({ state: notConnected });
-    expect(html).toContain('See your day in Roger');
     expect(html).toContain('Connect Google Calendar</button>');
-    expect(html).toContain('Roger only reads your calendar');
+    expect(html).toContain('opens at login');
+    expect(html).toContain('only reads your calendar');
+    expect(html).not.toContain('See your day in Roger');
+    expect(html).not.toContain('data-variant="primary"');
     expect(html).not.toContain('Today</h2>');
   });
 
-  it('says it waits for the browser, and lets the user start over', () => {
+  it('says it waits for the browser, and keeps the button so a second press starts over', () => {
     const html = view({ state: calendarState({ ...notConnected, connecting: true }) });
     expect(html).toContain('Finish signing in in your browser');
-    expect(html).toContain('Open Google again</button>');
+    expect(html).toContain('Connect Google Calendar</button>');
+    expect(html).not.toContain('Open Google again');
   });
 
-  it('shows the API refusal, such as an unticked calendar box', () => {
+  it('shows the API refusal, such as an unticked calendar box, as an alert problem line', () => {
     const html = view({
       state: calendarState({
         ...notConnected,
@@ -74,7 +80,7 @@ describe('Home, before a calendar is connected', () => {
       }),
     });
     expect(html).toMatch(
-      /role="alert">Roger could not connect Google Calendar: Tick the calendar box and try again</,
+      /role="alert"[^>]*><svg[^]*Roger could not connect Google Calendar: Tick the calendar box and try again</,
     );
   });
 
@@ -100,20 +106,19 @@ describe('Home, before a calendar is connected', () => {
     });
     expect(html).toContain('Roger could not reach your Google Calendar connection: API is down');
     expect(html).toContain('Try again</button>');
-    expect(html).not.toContain('See your day in Roger');
+    expect(html).not.toContain('only reads your calendar');
   });
 });
 
 describe('Home, with a calendar', () => {
-  it('says nothing is on the calendar today, with the day named', () => {
-    const html = view({ state: calendarState({ events: [] }) });
-    expect(html).toContain('Today</h2>');
-    expect(html).toContain('Nothing on your calendar today');
+  it('shows nothing at all for an empty day: no heading, no "Nothing on your calendar today"', () => {
+    expect(view({ state: calendarState({ events: [] }) })).toBe('');
   });
 
-  it('lists the day in order, the meeting under way as the larger Next card', () => {
+  it('lists the day in order, a time and a title per row and nothing else', () => {
     const html = view({ state: calendarState({ events: DAY }) });
-    const titles = [...html.matchAll(/class="calendar-title">([^<]+)</g)].map((m) => m[1]);
+    expect(html).toContain('Today</h2>');
+    const titles = [...html.matchAll(/class="today-title"[^>]*>([^<]+)</g)].map((m) => m[1]);
     expect(titles).toEqual([
       'Standup',
       'Design review',
@@ -122,39 +127,27 @@ describe('Home, with a calendar', () => {
       'Planning',
       'One on one',
       'Retro',
-      'Optional demo',
     ]);
-    expect(html.match(/class="calendar-next"/g)).toHaveLength(1);
-    expect(html).toMatch(/calendar-next[^]*Now · Started 15 min ago[^]*Design review/);
-    expect(html).toContain('Jane and Ali');
-    expect(html).toMatch(/\d{1,2}:\d{2}/);
+    expect(html).toContain('<span class="today-time">9:00 am</span>');
+    expect(html).toContain('<span class="today-time">5:30 pm</span>');
+    expect(html).not.toContain('Jane and Ali');
   });
 
-  it('greys the declined meeting, says so, and puts it last', () => {
-    const html = view({ state: calendarState({ events: DAY }) });
-    expect(html).toMatch(/calendar-row calendar-declined[^]*Optional demo[^]*Declined/);
-    expect(html.lastIndexOf('Optional demo')).toBeGreaterThan(html.lastIndexOf('Retro'));
+  it('leaves out the declined meeting and the all-day events', () => {
+    const html = view({
+      state: calendarState({
+        events: [allDayEvent('holiday', { title: 'Release week' }), ...DAY],
+      }),
+    });
+    expect(html).not.toContain('Optional demo');
+    expect(html).not.toContain('Release week');
+    expect(html).not.toContain('calendar-chip');
   });
 
   it('marks a meeting that is over, and gives it no button', () => {
     const html = view({ state: calendarState({ events: DAY }) });
-    expect(html).toContain('calendar-row calendar-over');
+    expect(html).toContain('data-over="true"');
     expect(html).not.toContain('Start notes for Standup');
-  });
-
-  it('puts the all-day events in a strip on top, a declined one greyed', () => {
-    const html = view({
-      state: calendarState({
-        events: [
-          allDayEvent('ooo', { title: 'Sam out', selfResponse: 'declined' }),
-          allDayEvent('holiday', { title: 'Public holiday' }),
-          ...DAY,
-        ],
-      }),
-    });
-    expect(html).toContain('aria-label="All-day events"');
-    expect(html.indexOf('Public holiday')).toBeLessThan(html.indexOf('Standup'));
-    expect(html).toContain('calendar-chip calendar-declined">Sam out (declined)');
   });
 
   it('keeps tomorrow’s meetings out', () => {
@@ -163,16 +156,13 @@ describe('Home, with a calendar', () => {
       new Date(2026, 9, 7, 10).toISOString(),
       new Date(2026, 9, 7, 11).toISOString(),
     );
-    expect(view({ state: calendarState({ events: [tomorrow] }) })).toContain(
-      'Nothing on your calendar today',
-    );
+    expect(view({ state: calendarState({ events: [tomorrow] }) })).toBe('');
   });
 });
 
-describe('Start notes and Open note', () => {
+describe('a row’s button', () => {
   it('offers Start notes from 15 minutes before a meeting, never before', () => {
-    // 11:00 now: Weekly sync at 14:00 is hours off, Lunch at 12:00 is an hour off, and a meeting
-    // at 11:10 is within the window.
+    // 11:00 now: Weekly sync at 14:00 is hours off, and a meeting at 11:10 is within the window.
     const events = [
       timedEvent('far', at(14), at(14, 30), { title: 'Far off' }),
       timedEvent('soon', at(11, 10), at(11, 40), { title: 'Soon' }),
@@ -180,6 +170,13 @@ describe('Start notes and Open note', () => {
     const html = view({ state: calendarState({ events }) });
     expect(html).toContain('aria-label="Start notes for Soon"');
     expect(html).not.toContain('Start notes for Far off');
+  });
+
+  it('is a ghost button in the fixed right column, not a primary', () => {
+    const events = [timedEvent('soon', at(11, 10), at(11, 40), { title: 'Soon' })];
+    const html = view({ state: calendarState({ events }) });
+    expect(html).toMatch(/class="btn today-action" data-variant="ghost" data-size="sm"/);
+    expect(html).not.toContain('data-variant="primary"');
   });
 
   it('shows Open note, not Start notes, when a local meeting already has the event', () => {
@@ -197,18 +194,65 @@ describe('Start notes and Open note', () => {
     expect(html).toContain('Open note</button>');
   });
 
-  it('waits for the note being taken before a second one starts', () => {
+  it('is gone while a note is being taken: Stop is the hero’s, and one recording at a time', () => {
     const events = [timedEvent('soon', at(11, 10), at(11, 40), { title: 'Soon' })];
     const html = view({ state: calendarState({ events }), startBlocked: true });
-    expect(html).toMatch(/<button[^>]*disabled=""[^>]*>Start notes<\/button>/);
-    expect(html).toContain('Stop the note you are taking first.');
+    expect(html).not.toContain('Start notes');
+    expect(html).not.toContain('disabled');
+  });
+
+  it('leaves the hero’s meeting to the hero: its row has no button of its own', () => {
+    const events = [timedEvent('soon', at(11, 5), at(11, 40), { title: 'Soon' })];
+    const html = view({ state: calendarState({ events }), heroEventId: 'soon' });
+    expect(html).toContain('>Soon</span>');
+    expect(html).not.toContain('Start notes');
+  });
+});
+
+describe('MeetingAction', () => {
+  const event = timedEvent('a', at(11, 10), at(11, 40), { title: 'Soon' });
+
+  function entryFor(links: ReadonlyMap<string, string> = new Map(), nowMs = NOW_MS): TimedEntry {
+    const entry = todayGroups({ events: [event], links, nowMs }).timed[0];
+    if (entry === undefined) throw new Error('the event is not on the test day');
+    return entry;
+  }
+
+  const handlers = (): MeetingActions => ({
+    startBlocked: false,
+    onStart: vi.fn(),
+    onOpen: vi.fn(),
+  });
+
+  function onClickOf(element: ReactElement | null): () => void {
+    if (!isValidElement<{ onClick: () => void }>(element)) throw new Error('no button rendered');
+    return element.props.onClick;
+  }
+
+  it('starts notes for the event itself when pressed', () => {
+    const actions = handlers();
+    onClickOf(MeetingAction({ entry: entryFor(), ...actions }))();
+    expect(actions.onStart).toHaveBeenCalledWith(event);
+    expect(actions.onOpen).not.toHaveBeenCalled();
+  });
+
+  it('opens the meeting that has the event when pressed, and never offers a second Start for it', () => {
+    const actions = handlers();
+    onClickOf(MeetingAction({ entry: entryFor(new Map([['a', 'meeting-3']])), ...actions }))();
+    expect(actions.onOpen).toHaveBeenCalledWith('meeting-3');
+    expect(actions.onStart).not.toHaveBeenCalled();
+  });
+
+  it('shows no button before the Start notes window when there is no note', () => {
+    const tenOClock = new Date(2026, 9, 6, 10).getTime(); // an hour before the 11:10 start
+    expect(MeetingAction({ entry: entryFor(new Map(), tenOClock), ...handlers() })).toBeNull();
   });
 });
 
 describe('Home, when something is wrong', () => {
   const events = [timedEvent('review', at(10, 45), at(11, 30), { title: 'Design review' })];
 
-  it('keeps the meetings it has when the connection cannot be checked, and says so', () => {
+  it('keeps the meetings it has when the connection cannot be checked, and says so in one quiet line', () => {
     const html = view({
       state: calendarState({
         events,
@@ -217,6 +261,8 @@ describe('Home, when something is wrong', () => {
       }),
     });
     expect(html).toContain('Roger could not check your Google Calendar connection: API is down');
+    expect(html).toContain('role="status"');
+    expect(html).toContain('Try again</button>');
     expect(html).toContain('Design review');
   });
 
@@ -232,54 +278,59 @@ describe('Home, when something is wrong', () => {
     );
   });
 
-  it('shows why a start failed before main could answer', () => {
+  it('says the calendar is stale and since when, as one line with no button', () => {
     const html = view({
-      state: calendarState({ events }),
-      startError: 'Roger could not start notes for this meeting: IPC closed',
+      state: calendarState({
+        events,
+        sync: {
+          lastSuccessAt: new Date(2026, 9, 6, 9, 12).toISOString(),
+          lastError: 'Google answered 503',
+          staleSince: new Date(2026, 9, 6, 10, 12).toISOString(),
+          reconnectRequired: false,
+        },
+      }),
     });
-    expect(html).toMatch(/role="alert">Roger could not start notes for this meeting: IPC closed</);
-  });
-});
-
-describe('the line after the first connect', () => {
-  const line = (phase: 'on' | 'approval' | 'undone', error: string | null = null): string =>
-    plain(
-      renderToStaticMarkup(
-        createElement(OpenAtLoginLine, {
-          phase,
-          error,
-          onUndo: vi.fn(),
-          onDismiss: vi.fn(),
-        }),
-      ),
-    );
-
-  it('says Roger will open at login so it can remind you, with Undo', () => {
-    const html = line('on');
-    expect(html).toContain('Roger will open at login so it can remind you.');
-    expect(html).toContain('Undo</button>');
+    expect(html).toContain('Calendar not updated since 9:12 am');
+    expect(html).not.toContain('Reconnect');
   });
 
-  it('says where to allow it when macOS waits for approval, with no Undo', () => {
-    const html = line('approval');
-    expect(html).toContain(LOGIN_ITEMS_SETTINGS_PATH.replace('&', '&amp;'));
-    expect(html).not.toContain('Undo');
-  });
-
-  it('confirms an Undo, and says why one failed', () => {
-    expect(line('undone')).toContain('Roger will not open at login.');
-    expect(line('on', 'preferences.json is read-only')).toContain(
-      'Roger could not undo it: preferences.json is read-only',
+  it('puts Reconnect beside a refused grant, and shows why a reconnect failed', () => {
+    const html = view({
+      state: calendarState({
+        events,
+        connection: { ...CONNECTION, status: 'reconnect_required' },
+        connectError: 'Tick the calendar box',
+      }),
+    });
+    expect(html).toContain('needs you to sign in again');
+    expect(html).toContain('Reconnect</button>');
+    expect(html).toMatch(
+      /role="alert"[^]*Roger could not connect Google Calendar: Tick the calendar box/,
     );
   });
 
-  it('shows above the day only when the first connect earned it', () => {
-    const events = [timedEvent('review', at(10, 45), at(11, 30))];
+  it('has exactly one problem line for several problems, the refused grant first', () => {
     const html = view({
-      state: calendarState({ events, justConnected: true }),
-      openAtLogin: { phase: 'on', error: null },
+      state: calendarState({
+        events,
+        connection: { ...CONNECTION, status: 'reconnect_required' },
+        copyError: 'disk is full',
+        linksError: 'busy',
+      }),
     });
-    expect(html).toContain('Roger will open at login so it can remind you.');
-    expect(view({ state: calendarState({ events }) })).not.toContain('open at login');
+    expect(html.match(/class="problem today-problem"/g)).toHaveLength(1);
+    expect(html).toContain('needs you to sign in again');
+    expect(html).not.toContain('disk is full');
+  });
+
+  it('says it waits for the browser while a reconnect is open', () => {
+    const html = view({
+      state: calendarState({
+        events,
+        connection: { ...CONNECTION, status: 'reconnect_required' },
+        connecting: true,
+      }),
+    });
+    expect(html).toContain('Finish signing in in your browser');
   });
 });

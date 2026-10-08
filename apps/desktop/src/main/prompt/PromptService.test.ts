@@ -3,12 +3,10 @@ import {
   promptKey,
   toMeetingCalendarEvent,
   type CalendarEvent,
-  type CalendarSyncState,
   type CallApp,
   type PromptCard,
   type TimedCalendarEvent,
 } from '../../shared/calendar';
-import { CALENDAR_PREFERENCES, DEFAULT_NOTICE_TEXT } from '../../shared/calendarPrefs';
 import {
   idleCaptureStatus,
   type CaptureStatus,
@@ -19,15 +17,12 @@ import {
 } from '../../shared/capture';
 import type { AppRoute } from '../../shared/ipc/app';
 import type { PromptPanelState } from '../../shared/ipc/prompt';
-import { APP_PREFERENCES } from '../../shared/preferences';
 import type { AudioSource } from '../../shared/transcript';
-import { createConsentNotice } from '../calendar/consentNotice';
 import { NO_ACCOUNT, PromptLog, type PromptRow } from '../calendar/PromptLog';
 import { PROMPT_OPEN_AFTER_START_MS } from '../calendar/reminderPolicy';
 import { SqliteCalendarCache } from '../calendar/SqliteCalendarCache';
 import type { CaptureService } from '../capture/CaptureService';
 import { createLogger } from '../logger';
-import { PreferencesStore, type PreferenceFiles } from '../preferences/PreferencesStore';
 import {
   CALL_OFFER_QUIET_AFTER_ACTION_MS,
   PromptService,
@@ -185,29 +180,6 @@ class FakeCapture implements PromptCapture {
   }
 }
 
-/** A preferences.json that lives in memory. */
-function memoryFiles(): PreferenceFiles {
-  const files = new Map<string, string>();
-  return {
-    readFileSync: (path) => {
-      const text = files.get(path);
-      if (text === undefined) {
-        throw Object.assign(new Error(`ENOENT: ${path}`), { code: 'ENOENT' });
-      }
-      return text;
-    },
-    writeFileSync: (path, text) => {
-      files.set(path, text);
-    },
-    renameSync: (from, to) => {
-      const text = files.get(from);
-      if (text === undefined) throw new Error(`ENOENT: ${from}`);
-      files.set(to, text);
-      files.delete(from);
-    },
-  };
-}
-
 /** The main window as the reveal port sees it, with Electron's two activating calls watched too. */
 function fakeWindow(visible: boolean) {
   const calls: string[] = [];
@@ -249,43 +221,12 @@ function harness(options: HarnessOptions = {}) {
     sink: (line) => lines.push(JSON.parse(line) as Record<string, unknown>),
   });
 
-  let syncState: CalendarSyncState = {
-    lastSuccessAt: iso(START),
-    lastError: null,
-    staleSince: null,
-    reconnectRequired: false,
-  };
-  const syncListeners = new Set<(state: CalendarSyncState) => void>();
-
-  const preferences = new PreferencesStore({ path: '/prefs.json', logger, files: memoryFiles() });
-  preferences.register(APP_PREFERENCES);
-  preferences.register(CALENDAR_PREFERENCES);
-  const copied: string[] = [];
-  const notice = createConsentNotice({
-    preferences,
-    clipboard: {
-      writeText: (text) => {
-        copied.push(text);
-      },
-    },
-    logger,
-  });
-
   const routes: AppRoute[] = [];
   const main = fakeWindow(options.windowVisible ?? false);
   const opened: string[] = [];
   const openWindow = vi.fn();
   const service = new PromptService({
     cache,
-    sync: {
-      getState: () => syncState,
-      onStateChange: (listener) => {
-        syncListeners.add(listener);
-        return () => {
-          syncListeners.delete(listener);
-        };
-      },
-    },
     log,
     capture,
     navigation: {
@@ -300,7 +241,6 @@ function harness(options: HarnessOptions = {}) {
       opened.push(url);
       return Promise.resolve();
     },
-    notice,
     logger,
   });
   const states: PromptPanelState[] = [];
@@ -320,8 +260,6 @@ function harness(options: HarnessOptions = {}) {
     log,
     capture,
     service,
-    preferences,
-    copied,
     routes,
     main,
     opened,
@@ -339,10 +277,6 @@ function harness(options: HarnessOptions = {}) {
     },
     setEvents: (events: CalendarEvent[]) => {
       cache.replaceEvents(events, iso(Date.now()));
-    },
-    setSync: (state: Partial<CalendarSyncState>) => {
-      syncState = { ...syncState, ...state };
-      for (const listener of [...syncListeners]) listener(syncState);
     },
     /** The call-detected rows, oldest first. */
     callRows: (): PromptRow[] =>
@@ -695,7 +629,6 @@ describe('PromptService', () => {
 
       const shown = harness({ events: [standup], windowVisible: true });
       shown.offerCalendar(standup);
-      await shown.service.act({ cardId: cardId(shown), action: 'copy_notice' });
       await shown.service.act({
         cardId: cardId(shown),
         action: 'join_and_take_notes',
@@ -762,33 +695,6 @@ describe('PromptService', () => {
     });
   });
 
-  describe('the notice', () => {
-    it('copies the current text and keeps the card', async () => {
-      const standup = call('standup', 1);
-      const h = harness({ events: [standup] });
-      h.offerCalendar(standup);
-      await h.service.act({ cardId: cardId(h), action: 'copy_notice' });
-      h.preferences.set('notice.text', 'Roger is taking notes on this call.');
-      await h.service.act({ cardId: cardId(h), action: 'copy_notice' });
-
-      expect(h.copied).toEqual([DEFAULT_NOTICE_TEXT, 'Roger is taking notes on this call.']);
-      expect(h.onlyCard()).toMatchObject({ phase: 'open' });
-      expect(h.row(standup)?.action).toBeNull();
-    });
-
-    it('notice off: the panel offers no Copy notice and nothing is copied', async () => {
-      const standup = call('standup', 1);
-      const h = harness({ events: [standup] });
-      h.offerCalendar(standup);
-      expect(h.service.getState().noticeEnabled).toBe(true);
-
-      h.preferences.set('notice.enabled', false);
-      expect(h.states.at(-1)?.noticeEnabled).toBe(false);
-      await h.service.act({ cardId: cardId(h), action: 'copy_notice' });
-      expect(h.copied).toEqual([]);
-    });
-  });
-
   describe('Dismiss', () => {
     it('logs every event on the card dismissed and closes it', async () => {
       const first = call('first', 1);
@@ -817,34 +723,23 @@ describe('PromptService', () => {
     });
   });
 
-  describe('a stale calendar', () => {
-    it('shows one card per stale spell', async () => {
+  describe('the panel state', () => {
+    it('holds the cards, whether a note records and its title: no notice, no stale card', () => {
       const h = harness();
-      const spell = { staleSince: iso(START - MINUTE), lastSuccessAt: iso(START - 61 * MINUTE) };
-      h.setSync(spell);
-      expect(h.onlyCard()).toMatchObject({
-        kind: 'stale_calendar',
-        lastSuccessAt: iso(START - 61 * MINUTE),
-      });
-      h.setSync({ ...spell, lastError: 'connect ECONNREFUSED' });
-      expect(h.cards()).toHaveLength(1);
-
-      await h.service.act({ cardId: cardId(h), action: 'dismiss' });
-      h.setSync({ ...spell, lastError: 'still down' });
-      expect(h.cards()).toEqual([]);
-
-      h.setSync({ staleSince: null, lastSuccessAt: iso(START) });
-      expect(h.cards()).toEqual([]);
-      h.setSync({ staleSince: iso(START + 60 * MINUTE), lastSuccessAt: iso(START) });
-      expect(h.onlyCard()).toMatchObject({ kind: 'stale_calendar', lastSuccessAt: iso(START) });
+      expect(h.service.getState()).toEqual({ cards: [], recording: false, recordingTitle: null });
     });
 
-    it('takes the card down when the spell ends', () => {
-      const h = harness();
-      h.setSync({ staleSince: iso(START), lastSuccessAt: iso(START - 60 * MINUTE) });
-      expect(h.cards()).toHaveLength(1);
-      h.setSync({ staleSince: null, lastSuccessAt: iso(START) });
-      expect(h.cards()).toEqual([]);
+    it('names the note being recorded, and tells the panel when its title arrives', () => {
+      const standup = call('standup', 1);
+      const h = harness({ events: [standup] });
+      h.offerCalendar(standup);
+      h.capture.beginStart();
+      // Starting: a note is on its way but has no meeting, so no title yet.
+      expect(h.states.at(-1)).toMatchObject({ recording: true, recordingTitle: null });
+      h.capture.record(MEETING, { mic: LIVE, system: LIVE });
+      expect(h.states.at(-1)).toMatchObject({ recording: true, recordingTitle: 'A meeting' });
+      h.capture.emit(idleCaptureStatus(UPLOAD));
+      expect(h.states.at(-1)).toMatchObject({ recording: false, recordingTitle: null });
     });
   });
 

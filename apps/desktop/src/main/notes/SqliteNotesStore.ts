@@ -84,6 +84,40 @@ const MIGRATIONS: readonly string[] = [
     PRIMARY KEY (meeting_id, kind, base_key)
   );
   `,
+  // The refused upload states. A CHECK cannot be altered, so the table is rebuilt in the order
+  // SQLite recommends (sqlite.org/lang_altertable.html, "Making Other Kinds Of Table Schema
+  // Changes"): create the new table, copy the rows with named columns, drop the old table (its
+  // partial index goes with it), rename the new one, recreate the index. Never rename the old
+  // table first: SQLite rewrites every view and trigger that mentions it to the new name.
+  `
+  CREATE TABLE notes_new (
+    meeting_id TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('user', 'ai')),
+    doc_json TEXT NOT NULL,
+    revision_id TEXT,
+    dirty INTEGER NOT NULL CHECK (dirty IN (0, 1)),
+    base_version INTEGER NOT NULL CHECK (base_version >= 0),
+    template_id TEXT,
+    last_run_id TEXT,
+    generated_version INTEGER,
+    conflict_json TEXT,
+    sync_state TEXT NOT NULL CHECK (sync_state IN
+      ('saved_locally', 'waiting_for_meeting', 'syncing', 'synced', 'offline', 'refused',
+       'refused_access')),
+    has_text INTEGER NOT NULL CHECK (has_text IN (0, 1)),
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (meeting_id, kind),
+    CHECK (dirty = 0 OR revision_id IS NOT NULL)
+  );
+  INSERT INTO notes_new (meeting_id, kind, doc_json, revision_id, dirty, base_version, template_id,
+    last_run_id, generated_version, conflict_json, sync_state, has_text, updated_at)
+  SELECT meeting_id, kind, doc_json, revision_id, dirty, base_version, template_id,
+    last_run_id, generated_version, conflict_json, sync_state, has_text, updated_at
+  FROM notes;
+  DROP TABLE notes;
+  ALTER TABLE notes_new RENAME TO notes;
+  CREATE INDEX notes_dirty ON notes (updated_at) WHERE dirty = 1;
+  `,
 ];
 
 const STORED_SYNC_STATES: ReadonlySet<string> = new Set<StoredNoteSyncState>([
@@ -92,6 +126,8 @@ const STORED_SYNC_STATES: ReadonlySet<string> = new Set<StoredNoteSyncState>([
   'syncing',
   'synced',
   'offline',
+  'refused',
+  'refused_access',
 ]);
 
 /** A `notes` row: a LocalNote whose sync state is the stored one, not yet read from the copy. */
@@ -178,8 +214,14 @@ export class SqliteNotesStore implements NotesStore {
     }
     this.saveBases.set(key, baseKey);
     // The save does not change why the note cannot upload; it does make a `synced` or `syncing`
-    // note one with edits the server has not seen.
-    const keepsSync = local?.sync === 'waiting_for_meeting' || local?.sync === 'offline';
+    // note one with edits the server has not seen. A refused note stays refused until an upload is
+    // accepted: `saved_locally` would hide the problem line (saveStatus.ts) for the 1.5 s before
+    // the next attempt refuses it again.
+    const keepsSync =
+      local?.sync === 'waiting_for_meeting' ||
+      local?.sync === 'offline' ||
+      local?.sync === 'refused' ||
+      local?.sync === 'refused_access';
     return this.write({
       meetingId,
       kind,

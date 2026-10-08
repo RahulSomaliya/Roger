@@ -1,0 +1,109 @@
+/*
+ * Home's Today and the connect line (TodaySection.tsx, ConnectCalendarCard.tsx): a time and a
+ * title per row, the button in a fixed right column. Split from the old calendar.css with
+ * calendarSettings.css (the Settings section) and calendarNotice.css (the meeting page's notice).
+ * They reuse styles.css (.btn, .problem, .overline). calendarSettings.css no longer imports this
+ * file; .calendar-status is read by TodaySection.tsx only, so a file that wants it imports this
+ * one. Colours only from theme/tokens.css (noLiteralColours.test.ts fails on a literal one); text
+ * reads the ink tokens, never a fill (tokens.test.ts).
+ */
+
+.calendar-status {
+  margin: 0;
+  font-size: 13px;
+  color: var(--ink-muted);
+}
+
+/* Connect: one secondary button and one helper line beside it, wrapping under it when narrow. */
+
+.calendar-connect {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.calendar-connect-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3) var(--space-4);
+}
+
+.calendar-connect-help {
+  flex: 1 1 240px;
+  min-width: 0;
+  margin: 0;
+  color: var(--ink-muted);
+}
+
+/* Today */
+
+.today {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+/* A line with a button beside it centres on the button's height, not on the first text line. */
+.today-problem {
+  align-items: center;
+}
+
+.today-problem > svg {
+  margin-top: 0;
+}
+
+.today-list {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* Time | title | button. All three columns are fixed, so a button that appears on hover moves
+   nothing, and the titles line up with Earlier's (--home-when-width, app.css). */
+.today-row {
+  display: grid;
+  grid-template-columns: var(--home-when-width) minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-3);
+  min-height: 40px;
+  padding: 0 var(--space-3);
+  border-radius: var(--radius-md);
+}
+
+.today-row:hover,
+.today-row:focus-within {
+  background: var(--fill);
+}
+
+.today-time {
+  color: var(--ink-subtle);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.today-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* A meeting that is over reads quieter. */
+.today-row[data-over='true'] .today-title {
+  color: var(--ink-muted);
+}
+
+/* The row's button is there on hover and focus, not on the page by default. Opacity, never
+   display: the column stays, and a keyboard user tabbing in lands on a button that then shows. */
+.today-action {
+  opacity: 0;
+}
+
+.today-row:hover .today-action,
+.today-row:focus-within .today-action {
+  opacity: 1;
+}

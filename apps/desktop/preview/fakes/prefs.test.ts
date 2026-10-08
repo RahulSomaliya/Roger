@@ -16,8 +16,6 @@ describe('the preview fake of the preferences', () => {
     expect(Object.keys(calendarDefaults)).toHaveLength(4);
     await expect(createPrefsFake(new FakeHub()).getPreferences()).resolves.toEqual({
       theme: 'system',
-      'notes.autoGenerate': true,
-      'notes.whenUnsure': 'ask',
       ...calendarDefaults,
     });
   });
@@ -42,9 +40,9 @@ describe('the preview fake of the preferences', () => {
     const second: PreferenceChange[] = [];
     prefs.onPreferenceChanged((change) => first.push(change));
     prefs.onPreferenceChanged((change) => second.push(change));
-    await prefs.setPreference('notes.whenUnsure', 'general');
-    await expect(prefs.getPreferences()).resolves.toMatchObject({ 'notes.whenUnsure': 'general' });
-    expect(first).toEqual([{ key: 'notes.whenUnsure', value: 'general' }]);
+    await prefs.setPreference('theme', 'light');
+    await expect(prefs.getPreferences()).resolves.toMatchObject({ theme: 'light' });
+    expect(first).toEqual([{ key: 'theme', value: 'light' }]);
     expect(second).toEqual(first);
   });
 

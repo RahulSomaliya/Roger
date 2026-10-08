@@ -13,7 +13,7 @@ import {
 
 /**
  * Roger's menu bar item (M5-T11): the icon (idle, recording, warning), the next meeting, Start
- * notes now, Stop note, calendar warnings, Open Roger and Quit Roger. What the menu says is
+ * notes, Stop, a reconnect line, Open Roger and Quit Roger. What the menu says is
  * decided in trayMenu.ts; this file feeds it, routes each click and keeps Electron's Tray current.
  *
  * Quit calls `app.quit()` and nothing else: RecordingLifecycle stops the recording and runs the

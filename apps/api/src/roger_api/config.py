@@ -65,6 +65,7 @@ class Settings(NotesSettings, CalendarSettings, DatabaseSettings):
     deepgram_api_key: SecretStr | None = None
     assemblyai_api_key: SecretStr | None = None
     soniox_api_key: SecretStr | None = None
+    xai_api_key: SecretStr | None = None
     stt_token_ttl_seconds: int = Field(default=30, ge=1, le=3600)
     # Retired: the preset names the model. Kept only so a leftover non-blank `STT_MODEL` stops
     # startup by name. Without the field, `extra="ignore"` drops it in silence and the API runs
@@ -164,6 +165,8 @@ class Settings(NotesSettings, CalendarSettings, DatabaseSettings):
                 return self.assemblyai_api_key
             case "soniox":
                 return self.soniox_api_key
+            case "xai":
+                return self.xai_api_key
             case "fake":
                 return None
 

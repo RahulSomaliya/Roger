@@ -253,7 +253,7 @@ describe('describeAnswerError', () => {
       'This meeting is too long to chat with: over about 10 hours of talk.',
     );
     expect(say('not_found')).toBe(
-      'This meeting is not on the server yet. Ask again once its transcript has uploaded.',
+      'This meeting is not on the server yet. Try again once its transcript has uploaded.',
     );
     expect(say('not_sent', 'the API is away')).toBe(
       'Roger could not send this question: the API is away',

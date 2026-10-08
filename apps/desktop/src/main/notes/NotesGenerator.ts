@@ -13,12 +13,7 @@ import type {
   PendingGenerateState,
   PendingGenerateStatus,
 } from '../../shared/notes';
-import type { NotesWhenUnsure } from '../../shared/preferences';
-import {
-  suggestTemplate,
-  templateTitleKey,
-  type TemplateAttendee,
-} from '../../shared/suggestTemplate';
+import { templateTitleKey } from '../../shared/suggestTemplate';
 import { ApiError } from '../api/http';
 import type { LlmRunSummary, NotesClient } from '../api/notesClient';
 import type { CaptureService, RecordingEnded } from '../capture/CaptureService';
@@ -47,12 +42,6 @@ const WAITING_LINES_LIMIT = 10_000;
 
 const OFFLINE: PendingGenerateStatus = { phase: 'waiting_for_notes', cause: 'offline' };
 
-/** The two notes preferences (`notes.autoGenerate`, `notes.whenUnsure`), read when needed. */
-export interface NotesGeneratorPreferences {
-  autoGenerate(): boolean;
-  whenUnsure(): NotesWhenUnsure;
-}
-
 export interface NotesGeneratorOptions {
   store: NotesStore;
   sync: Pick<NotesSync, 'flushMeeting' | 'pullMeeting'>;
@@ -65,12 +54,8 @@ export interface NotesGeneratorOptions {
   uploads: { onStatus(listener: () => void): () => void };
   /** Stop, through M2-T4's session listeners. */
   recordings: Pick<CaptureService, 'onRecording'>;
-  /** From the PreferencesStore of `[slot M4-S2]`; read through getters so a change applies. */
-  preferences: NotesGeneratorPreferences;
   /** The window whose page shows notes runs; null while none is open. */
   window: () => StreamWindow | null;
-  /** The invitees of the event a meeting was started for (index.ts: `meetingAttendees`, M5). */
-  attendees?: (meetingId: string) => readonly TemplateAttendee[];
   logger: Logger;
   clock?: () => Date;
   newRunId?: () => string;
@@ -112,13 +97,13 @@ interface GeneratorEvents extends Record<string, unknown> {
 type ErrorOutcome = 'fail' | 'retry' | 'end';
 
 /**
- * Generate after Stop, in main (M4-T23). A generate is a stored intent, a `pending_generate` row in
- * notes.sqlite with a run id made up front, so it survives a reload, a quit and an offline API. On
- * Stop, with `notes.autoGenerate` on, the row is written with the template `suggestTemplate` picks
- * (or none, when Roger must ask); the Generate button and the answer to "Which kind of call was
- * this?" write the same row (`generate`).
+ * Notes generates, in main (M4-T23). A generate is a stored intent, a `pending_generate` row in
+ * notes.sqlite with a run id made up front, so it survives a reload, a quit and an offline API.
+ * Only the header's Write notes (and "Write again as", and Retry) write a row (`generate`). Stop
+ * writes none and asks nothing: the person presses Write notes, and the page sends its own best
+ * guess of the template, General when unsure (redesign calls 5 and 6, docs/plans/redesign.md).
  *
- * A row runs once its template is known, the meeting has stopped and its lines are all uploaded,
+ * A row runs once the meeting has stopped and its lines are all uploaded,
  * the meeting is in Postgres, and NotesSync has flushed its notes. It is checked again at Stop, on
  * every uploader status event and NotesSync change that may unblock it, at launch and every 30 s.
  * The run streams through LlmStreams to the page; `done` goes into notes.sqlite through
@@ -197,9 +182,10 @@ export class NotesGenerator {
   }
 
   /**
-   * The Generate button, Retry, or the answer to "Which kind of call was this?"
-   * (`notes:generate`). A pending generate that has not failed takes this template and keeps its
-   * run id and reason; a failed one, or none, gets a new run id with reason `button`. The pick is
+   * Write notes, Write again as, or Retry (`notes:generate`). A pending generate that has not
+   * failed takes this template and keeps its run id, and is `button` from now on (a row left by
+   * Stop in an earlier build is dropped by `check`, unless the person asked for it here); a failed
+   * one, or none, gets a new run id with reason `button`. The pick is
    * remembered under the meeting's title. Throws while an attempt runs, and for another template
    * on a run the API may hold.
    */
@@ -225,13 +211,13 @@ export class NotesGenerator {
     const row: StoredPendingGenerate =
       current !== null && current.lastError === null
         ? // An attempt may already have reached the API: a new id would start a second paid run.
-          { ...current, templateId }
+          { ...current, templateId, reason: 'button' }
         : this.newRow(meetingId, templateId, 'button');
     this.rememberPick(meetingId, templateId);
     store.putPendingGenerate(row);
     this.waiting.delete(meetingId);
     this.check(meetingId);
-    return this.stateFor(row);
+    return this.stateFor(row, templateId);
   }
 
   /**
@@ -297,7 +283,9 @@ export class NotesGenerator {
   /** The meeting's pending generate and where it stands, or null (`notes:get-pending-generate`). */
   getPending(meetingId: string): PendingGenerateState | null {
     const row = this.options.store.getPendingGenerate(meetingId);
-    return row === null ? null : this.stateFor(row);
+    if (row === null) return null;
+    // A row an earlier build left asking for its template has no state: `check` drops it.
+    return row.templateId === null ? null : this.stateFor(row, row.templateId);
   }
 
   /** Every change of a meeting's pending generate, once (`notes:pending-generate-changed`). */
@@ -309,12 +297,13 @@ export class NotesGenerator {
 
   /**
    * Runs inside CaptureService's listener call, after Stop ended or discarded the meeting and
-   * before the upload flush. KeptSilentMeetings (notesQuitGuard.ts) hears the same event and reads
+   * before the upload flush. It writes no row (Stop never writes notes by itself); it drops a
+   * discarded meeting's row and re-checks one pressed during the recording. KeptSilentMeetings (notesQuitGuard.ts) hears the same event and reads
    * `discarded` and `stopFailed` the same way: keep the two in step.
    */
   private recordingEnded(recording: RecordingEnded): void {
     const { meetingId } = recording;
-    const { store, preferences, logger } = this.options;
+    const { logger } = this.options;
     try {
       // Deleted for having no line and no notes: a row for it (the Generate button pressed during
       // the recording) would wait for a meeting that never comes.
@@ -325,20 +314,8 @@ export class NotesGenerator {
       // Stop threw first, so the meeting may still be open (`ended_at` NULL): CrashRecovery
       // decides at the next launch. Nothing is written up for a meeting that may go on.
       if (recording.stopFailed) return;
-      const current = store.getPendingGenerate(meetingId);
-      // None, or a failed one (Retry's): a new row. Any other keeps its template and run id: the
-      // Generate button pressed during the recording, which `waitFor` held until now. With
-      // auto-generate off, only that row runs.
-      if (preferences.autoGenerate() && current?.lastError !== null) {
-        const row = this.newRow(meetingId, this.templateAtStop(meetingId), 'after_stop');
-        store.putPendingGenerate(row);
-        this.waiting.delete(meetingId);
-        logger.info('notes generate pending after stop', {
-          meetingId,
-          runId: row.runId,
-          templateId: row.templateId,
-        });
-      }
+      // Write notes pressed during the recording left a row, which `waitFor` held until now. Stop
+      // writes none of its own.
       this.check(meetingId);
     } catch (error) {
       logger.error('notes generate after stop failed', { meetingId, error: errorMessage(error) });
@@ -346,19 +323,17 @@ export class NotesGenerator {
   }
 
   /**
-   * Trap: NotesSync writes the sync state on every attempt at a note (`syncing`, then `synced`,
-   * `offline` or `saved_locally`), this generator's own flush included, and each write is a note
-   * change. A re-check on those flushes again, which writes again: see the trap on
-   * `NotesSync.flushMeeting`. Two rules keep this listener off that loop. Only a generate that
+   * Trap: NotesSync writes the sync state on an attempt at a note (`syncing` on a first one, then
+   * `synced`, `offline` or `refused`; a retry of a failed note writes only its answer), this
+   * generator's own flush included, and each write is a note change. A re-check on those flushes
+   * again, which writes again: see the trap on `NotesSync.flushMeeting`. Two rules keep this listener off that loop. Only a generate that
    * waits for its notes re-checks, and while an attempt runs (its flush and pull included)
    * nothing waits and `check` starts no second attempt, so the flush's own changes do nothing.
    * And only a change that can unblock a run re-checks: a stored note (`synced`), or
    * `saved_locally`, which a save by the user writes (it also ends a conflict with "Use mine").
-   * A retry the API refused writes `saved_locally` too (a `401`, a `422`, a `409` its copy did not
-   * explain): it wakes a waiting generate, whose flush asks once more and is refused again. That
-   * costs one request per NotesSync backoff window (2 s, doubling to 30 s), and never loops, by
-   * the first rule; NotesSync's backoff check does not cover a refused note. A retry that found
-   * the API away writes `syncing` and `offline`, which never re-check.
+   * A retry the API refused (a `401`, a `422`, a `409` its copy did not explain) writes `refused`
+   * or `refused_access`, which never re-check, like `syncing` and `offline`: a waiting generate
+   * wakes on the `synced` that the NotesSync backoff's next accepted attempt writes.
    */
   private noteChanged(note: LocalNote): void {
     if (note.sync !== 'synced' && note.sync !== 'saved_locally') return;
@@ -390,8 +365,24 @@ export class NotesGenerator {
     if (!this.running || this.attempts.has(meetingId)) return;
     try {
       const row = this.options.store.getPendingGenerate(meetingId);
-      // Gone or failed (`?.` is undefined for none; a failed one waits for Retry), or asking.
-      if (row?.lastError !== null || row.templateId === null) {
+      if (row !== null && (row.reason === 'after_stop' || row.templateId === null)) {
+        // Rows an earlier build left, from before the redesign. `after_stop` was the automatic
+        // write-up after Stop (call 5 deleted it): nobody asked for these notes in this build, and
+        // running the row spends the person's LLM budget on them. A null template was "Which kind
+        // of call was this?" (call 6 deleted the question): nothing answers it any more. Neither
+        // ran; drop it. `generate` gives a row the person takes over the reason `button`, so a
+        // Write notes pressed over a leftover is kept.
+        this.options.logger.info('pending generate from an earlier build dropped', {
+          meetingId,
+          runId: row.runId,
+          reason: row.reason,
+          hadTemplate: row.templateId !== null,
+        });
+        this.drop(meetingId);
+        return;
+      }
+      // Gone or failed (`?.` is undefined for none; a failed one waits for Retry).
+      if (row?.lastError !== null) {
         this.waiting.delete(meetingId);
       } else {
         const wait = this.waitFor(meetingId);
@@ -475,7 +466,7 @@ export class NotesGenerator {
           status: {
             phase: 'failed',
             code: 'internal_error',
-            message: 'Roger could not generate the notes. It will try again.',
+            message: 'Roger could not write the notes. It will try again.',
           },
           wakeOn: 'timer',
         });
@@ -753,18 +744,6 @@ export class NotesGenerator {
     };
   }
 
-  /** The rule in shared/suggestTemplate.ts, then the `notes.whenUnsure` preference. */
-  private templateAtStop(meetingId: string): string | null {
-    const { store, transcripts, preferences, attendees } = this.options;
-    const suggestion = suggestTemplate({
-      title: transcripts.getMeeting(meetingId)?.title ?? '',
-      lastPick: (titleKey) => store.getTemplateChoice(titleKey),
-      attendees: attendees?.(meetingId) ?? [],
-    });
-    if (suggestion.templateId !== null) return suggestion.templateId;
-    return preferences.whenUnsure() === 'general' ? 'general' : null;
-  }
-
   /** Never for a title that says nothing about the call (`templateTitleKey`). */
   private rememberPick(meetingId: string, templateId: string): void {
     const meeting = this.options.transcripts.getMeeting(meetingId);
@@ -792,11 +771,11 @@ export class NotesGenerator {
     return row.templateId !== null && row.lastError === null && !this.unsent.has(row.runId);
   }
 
-  private stateFor(row: StoredPendingGenerate): PendingGenerateState {
+  private stateFor(row: StoredPendingGenerate, templateId: string): PendingGenerateState {
     return {
       meetingId: row.meetingId,
       runId: row.runId,
-      templateId: row.templateId,
+      templateId,
       reason: row.reason,
       createdAt: row.createdAt,
       status: this.statusOf(row),
@@ -805,7 +784,6 @@ export class NotesGenerator {
 
   private statusOf(row: StoredPendingGenerate): PendingGenerateStatus {
     if (row.lastError !== null) return { phase: 'failed', ...row.lastError };
-    if (row.templateId === null) return { phase: 'needs_template' };
     if (this.attempts.get(row.meetingId)?.runId === row.runId) return { phase: 'running' };
     const wait = this.waiting.get(row.meetingId) ?? this.waitFor(row.meetingId);
     // Ready, so the next check starts it (it has not run since start, or this was not started).

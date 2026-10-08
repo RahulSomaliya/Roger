@@ -1,5 +1,5 @@
 /**
- * The video-call host allowlist. "Join and take notes" opens a link in the default browser, so it
+ * The video-call host allowlist. "Join and start notes" opens a link in the default browser, so it
  * only ever opens a link that passes here, however the link reached the desktop.
  *
  * The allowlist exists twice: here and in the API's `services/calendar/video_links.py`, which picks

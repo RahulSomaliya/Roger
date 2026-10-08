@@ -25,6 +25,66 @@ preset, provider, model, price and token lifetime it started with.
 | --- | --- | --- | --- | --- |
 | 2026-10-05 | `deepgram` (with `STT_MODEL=nova-3`; presets came with M3-T1) | `deepgram` | `nova-3` | M1's first vendor, in the walking skeleton. Not measured. |
 | 2026-10-06 | `assemblyai` | `assemblyai` | `universal-streaming-english` | Owner decision in M1 (merge a3be3ee): AssemblyAI lists Granola as a customer, live text costs $0.15 per stream-hour billed on open time, and the free hours are generous. Deepgram stays as the second adapter for the bake-off. Not measured yet: the bake-off confirms or replaces it by the rule below. |
+| 2026-10-07 | `xai` (available, not serving: AssemblyAI still is) | `xai` | `grok-voice-transcribe-2.0` | Added so Rahul can hear Grok and AssemblyAI on the same audio: set `STT_PROVIDER=xai` and `XAI_API_KEY`, restart the API. Measured once on the synthetic canary (live check below), not a bake-off run until the open points are settled. |
+
+### xAI (Grok Voice Transcribe 2.0), added 2026-10-07
+
+Read from docs.x.ai on 2026-10-07: the
+[speech-to-text page](https://docs.x.ai/developers/model-capabilities/audio/speech-to-text), the
+[models and pricing page](https://docs.x.ai/developers/models), the
+[client_secrets reference](https://docs.x.ai/developers/rest-api-reference/inference/voice), the
+[voice agent page](https://docs.x.ai/developers/model-capabilities/audio/voice-agent) and the
+[security FAQ](https://docs.x.ai/developers/faq/security).
+
+| | xAI |
+| --- | --- |
+| Live socket | `wss://api.x.ai/v1/stt`, settings in the query: `model` (default `grok-voice-transcribe-2.0`), `sample_rate` (16000), `encoding` (`pcm`, `mulaw`, `alaw`, `opus`), `interim_results`, `endpointing` (ms, default 400), `language`, `format` (needs `language`), `diarize`, `keyterm` (repeated, 100 terms of 50 characters), `smart_turn`, `vad_threshold` |
+| What Roger sends | `model`, `encoding=pcm`, `sample_rate`, `interim_results=true`, `language`, `format=true`, one `keyterm` per term. No `diarize`: the mic (Me) and the call audio (Them) stay two streams (house rule 6). `endpointing`, `smart_turn` and `vad_threshold` at xAI's defaults. |
+| Token from the API | `POST https://api.x.ai/v1/realtime/client_secrets`, `Authorization: Bearer <key>`, body `{"expires_after": {"seconds": 1..3600}}` (default 600). Returns `{value, expires_at}`. |
+| How the desktop authenticates | `Authorization: Bearer <client secret>` on the websocket handshake |
+| Messages | Server: `transcript.created` (wait for it before audio), `transcript.partial` (`is_final`, `speech_final`, `words`), `transcript.done` (after `audio.done`), `error`. Client: binary audio, `{"type":"Finalize"}` (the API reference accepts `Finalize` or `finalize`) and `{"type":"audio.done"}`. |
+| Partial states | `is_final` false: interim. `is_final` true, `speech_final` false: a chunk of about 3 s locked. Both true: the speaker stopped, "complete stitched utterance". Roger saves a line only at the last. |
+| Price per stream-hour | $0.20 streaming ($0.10 REST). Diarization and keyterms add nothing. |
+| Billing basis | Not documented. Assumed to be open time, silent or not (the conservative reading, the same as AssemblyAI's): a meeting hour costs $0.40. |
+| Limits | No session cap, idle timeout, keep-alive message or sessions-per-minute limit is documented, so Roger's own guards (stall close, silence gate, 4-hour stop) are the only net. |
+| Training and retention | "By default, all API requests and responses are stored on our servers (encrypted at rest) for 30 days for auditing purposes in the event of suspected abuse or misuse." xAI "never trains on your API inputs or outputs without your explicit permission." Zero data retention (inputs and outputs never persisted to disk) is a team-level enterprise setting, not a request parameter. |
+
+Live check 2026-10-07, `make bench ARGS="canary"` against a local API serving `STT_PROVIDER=xai`
+with the real key, the same synthetic script through both vendors (synthetic speech: it says nothing
+about accuracy on real voices):
+
+- A client secret minted by `POST /v1/realtime/client_secrets` (694 ms through the API) is accepted
+  as `Authorization: Bearer` on the `wss://api.x.ai/v1/stt` handshake. No relay is needed.
+- `grok-voice-transcribe-2.0`: WER 9.4%, first final after 4182 ms, connected 17.1 s for 14.25 s of
+  audio, estimated $0.0009, canary passed. `universal-streaming-english`: WER 9.4%, first final
+  after 3265 ms, connected 16.1 s, estimated $0.0007, passed.
+- After `transcript.done` and the core's close(1000), xAI dropped the connection without a close
+  frame about 2.4 s later (code 1006). The finish had completed first ("stt session finished"
+  logged), so no gap row; the cost is about 2.4 s more open socket per session end, which may or
+  may not be billed (see Billing basis below).
+
+Open points, before Grok is used on a real call:
+
+1. **Lines.** That `speech_final`'s text repeats the locked chunks, and that an interim after a
+   chunk holds only the new words (`XaiLineAssembler`). If not, a line repeats or loses a chunk.
+   The canary's 9.4% WER is consistent with no repeated words, but one synthetic clip does not
+   prove it.
+2. **Timing.** What `start` and `duration` of a partial span (read here as the utterance's start
+   and length, in seconds from the stream's start), and the unit of a word's `start` and `end`
+   (read as seconds).
+3. **Billing basis.** Open time or audio sent, and whether the 2.4 s tail after a close is billed:
+   read a day's usage in the xAI console against the `stt_usage` rows, then correct the price note
+   in `stt_vendors.py`.
+4. **Retention.** Roger promises it never trains vendors on calls (decision D3). xAI does not train
+   without permission, but it keeps requests 30 days; Rahul decides whether that is acceptable, or
+   whether to ask for zero data retention on the team, before any real client call goes through it.
+5. **Finish on an empty buffer.** That `Finalize` with nothing buffered is harmless, and that
+   `transcript.done` still follows the last `speech_final`. The canary's finish came after speech,
+   so it never sent `Finalize` on an empty buffer (a Stop during silence does).
+
+To compare: restart the API with `STT_PROVIDER=xai`, then `make bench ARGS="run"` replays the same
+items through Grok exactly as it did for the other vendors (the bench builds the adapter from the
+desktop's registry), and `score` and `report --summary` read the run like any other.
 
 ## Results
 
@@ -248,8 +308,9 @@ sees presets.
 | `deepgram` | `deepgram` | `nova-3` | 0.462 | 0.54 | 1.08 |
 | `fake` | `fake` | `fake` | 0 | 0 | 0 |
 | `soniox` (D1, M3-T14 and T15) | `soniox` | `stt-rt-v5` | 0.12 | 0.12 (context terms appear included) | 0.24 |
+| `xai` (2026-10-07) | `xai` | `grok-voice-transcribe-2.0` | 0.20 | 0.20 (keyterms free) | 0.40 (open time assumed) |
 
-Prices are list prices read on 2026-10-06; each carries its source URL in `stt_vendors.py`. A
+Prices are list prices read on 2026-10-06 (xAI's on 2026-10-07); each carries its source URL in `stt_vendors.py`. A
 meeting opens two streams, so a meeting hour costs twice the stream price. Deepgram's is its
 regular price ($0.0077 a minute); at the promotional $0.0048 a meeting hour with a list is $0.73.
 `STT_PRICE_PER_HOUR_USD` replaces the base price for every preset, a rate without keyterms (the API
@@ -285,6 +346,7 @@ Step 1 of the choice rule needs this confirmed for the vendor chosen. Roger prom
 | AssemblyAI | Data Controls in its dashboard, by the owner, before any real audio | Not yet recorded: the owner writes the date here |
 | Deepgram | `mip_opt_out=true` on every websocket URL (`DeepgramSpeechToText.ts`, M3-T4a) | In code since M3-T4a; the opted-out price is still to read |
 | Soniox | Never trains on content (its security and privacy page) | Nothing to switch; its docs say so |
+| xAI | Never trains on API data without explicit permission; requests are kept 30 days for abuse audit (zero data retention is a team-level enterprise setting) | Nothing to switch; Rahul decides on the 30-day retention (see the vendor log) |
 
 Sources: [Deepgram keyterm](https://developers.deepgram.com/docs/keyterm),
 [Deepgram pricing](https://deepgram.com/pricing),
@@ -303,7 +365,12 @@ Sources: [Deepgram keyterm](https://developers.deepgram.com/docs/keyterm),
 [Soniox temporary keys](https://soniox.com/docs/stt/api-reference/auth/create_temporary_api_key),
 [Soniox context](https://soniox.com/docs/stt/concepts/context),
 [Soniox pricing](https://soniox.com/pricing),
-[Soniox security and privacy](https://soniox.com/docs/security-and-privacy).
+[Soniox security and privacy](https://soniox.com/docs/security-and-privacy),
+[xAI speech-to-text](https://docs.x.ai/developers/model-capabilities/audio/speech-to-text),
+[xAI models and pricing](https://docs.x.ai/developers/models),
+[xAI client_secrets](https://docs.x.ai/developers/rest-api-reference/inference/voice),
+[xAI voice agent](https://docs.x.ai/developers/model-capabilities/audio/voice-agent),
+[xAI security FAQ](https://docs.x.ai/developers/faq/security).
 
 ## Running the bench
 

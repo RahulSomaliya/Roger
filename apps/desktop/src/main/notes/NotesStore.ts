@@ -28,7 +28,11 @@ export interface StoredPendingGenerate {
    * after a failed run takes a new one (the API would replay the stored failure to the old one).
    */
   runId: string;
-  /** Null until a template is known: Roger asks "Which kind of call was this?". */
+  /**
+   * Never null in a row written now. A row an earlier build left asking "Which kind of call was
+   * this?" (redesign call 6 deleted the question) still reads null, and NotesGenerator drops it.
+   * The column stays nullable: dropping that needs a migration for no gain.
+   */
   templateId: string | null;
   reason: GenerateReason;
   /** UTC ISO 8601. */
@@ -51,8 +55,8 @@ export interface NotesStore {
   getNotes(meetingId: string): MeetingNotes;
   /**
    * Store the page's doc as a new local revision (a new `revisionId`), dirty. The sync state
-   * becomes `saved_locally`, except that `waiting_for_meeting` and `offline` stay: the save does
-   * not change why the note cannot upload. A conflict copy stays until it is resolved. Throws,
+   * becomes `saved_locally`, except that `waiting_for_meeting`, `offline`, `refused` and
+   * `refused_access` stay: the save does not change why the note cannot upload. A conflict copy stays until it is resolved. Throws,
    * storing nothing, on a doc `noteDocProblem` refuses: the API would refuse it with a `422`, and
    * it would stay dirty and be re-sent forever.
    *
@@ -128,8 +132,8 @@ export interface NotesStore {
    */
   deleteNoteIfEmpty(meetingId: string, kind: NoteKind): boolean;
   /**
-   * Trap: NotesSync's own attempts write here too (`syncing`, then `synced`, `offline` or
-   * `saved_locally`), so a listener that calls `NotesSync.flushMeeting` (NotesGenerator's
+   * Trap: NotesSync's own attempts write here too (`syncing` on a first attempt, then `synced`,
+   * `offline` or `saved_locally`), so a listener that calls `NotesSync.flushMeeting` (NotesGenerator's
    * re-check, M4-T23) is fed by its own flush. Read the trap on flushMeeting before wiring one.
    */
   onNoteChanged(listener: (note: LocalNote) => void): () => void;

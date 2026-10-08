@@ -348,8 +348,10 @@ describe('CaptureService', () => {
     expect(status.segmentsStored).toBe(0);
     expect(status.segmentsUnsaved).toBe(1);
     expect(status.error).toContain('1 line could not be saved on this Mac');
-    expect(status.error).toContain('Mic (me)');
-    expect(status.error).toContain(meetingId!);
+    // No ids and no stream labels on the page: both are in the log (CaptureSession, 'line not
+    // saved locally'). What stays is the plain fact and what to do (house rule 1).
+    expect(status.error).not.toContain(meetingId!);
+    expect(status.error).not.toContain('Mic (me)');
     expect(status.error).toContain('database or disk is full');
     expect(h.statuses.at(-1)?.error).toBe(status.error);
     expect(h.segments.map((s) => s.text)).toEqual(['lost line']);
@@ -1173,7 +1175,9 @@ describe('CaptureService forgotten Stop', () => {
 
     const status = h.service.getStatus();
     expect(status.phase).toBe('idle');
-    expect(status.notice).toMatch(/^Stopped at \d\d:\d\d after 15 minutes with no speech\.$/);
+    expect(status.notice).toMatch(
+      /^Stopped at \d{1,2}:\d\d [ap]m after 15 minutes with no speech\.$/,
+    );
     expect(mic.closed).toBe(true);
     expect(h.stt.streams.get('system')?.closed).toBe(true);
     expect(h.statuses.at(-1)?.notice).toBe(status.notice);
@@ -1249,7 +1253,9 @@ describe('CaptureService forgotten Stop', () => {
 
     const status = h.service.getStatus();
     expect(status.phase).toBe('idle');
-    expect(status.notice).toMatch(/^Stopped at \d\d:\d\d: one recording is capped at 2 minutes\.$/);
+    expect(status.notice).toMatch(
+      /^Stopped at \d{1,2}:\d\d [ap]m: one meeting is capped at 2 minutes\.$/,
+    );
     expect(h.store.getMeeting(meetingId!)?.endedAt).not.toBeNull();
   });
 
@@ -1841,10 +1847,9 @@ describe('CaptureService stop reason', () => {
 });
 
 describe('defaultMeetingTitle', () => {
-  it('names a meeting after its start time', () => {
-    expect(defaultMeetingTitle(new Date('2026-10-05T10:05:00Z'))).toMatch(
-      /^Meeting 5 Oct 2026 \d\d:\d\d$/,
-    );
+  it('names a meeting after its start time, in the 12-hour form docs/design.md gives', () => {
+    expect(defaultMeetingTitle(new Date(2026, 9, 5, 17, 1))).toBe('Meeting at 5:01 pm');
+    expect(defaultMeetingTitle(new Date(2026, 9, 5, 0, 7))).toBe('Meeting at 12:07 am');
   });
 });
 

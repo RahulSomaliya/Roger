@@ -31,10 +31,11 @@ migrated it logs `database_not_ready` and exits.
 | --- | --- | --- |
 | `DATABASE_URL` | required | `postgresql+asyncpg://...`. Plain `postgres://` and `postgresql://` URLs are accepted and switched to asyncpg. Alembic reads the same variable. |
 | `ROGER_API_TOKEN` | required | Shared bearer secret for `/v1/*` and `/mcp`. At least 16 characters; startup fails on the `.env.example` placeholder (anything starting with `change-me`). |
-| `STT_PROVIDER` | `fake` | A preset: the vendor and its model together, `assemblyai` (Roger's vendor), `assemblyai-pro`, `deepgram`, `soniox` or `fake` (no vendor). Startup fails on any other value. See [Speech-to-text tokens](#speech-to-text-tokens). |
+| `STT_PROVIDER` | `fake` | A preset: the vendor and its model together, `assemblyai` (Roger's vendor), `assemblyai-pro`, `deepgram`, `soniox`, `xai` or `fake` (no vendor). Startup fails on any other value. See [Speech-to-text tokens](#speech-to-text-tokens). |
 | `ASSEMBLYAI_API_KEY` | empty | Required with the `assemblyai` and `assemblyai-pro` presets; startup fails without it. Never leaves the API. |
 | `DEEPGRAM_API_KEY` | empty | Required when `STT_PROVIDER=deepgram`; startup fails without it. Never leaves the API. |
 | `SONIOX_API_KEY` | empty | Required when `STT_PROVIDER=soniox`; startup fails without it. Never leaves the API. |
+| `XAI_API_KEY` | empty | Required when `STT_PROVIDER=xai`; startup fails without it. Never leaves the API. |
 | `STT_TOKEN_TTL_SECONDS` | `30` | Lifetime of the speech-to-text token handed to the desktop (1..3600; at most 600 with the AssemblyAI presets, the vendor's limit). |
 | `STT_MODEL` | retired | The preset names the model. Startup fails while `STT_MODEL` has a value and names it; delete the line (a blank `STT_MODEL=` still counts as unset). |
 | `STT_PRICE_PER_HOUR_USD` | unset | USD per hour of one open stream without keyterms, returned to the desktop as `stream.price_per_hour_usd_without_keyterms`. Unset means the list price of the preset's model (`src/roger_api/stt_vendors.py`); set it for a negotiated rate. When the workspace has a jargon list, `stream.price_per_hour_usd` is this plus the vendor's keyterm surcharge for the model, so never set an all-in rate here: it would count the surcharge twice. A model with no list price returns `null` and logs `stt_price_unknown` at startup. |
@@ -63,6 +64,7 @@ and one of its models, so switching vendor or model is one line in `.env`, then 
 | `assemblyai-pro` | `assemblyai` | `universal-3-6-pro` | 0.45 |
 | `deepgram` | `deepgram` | `nova-3` | 0.462 |
 | `soniox` | `soniox` | `stt-rt-v5` | 0.12 |
+| `xai` | `xai` | `grok-voice-transcribe-2.0` | 0.20 |
 | `fake` | `fake` | `fake` | 0 |
 
 The token's `provider` is always the vendor, never the preset, so the desktop never sees presets.
@@ -100,6 +102,16 @@ sent, silence included (about $0.06 an hour), and the text returned (about $0.06
 continuous speech), so its $0.12 errs high. The jargon list costs a few input tokens per stream
 opened (under $0.001 for the longest list), so the price is the same with a list. The desktop's
 Soniox adapter is M3-T15's; before it, Start on the Mac refused `soniox`.
+
+xAI (`STT_PROVIDER=xai`, model `grok-voice-transcribe-2.0`) is there to compare Grok with
+AssemblyAI on the same audio (`make bench`). The issuer mints a client secret
+(`POST https://api.x.ai/v1/realtime/client_secrets`, `Authorization: Bearer <key>`, body
+`{"expires_after": {"seconds": <STT_TOKEN_TTL_SECONDS>}}`, answering `{"value", "expires_at"}`) and
+the desktop sends it as `Authorization: Bearer` on the websocket handshake. That `wss://api.x.ai/v1/stt`
+accepts a client secret was confirmed with a live key on 2026-10-07 (the vendor log in
+`docs/research/stt-benchmark.md`), though xAI documents the secrets for its voice-agent socket
+only. xAI does not say whether it bills open time or audio sent, so the price assumes open time. Its API requests are kept 30 days for abuse audit; zero data
+retention is a team-level setting (same log).
 
 Two vendor rules to know before testing (read 2026-10-06):
 

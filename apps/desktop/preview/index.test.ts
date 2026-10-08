@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import rendererHtml from '../src/renderer/index.html?raw';
 import previewHtml from './index.html?raw';
+import promptPreviewHtml from './prompt.html?raw';
+import promptRendererHtml from '../src/renderer/prompt.html?raw';
 
 const CSP_META = /<meta\s+http-equiv="Content-Security-Policy"\s+content="([^"]*)"/;
 
@@ -25,5 +27,18 @@ describe('preview/index.html', () => {
     const { at } = policyOf(previewHtml, 'preview/index.html');
     const firstScript = previewHtml.indexOf('<script');
     expect(firstScript).toBeGreaterThan(at);
+  });
+});
+
+describe('preview/prompt.html', () => {
+  // The panel's own policy is narrower than the main window's (no media, no workers).
+  it("enforces the prompt panel's Content-Security-Policy, unchanged", () => {
+    const panel = policyOf(promptRendererHtml, 'src/renderer/prompt.html');
+    expect(policyOf(promptPreviewHtml, 'preview/prompt.html').policy).toBe(panel.policy);
+  });
+
+  it('sets the policy before any script', () => {
+    const { at } = policyOf(promptPreviewHtml, 'preview/prompt.html');
+    expect(promptPreviewHtml.indexOf('<script')).toBeGreaterThan(at);
   });
 });

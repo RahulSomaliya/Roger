@@ -11,7 +11,6 @@ import {
   describeStream,
   describeUpload,
   formatOffset,
-  streamTone,
 } from './format';
 
 const upload = (overrides: Partial<UploadStatus>): UploadStatus => ({
@@ -24,14 +23,19 @@ const upload = (overrides: Partial<UploadStatus>): UploadStatus => ({
 });
 
 describe('formatOffset', () => {
-  it('renders hh:mm:ss including past one hour', () => {
-    expect(formatOffset(0)).toBe('00:00:00');
-    expect(formatOffset(61_500)).toBe('00:01:01');
-    expect(formatOffset(3_725_000)).toBe('01:02:05');
+  it('renders m:ss, and h:mm:ss past one hour (docs/design.md)', () => {
+    expect(formatOffset(0)).toBe('0:00');
+    expect(formatOffset(61_500)).toBe('1:01');
+    expect(formatOffset(247_000)).toBe('4:07');
+    expect(formatOffset(600_000)).toBe('10:00');
+    expect(formatOffset(3_599_999)).toBe('59:59');
+    expect(formatOffset(3_600_000)).toBe('1:00:00');
+    expect(formatOffset(3_725_000)).toBe('1:02:05');
+    expect(formatOffset(37_325_000)).toBe('10:22:05');
   });
 
   it('never goes negative', () => {
-    expect(formatOffset(-5)).toBe('00:00:00');
+    expect(formatOffset(-5)).toBe('0:00');
   });
 });
 
@@ -51,7 +55,7 @@ describe('describeHealth', () => {
 });
 
 describe('describeStream', () => {
-  // The row's label (StreamStatus): short, because the row shows why beside it (streamMessages).
+  // The row's label (CaptureFacts): short, because the row shows why beside it (streamMessages).
   it('says Transcribing only for an open session, and Not connected for a closed one', () => {
     expect(describeStream('open', 'active')).toBe('Transcribing');
     expect(describeStream('closed', 'error')).toBe('Not connected');
@@ -92,33 +96,6 @@ describe('describeStream', () => {
   });
 });
 
-describe('streamTone', () => {
-  it('is ok only while a session transcribes audio', () => {
-    expect(streamTone('open', 'active')).toBe('ok');
-    expect(streamTone('open', 'stalled')).toBe('warn');
-    expect(streamTone('open', 'ended')).toBe('warn');
-  });
-
-  it('waits quietly while a session starts, and stays off when there is none', () => {
-    expect(streamTone('connecting', 'pending')).toBe('pending');
-    // Connected a moment before the first chunk: every Start passes through it.
-    expect(streamTone('open', 'pending')).toBe('pending');
-    expect(streamTone('closed', 'pending')).toBe('off');
-  });
-
-  it('stays off while the silence gate keeps a session closed: nothing is being said', () => {
-    expect(streamTone('paused', 'active')).toBe('off');
-  });
-
-  it('warns while the words are not reaching the vendor, and errs once they never will', () => {
-    expect(streamTone('paused', 'stalled')).toBe('warn');
-    expect(streamTone('paused', 'pending')).toBe('warn');
-    expect(streamTone('retrying', 'active')).toBe('warn');
-    expect(streamTone('offline', 'active')).toBe('warn');
-    expect(streamTone('error', 'active')).toBe('error');
-  });
-});
-
 describe('describeSaved', () => {
   it('counts lines that could not be saved next to the saved ones', () => {
     expect(describeSaved(3, 0)).toBe('3 lines');
@@ -134,10 +111,8 @@ describe('describeUpload', () => {
     expect(describeUpload(upload({}))).toBe('all lines uploaded');
   });
 
-  it('mentions lines the API rejected so nobody thinks they were uploaded', () => {
-    expect(describeUpload(upload({ rejected: 2 }))).toBe(
-      'all lines uploaded · 2 rejected by the API',
-    );
+  it('mentions lines the server refused so nobody thinks they were uploaded', () => {
+    expect(describeUpload(upload({ rejected: 2 }))).toBe('all lines uploaded · 2 refused for good');
   });
 });
 
@@ -196,8 +171,8 @@ describe('describeMeter', () => {
 
   it('gives sessions, audio and each source in the details', () => {
     expect(meterDetails(status)).toBe(
-      '3 sessions opened · 12m 25s of audio sent. Mic (me): 6m 15s connected, about $0.02. ' +
-        'Call audio (them): 6m 15s connected, about $0.02.',
+      '3 sessions opened · 12m 25s of audio sent. Microphone: 6m 15s connected, about $0.02. ' +
+        'Call audio: 6m 15s connected, about $0.02.',
     );
   });
 
@@ -242,8 +217,8 @@ describe('describeMeter', () => {
     it("gives each source's closed time in the details, and says when the gate is spent", () => {
       expect(meterDetails(gated)).toBe(
         '3 sessions opened · 12m 25s of audio sent · 12m 00s closed in silence. ' +
-          'Mic (me): 6m 15s connected, about $0.02, 12m 00s closed in silence. ' +
-          'Call audio (them): 6m 15s connected, about $0.02.',
+          'Microphone: 6m 15s connected, about $0.02, 12m 00s closed in silence. ' +
+          'Call audio: 6m 15s connected, about $0.02.',
       );
       expect(meterDetails({ ...gated, silenceGate: 'spent' })).toBe(
         `${meterDetails(gated)} Silence gate off for this meeting: its reopens are spent.`,

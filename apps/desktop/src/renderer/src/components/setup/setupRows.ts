@@ -31,8 +31,6 @@ export type SetupActionKind = SetupAction['kind'];
 export interface SetupRowView {
   id: SetupRowId;
   title: string;
-  /** What the row checks, for someone who has never heard of it. */
-  description: string;
   stateLabel: string;
   tone: SetupTone;
   /** Main's words: what is wrong and how to fix it (shared/ipc/setup.ts), or null. */
@@ -110,10 +108,11 @@ function fromCheck<State extends string>(
   looks: Record<State, StateLook>,
 ): Pick<SetupRowView, 'stateLabel' | 'tone' | 'message'> {
   const look = looks[check.state];
-  // A good or not-yet-known state that still says something needs a look, not a green or grey
-  // dot: a development build, a missing helper, codesign or macOS giving no answer. setupSummary
-  // counts only attention and problem rows, so a grey row with a message would sit under "Roger
-  // has what it needs" while saying Roger cannot record call audio.
+  // A good or not-yet-known state that still says something needs a look, not a pass or a grey
+  // "not tested": a development build, a missing helper, codesign or macOS giving no answer.
+  // splitRows and needsYou count only attention and problem rows as open, so a grey row with a
+  // message would be folded under "5 checks pass" and let Done show while saying Roger cannot
+  // record call audio.
   const quiet = look.tone === 'ok' || look.tone === 'neutral';
   const tone = quiet && check.message !== null ? 'attention' : look.tone;
   return { stateLabel: look.label, tone, message: check.message };
@@ -134,7 +133,6 @@ function microphoneRow(check: SetupCheck<MediaAccessState>): SetupRowView {
   return {
     id: 'microphone',
     title: 'Microphone',
-    description: 'Your side of the call, from the microphone Roger records.',
     ...fromCheck(check, MEDIA_ACCESS),
     actions: withRelaunch(check, actions),
   };
@@ -146,8 +144,6 @@ function callAudioRow(status: SetupStatus): SetupRowView {
     return {
       id: 'callAudio',
       title: 'Call audio',
-      description:
-        'The other side of the call. On this Mac Roger records it through Screen Recording.',
       ...fromCheck(screen, MEDIA_ACCESS),
       actions: withRelaunch(
         screen,
@@ -169,8 +165,6 @@ function callAudioRow(status: SetupStatus): SetupRowView {
   return {
     id: 'callAudio',
     title: 'Call audio',
-    description:
-      'The other side of the call: what your Mac plays. The test plays a short sound and listens for it.',
     ...fromCheck(check, SYSTEM_AUDIO),
     actions: withRelaunch(check, actions),
   };
@@ -180,8 +174,6 @@ function notificationsRow(check: SetupCheck<NotificationSetupState>): SetupRowVi
   return {
     id: 'notifications',
     title: 'Notifications',
-    description:
-      'How Roger warns you, while its window is in the background, that a recording stopped hearing you.',
     ...fromCheck(check, NOTIFICATIONS),
     actions: withRelaunch(check, [
       { kind: 'test-notification', label: 'Send a test notification' },
@@ -193,7 +185,6 @@ function signingRow(check: SetupCheck<SigningSetupState>): SetupRowView {
   return {
     id: 'signing',
     title: 'This copy of Roger',
-    description: 'macOS ties every permission to how Roger is signed.',
     ...fromCheck(check, SIGNING),
     actions: withRelaunch(check, []),
   };
@@ -213,13 +204,10 @@ function connectionRow(
     id === 'server'
       ? {
           title: "Roger's server",
-          description: 'Where your transcripts are kept, and what lets Roger use speech-to-text.',
           looks: SERVER,
         }
       : {
           title: 'Speech-to-text',
-          description:
-            'Turns the call into text as it happens. The check opens no session: sessions are billed.',
           looks: SPEECH_TO_TEXT,
         };
   const read = fromCheck(check, text.looks);
@@ -227,7 +215,6 @@ function connectionRow(
   return {
     id,
     title: text.title,
-    description: text.description,
     ...read,
     tone: waitsOnServer ? 'neutral' : read.tone,
     actions: withRelaunch(check, check.state === 'ok' ? [] : [RECHECK]),
@@ -246,9 +233,39 @@ export function setupRows(status: SetupStatus): SetupRowView[] {
   ];
 }
 
-/** One line above the rows: all ready, or how many need the person. */
-export function setupSummary(rows: readonly SetupRowView[]): string {
-  const open = rows.filter((view) => view.tone === 'problem' || view.tone === 'attention').length;
-  if (open === 0) return 'Roger has what it needs on this Mac.';
-  return open === 1 ? '1 check needs you.' : `${open} checks need you.`;
+/** A row that is not a pass: broken, needs the person, or not known yet. */
+const isOpen = (view: SetupRowView): boolean => view.tone !== 'ok';
+
+/** A row that needs the person: the ones that count against Done and can lead with a fix. */
+const failing = (view: SetupRowView): boolean =>
+  view.tone === 'problem' || view.tone === 'attention';
+
+/**
+ * The rows for the default view and the ones folded under "N checks pass". A row not yet tested
+ * stays in view (its test is the fix); only a confirmed pass is folded away.
+ */
+export function splitRows(rows: readonly SetupRowView[]): {
+  open: SetupRowView[];
+  passing: SetupRowView[];
+} {
+  return { open: rows.filter(isOpen), passing: rows.filter((view) => !isOpen(view)) };
+}
+
+/** The line that folds the passing rows away. */
+export function passingLine(count: number): string {
+  return count === 1 ? '1 check passes' : `${count} checks pass`;
+}
+
+/**
+ * The one row whose first fix is the screen's primary button: the first failing check that has
+ * a button (an ad hoc signature has none, only its message). Null when nothing fails; Done leads
+ * then. Setup never has two primaries (docs/design.md, The one primary).
+ */
+export function leadingFix(rows: readonly SetupRowView[]): SetupRowId | null {
+  return rows.find((view) => failing(view) && view.actions.length > 0)?.id ?? null;
+}
+
+/** True while any check fails or says it needs a look; Done shows once this is false. */
+export function needsYou(rows: readonly SetupRowView[]): boolean {
+  return rows.some(failing);
 }

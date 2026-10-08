@@ -4,12 +4,10 @@ import { describe, expect, it } from 'vitest';
 import { PromptPanel, type PromptPanelProps } from './PromptPanel';
 import {
   PANEL_NOW,
-  attendee,
   callDetectedCard,
   calendarCard,
   calendarEvent,
   panelState,
-  staleCard,
 } from './promptTesting';
 
 /** renderToString puts <!-- --> between adjacent text pieces: strip it before matching text. */
@@ -27,7 +25,6 @@ const render = (props: Partial<PromptPanelProps>): string =>
       error: null,
       nowMs: PANEL_NOW,
       failures: {},
-      copiedCardId: null,
       onAct: () => undefined,
       ...props,
     }),
@@ -36,51 +33,50 @@ const render = (props: Partial<PromptPanelProps>): string =>
 const buttons = (html: string): string[] =>
   [...html.matchAll(/<button[^>]*>(.*?)<\/button>/g)].map((match) => text(match[1] ?? ''));
 
+/** The labels of the buttons that carry the accent fill. */
+const primaries = (html: string): string[] =>
+  [...html.matchAll(/<button[^>]*data-variant="primary"[^>]*>(.*?)<\/button>/g)].map((match) =>
+    text(match[1] ?? ''),
+  );
+
 describe('PromptPanel: a calendar card', () => {
   const html = render({ state: panelState([calendarCard()]) });
 
-  it('shows when it starts, the title, the time range and who is on it', () => {
+  it('shows when it starts, the title and the time range, and no guest line', () => {
     const lines = text(html);
     expect(lines).toContain('Starting in 1 min');
     expect(lines).toContain('Northwind renewal');
-    expect(lines).toMatch(/\d{1,2}:\d{2}.*–.*\d{1,2}:\d{2}/);
-    expect(lines).toContain('Jane and Ali');
+    expect(lines).toMatch(/\d{1,2}:\d{2}.*\u2013.*\d{1,2}:\d{2} (am|pm)/);
+    expect(lines).not.toContain('Jane');
+    expect(html).not.toContain('prompt-attendees');
   });
 
-  it('offers Join and take notes, Take notes, Copy notice and Dismiss, in that order', () => {
-    expect(buttons(html)).toEqual(['Join and take notes', 'Take notes', 'Copy notice', 'Dismiss']);
+  it('offers Join and start notes, Start notes and Dismiss, and nothing to copy', () => {
+    expect(buttons(html)).toEqual(['Join and start notes', 'Start notes', 'Dismiss']);
   });
 
-  it('leaves Join out of a call with no video link, and out of one whose link is not allowlisted', () => {
+  it('has exactly one primary: Join with a link, Start notes without one', () => {
+    expect(primaries(html)).toEqual(['Join and start notes']);
     for (const videoLink of [null, 'https://evil.example/join']) {
       const card = calendarCard([calendarEvent({ videoLink })]);
-      expect(buttons(render({ state: panelState([card]) }))).toEqual([
-        'Take notes',
-        'Copy notice',
-        'Dismiss',
-      ]);
+      const noLink = render({ state: panelState([card]) });
+      expect(buttons(noLink)).toEqual(['Start notes', 'Dismiss']);
+      expect(primaries(noLink)).toEqual(['Start notes']);
     }
   });
 
-  it('offers no Copy notice while the notice is off', () => {
-    const state = panelState([calendarCard()], { noticeEnabled: false });
-    expect(buttons(render({ state }))).toEqual(['Join and take notes', 'Take notes', 'Dismiss']);
+  it('keeps the button labels while a note records and says once what the start stops', () => {
+    const state = panelState([calendarCard()], { recording: true, recordingTitle: 'Weekly sync' });
+    const recording = render({ state });
+    expect(buttons(recording)).toEqual(['Join and start notes', 'Start notes', 'Dismiss']);
+    expect(text(recording)).toContain('Stops notes on Weekly sync');
+    expect(text(recording).match(/Stops notes/g)).toHaveLength(1);
+    expect(text(html)).not.toContain('Stops notes');
   });
 
-  it('says "Stop current note and start" while a note is starting or recording', () => {
+  it('says it without a title while the recording has none yet', () => {
     const state = panelState([calendarCard()], { recording: true });
-    expect(buttons(render({ state }))).toEqual([
-      'Stop current note and join',
-      'Stop current note and start',
-      'Copy notice',
-      'Dismiss',
-    ]);
-  });
-
-  it('says "Copied" on the card whose notice was just copied', () => {
-    expect(
-      buttons(render({ state: panelState([calendarCard()]), copiedCardId: 'prompt-1' })),
-    ).toContain('Copied');
+    expect(text(render({ state }))).toContain('Stops your current notes');
   });
 
   it('calls a title-less invite "Untitled meeting" and shows a long title whole for CSS to clamp', () => {
@@ -95,48 +91,44 @@ describe('PromptPanel: a calendar card', () => {
     ).toContain(long);
   });
 
-  it('has no attendee line for a call with nobody else, and a short one for forty', () => {
-    const solo = calendarEvent({ attendees: [attendee('Rahul', true)] });
-    expect(render({ state: panelState([calendarCard([solo])]) })).not.toContain('prompt-attendees');
-    const forty = calendarEvent({
-      attendees: Array.from({ length: 40 }, (_, index) => attendee(`Guest${index}`)),
-    });
-    expect(text(render({ state: panelState([calendarCard([forty])]) }))).toContain(
-      'Guest0, Guest1 and 38 others',
-    );
-  });
-
-  it('gives two calls on one card a start action each and one Dismiss', () => {
+  it('gives two calls on one card a start action each, one primary and one Dismiss', () => {
     const second = calendarEvent({ id: 'event-2', title: 'Design crit', videoLink: null });
     const state = panelState([calendarCard([calendarEvent(), second])]);
-    const html = render({ state });
-    expect(buttons(html)).toEqual([
-      'Join and take notes',
-      'Take notes',
-      'Take notes',
-      'Copy notice',
-      'Dismiss',
-    ]);
-    expect(text(html)).toContain('Design crit');
+    const two = render({ state });
+    expect(buttons(two)).toEqual(['Join and start notes', 'Start notes', 'Start notes', 'Dismiss']);
+    expect(text(two)).toContain('Design crit');
+    // The earliest call's start leads; the second call's is outlined, not a second fill.
+    expect(primaries(two)).toEqual(['Join and start notes']);
   });
 
-  it('shows why a start failed, and keeps the buttons', () => {
+  it('keeps one primary across stacked cards: only the first card leads', () => {
+    const later = calendarEvent({ id: 'event-3', title: 'Design crit', videoLink: null });
+    const state = panelState([
+      calendarCard(),
+      calendarCard([later], { id: 'prompt-4' }),
+      callDetectedCard(),
+    ]);
+    expect(primaries(render({ state }))).toEqual(['Join and start notes']);
+  });
+
+  it('shows why a start failed as a problem line with an icon, and keeps the buttons', () => {
     const state = panelState([
       calendarCard([calendarEvent()], { error: 'Roger could not reach the microphone' }),
     ]);
-    const html = render({ state });
-    expect(html).toContain('role="alert"');
-    expect(text(html)).toContain('Roger could not reach the microphone');
-    expect(buttons(html)).toContain('Take notes');
+    const failed = render({ state });
+    expect(failed).toMatch(/<p class="problem" role="alert"><svg/);
+    expect(text(failed)).toContain('Roger could not reach the microphone');
+    expect(buttons(failed)).toContain('Start notes');
   });
 });
 
 describe('PromptPanel: taking notes', () => {
-  it('replaces the buttons with "Taking notes · Open Roger"', () => {
+  it('replaces the buttons with "Recording" and Open Roger, no primary', () => {
     const state = panelState([calendarCard([calendarEvent()], { phase: 'taking_notes' })]);
     const html = render({ state });
-    expect(text(html)).toContain('Taking notes');
+    expect(text(html)).toContain('Recording');
     expect(buttons(html)).toEqual(['Open Roger']);
+    expect(primaries(html)).toEqual([]);
   });
 
   it('does the same for a call-detected card', () => {
@@ -146,23 +138,18 @@ describe('PromptPanel: taking notes', () => {
 });
 
 describe('PromptPanel: a call-detected card', () => {
-  it('says which app is using the mic, with Take notes and Dismiss', () => {
+  it('says which app is using the microphone, with Start notes as the primary and Dismiss', () => {
     const html = render({ state: panelState([callDetectedCard()]) });
-    expect(text(html)).toContain('Zoom is using the mic');
-    expect(buttons(html)).toEqual(['Take notes', 'Dismiss']);
+    expect(text(html)).toContain('Zoom is using the microphone');
+    expect(buttons(html)).toEqual(['Start notes', 'Dismiss']);
+    expect(primaries(html)).toEqual(['Start notes']);
   });
 
-  it('says "Stop current note and start" while recording', () => {
-    const html = render({ state: panelState([callDetectedCard()], { recording: true }) });
-    expect(buttons(html)).toEqual(['Stop current note and start', 'Dismiss']);
-  });
-});
-
-describe('PromptPanel: the stale calendar card', () => {
-  it('says since when, with Dismiss only', () => {
-    const html = render({ state: panelState([staleCard()]) });
-    expect(text(html)).toContain('Calendar not updated since');
-    expect(buttons(html)).toEqual(['Dismiss']);
+  it('keeps the label while recording and says what the start stops', () => {
+    const state = panelState([callDetectedCard()], { recording: true, recordingTitle: 'Standup' });
+    const html = render({ state });
+    expect(buttons(html)).toEqual(['Start notes', 'Dismiss']);
+    expect(text(html)).toContain('Stops notes on Standup');
   });
 });
 
@@ -173,15 +160,17 @@ describe('PromptPanel: the whole panel', () => {
   });
 
   it('stacks cards in the order main sent them', () => {
-    const state = panelState([callDetectedCard(), calendarCard(), staleCard()]);
+    const state = panelState([callDetectedCard(), calendarCard()]);
     const lines = text(render({ state }));
-    expect(lines.indexOf('Zoom is using the mic')).toBeLessThan(lines.indexOf('Northwind renewal'));
-    expect(lines.indexOf('Northwind renewal')).toBeLessThan(lines.indexOf('Calendar not updated'));
+    expect(lines.indexOf('Zoom is using the microphone')).toBeLessThan(
+      lines.indexOf('Northwind renewal'),
+    );
   });
 
-  it('shows why the state could not be read, as an alert', () => {
+  it('shows why the state could not be read, as an alert on a card of its own', () => {
     const html = render({ error: 'Could not read the prompt panel: untrusted sender' });
     expect(html).toContain('role="alert"');
+    expect(html).toContain('class="prompt-card"');
     expect(text(html)).toContain('untrusted sender');
   });
 

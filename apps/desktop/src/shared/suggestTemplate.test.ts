@@ -138,18 +138,23 @@ describe('suggestTemplate', () => {
   });
 
   it('Untitled meeting is never remembered', () => {
-    // Main names a manual start "Meeting 5 Oct 2026 10:05" (`defaultMeetingTitle`,
-    // capture/CaptureService.ts; NotesGenerator.test.ts checks every month of it), and
-    // "Untitled meeting" is the page's word for a meeting with no title. Neither says what kind
-    // of call it was, and a pick remembered under one would be offered for every manual start.
+    // Main names a manual start "Meeting at 5:01 pm" (`defaultMeetingTitle`,
+    // capture/CaptureService.ts; NotesGenerator.test.ts checks it in every month), before the
+    // redesign "Meeting 5 Oct 2026 10:05", and "Untitled meeting" is the page's word for a meeting
+    // with no title. None says what kind of call it was, and a pick remembered under one would be
+    // offered for every manual start.
     for (const title of [
       'Untitled meeting',
       '  untitled MEETING ',
       '',
       '   ',
+      // The old default title (until the redesign) and the new one: old meetings keep theirs.
       'Meeting 5 Oct 2026 10:05',
       'Meeting 15 Sept 2026 09:30',
       'meeting 1 jun 2026 23:59',
+      'Meeting at 5:01 pm',
+      'meeting at 12:07 AM',
+      '  Meeting   at 9:30 am ',
     ]) {
       expect(templateTitleKey(title), title).toBeNull();
       const asked: string[] = [];
@@ -166,5 +171,6 @@ describe('suggestTemplate', () => {
     expect(templateTitleKey('Meeting 5 Oct 2026 10:05 with Acme')).toBe(
       'meeting 5 oct 2026 10:05 with acme',
     );
+    expect(templateTitleKey('Meeting at 5:01 pm with Acme')).toBe('meeting at 5:01 pm with acme');
   });
 });

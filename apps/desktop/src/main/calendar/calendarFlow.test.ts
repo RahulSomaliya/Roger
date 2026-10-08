@@ -10,8 +10,6 @@ import type { MeetingDto, SttTokenApi, UploadApi } from '../api/ApiClient';
 import { CaptureService } from '../capture/CaptureService';
 import type { SenderEvent } from '../ipc/trust';
 import { createLogger } from '../logger';
-import { NotesGenerator } from '../notes/NotesGenerator';
-import { SqliteNotesStore } from '../notes/SqliteNotesStore';
 import { PreferencesStore, type PreferenceFiles } from '../preferences/PreferencesStore';
 import { InMemoryTranscriptStore } from '../store/InMemoryTranscriptStore';
 import {
@@ -25,7 +23,6 @@ import { sumUsage, type SttUsage } from '../stt/usage';
 import { TranscriptUploader } from '../upload/TranscriptUploader';
 import {
   createCalendarRuntime,
-  meetingAttendees,
   type CalendarRuntime,
   type CalendarWindow,
 } from './createCalendarRuntime';
@@ -280,7 +277,6 @@ function harness(initialEvents: CalendarEvent[]): Harness {
       powerMonitor,
       powerSaveBlocker: { start: () => 1, stop: () => undefined },
       shell: { openExternal: () => Promise.resolve() },
-      clipboard: { writeText: () => undefined },
     },
     logger: silent,
   });
@@ -425,62 +421,6 @@ describe('the calendar, end to end', () => {
     const second = h.capture.getStatus().meetingId;
     if (second === null) throw new Error('capture is not recording');
     expect(h.store.getMeeting(second)?.calendarEvent).toBeNull();
-  });
-
-  it('suggests the client-call template at Stop for a meeting started for an event with an outside attendee', async () => {
-    const h = start([
-      call('sync', 0, { title: 'Sync', guest: 'buyer@acme.com' }),
-      call('internal', 60, { title: 'Sync' }),
-    ]);
-    const generates = new SqliteNotesStore(':memory:');
-    const generator = new NotesGenerator({
-      store: generates,
-      // The lines Stop leaves unsent keep the generate waiting: only its row is under test.
-      sync: {
-        flushMeeting: () => Promise.resolve({ ok: false, cause: 'offline' }),
-        pullMeeting: (meetingId) => Promise.resolve({ meetingId, user: null, ai: null }),
-      },
-      streams: {
-        streamNotes: () => new Promise(() => undefined),
-        cancelNotes: () => Promise.resolve(false),
-      },
-      api: {
-        getRun: () => Promise.reject(new Error('no run')),
-        cancelRun: () => Promise.reject(new Error('no run')),
-      },
-      transcripts: h.store,
-      uploads: { onStatus: () => () => undefined },
-      recordings: h.capture,
-      preferences: { autoGenerate: () => true, whenUnsure: () => 'ask' },
-      window: () => null,
-      attendees: meetingAttendees(h.store),
-      logger: silent,
-    });
-    generator.start();
-    try {
-      await h.advanceTo(2);
-
-      // Not the title (both are "Sync"): the invitee outside linkt.ai is the cue.
-      await h.capture.start({ source: 'tray' });
-      const outside = h.capture.getStatus().meetingId;
-      if (outside === null) throw new Error('capture is not recording');
-      say(h, 'system', 'Hello');
-      await h.capture.stop();
-      expect(generates.getPendingGenerate(outside)?.templateId).toBe('client_call');
-
-      // The same title, a colleague only: no cue, so the user is asked.
-      await h.advanceTo(62);
-      await h.capture.start({ source: 'tray' });
-      const inside = h.capture.getStatus().meetingId;
-      if (inside === null) throw new Error('capture is not recording');
-      expect(h.store.getMeeting(inside)?.calendarEvent?.eventId).toBe('internal');
-      say(h, 'system', 'Hello');
-      await h.capture.stop();
-      expect(generates.getPendingGenerate(inside)?.templateId).toBeNull();
-    } finally {
-      generator.stop();
-      generates.close();
-    }
   });
 
   it("keeps the event a start request names, never the enricher's guess", async () => {

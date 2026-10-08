@@ -6,8 +6,6 @@ import { applyTheme, followThemePreference, type ThemeRoot, type ThemeState } fr
 
 const STORED: PreferenceValues = {
   theme: 'dark',
-  'notes.autoGenerate': true,
-  'notes.whenUnsure': 'ask',
   'calendar.reminderLeadMinutes': 1,
   'notice.enabled': true,
   'notice.text': DEFAULT_NOTICE_TEXT,
@@ -93,7 +91,7 @@ describe('the theme on <html>', () => {
   it('follows every theme change and ignores other keys', async () => {
     const { root, main, states } = follow();
     await main.answer(STORED);
-    main.change({ key: 'notes.autoGenerate', value: false });
+    main.change({ key: 'notice.enabled', value: false });
     main.change({ key: 'theme', value: 'system' });
     expect(root.attributes.has('data-theme')).toBe(false);
     main.change({ key: 'theme', value: 'light' });

@@ -2,14 +2,33 @@ import { createElement } from 'react';
 import { renderToString } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
 import { idleCaptureStatus } from '../../../shared/capture';
+import type { LocalNote } from '../../../shared/notes';
 import type { MeetingSlotProps, SlotEntry, Slots } from '../app/slotRegistry';
+import { type AiNotesApi, AiNotesSession, type AiNotesState } from '../notes/aiNotesActions';
 import { useCitationNavigator } from '../transcript/transcriptNavigator';
 import { MeetingPage } from './MeetingPage';
 import { useMeetingView } from './useMeeting';
 import type * as UseMeeting from './useMeeting';
 
-// The page with every region mounted, as it will be once M4-T20 mounts the notes and chat (the
-// real slot files have only the transcript today). Each stand-in shows what it can read.
+// What the page's AI notes session says: a test sets it, and the real session class holds it. The
+// session's channels are never called (the page's effects do not run under renderToString).
+const fakes = vi.hoisted(() => ({ state: null as AiNotesState | null }));
+
+const NOTES_API: AiNotesApi = {
+  getNotes: vi.fn(),
+  saveNote: vi.fn(),
+  listNoteTemplates: vi.fn(),
+  generateNotes: vi.fn(),
+  cancelNotesGenerate: vi.fn(),
+  getPendingGenerate: vi.fn(),
+  getNotesRun: vi.fn(),
+  onNoteChanged: vi.fn(),
+  onNotesEvent: vi.fn(),
+  onPendingGenerateChanged: vi.fn(),
+};
+
+// The page with every region mounted, as it is once M4-T20's slot file mounts the notes and chat
+// (the real slot files are mocked here). Each stand-in shows what it can read.
 vi.mock('../app/slots', () => {
   const region =
     (name: string) =>
@@ -35,7 +54,6 @@ vi.mock('../app/slots', () => {
   };
   const slots: Slots = {
     banner: [],
-    home: [],
     settings: [],
     setup: [],
     meetingBanner: [],
@@ -76,6 +94,10 @@ vi.mock('../app/ShellContext', () => ({
 }));
 vi.mock('./useMeeting', async (importOriginal) => ({
   ...(await importOriginal<typeof UseMeeting>()),
+  useMeetingNotes: (meetingId: string) => {
+    const session = new AiNotesSession(NOTES_API, meetingId);
+    return { session, state: fakes.state ?? session.getState() };
+  },
   useMeeting: () => ({
     value: {
       id: MEETING,
@@ -100,41 +122,95 @@ function tagWithId(html: string, id: string): string {
   return tag;
 }
 
+const AI_NOTE: LocalNote = {
+  meetingId: MEETING,
+  kind: 'ai',
+  doc: { type: 'doc', content: [] },
+  revisionId: null,
+  dirty: false,
+  baseVersion: 1,
+  templateId: 'general',
+  lastRunId: null,
+  generatedVersion: 1,
+  conflictCopy: null,
+  sync: 'synced',
+  updatedAt: '2026-10-06T11:12:00.000Z',
+};
+
+/** What the session says once main has answered and the meeting has AI notes. */
+function withAiNotes(): AiNotesState {
+  return { ...new AiNotesSession(NOTES_API, MEETING).getState(), status: 'ready', note: AI_NOTE };
+}
+
+/** The tab row's tabs, as [label, selected]. */
+function tabs(html: string): [string, string][] {
+  return [
+    ...html.matchAll(/<button[^>]*role="tab"[^>]*aria-selected="(true|false)"[^>]*>([^<]*)</g),
+  ].map((match) => [match[2] ?? '', match[1] ?? '']);
+}
+
 describe('the meeting page with every region mounted', () => {
   it('gives each region its meeting, inside the citation navigator and the page view', () => {
+    fakes.state = null;
     const html = page();
     expect(html).toContain(`my-notes of ${MEETING}`);
     expect(html).toContain(`chat of ${MEETING}`);
     expect(html).toContain(`transcript of ${MEETING} (0 stored lines, reveal: function)`);
   });
 
-  it('offers Notes, Transcript and Chat for a narrow page, opening on the notes', () => {
+  it('has one tab row, My notes then Transcript then Chat, opening on your notes', () => {
+    fakes.state = null;
     const html = page();
-    const buttons = [...html.matchAll(/<button[^>]*aria-pressed="(true|false)"[^>]*>([^<]*)</g)];
-    expect(buttons.map((match) => [match[2], match[1]])).toEqual([
-      ['Notes', 'true'],
+    expect(tabs(html)).toEqual([
+      ['My notes', 'true'],
       ['Transcript', 'false'],
       ['Chat', 'false'],
     ]);
-    expect(tagWithId(html, 'meeting-pane-notes')).toContain('data-active="true"');
+    expect(tagWithId(html, 'meeting-panel-mine')).not.toContain('hidden');
   });
 
-  it('keeps the transcript mounted while another pane shows, so a reveal can find its lines', () => {
+  it('shows no AI notes tab before there are AI notes, and no empty state in its place', () => {
+    // The AI notes slot IS mounted here: the page holds the tab back until notes exist or are
+    // being written ("No AI notes yet / Generate notes" is gone with its empty state).
+    fakes.state = null;
     const html = page();
-    expect(tagWithId(html, 'meeting-pane-transcript')).not.toContain('data-active');
+    expect(tabs(html).map(([label]) => label)).not.toContain('AI notes');
+    expect(html).not.toContain(`ai-notes of ${MEETING}`);
+    expect(html).not.toContain('No AI notes yet');
+  });
+
+  it('adds the AI notes tab, mounted and closed, once AI notes exist', () => {
+    fakes.state = withAiNotes();
+    const html = page();
+    expect(tabs(html)).toEqual([
+      ['My notes', 'true'],
+      ['AI notes', 'false'],
+      ['Transcript', 'false'],
+      ['Chat', 'false'],
+    ]);
+    expect(tagWithId(html, 'meeting-panel-ai')).toContain('hidden=""');
+    expect(html).toContain(`ai-notes of ${MEETING}`);
+  });
+
+  it('keeps the transcript mounted while another tab shows, so a reveal can find its lines', () => {
+    fakes.state = null;
+    const html = page();
+    expect(tagWithId(html, 'meeting-panel-transcript')).toContain('hidden=""');
     expect(html).toContain('class="stand-in-transcript"');
   });
 
-  it('puts My notes and AI notes in tabs, both mounted, My notes open', () => {
+  it('labels each pane by its tab, for a screen reader', () => {
+    fakes.state = null;
     const html = page();
-    const tabs = [
-      ...html.matchAll(/<button[^>]*role="tab"[^>]*aria-selected="(true|false)"[^>]*>([^<]*)</g),
-    ];
-    expect(tabs.map((match) => [match[2], match[1]])).toEqual([
-      ['My notes', 'true'],
-      ['AI notes', 'false'],
-    ]);
-    expect(tagWithId(html, 'meeting-notes-panel-ai')).toContain('hidden=""');
-    expect(html).toContain(`ai-notes of ${MEETING}`);
+    expect(tagWithId(html, 'meeting-panel-chat')).toContain('aria-labelledby="meeting-tab-chat"');
+    expect(tagWithId(html, 'meeting-tab-chat')).toContain('aria-controls="meeting-panel-chat"');
+  });
+
+  it('has no side-by-side layout and no second row of tabs', () => {
+    fakes.state = withAiNotes();
+    const html = page();
+    expect(html).not.toContain('data-layout');
+    expect(html).not.toContain('meeting-pane-button');
+    expect(html.match(/role="tablist"/g)).toHaveLength(1);
   });
 });

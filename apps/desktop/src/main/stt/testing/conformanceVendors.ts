@@ -212,4 +212,52 @@ export const CONFORMANCE_VENDORS: readonly ConformanceVendor[] = [
       refusal: null,
     },
   },
+  {
+    provider: 'xai',
+    settings: {
+      model: 'grok-voice-transcribe-2.0',
+      language: 'en',
+      sampleRate: 16000,
+      encoding: 'linear16',
+      pricePerHourUsd: 0.2,
+    },
+    // Everything is in the URL's query.
+    openingMessages: [],
+    // xAI's ready signal: "wait for this before sending audio".
+    readyMessage: JSON.stringify({ type: 'transcript.created' }),
+    // `Finalize` (xAI accepts `finalize` too), then `audio.done`.
+    finishMessages: [JSON.stringify({ type: 'Finalize' }), JSON.stringify({ type: 'audio.done' })],
+    // transcript.done ends the stream. xAI closes the socket after it as well; the fake leaves
+    // that to the core, as AssemblyAI's and Soniox's do, so the suite proves the core closes on
+    // the message.
+    answerFinish: (socket) => {
+      socket.send(JSON.stringify({ type: 'transcript.done', text: '', duration: 1 }));
+    },
+    // An utterance-final partial: the one state that is a line.
+    finalMessage: (text) =>
+      JSON.stringify({
+        type: 'transcript.partial',
+        text,
+        words: [{ text, start: 0, end: 0.5 }],
+        is_final: true,
+        speech_final: true,
+        start: 0,
+        duration: 0.5,
+      }),
+    // xAI documents no close codes: this one is ours (1011, the standard server error).
+    midCallClose: { code: 1011, reason: 'internal error' },
+    errorFrame: JSON.stringify({ type: 'error', message: 'internal error' }),
+    // xAI documents no keep-alive message.
+    keepAliveMessage: null,
+    // "real-time-paced" in its examples, but no close for a burst is documented, so a burst must
+    // go at once (XaiSpeechToText.ts, audioPacing).
+    rejectsAudioFasterThanRealTime: false,
+    keyterms: {
+      // One `keyterm` parameter per term in the URL's query.
+      sent: (connection) => new URL(connection.url, 'ws://vendor').searchParams.getAll('keyterm'),
+      // xAI documents no refusal of a list, and its limits equal the shared ones (keyterms.ts):
+      // none is put down to the list at connect.
+      refusal: null,
+    },
+  },
 ];

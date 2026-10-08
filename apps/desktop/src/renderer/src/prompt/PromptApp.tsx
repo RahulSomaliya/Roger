@@ -8,9 +8,6 @@ import { followPromptState, type PromptFeed } from './promptState';
 /** How often "Starting in 1 min" is recomputed: a card lives at most 10 min, so 5 s is plenty. */
 const TICK_MS = 5000;
 
-/** How long Copy notice says "Copied". */
-const COPIED_MS = 2500;
-
 /**
  * The prompt panel page (M5-T10): follows main's state, draws the cards, sends clicks back, and
  * reports its height so main can size the window. `api` is `window.rogerPrompt` in the app and a
@@ -19,7 +16,6 @@ const COPIED_MS = 2500;
 export function PromptApp({ api }: { api: PromptApi }) {
   const [feed, setFeed] = useState<PromptFeed>({ state: null, error: null });
   const [failures, setFailures] = useState<Readonly<Record<string, string>>>({});
-  const [copiedCardId, setCopiedCardId] = useState<string | null>(null);
   const nowMs = useNow(TICK_MS);
   const content = useRef<HTMLDivElement>(null);
 
@@ -34,29 +30,12 @@ export function PromptApp({ api }: { api: PromptApi }) {
     [api],
   );
   useReportedHeight(content);
-  const copiedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  useEffect(
-    () => () => {
-      if (copiedTimer.current !== null) clearTimeout(copiedTimer.current);
-    },
-    [],
-  );
 
   const act = useCallback(
     (request: PromptActionRequest): void => {
-      api.act(request).then(
-        () => {
-          if (request.action !== 'copy_notice') return;
-          setCopiedCardId(request.cardId);
-          if (copiedTimer.current !== null) clearTimeout(copiedTimer.current);
-          copiedTimer.current = setTimeout(() => {
-            setCopiedCardId(null);
-          }, COPIED_MS);
-        },
-        (error: unknown) => {
-          setFailures((current) => ({ ...current, [request.cardId]: describeError(error) }));
-        },
-      );
+      api.act(request).catch((error: unknown) => {
+        setFailures((current) => ({ ...current, [request.cardId]: describeError(error) }));
+      });
     },
     [api],
   );
@@ -69,7 +48,6 @@ export function PromptApp({ api }: { api: PromptApi }) {
           error={feed.error}
           nowMs={nowMs}
           failures={failures}
-          copiedCardId={copiedCardId}
           onAct={act}
         />
       </div>

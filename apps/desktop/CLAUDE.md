@@ -1,6 +1,6 @@
 # Roger desktop: failure log
 
-Extends the root `CLAUDE.md`, whose house rules and repo-wide failure log apply here too: these are the traps hit only in `apps/desktop` (its bench, e2e and QA scripts and the Swift helper included). Add one when you hit a new one.
+Extends the root `CLAUDE.md`, whose house rules and repo-wide failure log apply here too: these are the traps hit only in `apps/desktop` (its bench, e2e and QA scripts and the Swift helper included). Add one when you hit a new one. Renderer and UI traps from the redesign live in `src/renderer/CLAUDE.md`.
 
 - In `make dev-desktop` the terminal is the app macOS asks for capture permission. cmux, iTerm2 and
   Terminal.app have no `NSAudioCaptureUsageDescription`, so the system audio ("Them") stream is
@@ -66,11 +66,11 @@ Extends the root `CLAUDE.md`, whose house rules and repo-wide failure log apply 
   is fine for other files: `preview/index.test.ts` imports both `index.html` pages that way (M4-S3).
 - A CSS scan with `/\{([^{}]*)\}/` reads only innermost blocks and skips every declaration of a rule
   that holds a nested rule; read declarations with `renderer/src/theme/cssDeclarations.ts` (M4-S2).
-- In dark, one colour cannot be both a fill under white text and text on `--panel`; in light,
-  danger cannot either (4.46:1 as text on `--bg`, 3.7:1 in the error box). `--accent` and
-  `--danger` are fills under `--on-accent`; text in those hues uses `--accent-ink` and
-  `--danger-ink`, and `tokens.test.ts` checks the fills, the inks on `--panel` and `--bg`, and
-  error text on its `--danger-bg` tint (M4-S2).
+- Colour tokens are OKLCH only (`theme/tokens.css`, `docs/design.md`): an rgb or hex token makes
+  `tokens.test.ts`'s reader throw. `--accent` is a fill under `--on-accent`; text in that hue is
+  `--accent-ink`. A new text-on-surface pairing gets a pinned row in `tokens.test.ts` first, and
+  `tokenReads.test.ts` fails any `var(--x)` no sheet defines, so a missed rename fails the gate
+  instead of inheriting silently (M4-S2, redesign R0a).
 - Main's errors reach the renderer as text ("Error invoking remote method '<channel>': ApiError:
   ..."), never as the class: renderer code never checks `instanceof ApiError`;
   `app/describeError.ts` strips the wrapper (M4-S3).
@@ -99,8 +99,11 @@ Extends the root `CLAUDE.md`, whose house rules and repo-wide failure log apply 
   page (Vitest rewrites it): pass that code as a string. The shell scrolls in `.shell-page`, so
   grow the viewport until it stops scrolling (`qa.fitShellPage`, `qa/driver.ts`). A package the
   app has not imported yet makes Vite reload the page mid-`evaluate`: take that on a throwaway page.
-- CSS that sets `display` on an element with the `hidden` attribute overrides it: add
-  `[hidden] { display: none }` beside it (`meeting/meeting.css`, M4-S4).
+- CSS that sets `display` on an element with the `hidden` attribute overrides it (M4-S4), and on a
+  native `<dialog>` it overrides the closed dialog's `display: none`: `styles.css` carries a global
+  `[hidden] { display: none !important }`, and `.dialog` never sets `display` (redesign R0b).
+- Newer ICU puts U+202F before "AM"/"PM" in en-US times: `clock.ts` `formatClock` joins
+  `formatToParts` by hand; never swap in `toLocaleTimeString` (redesign R0b).
 - TipTap (M4-T17): ProseMirror fills missing attrs with null, so `isRequired` lets a bare node
   through (add `validate`); `setEditable(x)` emits `update` unless its second argument is `false`;
   a doc given as `content` meets its first transaction at the first click (an atom click threw
@@ -277,19 +280,21 @@ Extends the root `CLAUDE.md`, whose house rules and repo-wide failure log apply 
   macOS 13+, use `wasOpenedAtLogin`. Tray icons are `build/tray*Template.png` plus `@2x` (the
   `Template` suffix makes macOS tint them), reach a packaged app only through `electron-builder.yml`
   `extraResources`, and `createFromPath` of a missing file returns an EMPTY image with no error.
-- A meeting-page region that is a grid row must scroll inside itself: `.meeting-notes-panel` had no
-  overflow, so a tall AI panel painted over the chat and took its clicks, and only `expectVisible`
-  (`elementFromPoint`) caught it (M4-T20). A component mounted in a slot file that reads
+- The meeting page is one column: each pane is a flex column with `overflow-y: auto` inside
+  `.meeting-body` (a pane without it once painted over the chat and took its clicks, M4-T20), and
+  closed panes carry `hidden`. A component mounted in a slot file that reads
   `window.roger` breaks every Node test that renders the real slots: mock the slot file
   (`vi.mock('../app/slots/m4-notes', () => ({ contributions: {} }))`, likewise `m5-calendar`),
   never stub `window` (`MeetingPage.test.ts`, `AppLayout.test.ts`; M4-T20, M5-T13).
 - QA traps. A check on what the page does as it loads cannot seed the preview fake (scenarios start
-  after the app subscribes): wrap `window.roger` in `context.addInitScript` (`m2-t19.qa.e2e.ts`
-  `openFirstRun`). `qa.expectVisible` uses `document.querySelector`, so `:text-is()` throws: give a
-  control a data attribute (M2-T19). A `dl`'s `textContent` joins label and value ("Saved
-  locally120 lines"): match per row (M2-T20a). Ask is disabled while the chat box is empty: type
-  first (M4-T19). The AI panel's streamed lines reuse `.note-editor-content` and come before the
-  editor: select `.ai-notes-editor .note-editor-content` (M4-T18), and assert Regenerate, not the
-  template name, which waits for the picker (M4-T20). The preview names a started meeting by the
-  clock: read `getCaptureStatus().title`, not the `h1`. `no-unnecessary-condition` applies inside
-  `page.evaluate`, where `textContent` is `string` and `?? ""` fails (M5-T13).
+  after the app subscribes): emit the state on the hub once the page is up, as `redesign.qa.e2e.ts`
+  does for the setup status, or wrap `window.roger` in `context.addInitScript`. `qa.expectVisible`
+  uses `document.querySelector`, so `:text-is()` throws: give a control a data attribute (M2-T19). A
+  `dl`'s `textContent` joins label and value ("Saved locally120 lines"): match per row (M2-T20a).
+  Ask is disabled while the chat box is empty: type first (M4-T19). The AI panel's streamed lines
+  reuse `.note-editor-content` and come before the editor: select `.ai-notes-editor
+.note-editor-content` (M4-T18). The preview names a started meeting by the clock: read
+  `getCaptureStatus().title`, not the `h1`. `no-unnecessary-condition` applies inside
+  `page.evaluate`, where `textContent` is `string` and `?? ""` fails (M5-T13). A busy
+  `.btn[aria-disabled='true']` has `pointer-events: none`, so `elementFromPoint` skips it: click it
+  by DOM, and its handler ignores clicks itself (redesign R0b).

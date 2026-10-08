@@ -78,8 +78,6 @@ describe('the preferences IPC', () => {
     h.store.set('theme', 'dark');
     await expect(h.invoke(prefsChannels.PrefsGetAll, MAIN_PAGE)).resolves.toEqual({
       theme: 'dark',
-      'notes.autoGenerate': true,
-      'notes.whenUnsure': 'ask',
     });
   });
 
@@ -131,10 +129,8 @@ describe('the preferences IPC', () => {
 
   it('sends a change made in main to the page as well', () => {
     const h = harness();
-    h.store.set('notes.autoGenerate', false);
-    expect(h.sent).toEqual([
-      [prefsChannels.PrefsChanged, { key: 'notes.autoGenerate', value: false }],
-    ]);
+    h.store.set('theme', 'light');
+    expect(h.sent).toEqual([[prefsChannels.PrefsChanged, { key: 'theme', value: 'light' }]]);
   });
 
   it('sends nothing while the window is closed or destroyed, and the set still saves', () => {

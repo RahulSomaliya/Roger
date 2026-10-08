@@ -1,6 +1,7 @@
 import type { EchoStatus } from '../../../../shared/capture';
 import { SPEAKER_FOR_SOURCE } from '../../../../shared/transcript';
 import type { EchoLine } from './echoChanges';
+import { ProblemLine } from './ProblemLine';
 import './captureDetails.css';
 
 const SPEAKER_NAME = { me: 'Me', them: 'Them' } as const;
@@ -38,7 +39,7 @@ export interface EchoLinesProps {
 }
 
 /**
- * The echo filter's lines, and the toggle that shows them (the meeting page's capture report
+ * The echo filter's lines, and the toggle that shows them (Details, the `meetingCaptureReport`
  * region). Off, the transcript hides the hidden lines and the list is closed; on, the transcript
  * shows them marked as echo and this list gives each changed line's text.
  *
@@ -62,12 +63,15 @@ export function EchoLines({
     Math.max(0, counts.hidden - listedHidden) +
     Math.max(0, counts.trimmed - (lines.length - listedHidden));
   return (
-    <section className="echo-lines" aria-label="Echo filter">
+    <section className="details-section echo-lines" aria-label="Echo filter">
+      <h3 className="details-heading">Echo lines</h3>
       <div className="echo-lines-head">
         <p className="echo-lines-summary">{summary}</p>
         <button
           type="button"
-          className="shell-button"
+          className="btn"
+          data-variant="secondary"
+          data-size="sm"
           aria-pressed={showHidden}
           onClick={() => {
             onShowHidden(!showHidden);
@@ -94,7 +98,9 @@ export function EchoLines({
                 {line.kind === 'hidden' ? (
                   <button
                     type="button"
-                    className="shell-button echo-line-unhide"
+                    className="btn"
+                    data-variant="secondary"
+                    data-size="sm"
                     aria-label={`Unhide: ${line.text}`}
                     disabled={pending.has(line.segmentId)}
                     onClick={() => {
@@ -115,11 +121,7 @@ export function EchoLines({
           ) : null}
         </>
       ) : null}
-      {error !== null ? (
-        <p role="alert" className="error echo-lines-error">
-          {error}
-        </p>
-      ) : null}
+      {error !== null ? <ProblemLine loud>{error}</ProblemLine> : null}
     </section>
   );
 }

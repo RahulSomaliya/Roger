@@ -64,7 +64,8 @@ export function followThemePreference(
 
 /**
  * Puts the `theme` preference on <html> for the life of the calling component: AppLayout calls it
- * once (M4-S1). Show `error` where the shell shows errors; the page follows macOS until then.
+ * once (M4-S1). `error` is not shown anywhere: the page follows macOS until then, and AppLayout
+ * reports it.
  */
 export function useTheme(): ThemeState {
   const [state, setState] = useState<ThemeState>({ preference: null, error: null });

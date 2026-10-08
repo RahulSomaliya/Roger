@@ -7,8 +7,6 @@ import { CalendarSettingsStore, type CalendarSettingsApi } from './calendarSetti
 
 const stored: PreferenceValues = {
   theme: 'system',
-  'notes.autoGenerate': true,
-  'notes.whenUnsure': 'ask',
   'calendar.reminderLeadMinutes': 5,
   'notice.enabled': false,
   'notice.text': 'Recording this one.',
@@ -143,7 +141,7 @@ describe('CalendarSettingsStore', () => {
     await settle();
     await store.choose('notice.enabled', true);
     expect(setPreference).toHaveBeenCalledWith('notice.enabled', true);
-    expect(store.getState()).toMatchObject({ saving: null, saveError: null, noticeEnabled: false });
+    expect(store.getState()).toMatchObject({ saveError: null, noticeEnabled: false });
   });
 
   it('says why a save failed and keeps the stored value', async () => {
@@ -159,7 +157,7 @@ describe('CalendarSettingsStore', () => {
     expect(store.getState().saveError).toBe(
       'Roger could not save that setting: notice.text is blank',
     );
-    expect(store.getState()).toMatchObject({ saving: null, noticeText: 'Recording this one.' });
+    expect(store.getState()).toMatchObject({ noticeText: 'Recording this one.' });
   });
 
   it('follows what macOS says about the login item, and why it could not be asked', async () => {

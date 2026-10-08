@@ -1,6 +1,5 @@
 import {
   parseInstant,
-  type AllDayCalendarEvent,
   type CalendarEvent,
   type TimedCalendarEvent,
 } from '../../../shared/calendar';
@@ -13,6 +12,9 @@ import {
  * ahead, so that today in any zone is inside the copy (at 23:30 IST the 10:00 standup is 13.5 h
  * back), and this page cuts the day by its own local date, which follows a macOS time zone change.
  * Cutting it anywhere else (main, or UTC) drops the morning's meetings off an evening's Home.
+ *
+ * Only timed meetings you have not declined are listed (docs/plans/redesign.md): an all-day event
+ * is not a meeting anyone starts notes on, and a declined one is a meeting you are not going to.
  */
 
 const MINUTE_MS = 60_000;
@@ -20,24 +22,23 @@ const MINUTE_MS = 60_000;
 /** Start notes shows this long before a meeting starts, and until it ends. */
 export const START_NOTES_LEAD_MS = 15 * MINUTE_MS;
 
+/** Home's Start notes names a meeting from this long before it starts, and while it is on. */
+export const HERO_LEAD_MS = 10 * MINUTE_MS;
+
 /** One row of Home's list. */
-export interface TodayEntry<Event extends CalendarEvent = CalendarEvent> {
-  event: Event;
-  /** The user said no: the row is greyed and sorts after the rest. */
-  declined: boolean;
-  /** Start notes is on offer now (timed events only; startNotesAvailable). */
+export interface TimedEntry {
+  event: TimedCalendarEvent;
+  /** Start notes is on offer now (startNotesAvailable). */
   startNotes: boolean;
   /** The newest local meeting started for this event: Open note. Null when there is none. */
   meetingId: string | null;
 }
 
 export interface TodayGroups {
-  /** The strip on top: all-day events, in the order main gave them, declined ones last. */
-  allDay: TodayEntry<AllDayCalendarEvent>[];
-  /** Timed events by start, declined ones last. */
-  timed: TodayEntry<TimedCalendarEvent>[];
-  /** The meeting under way, else the next to start, never a declined one; null when none is left. */
-  next: TodayEntry<TimedCalendarEvent> | null;
+  /** Timed events by start. */
+  timed: TimedEntry[];
+  /** The meeting under way, else the next to start; null when none is left today. */
+  next: TimedEntry | null;
 }
 
 export interface TodayInputs {
@@ -49,12 +50,8 @@ export interface TodayInputs {
   nowMs: number;
 }
 
-/**
- * Whether Start notes is on offer for `event` at `nowMs`: a timed event, from 15 minutes before its
- * start until its end. A declined meeting gets it too: the plan's window names no other rule.
- */
-export function startNotesAvailable(event: CalendarEvent, nowMs: number): boolean {
-  if (event.allDay) return false;
+/** Whether Start notes is on offer for `event` at `nowMs`: from 15 minutes before its start until its end. */
+export function startNotesAvailable(event: TimedCalendarEvent, nowMs: number): boolean {
   return (
     nowMs >= parseInstant(event.start) - START_NOTES_LEAD_MS && nowMs < parseInstant(event.end)
   );
@@ -66,28 +63,24 @@ export function todayGroups({ events, links, nowMs }: TodayInputs): TodayGroups 
   const dayStart = new Date(day.getFullYear(), day.getMonth(), day.getDate()).getTime();
   // Built from the date, not "+ 24 h": a day with a DST change is 23 or 25 hours long.
   const dayEnd = new Date(day.getFullYear(), day.getMonth(), day.getDate() + 1).getTime();
-  const dayKey = localDateKey(day);
 
-  const entryOf = <Event extends CalendarEvent>(event: Event): TodayEntry<Event> => ({
-    event,
-    declined: event.selfResponse === 'declined',
-    startNotes: startNotesAvailable(event, nowMs),
-    meetingId: links.get(event.id) ?? null,
-  });
-
-  const allDay: TodayEntry<AllDayCalendarEvent>[] = [];
-  const timed: { entry: TodayEntry<TimedCalendarEvent>; startMs: number; endMs: number }[] = [];
+  const timed: { entry: TimedEntry; startMs: number; endMs: number }[] = [];
   for (const event of events) {
-    if (event.allDay) {
-      // Plain dates, end exclusive, compared as text: "2026-10-06" sorts as it reads.
-      if (event.startDate <= dayKey && dayKey < event.endDate) allDay.push(entryOf(event));
-      continue;
-    }
+    if (event.allDay || event.selfResponse === 'declined') continue;
     const startMs = parseInstant(event.start);
     const endMs = parseInstant(event.end);
     // Overlap, so an event over midnight is on both days; a zero-length one counts at its start.
     const onToday = startMs < dayEnd && (endMs > dayStart || startMs >= dayStart);
-    if (onToday) timed.push({ entry: entryOf(event), startMs, endMs });
+    if (!onToday) continue;
+    timed.push({
+      entry: {
+        event,
+        startNotes: startNotesAvailable(event, nowMs),
+        meetingId: links.get(event.id) ?? null,
+      },
+      startMs,
+      endMs,
+    });
   }
 
   timed.sort(
@@ -96,24 +89,16 @@ export function todayGroups({ events, links, nowMs }: TodayInputs): TodayGroups 
       a.endMs - b.endMs ||
       a.entry.event.id.localeCompare(b.entry.event.id),
   );
-  const ordered = declinedLast(timed.map(({ entry }) => entry));
-  const next =
-    timed
-      .filter(({ entry, endMs }) => !entry.declined && endMs > nowMs)
-      .map(({ entry }) => entry)[0] ?? null;
-  return { allDay: declinedLast(allDay), timed: ordered, next };
+  const next = timed.find(({ endMs }) => endMs > nowMs)?.entry ?? null;
+  return { timed: timed.map(({ entry }) => entry), next };
 }
 
-/** A stable partition: the entries the user accepted keep their order, then the declined ones. */
-function declinedLast<Entry extends TodayEntry>(entries: Entry[]): Entry[] {
-  return [
-    ...entries.filter((entry) => !entry.declined),
-    ...entries.filter((entry) => entry.declined),
-  ];
-}
-
-/** "2026-10-06" for the local date of `date`. */
-function localDateKey(date: Date): string {
-  const two = (value: number): string => String(value).padStart(2, '0');
-  return `${date.getFullYear()}-${two(date.getMonth() + 1)}-${two(date.getDate())}`;
+/**
+ * The meeting Home's Start notes is for: the next one, once it starts within 10 minutes or is on
+ * now, else null (a blank note). Null too when the meeting already has its notes: Open note is
+ * its row's action, and a Start here would make a second meeting for the event.
+ */
+export function heroMeeting({ next }: TodayGroups, nowMs: number): TimedEntry | null {
+  if (next?.meetingId !== null) return null;
+  return parseInstant(next.event.start) - nowMs <= HERO_LEAD_MS ? next : null;
 }
