@@ -84,12 +84,13 @@ const MIGRATIONS: readonly string[] = [
     PRIMARY KEY (meeting_id, kind, base_key)
   );
   `,
-  // The refused upload states. A CHECK cannot be altered, so the table is rebuilt; its rows keep
-  // their order of columns, and the partial index goes with the old table.
+  // The refused upload states. A CHECK cannot be altered, so the table is rebuilt in the order
+  // SQLite recommends (sqlite.org/lang_altertable.html, "Making Other Kinds Of Table Schema
+  // Changes"): create the new table, copy the rows with named columns, drop the old table (its
+  // partial index goes with it), rename the new one, recreate the index. Never rename the old
+  // table first: SQLite rewrites every view and trigger that mentions it to the new name.
   `
-  DROP INDEX notes_dirty;
-  ALTER TABLE notes RENAME TO notes_before_refused;
-  CREATE TABLE notes (
+  CREATE TABLE notes_new (
     meeting_id TEXT NOT NULL,
     kind TEXT NOT NULL CHECK (kind IN ('user', 'ai')),
     doc_json TEXT NOT NULL,
@@ -108,8 +109,13 @@ const MIGRATIONS: readonly string[] = [
     PRIMARY KEY (meeting_id, kind),
     CHECK (dirty = 0 OR revision_id IS NOT NULL)
   );
-  INSERT INTO notes SELECT * FROM notes_before_refused;
-  DROP TABLE notes_before_refused;
+  INSERT INTO notes_new (meeting_id, kind, doc_json, revision_id, dirty, base_version, template_id,
+    last_run_id, generated_version, conflict_json, sync_state, has_text, updated_at)
+  SELECT meeting_id, kind, doc_json, revision_id, dirty, base_version, template_id,
+    last_run_id, generated_version, conflict_json, sync_state, has_text, updated_at
+  FROM notes;
+  DROP TABLE notes;
+  ALTER TABLE notes_new RENAME TO notes;
   CREATE INDEX notes_dirty ON notes (updated_at) WHERE dirty = 1;
   `,
 ];

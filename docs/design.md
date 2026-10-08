@@ -218,7 +218,11 @@ it is never a sub-second flash.
   left column). No badges, counts, progress bars or cards. A row's action appears on hover and
   focus in a fixed right column, so nothing moves.
 - **Citation chip.** `fill`, `ink-muted`, 12 px tabular offset, `--radius-md`. A line the model
-  flagged adds the word "check" in `accent-ink`.
+  flagged adds the word "check" in `accent-ink`. The offset is the API's own `label` (`mm:ss`,
+  "00:15", `h:mm:ss` past an hour: `docs/api-contract.md`, the citation node), stored in the notes
+  doc and shown as it is. Transcript offsets are written "4:07", so one moment reads two ways on
+  the Notes and Transcript tabs. That is deliberate: the chip's label is part of the contract and
+  of every doc already stored, and the renderer does not rewrite it.
 - **Inputs.** 40 px, `surface`, 1 px `line`, `--radius-md`, `ring` on focus. Settings save on
   change or blur: no Save buttons. Checkboxes and radios are native with `accent-color:
   var(--accent)`.
@@ -261,9 +265,11 @@ it is never a sub-second flash.
 - A problem says what happened, then what to do: "Roger can't hear the call. Check the call plays
   on this Mac." Never "Error:", never blame.
 - Clock times are 12-hour, lowercase: "9:14 am", never "09:14" or "9:14 AM". Durations "1h 23m".
-  Transcript offsets "4:07", "1:02:05" over an hour. Dates "Wed 7 Oct" in lists
-  (Home's Earlier). The meeting page's time line still reads the system locale ("Mon, Oct 5, 3:00 pm
-  to 3:03 pm" on an English-US Mac): one date format is open, see Traps.
+  Transcript offsets "4:07", "1:02:05" over an hour (a citation chip keeps the API's "00:15":
+  see Citation chip). Dates "Wed 7 Oct" everywhere: Home's Earlier and the meeting page's time
+  line ("Mon 5 Oct, 3:00 pm to 3:03 pm") both come from `meetingDayLabel`, English whatever the
+  Mac's language. Every error line goes through `describeError`: a few plain words per kind
+  ("Roger could not reach its server."), never a route, an address or a vendor's text.
 - Confirm what mattered, truthfully: "Notes written", "Notice copied". "Saved" is not news.
 
 ### Naming list (one word per concept; goes into `CLAUDE.md`)
@@ -360,17 +366,18 @@ it is never a sub-second flash.
   (`preview/prompt.html?card=meeting-link`, states in `preview/promptScenarios.ts`), has no fake
   `window.roger`, and follows the system scheme only, so QA forces the theme with the browser's
   colour scheme, not a preference. It sits on a `fill` stage as wide as the real window (360 px).
-- A menu anchored `right: 0` of its trigger leaves the window when the trigger sits at the left
-  edge: at 390 the header's actions wrap under the title, and the ⋯ menu opens 142 px off screen
-  with its labels cut (`Menu.tsx`, `.menu` in `styles.css`, `MeetingHeader.tsx`). Check a menu at
-  390, not only at 1440.
-- Raw API text reaches the page: a failed jargon save reads "Not saved: PUT /v1/vocabulary failed:
-  connect ECONNREFUSED 127.0.0.1:8000" and Write notes "could not start writing the notes: POST
-  /v1/meetings/.../notes/generate failed ...". The chat has `describeReadFailure`; these two do not.
-  Copy rule: no routes, verbs or errnos outside Details.
-- Lines the server refused for good show only on the meeting page (`meetingBanner`), never on
-  Home: `captureStatusFor` needs a meeting. A person who stops a call and stays on Home is not told.
-  Open: add the line to Home's banner, or accept it.
-- `meetingTimes.ts` formats dates with the system locale (`toLocaleDateString(locale)`), while
-  `labels.ts` and `calendarFormat.ts` pin English "Mon 5 Oct". The same day reads two ways. Pick
-  one in `meetingTimes.ts`.
+- A menu anchored `right: 0` of its trigger left the window when the trigger sat at the left edge:
+  at 390 the header's actions wrap under the title, and the ⋯ menu opened 142 px off screen with
+  its labels cut. Fixed in R13: `Menu` flips to the other edge when the list would not fit
+  (`menuPlacement.ts`), and QA's `expectMenuInWindow` fails any open menu outside the window. Check
+  a menu at 390, not only at 1440.
+- Raw API text reached the page (a failed jargon save read "Not saved: PUT /v1/vocabulary failed:
+  connect ECONNREFUSED 127.0.0.1:8000"). Fixed in R13: `describeError` (`app/describeError.ts`)
+  maps the API client's message shapes to plain words, and every error line uses it. A new
+  `Error` text shown on the page goes through it; copy rule: no routes, verbs or errnos outside
+  Details.
+- Lines the server refused for good show in the banner on every page except the meeting page whose
+  header already says it (`m2-capture-status.ts`: `CaptureWarnings` and `RefusedLines` both decide
+  through `captureStatusFor`). A person who stops a call and stays on Home is told.
+- A failed note keeps its failed state while a retry is out (`NotesSync`): `syncing` written over
+  `refused` made the "Not saved to Roger" line blink off during every retry.

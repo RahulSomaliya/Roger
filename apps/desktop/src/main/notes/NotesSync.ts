@@ -213,8 +213,8 @@ export class NotesSync {
    * It keeps the backoff as a pass does: a failed attempt starts it, and while it runs a note the
    * API was away for answers `offline` at once, with no request.
    *
-   * Trap: each attempt writes the note's sync state (`syncing`, then `synced`, `offline` or
-   * `saved_locally`), and each write emits `NotesStore.onNoteChanged`. A caller that flushes on
+   * Trap: each attempt writes the note's sync state (`syncing` on a first attempt, then `synced`,
+   * `offline` or `saved_locally`; a retry of a failed note writes only its answer), and each write emits `NotesStore.onNoteChanged`. A caller that flushes on
    * that event (NotesGenerator's re-check, M4-T23) is fed by its own flush: a failed attempt
    * emits twice, so two more flushes, each emitting twice in turn. What ends that loop is the
    * backoff check in `sendNote` (`backing_off`): the next flush asks nothing and writes nothing.
@@ -394,7 +394,12 @@ export class NotesSync {
       // notes.sqlite's CHECK refuses a dirty row without a revision; reaching here is a bug.
       throw new Error(`the dirty ${kind} notes of meeting ${meetingId} carry no revision`);
     }
-    store.setSyncState(meetingId, kind, 'syncing');
+    // A note that failed stays failed while its retry is out: the page says "Not saved to Roger"
+    // (or the offline line) from this state, and `syncing` over it blinked the line off for the
+    // length of every retry. The state changes only on the retry's answer (markSynced, or the
+    // failure paths below). `syncing` is for a first attempt: from `saved_locally`, `synced` or
+    // `waiting_for_meeting`.
+    if (!FAILED_STATES.has(note.sync)) store.setSyncState(meetingId, kind, 'syncing');
     try {
       const stored = await api.putNote(meetingId, kind, {
         doc: note.doc,
@@ -514,6 +519,13 @@ export class NotesSync {
     return this.clock().getTime();
   }
 }
+
+/** The sync states of a note whose last attempt failed: a retry does not overwrite them. */
+const FAILED_STATES: ReadonlySet<LocalNote['sync']> = new Set([
+  'offline',
+  'refused',
+  'refused_access',
+]);
 
 function flushCause(outcome: SyncOutcome): 'meeting' | 'offline' | 'conflict' | null {
   switch (outcome) {

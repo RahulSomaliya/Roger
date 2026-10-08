@@ -235,6 +235,13 @@ interface HarnessOptions {
 
 function harness(options: HarnessOptions = {}) {
   const log: string[] = [];
+  /** What the generator logs, as JSON lines. */
+  const lines: string[] = [];
+  const generatorLogger = createLogger({
+    level: 'info',
+    format: 'json',
+    sink: (line) => lines.push(line),
+  });
   const clock = (): Date => new Date(Date.now());
   let revision = 0;
   const store = new SqliteNotesStore(options.storePath ?? ':memory:', {
@@ -301,7 +308,7 @@ function harness(options: HarnessOptions = {}) {
     uploads,
     recordings,
     window: () => page.window,
-    logger: silentLogger,
+    logger: generatorLogger,
     clock,
     newRunId: () => {
       const runId = RUN_IDS[runIds];
@@ -314,6 +321,7 @@ function harness(options: HarnessOptions = {}) {
   generator.onPendingChanged((change) => changes.push(change));
   return {
     log,
+    lines,
     store,
     transcripts,
     api,
@@ -406,6 +414,52 @@ describe('NotesGenerator: after Stop', () => {
     expect(h.store.listPendingGenerates()).toEqual([]);
     expect(h.generator.getPending(MEETING)).toBeNull();
     expect(h.log).toEqual([]);
+  });
+
+  // Redesign call 5 deleted the automatic write-up after Stop. A row an earlier build stored for
+  // it (with its template picked, so it would run) was nobody's request in this build: running it
+  // spends the person's LLM budget on notes they did not ask for.
+  it('drops a pending generate an earlier build left for Stop, with a log line, and writes nothing', async () => {
+    const h = harness({ waitingLines: 0 });
+    h.store.putPendingGenerate({
+      meetingId: MEETING,
+      runId: RUN_1,
+      templateId: 'general',
+      reason: 'after_stop',
+      createdAt: new Date(T0).toISOString(),
+      lastError: null,
+    });
+
+    h.generator.start();
+    await settle();
+    await vi.advanceTimersByTimeAsync(NOTES_RECHECK_MS);
+
+    expect(h.store.listPendingGenerates()).toEqual([]);
+    expect(h.generator.getPending(MEETING)).toBeNull();
+    // No request of any kind: not the notes flush, not a run.
+    expect(h.log).toEqual([]);
+    expect(h.lines.filter((line) => line.includes('after_stop'))).toHaveLength(1);
+    expect(h.lines.join('\n')).toContain('pending generate from an earlier build dropped');
+    h.generator.stop();
+  });
+
+  it('still keeps the Write notes pressed over such a row', () => {
+    const h = harness({ waitingLines: 1 });
+    h.store.putPendingGenerate({
+      meetingId: MEETING,
+      runId: RUN_1,
+      templateId: 'general',
+      reason: 'after_stop',
+      createdAt: new Date(T0).toISOString(),
+      lastError: null,
+    });
+    h.generator.generate(MEETING, 'general');
+    expect(h.store.getPendingGenerate(MEETING)).toMatchObject({
+      templateId: 'general',
+      reason: 'button',
+      lastError: null,
+    });
+    expect(h.lines.join('\n')).not.toContain('earlier build');
   });
 
   it('a meeting that was discarded or did not stop gets no write-up, and a discarded one drops its row', () => {

@@ -396,6 +396,8 @@ body {
   display: flex;
   flex-direction: column;
   min-width: 200px;
+  /* A window narrower than the list: it still ends inside it (components/ui/menuPlacement.ts). */
+  max-width: calc(100vw - 2 * var(--space-2));
   padding: var(--space-1);
   border-radius: var(--radius-lg);
   background: var(--raised);

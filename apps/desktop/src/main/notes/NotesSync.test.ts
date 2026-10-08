@@ -376,6 +376,43 @@ describe('NotesSync: uploads', () => {
     sync.stop();
   });
 
+  // QA (redesign R13): "Not saved to Roger" blinked off for the length of each retry, because the
+  // attempt wrote `syncing` over the refusal. A failed note stays failed until the answer says otherwise.
+  it('keeps a refused or offline note in that state while a retry is out', async () => {
+    const { api, store, sync } = harness();
+    sync.start();
+    const seen: string[] = [];
+    store.onNoteChanged((note) => {
+      seen.push(note.sync);
+    });
+
+    api.refuseWith = new ApiError(422, 'validation_error', 'doc is not valid');
+    sync.save(MEETING, 'user', paragraphs('Refused'));
+    await vi.advanceTimersByTimeAsync(1_500);
+    expect(store.getNote(MEETING, 'user')?.sync).toBe('refused');
+
+    // The retry is out, unanswered: the page must still say "Not saved to Roger".
+    api.refuseWith = null;
+    const hold = api.holdNextPut();
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(store.getNote(MEETING, 'user')?.sync).toBe('refused');
+    hold.resolve();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(store.getNote(MEETING, 'user')).toMatchObject({ dirty: false, sync: 'synced' });
+
+    // The same for an API that is away: offline until an answer, never syncing in between.
+    seen.length = 0;
+    api.down = true;
+    sync.save(MEETING, 'user', paragraphs('Offline'));
+    await vi.advanceTimersByTimeAsync(1_500);
+    await vi.advanceTimersByTimeAsync(2_000);
+    await vi.advanceTimersByTimeAsync(4_000);
+    expect(api.puts().length).toBeGreaterThanOrEqual(4);
+    expect(seen.filter((state) => state === 'syncing')).toHaveLength(1);
+    expect(store.getNote(MEETING, 'user')?.sync).toBe('offline');
+    sync.stop();
+  });
+
   it('never runs two passes at once, so a slow failure still backs off', async () => {
     const { api, sync } = harness();
     api.down = true;
@@ -707,7 +744,8 @@ describe('NotesSync: flushMeeting', () => {
     api.down = true;
     sync.save(MEETING, 'user', paragraphs('Typed after Stop'));
     // A re-check that flushes on every change (NotesGenerator, M4-T23) is fed by its own flush:
-    // each attempt writes syncing, then offline. Capped, so a loop ends the test.
+    // the first attempt writes syncing, then offline (a retry of an offline note writes nothing
+    // new, so it emits nothing). Capped, so a loop ends the test.
     let flushes = 0;
     store.onNoteChanged(() => {
       if (flushes >= 50) return;
@@ -730,7 +768,8 @@ describe('NotesSync: flushMeeting', () => {
     expect(api.puts()).toHaveLength(2);
     await vi.advanceTimersByTimeAsync(1);
     expect(api.puts()).toHaveLength(3);
-    expect(flushes).toBe(6);
+    // The retries emitted nothing: the note was offline already and stayed so.
+    expect(flushes).toBe(2);
     sync.stop();
   });
 });

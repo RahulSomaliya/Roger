@@ -52,7 +52,7 @@ export function elapsedInWords(sinceMs: number, nowMs: number): string {
 const DAY_MS = 86_400_000;
 
 /** Whole local days from `date` to `now`: 0 today, 1 yesterday. */
-function daysAgo(date: Date, now: Date): number {
+export function daysAgo(date: Date, now: Date): number {
   const midnight = (d: Date): number =>
     new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
   // Rounded: a day with a daylight saving change is 23 or 25 hours long.
