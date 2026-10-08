@@ -5,9 +5,12 @@ import { streamSettingsMismatch } from '../../src/main/stt/streamSettings';
 /**
  * Credentials for the bench, from the local API like the app's (M3 design, "Benchmark
  * credentials"): every attempt at an item asks `POST /v1/stt/token` just before its streams open,
- * and both streams of the item share that token. A fresh token per attempt, never one per run: a
- * Deepgram grant only works at the handshake and lives 30 s, an AssemblyAI token at most 600 s, so
- * one token per run would fail every later item and disqualify a vendor over a tooling bug.
+ * and both streams of the item share that token when the vendor's token is reusable. A
+ * single-connection vendor's (xAI's client secret opens one websocket, ever: SttCredentialUse)
+ * streams get a token each (replay.ts streamTokens), as do its gate reopens (GateTokens). A fresh
+ * token per attempt, never one per run: a Deepgram grant only works at the handshake and lives
+ * 30 s, an AssemblyAI token at most 600 s, so one token per run would fail every later item and
+ * disqualify a vendor over a tooling bug.
  */
 
 /**

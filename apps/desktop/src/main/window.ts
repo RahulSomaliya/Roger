@@ -57,8 +57,11 @@ export function createMainWindow(
   }: { lifecycle: Pick<RecordingLifecycle, 'quitting'>; openedAtLogin: boolean },
 ): BrowserWindow {
   const window = new BrowserWindow({
-    width: 520,
-    height: 760,
+    // Landscape by default (Rahul, 2026-10-08: "change the default window size ... landscape").
+    // No size is saved between launches, so every Mac opens at this one; the pages are laid out
+    // for it first and still work down to minWidth.
+    width: 1080,
+    height: 730,
     minWidth: 420,
     minHeight: 520,
     title: 'Roger',

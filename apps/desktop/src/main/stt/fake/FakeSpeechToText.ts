@@ -26,6 +26,8 @@ export interface FakeSttOptions {
 export class FakeSpeechToText implements SpeechToText {
   readonly provider = 'fake';
   readonly vendorName = 'Fake';
+  /** Its empty token opens anything: one token at Start serves both sources, as for AssemblyAI. */
+  readonly credentialUse = 'reusable';
   private readonly streams: FakeStream[] = [];
   private readonly clock: () => number;
 

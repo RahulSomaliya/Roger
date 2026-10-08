@@ -1,8 +1,6 @@
+import { GateTokens } from '../../src/main/capture/GateTokens';
 import {
   GATE_MIN_OPEN_MS,
-  GATE_TOKEN_MIN_INTERVAL_MS,
-  GATE_TOKEN_MIN_LEFT_MS,
-  GATE_TOKEN_REFRESH_LEAD_MS,
   type GateChunk,
   SilenceGate,
   type SilenceGateSettings,
@@ -20,7 +18,8 @@ import type { BenchOpener } from './opens';
 import type { BenchTimers } from './timers';
 
 /**
- * One attempt at one item: a fresh token, both streams opened through the bench's open budget, the
+ * One attempt at one item: a fresh token (one per stream when the vendor's token opens one
+ * connection, xAI's: SttCredentialUse), both streams opened through the bench's open budget, the
  * item's WAV files fed to them at real time, every event kept with its arrival time, both closed
  * (M3 design, "Benchmark replay"). Live accuracy and lag are what a person sees, so the audio goes
  * out as the app's capture would send it: 100 ms chunks, each once its last sample would have been
@@ -138,6 +137,8 @@ export async function replayItemAttempt(input: ItemAttemptInput): Promise<ItemAt
   };
   let prepared: {
     credentials: BenchCredentials;
+    /** What each of `item.sources` opens with, in order (streamTokens). */
+    perSource: BenchCredentials[];
     stt: SpeechToText;
     wire: ConnectQueries;
     requestedAtMs: number;
@@ -150,11 +151,22 @@ export async function replayItemAttempt(input: ItemAttemptInput): Promise<ItemAt
         const requestedAtMs = timers.now();
         times.requestedAtMs = requestedAtMs;
         const credentials = await input.credentials.fetch();
-        const receivedAtMs = timers.now();
-        times.receivedAtMs = receivedAtMs;
+        times.receivedAtMs = timers.now();
         const wire = new ConnectQueries(credentials.accessToken);
         const stt = adapterFor(input.adapters, credentials.provider, wire.tap);
-        return { credentials, stt, wire, requestedAtMs, receivedAtMs };
+        let perSource: BenchCredentials[];
+        try {
+          perSource = await streamTokens(stt, credentials, item.sources.length, input.credentials);
+        } catch (error) {
+          // A token is still missing: the attempt failed at its token request, retried like one.
+          times.receivedAtMs = null;
+          throw error;
+        }
+        // Every token the streams carry, or a connect query holding the second one passes.
+        for (const token of perSource) wire.watch(token.accessToken);
+        const receivedAtMs = timers.now();
+        times.receivedAtMs = receivedAtMs;
+        return { credentials, perSource, stt, wire, requestedAtMs, receivedAtMs };
       },
       signal,
     );
@@ -183,16 +195,16 @@ export async function replayItemAttempt(input: ItemAttemptInput): Promise<ItemAt
   // and an item that never replayed is left out of run.json. The check before the replay below
   // comes too late for this: by then both sessions are open.
   throwIfStopped(signal);
-  const { credentials, stt, wire } = prepared;
+  const { credentials, perSource, stt, wire } = prepared;
 
   const outcome = new AttemptOutcome();
   const runs: SourceRun[] = item.sources.map((source) => ({ source, sessions: [], events: [] }));
   const openedAtMs = timers.now();
   const opens = await Promise.allSettled(
-    runs.map(async (run) => {
+    runs.map(async (run, index) => {
       const session = new ReplaySession(run, run.source, 'start', 0, openedAtMs);
       run.sessions.push(session);
-      await session.open(stt, credentials, timers, outcome);
+      await session.open(stt, perSource[index] ?? credentials, timers, outcome);
     }),
   );
   opens.forEach((open, index) => {
@@ -268,6 +280,24 @@ export async function replayItemAttempt(input: ItemAttemptInput): Promise<ItemAt
     events: new Map(runs.map((run) => [run.source, run.events])),
     adapterQuery: wire.query,
   };
+}
+
+/**
+ * What each of an attempt's `streams` opens with: `first` for every one when the vendor's token is
+ * reusable (one API call, as the app's Start), else `first` for the first and a fresh token each
+ * for the rest, fetched together. A single-connection token (xAI's client secret) opens one
+ * websocket, ever: shared, the second stream was refused with HTTP 401 (2026-10-08). The app keeps
+ * the same rule in CaptureSession.open; the gate's reopens below keep it through GateTokens.
+ */
+async function streamTokens(
+  stt: SpeechToText,
+  first: BenchCredentials,
+  streams: number,
+  source: BenchCredentialSource,
+): Promise<BenchCredentials[]> {
+  if (stt.credentialUse === 'reusable') return Array.from({ length: streams }, () => first);
+  const rest = await Promise.all(Array.from({ length: streams - 1 }, () => source.fetch()));
+  return [first, ...rest];
 }
 
 /**
@@ -369,24 +399,36 @@ interface GateDeps {
 
 /**
  * The silence gate over one attempt's streams, as one meeting's (CaptureSession): its own reopen
- * count, both sources together, each close taking the reopen it will need; and one token fetched
- * while any stream is closed, kept fresh, that both reopen with (as at Start). The rules are the
- * app's own (SilenceGate.ts), so run F measures what the app does.
+ * count, both sources together, each close taking the reopen it will need; and the tokens fetched
+ * while a stream is closed, kept fresh (GateTokens, the app's own): one both reopen with for a
+ * reusable vendor (as at Start), one per gated stream, spent on its one reopen, for a
+ * single-connection one. The rules are the app's own (SilenceGate.ts), so run F measures what the
+ * app does.
  */
 class GateRun {
   /** A RunStoppedError met by a token fetch (the API changed vendor): the run stops on it. */
   stopped: RunStoppedError | null = null;
   private closes = 0;
-  private token: BenchCredentials | null = null;
-  private prefetching: Promise<BenchCredentials | null> | null = null;
-  private prefetchNotBeforeMs = 0;
+  private readonly tokens: GateTokens<BenchCredentials>;
   private readonly streams: GatedStream[] = [];
   private readonly reopens = new Set<Promise<void>>();
 
   constructor(
     readonly settings: ReplayGate,
     readonly deps: GateDeps,
-  ) {}
+  ) {
+    this.tokens = new GateTokens({
+      credentialUse: deps.stt.credentialUse,
+      fetch: () => deps.credentials.fetch(),
+      leftMs: (token) => this.leftMs(token),
+      now: () => deps.timers.now(),
+      // Left for the reopen, which fetches at the onset as the app does; a token every later item
+      // would fail on stops the run.
+      onPrefetchFailed: (error) => {
+        if (error instanceof RunStoppedError) this.stopped ??= error;
+      },
+    });
+  }
 
   /** `run`'s samples go through this, not straight to its start session. */
   stream(run: SourceRun): GatedStream {
@@ -415,40 +457,24 @@ class GateRun {
   }
 
   /**
-   * As CaptureSession.keepTokenFresh: fetched at a close and GATE_TOKEN_REFRESH_LEAD_MS before it
-   * expires while any stream is closed, at most every GATE_TOKEN_MIN_INTERVAL_MS. A failed fetch
-   * is left for the reopen, which fetches at the onset as the app does: its wait then shows in that
+   * As CaptureSession.keepTokenFresh (GateTokens): fetched at a close and again before it expires
+   * while a stream is closed, at most every GATE_TOKEN_MIN_INTERVAL_MS per token. A failed fetch is
+   * left for the reopen, which fetches at the onset as the app does: its wait then shows in that
    * reopen's backlog in run.json. A token every later item would fail on stops the run.
    */
   keepTokenFresh(): void {
-    if (this.prefetching !== null || this.deps.signal.aborted || this.stopped !== null) return;
-    if (!this.streams.some((stream) => stream.gated)) return;
-    const now = this.deps.timers.now();
-    if (now < this.prefetchNotBeforeMs) return;
-    if (this.token !== null && this.leftMs(this.token) > GATE_TOKEN_REFRESH_LEAD_MS) return;
-    this.prefetchNotBeforeMs = now + GATE_TOKEN_MIN_INTERVAL_MS;
-    const fetching = this.deps.credentials.fetch().then(
-      (credentials) => {
-        this.token = credentials;
-        return credentials;
-      },
-      (error: unknown) => {
-        if (error instanceof RunStoppedError) this.stopped ??= error;
-        return null;
-      },
+    if (this.deps.signal.aborted || this.stopped !== null) return;
+    this.tokens.keepFresh(
+      this.streams.filter((stream) => stream.gated).map((stream) => stream.source),
     );
-    this.prefetching = fetching;
-    void fetching.finally(() => {
-      if (this.prefetching === fetching) this.prefetching = null;
-    });
   }
 
-  /** The prefetched token while it has GATE_TOKEN_MIN_LEFT_MS left, else a fetch now. */
-  async reopenToken(): Promise<BenchCredentials> {
-    const fetched = this.prefetching === null ? null : await this.prefetching;
-    const token = fetched ?? this.token;
-    if (token !== null && this.leftMs(token) >= GATE_TOKEN_MIN_LEFT_MS) return token;
-    return this.deps.credentials.fetch();
+  /**
+   * `source`'s reopen token: the prefetched one while it has GATE_TOKEN_MIN_LEFT_MS left, else a
+   * fetch now; a single-connection one is spent here (GateTokens.take).
+   */
+  reopenToken(source: AudioSource): Promise<BenchCredentials> {
+    return this.tokens.take(source);
   }
 
   private leftMs(token: BenchCredentials): number {
@@ -484,6 +510,10 @@ class GatedStream implements Pick<SttStream, 'send'> {
 
   get gated(): boolean {
     return this.state === 'gated';
+  }
+
+  get source(): AudioSource {
+    return this.run.source;
   }
 
   send(pcm: Uint8Array): void {
@@ -545,7 +575,7 @@ class GatedStream implements Pick<SttStream, 'send'> {
       // in its turn: the prefetched one, or a fetch when it ran out.
       const credentials = await opener.reserve(
         1,
-        () => this.shared.reopenToken(),
+        () => this.shared.reopenToken(this.run.source),
         AbortSignal.any([signal, outcome.ended.signal]),
       );
       if (outcome.failure !== null || signal.aborted) return;
@@ -629,8 +659,17 @@ function stoppedBy(signal: AbortSignal): string {
 class ConnectQueries {
   query: string | null = null;
   leakedToken = false;
+  /** Every token the attempt's streams open with (watch): any may be in the first connect. */
+  private readonly accessTokens: string[];
 
-  constructor(private readonly accessToken: string) {}
+  constructor(accessToken: string) {
+    this.accessTokens = [accessToken];
+  }
+
+  /** Checks connect queries for `accessToken` too: a stream's own token (streamTokens). */
+  watch(accessToken: string): void {
+    if (!this.accessTokens.includes(accessToken)) this.accessTokens.push(accessToken);
+  }
 
   readonly tap: BenchWireTap = (record) => {
     if (record.kind !== 'connect' || typeof record.query !== 'string') return;
@@ -642,10 +681,12 @@ class ConnectQueries {
   };
 
   private holdsToken(query: string): boolean {
-    if (this.accessToken === '') return false;
-    if (query.includes(this.accessToken)) return true;
+    const tokens = this.accessTokens.filter((token) => token !== '');
+    if (tokens.length === 0) return false;
+    if (tokens.some((token) => query.includes(token))) return true;
     try {
-      return decodeURIComponent(query.replaceAll('+', ' ')).includes(this.accessToken);
+      const decoded = decodeURIComponent(query.replaceAll('+', ' '));
+      return tokens.some((token) => decoded.includes(token));
     } catch {
       // Not valid percent-encoding, so it cannot be checked for the token: never stored.
       return true;

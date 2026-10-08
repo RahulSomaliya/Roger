@@ -36,6 +36,14 @@ import { parseXaiMessage, XAI_AUDIO_DONE, XAI_FINALIZE, XaiLineAssembler } from 
  * (1) the exact reading of the three partial states (messages.ts XaiLineAssembler); (2) what
  * `start` and `duration` span.
  *
+ * A client secret opens exactly ONE websocket, ever (live probe 2026-10-08 through the API's
+ * XaiSttTokenIssuer, in the same vendor log): one secret, two connections at once: one opens, the
+ * other is refused with HTTP 401; two secrets, two at once: both open; one secret, open, close,
+ * open again: the second is HTTP 401. The key was fine. Hence `credentialUse: 'single-connection'`:
+ * Start, every reopen, the silence gate's prefetch, the gap re-run and the bench each give every
+ * open a secret of its own (SttCredentialUse). Before it, Roger shared Start's one token between
+ * mic and call audio, as it does for AssemblyAI, and every Start failed on one of the two.
+ *
  * What xAI documents nothing about, and what this file therefore assumes:
  * - Billing: open time (the conservative reading; the API's price table says the same), so the core
  *   closes a source with no audio like any vendor's.
@@ -111,6 +119,10 @@ export function xaiProtocol(options: XaiProtocolOptions = {}): SttProtocol {
   return {
     provider: 'xai',
     vendorName: 'xAI',
+    // A client secret opens ONE websocket, ever (file header, the 2026-10-08 probe): a second with
+    // it, at once or after the first closed, is HTTP 401. Every open gets its own token
+    // (SttCredentialUse).
+    credentialUse: 'single-connection',
     // The API's client secret as a bearer header, the way xAI documents a key on this socket. In
     // the header, never the URL: the wire tap records the query. A raw API key never reaches the
     // desktop (house rule 3).

@@ -1,5 +1,10 @@
 import type { Logger } from '../../logger';
-import type { OpenStreamOptions, SttEvent, SttStreamSettings } from '../SpeechToText';
+import type {
+  OpenStreamOptions,
+  SttCredentialUse,
+  SttEvent,
+  SttStreamSettings,
+} from '../SpeechToText';
 import type { AudioPacing } from './AudioPacer';
 
 /**
@@ -66,6 +71,14 @@ export interface SttProtocol {
   readonly provider: string;
   /** For people: error text and logs, e.g. "AssemblyAI". */
   readonly vendorName: string;
+  /**
+   * What one access token from the API may open (SttCredentialUse): `reusable` (any number of
+   * sessions within its TTL) or `single-connection` (one websocket, ever: xAI). Declared from the
+   * vendor's token docs or a live check, never assumed: a wrong `reusable` fails every Start on its
+   * second source with HTTP 401. The conformance suite checks it against the vendor's fake
+   * (conformanceVendors.ts `credentialUse`), which refuses a token it has seen when single-use.
+   */
+  readonly credentialUse: SttCredentialUse;
   /**
    * Throws SttConnectError when the settings cannot work; no socket is opened then. Map
    * `settings.keyterms` (already cut to the shared limits by the core, keyterms.ts) to the vendor's

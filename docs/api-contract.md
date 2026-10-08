@@ -223,8 +223,15 @@ fails on the Mac with "Unsupported speech-to-text provider".
 | `assemblyai` | AssemblyAI temporary streaming token; the desktop sends it as the `token` query parameter | Seconds left to open the stream (1..600). One token opens both streams; a session then runs up to 3 hours, a cap the API asks for explicitly on every token (`max_session_duration_seconds=10800`), after which AssemblyAI closes it with 3008. |
 | `deepgram` | Deepgram grant (JWT); the desktop sends it as `Authorization: Bearer` | Seconds the grant is valid |
 | `soniox` | Soniox temporary API key; the desktop sends it as `Authorization: Bearer` | Seconds left to open a stream (1..3600). One key opens both streams (never `single_use`); a stream then runs up to 5 hours, a cap the API asks for explicitly on every key (`max_session_duration_seconds=18000`), after which Soniox ends it with a `temp_api_key_session_expired` error. |
-| `xai` | xAI client secret (`xai-client-secret.` prefix), minted by `POST /v1/realtime/client_secrets`; the desktop sends it as `Authorization: Bearer` on the websocket handshake. `/v1/stt` accepts it (live check 2026-10-07), though xAI documents it for the voice-agent socket only. | Seconds left to open a stream (1..3600). xAI documents no session cap, so the API asks for none. |
+| `xai` | xAI client secret (`xai-client-secret.` prefix), minted by `POST /v1/realtime/client_secrets`; the desktop sends it as `Authorization: Bearer` on the websocket handshake. `/v1/stt` accepts it (live check 2026-10-07), though xAI documents it for the voice-agent socket only. It opens ONE connection, ever: a second websocket on it, at the same time or after the first closed, is refused with HTTP 401 (probe 2026-10-08), so the desktop asks for one token per stream it opens (two at every Start). | Seconds left to open its one stream (1..3600). xAI documents no session cap, so the API asks for none. |
 | `fake` | `""` | `0` |
+
+How many streams one `access_token` opens is the vendor's, and the desktop's adapter declares it
+(`credentialUse` in `apps/desktop/src/main/stt/core/SttProtocol.ts`): `reusable` for `assemblyai`,
+`deepgram`, `soniox` and `fake` (Start opens both streams on one token, and the silence gate keeps
+one for both), `single-connection` for `xai` (every open, Start's two, each reopen and each gap
+re-run session, asks for its own). The response carries no field for it: a vendor's rule changes
+with its adapter, not with the API.
 
 Response:
 

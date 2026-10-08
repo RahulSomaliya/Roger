@@ -727,6 +727,12 @@ export class CaptureService {
           'Microphone access is denied. Allow Roger under System Settings → Privacy & Security → Microphone.',
         );
       }
+      // ONE token here, which names the vendor. It opens both sources only when the vendor's
+      // token is reusable (AssemblyAI); a single-connection one (xAI's client secret: one
+      // websocket, ever) opens the first source alone, and CaptureSession.open fetches the other's
+      // beside it. Never hand this token to a second open here: every Start failed with "xAI:
+      // rejected with HTTP 401" while it served both (2026-10-08). Every other open fetches its
+      // own the same way (CaptureSession.reopen, GateTokens, rerun/GapRetranscriber.open).
       const { provider, accessToken, settings, pricePerHourUsdWithoutKeyterms } =
         await this.resolveStt();
       // Checked before the meeting exists: a session on the wrong format would store nonsense lines.
@@ -1114,8 +1120,10 @@ export class CaptureService {
   }
 
   /**
-   * Credentials for a reopen, mid-meeting. The vendor and the audio format must be the ones the
-   * meeting started with: the session's adapter cannot switch vendor, and another format would be
+   * Credentials for a reopen, mid-meeting, and for each Start open after the first when the
+   * vendor's token opens one connection (SttCredentialUse): one fresh token per call, never cached
+   * here, so no two opens share one. The vendor and the audio format must be the ones the meeting
+   * started with: the session's adapter cannot switch vendor, and another format would be
    * transcribed as garbage with no error.
    */
   private async freshCredentials(provider: string): Promise<StreamCredentials> {

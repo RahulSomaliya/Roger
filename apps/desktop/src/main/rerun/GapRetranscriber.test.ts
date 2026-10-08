@@ -19,6 +19,7 @@ import {
   type OpenStreamOptions,
   type SpeechToText,
   SttConnectError,
+  type SttCredentialUse,
   SttEventEmitter,
   type SttEventListener,
   type SttStream,
@@ -69,7 +70,14 @@ function said(words: TranscriptWord[]): VendorFinal {
  * adapter the factory makes logs its opens here, so a test sees each session in order.
  */
 class ScriptedVendor {
-  readonly opens: { label: string; keyterms: readonly string[]; atMs: number }[] = [];
+  readonly opens: { label: string; keyterms: readonly string[]; atMs: number; token: string }[] =
+    [];
+  /**
+   * As `single-connection` it plays xAI: an open with a token an earlier open used is refused with
+   * HTTP 401 (the 2026-10-08 probe).
+   */
+  credentialUse: SttCredentialUse = 'reusable';
+  readonly tokensUsed = new Set<string>();
   readonly streams: ScriptedStream[] = [];
   /** The finals each source's session sends at its close. */
   finals: Partial<Record<AudioSource, VendorFinal[]>> = {};
@@ -87,12 +95,15 @@ class ScriptedVendor {
 
 class ScriptedStt implements SpeechToText {
   readonly vendorName = 'Scripted';
+  readonly credentialUse: SttCredentialUse;
   private readonly mine: ScriptedStream[] = [];
 
   constructor(
     private readonly vendor: ScriptedVendor,
     readonly provider: string,
-  ) {}
+  ) {
+    this.credentialUse = vendor.credentialUse;
+  }
 
   openStream(options: OpenStreamOptions): Promise<SttStream> {
     const { vendor } = this;
@@ -100,7 +111,13 @@ class ScriptedStt implements SpeechToText {
       label: options.label,
       keyterms: options.settings.keyterms ?? [],
       atMs: vendor.clock(),
+      token: options.accessToken,
     });
+    const spent = vendor.tokensUsed.has(options.accessToken);
+    vendor.tokensUsed.add(options.accessToken);
+    if (spent && this.credentialUse === 'single-connection') {
+      return Promise.reject(new SttConnectError('Scripted: rejected with HTTP 401', 401));
+    }
     const error = vendor.openErrors.shift();
     if (error !== undefined) return Promise.reject(error);
     const stream = new ScriptedStream(vendor, options.label as AudioSource);
@@ -649,6 +666,29 @@ describe('GapRetranscriber', () => {
     expect(h.vendor.opens.map((open) => open.keyterms)).toEqual([['Roger'], []]);
     // Both opens took a slot: two of the minute's four are gone.
     expect(h.budget.check(3, 'minute').ok).toBe(false);
+    expect(h.store.listUnrecoveredGaps(MEETING)).toEqual([]);
+  });
+
+  it('gives every session a token of its own, the open without the jargon list too', async () => {
+    // xAI's client secret opens one websocket, ever (SttCredentialUse): a token handed to a
+    // second open would be refused with HTTP 401 and the gap would never fill.
+    const h = harness({ perMinute: 10 });
+    h.vendor.credentialUse = 'single-connection';
+    h.gap('system', 3_000, 4_000);
+    h.gap('mic', 6_000, 7_000);
+    h.keep('system', 0, 10_000);
+    h.keep('mic', 0, 10_000);
+    h.vendor.openErrors = [
+      new SttConnectError('keyterms refused', 400, { keytermsRejected: true }),
+    ];
+
+    await h.rerun.rerunMeeting(MEETING);
+
+    expect(h.vendor.opens.map((open) => [open.label, open.token, open.keyterms])).toEqual([
+      ['system', 'token-1', ['Roger']],
+      ['system', 'token-2', []],
+      ['mic', 'token-3', ['Roger']],
+    ]);
     expect(h.store.listUnrecoveredGaps(MEETING)).toEqual([]);
   });
 

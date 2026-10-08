@@ -26,6 +26,7 @@ preset, provider, model, price and token lifetime it started with.
 | 2026-10-05 | `deepgram` (with `STT_MODEL=nova-3`; presets came with M3-T1) | `deepgram` | `nova-3` | M1's first vendor, in the walking skeleton. Not measured. |
 | 2026-10-06 | `assemblyai` | `assemblyai` | `universal-streaming-english` | Owner decision in M1 (merge a3be3ee): AssemblyAI lists Granola as a customer, live text costs $0.15 per stream-hour billed on open time, and the free hours are generous. Deepgram stays as the second adapter for the bake-off. Not measured yet: the bake-off confirms or replaces it by the rule below. |
 | 2026-10-07 | `xai` (available, not serving: AssemblyAI still is) | `xai` | `grok-voice-transcribe-2.0` | Added so Rahul can hear Grok and AssemblyAI on the same audio: set `STT_PROVIDER=xai` and `XAI_API_KEY`, restart the API. Measured once on the synthetic canary (live check below), not a bake-off run until the open points are settled. |
+| 2026-10-08 | `xai` (Rahul switched to it for real calls) | `xai` | `grok-voice-transcribe-2.0` | Every Start failed: "xAI: rejected with HTTP 401" on one of the two sources. Cause: a client secret opens one websocket, ever (probe below), and Roger shared Start's one token between both. Fixed in the desktop the same day: every open gets its own token (`credentialUse: 'single-connection'`). |
 
 ### xAI (Grok Voice Transcribe 2.0), added 2026-10-07
 
@@ -62,6 +63,31 @@ about accuracy on real voices):
   frame about 2.4 s later (code 1006). The finish had completed first ("stt session finished"
   logged), so no gap row; the cost is about 2.4 s more open socket per session end, which may or
   may not be billed (see Billing basis below).
+
+The canary opens one stream, so it never saw what a Start does with two. Live probe 2026-10-08,
+after every Start in the packaged app failed (the mic stream opened and the call audio stream was
+refused with "xAI: rejected with HTTP 401", the next try the other way round, then "capture start
+failed"), through the API's own `XaiSttTokenIssuer` (`POST /v1/realtime/client_secrets`, the secret
+sent as `Authorization: Bearer` on `wss://api.x.ai/v1/stt`):
+
+| Test | Result |
+| --- | --- |
+| T1: one secret, two connections at once | One opens, the other is refused with HTTP 401 |
+| T2: two secrets, two connections at once | Both open |
+| T3: one secret, open, close, open again | The second is refused with HTTP 401 |
+
+So an xAI client secret opens exactly one websocket, ever; the key is fine. AssemblyAI's token and
+Soniox's key are reusable within their TTL, which is why Start's shared token never showed it. The
+fix (desktop, same day): each adapter declares `credentialUse` on its protocol (`xai`
+`single-connection`, the others `reusable`), and every caller gives a single-connection vendor's
+opens a token each: Start fetches one per source (the second beside the first one's open), every
+reopen fetches its own, the silence gate prefetches one per gated source and spends it on one
+reopen (`GateTokens`), the open without the jargon list fetches anew, and the gap re-run and the
+bench never hand one token to two opens. A reusable vendor keeps one token at Start and one gate
+token for both sources, so AssemblyAI's calls and latency are unchanged. The conformance suite's
+fake refuses a seen token for a vendor whose entry says `single-connection`. Each token still opens
+within the API's 30 s TTL: Start's are spent at once, and a gate token with under 5 s left is
+replaced at the onset.
 
 Open points, before Grok is used on a real call:
 

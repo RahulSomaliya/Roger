@@ -1,6 +1,6 @@
 import { DEFAULT_COST_GUARDS } from '../../costGuards';
 import type { Logger } from '../../logger';
-import type { OpenStreamOptions, SpeechToText, SttStream } from '../SpeechToText';
+import type { OpenStreamOptions, SpeechToText, SttCredentialUse, SttStream } from '../SpeechToText';
 import { sumUsage, type SttUsage } from '../usage';
 import {
   STT_LIVENESS,
@@ -53,6 +53,7 @@ export interface WebSocketSttOptions {
 export class WebSocketSpeechToText implements SpeechToText {
   readonly provider: string;
   readonly vendorName: string;
+  readonly credentialUse: SttCredentialUse;
   /** What the adapter runs; the conformance suite checks its declarations against the vendor. */
   readonly protocol: SttProtocol;
   private readonly logger: Logger;
@@ -74,6 +75,7 @@ export class WebSocketSpeechToText implements SpeechToText {
   constructor(protocol: SttProtocol, options: WebSocketSttOptions) {
     this.provider = protocol.provider;
     this.vendorName = protocol.vendorName;
+    this.credentialUse = protocol.credentialUse;
     const keepAlive = protocol.keepAlive;
     this.protocol =
       keepAlive !== null && options.keepAliveMs !== undefined
