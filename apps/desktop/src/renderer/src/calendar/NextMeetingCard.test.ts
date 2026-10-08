@@ -31,9 +31,10 @@ describe('NextMeetingCard (the meeting Home’s Start notes is for)', () => {
     expect(html).toContain('11:08 am to 12:00 pm');
   });
 
-  it('names an untitled invite as such, and lists no guests: the hero is a title and hours', () => {
+  it('names an untitled invite as its meeting will be named, and lists no guests: the hero is a title and hours', () => {
     const html = card(entryFor(timedEvent('a', at(11, 5), at(12), { title: '  ' })));
-    expect(html).toContain('Untitled meeting');
+    expect(html).toMatch(/Meeting at \d{1,2}:\d{2} (am|pm)/);
+    expect(html).not.toContain('Untitled');
     expect(html).not.toContain('<button');
   });
 });

@@ -62,6 +62,20 @@ const NOT_TAKEN_MESSAGE =
   "Roger's window did not start the notes. Open Roger and choose Start notes.";
 const NO_JOIN_LINK_MESSAGE = 'This meeting has no Meet, Zoom or Teams link Roger can open.';
 const BUSY_MESSAGE = 'Roger is still starting your last notes. Try again in a moment.';
+/**
+ * Plain lines for a start that failed before capture answered (redesign sweep, P2). Main's and
+ * the vendor's own text (`errorMessage(error)`: a field name, an errno, "xAI: rejected with HTTP
+ * 401") goes to the prompt log's `detail` and the app log only: a card floats over someone's call
+ * and is read in one glance.
+ */
+const REFUSED_MESSAGE = 'Roger could not start notes from here. Try again.';
+
+/** "Roger could not stop the notes on Weekly sync. Stop them in Roger, then try again." */
+function stopFailedMessage(title: string | null): string {
+  const what =
+    title === null || title.trim() === '' ? 'your current notes' : `the notes on ${title}`;
+  return `Roger could not stop ${what}. Stop them in Roger, then try again.`;
+}
 
 /**
  * Capture as the prompt reads and drives it: CaptureService fits as it is (PromptService.test.ts
@@ -259,7 +273,8 @@ export class PromptService implements PromptOfferPort {
 
   getState(): PromptPanelState {
     return {
-      cards: this.cards.flatMap((card) => {
+      // Newest first, as macOS banners stack (redesign sweep, P15): `cards` is in arrival order.
+      cards: [...this.cards].reverse().flatMap((card) => {
         const shown = toPromptCard(card);
         return shown === null ? [] : [shown];
       }),
@@ -557,7 +572,7 @@ export class PromptService implements PromptOfferPort {
     const nowMs = this.clock();
     // `starting` first: the row then holds the click's time, whatever the stop below costs.
     if (!this.record(card.accountEmail, target.key, 'starting', nowMs)) {
-      this.showError(card, 'Roger could not start notes from this prompt. Try again.');
+      this.showError(card, REFUSED_MESSAGE);
       return;
     }
     const attempt: StartAttempt = {
@@ -598,13 +613,17 @@ export class PromptService implements PromptOfferPort {
       }
     }
     const { capture } = this.options;
+    // Read before the stop: the note's title is gone from the status once it has stopped.
+    const stopping = capture.phase !== 'idle' ? capture.getStatus().title : null;
     try {
       // Trap: stop first, then request. A request that meets a recording joins it: the answer is
       // that note's status with no error, and this card's title and event go only to a warning in
       // the log (CaptureService.requestStart).
       if (capture.phase !== 'idle') await capture.stop();
     } catch (error) {
-      this.settleFailed(attempt, 'stop_failed', errorMessage(error));
+      this.settleFailed(attempt, 'stop_failed', errorMessage(error), {
+        card: stopFailedMessage(stopping),
+      });
       return;
     }
     if (this.attempt !== attempt) return;
@@ -612,7 +631,7 @@ export class PromptService implements PromptOfferPort {
       capture.requestStart(target.request);
     } catch (error) {
       // requestStart names the field it refused, never its value: safe for the log and the card.
-      this.settleFailed(attempt, 'request_refused', errorMessage(error));
+      this.settleFailed(attempt, 'request_refused', errorMessage(error), { card: REFUSED_MESSAGE });
       return;
     }
     attempt.requested = true;
@@ -776,10 +795,12 @@ export class PromptService implements PromptOfferPort {
     attempt: StartAttempt,
     reason: string,
     message: string,
-    { showCard }: { showCard: boolean } = { showCard: true },
+    { showCard, card }: { showCard?: boolean; card?: string } = {},
   ): void {
     this.settle(attempt, 'start_failed', { reason, detail: message });
-    if (showCard) this.restoreCard(attempt, message);
+    // `message` is the log's; the card shows `card` when it differs (a thrown error's text is not
+    // for people). A capture refusal arrives already plain (CaptureStatus.error).
+    if (showCard !== false) this.restoreCard(attempt, card ?? message);
   }
 
   private settle(
@@ -1087,6 +1108,10 @@ function toPromptCard(card: CardState): PromptCard | null {
         phase: card.phase,
         error: card.error,
         shownBy: card.shownBy,
+        startedEventId:
+          card.startingKey === null
+            ? null
+            : (card.events.find(({ key }) => key === card.startingKey)?.event.id ?? null),
         events: [first, ...rest],
       };
       return shown;

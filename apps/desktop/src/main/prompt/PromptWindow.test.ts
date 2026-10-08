@@ -1,9 +1,9 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PromptPanelState } from '../../shared/ipc/prompt';
 import { createLogger } from '../logger';
 import type { AppPage } from '../page-policy';
 import { PANEL_MARGIN, PANEL_WIDTH, type Rectangle } from './promptBounds';
-import { PromptWindow, parsePanelHeight } from './PromptWindow';
+import { EXIT_FALLBACK_MS, PromptWindow, parsePanelHeight } from './PromptWindow';
 
 // Never a real window: BrowserWindow is a recording stand-in, and `screen` is two displays.
 const electron = vi.hoisted(() => {
@@ -66,6 +66,9 @@ const electron = vi.hoisted(() => {
     }
     getBounds(): { x: number; y: number; width: number; height: number } {
       return this.bounds;
+    }
+    invalidateShadow(): void {
+      this.calls.push('invalidateShadow');
     }
     showInactive(): void {
       this.visible = true;
@@ -215,6 +218,11 @@ beforeEach(() => {
   electron.world.cursor = { x: 700, y: 400 };
   electron.world.displays = [MAIN_DISPLAY, LEFT_DISPLAY];
   electron.world.failCreate = false;
+  vi.useFakeTimers();
+});
+
+afterEach(() => {
+  vi.useRealTimers();
 });
 
 describe('parsePanelHeight', () => {
@@ -368,7 +376,9 @@ describe('PromptWindow: showing it', () => {
     const win = only();
     reportHeight(win, 150);
     h.change(NO_CARDS);
+    reportHeight(win, 0);
     expect(win.visible).toBe(false);
+    reportHeight(win, 150);
     h.change(ONE_CARD);
     expect(win.visible).toBe(true);
     expect(electron.world.windows).toHaveLength(1);
@@ -383,20 +393,65 @@ describe('PromptWindow: showing it', () => {
     reportHeight(win, 120);
     expect(win.visible).toBe(true);
     h.change(NO_CARDS);
+    reportHeight(win, 0);
     reportHeight(win, 120);
     expect(win.visible).toBe(false);
   });
 });
 
 describe('PromptWindow: hiding it', () => {
-  it('hides when the last card goes, and keeps the window for the next one', () => {
+  it('keeps the window up for the exit animation, then hides when the page reports 0', () => {
     const h = harness();
     h.startWith(ONE_CARD);
     const win = only();
     reportHeight(win, 150);
     h.change(NO_CARDS);
+    // The last card is still sliding out: hiding now would cut it off.
+    expect(win.visible).toBe(true);
+    expect(win.calls).not.toContain('hide');
+    reportHeight(win, 0);
     expect(win.calls).toContain('hide');
     expect(win.destroyed).toBe(false);
+    // The fallback timer found nothing left to do.
+    vi.advanceTimersByTime(EXIT_FALLBACK_MS);
+    expect(win.calls.filter((call) => call === 'hide')).toHaveLength(1);
+  });
+
+  it('hides after the fallback when the page never reports 0', () => {
+    const h = harness();
+    h.startWith(ONE_CARD);
+    const win = only();
+    reportHeight(win, 150);
+    h.change(NO_CARDS);
+    vi.advanceTimersByTime(EXIT_FALLBACK_MS - 1);
+    expect(win.visible).toBe(true);
+    vi.advanceTimersByTime(1);
+    expect(win.visible).toBe(false);
+  });
+
+  it('does not hide a window whose card came back inside the fallback', () => {
+    const h = harness();
+    h.startWith(ONE_CARD);
+    const win = only();
+    reportHeight(win, 150);
+    h.change(NO_CARDS);
+    h.change(ONE_CARD);
+    vi.advanceTimersByTime(EXIT_FALLBACK_MS * 2);
+    expect(win.visible).toBe(true);
+  });
+
+  it('refreshes the system shadow after every resize and after the window hides', () => {
+    // A transparent window's shadow is cached by macOS: a card that grows or leaves keeps the old one.
+    const h = harness();
+    h.startWith(ONE_CARD);
+    const win = only();
+    reportHeight(win, 150);
+    expect(win.calls.slice(win.calls.indexOf('setBounds')).slice(0, 2)).toEqual([
+      'setBounds',
+      'invalidateShadow',
+    ]);
+    reportHeight(win, 0);
+    expect(win.calls.slice(-2)).toEqual(['hide', 'invalidateShadow']);
   });
 
   it('hides for a height of 0, which the page reports when it draws nothing', () => {

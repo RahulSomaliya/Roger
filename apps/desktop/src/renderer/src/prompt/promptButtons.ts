@@ -6,6 +6,7 @@ import type {
 } from '../../../shared/calendar';
 import type { PromptActionRequest } from '../../../shared/ipc/prompt';
 import { parseJoinLink } from '../../../shared/meetingLinks';
+import type { IconName } from '../components/ui/icons';
 
 /**
  * What each card's buttons say and send (M5-T10), as data: the panel draws them, and the tests
@@ -21,6 +22,8 @@ export interface PromptButton {
   label: string;
   /** primary: the accent fill; secondary: outlined; ghost: text only (`.btn` in prompt.css). */
   variant: 'primary' | 'secondary' | 'ghost';
+  /** Set for an icon-only button: `label` is then its accessible name and tooltip, not its text. */
+  icon?: IconName;
   request: PromptActionRequest;
 }
 
@@ -69,17 +72,19 @@ export function callDetectedButtons(card: CallDetectedPromptCard, leading = true
 }
 
 /**
- * The card's own button below its calls: Dismiss. Copy notice left the panel with the redesign
+ * Dismiss: an x icon button at the card's top right (redesign sweep, section 3). It used to be a
+ * word alone on a footer row, a third of the card for the least-used control; as an icon it frees
+ * that row for the start buttons. The name stays "Dismiss" (the button's `aria-label` and tooltip),
+ * because a bare x says nothing to a screen reader. Copy notice left the panel with the redesign
  * (docs/plans/redesign.md, call 7): the notice is one click away on the meeting page.
  */
-export function footerButtons(card: PromptCard): PromptButton[] {
-  return [
-    {
-      label: 'Dismiss',
-      variant: 'ghost',
-      request: { cardId: card.id, action: 'dismiss' },
-    },
-  ];
+export function dismissButton(card: PromptCard): PromptButton {
+  return {
+    label: 'Dismiss',
+    icon: 'x',
+    variant: 'ghost',
+    request: { cardId: card.id, action: 'dismiss' },
+  };
 }
 
 /** "Recording and Open Roger": the one click that may bring Roger's window forward. */

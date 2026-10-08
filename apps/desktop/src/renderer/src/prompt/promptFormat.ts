@@ -1,11 +1,14 @@
 import { parseInstant, type CallApp } from '../../../shared/calendar';
-import { formatClock } from '../clock';
+import { formatClock, meetingHours } from '../../../shared/clock';
 
 /**
  * The words on the prompt panel's cards (M5-T10): pure, so the exact strings are tested.
  */
 
 const MINUTE_MS = 60_000;
+
+/** What the card's overline calls the app: a card over another app's call must name itself. */
+const IDENTITY = 'Roger';
 
 /**
  * "Starting in 1 min", "Starting now", "Started just now" or "Started 3 min ago". The wait rounds
@@ -20,28 +23,43 @@ export function startLabel(startIso: string, nowMs: number): string {
   return elapsed < 1 ? 'Started just now' : `Started ${elapsed} min ago`;
 }
 
-/** The invite's title; "Untitled meeting" when it has none (Google allows an empty one). */
-export function eventTitle(event: { title: string }): string {
+/**
+ * The invite's title; a blank one (Google allows an empty title) is named as its meeting will be,
+ * "Meeting at 3:27 pm" (CaptureService `defaultMeetingTitle`), never "Untitled meeting": the card
+ * and the note must not call one meeting two things. The time is the invite's start, not the
+ * click's, so the card reads the same however long it stays up.
+ */
+export function eventTitle(event: { title: string; start: string }): string {
   const title = event.title.trim();
-  return title === '' ? 'Untitled meeting' : title;
+  return title === '' ? `Meeting at ${formatClock(parseInstant(event.start))}` : title;
 }
 
-/** "Zoom is using the microphone": the call-detected card's headline. */
+/** "Call in Zoom": the call-detected card's headline. An offer to take notes, not a privacy warning. */
 export function callDetectedTitle(app: CallApp): string {
-  return `${app.name} is using the microphone`;
+  return `Call in ${app.name}`;
 }
 
 /**
- * "10:00 - 10:30 am", or "11:30 am - 12:30 pm" across noon, with an en dash: the shared `formatClock`
- * (12-hour, lowercase, whatever the Mac's own setting says), with the first end's am or pm
- * dropped when both ends share it.
+ * The card's overline: "Roger \u00b7 Starting in 1 min". Roger names itself because the card floats
+ * over another app's call and every macOS banner names its app. The wait is Home's `startLabel`;
+ * CSS upper-cases it (prompt.css `.prompt-overline`), so the text stays sentence case for
+ * a screen reader.
  */
-export function timeRange(startIso: string, endIso: string): string {
-  const start = formatClock(parseInstant(startIso));
-  const end = formatClock(parseInstant(endIso));
-  const period = end.slice(end.lastIndexOf(' '));
-  const lead = start.endsWith(period) ? start.slice(0, -period.length) : start;
-  return `${lead} \u2013 ${end}`;
+export function overline(startIso: string, nowMs: number): string {
+  return `${IDENTITY} \u00b7 ${startLabel(startIso, nowMs)}`;
+}
+
+/** A call Roger noticed has no start to count from: "Roger \u00b7 Now". */
+export function callOverline(): string {
+  return `${IDENTITY} \u00b7 Now`;
+}
+
+/**
+ * "3:27 pm to 3:57 pm": the one form Home and the meeting page use (`meetingHours`, the shared
+ * clock). The panel's old "3:27 \u2013 3:57 pm" dropped the first period and used a dash.
+ */
+export function hours(startIso: string, endIso: string): string {
+  return meetingHours(parseInstant(startIso), parseInstant(endIso));
 }
 
 /**

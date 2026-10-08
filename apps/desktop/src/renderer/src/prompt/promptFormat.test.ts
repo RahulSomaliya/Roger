@@ -1,5 +1,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { callDetectedTitle, eventTitle, startLabel, stopsLabel, timeRange } from './promptFormat';
+import {
+  callDetectedTitle,
+  callOverline,
+  eventTitle,
+  hours,
+  overline,
+  startLabel,
+  stopsLabel,
+} from './promptFormat';
 
 const START = '2026-10-07T10:00:00.000Z';
 const at = (offsetMs: number): number => Date.parse(START) + offsetMs;
@@ -30,48 +38,67 @@ describe('startLabel', () => {
 });
 
 describe('eventTitle and callDetectedTitle', () => {
-  it('calls an untitled invite "Untitled meeting", blank text included', () => {
-    expect(eventTitle({ title: '' })).toBe('Untitled meeting');
-    expect(eventTitle({ title: '   ' })).toBe('Untitled meeting');
-    expect(eventTitle({ title: ' Weekly sync ' })).toBe('Weekly sync');
+  const unnamed = { start: START };
+
+  it('names a blank invite the way its meeting will be named: "Meeting at 3:27 pm"', () => {
+    vi.stubEnv('TZ', 'Asia/Kolkata');
+    expect(new Date(START).getTimezoneOffset()).toBe(-330);
+    expect(eventTitle({ title: '', ...unnamed })).toBe('Meeting at 3:30 pm');
+    expect(eventTitle({ title: '   ', ...unnamed })).toBe('Meeting at 3:30 pm');
+    expect(eventTitle({ title: ' Weekly sync ', ...unnamed })).toBe('Weekly sync');
   });
 
-  it('says which app is using the microphone', () => {
-    expect(callDetectedTitle({ bundleId: 'us.zoom.xos', name: 'Zoom' })).toBe(
-      'Zoom is using the microphone',
-    );
+  it('never says "Untitled meeting"', () => {
+    expect(eventTitle({ title: '', ...unnamed })).not.toMatch(/untitled/i);
+  });
+
+  it('calls a detected call "Call in Zoom", not a privacy warning', () => {
+    expect(callDetectedTitle({ bundleId: 'us.zoom.xos', name: 'Zoom' })).toBe('Call in Zoom');
   });
 });
 
-describe('timeRange', () => {
-  it('writes both ends as 12-hour lowercase, the period once when it is shared', () => {
+describe('overline', () => {
+  it("names Roger, then how far off the start is (Home's startLabel)", () => {
+    expect(overline(START, at(-MIN))).toBe('Roger \u00b7 Starting in 1 min');
+    expect(overline(START, at(0))).toBe('Roger \u00b7 Starting now');
+    expect(overline(START, at(3 * MIN))).toBe('Roger \u00b7 Started 3 min ago');
+  });
+
+  it('is "Roger \u00b7 Now" for a call Roger noticed, which has no start', () => {
+    expect(callOverline()).toBe('Roger \u00b7 Now');
+  });
+});
+
+describe('hours', () => {
+  it('writes both ends with their period and "to", the form Home uses', () => {
     vi.stubEnv('TZ', 'UTC');
-    // Without this a TZ test passes when the switch did nothing (apps/desktop/CLAUDE.md, M5-T8).
     expect(new Date(START).getTimezoneOffset()).toBe(0);
-    expect(timeRange('2026-10-07T10:00:00.000Z', '2026-10-07T10:30:00.000Z')).toBe(
-      '10:00 \u2013 10:30 am',
+    expect(hours('2026-10-07T10:00:00.000Z', '2026-10-07T10:30:00.000Z')).toBe(
+      '10:00 am to 10:30 am',
     );
-    expect(timeRange('2026-10-07T11:30:00.000Z', '2026-10-07T12:30:00.000Z')).toBe(
-      '11:30 am \u2013 12:30 pm',
+  });
+
+  it('keeps both periods across noon and midnight', () => {
+    vi.stubEnv('TZ', 'UTC');
+    expect(hours('2026-10-07T11:30:00.000Z', '2026-10-07T12:30:00.000Z')).toBe(
+      '11:30 am to 12:30 pm',
     );
-    expect(timeRange('2026-10-07T00:00:00.000Z', '2026-10-07T01:00:00.000Z')).toBe(
-      '12:00 \u2013 1:00 am',
+    expect(hours('2026-10-07T23:30:00.000Z', '2026-10-08T00:15:00.000Z')).toBe(
+      '11:30 pm to 12:15 am',
     );
   });
 
   it('follows the Mac when its time zone changes', () => {
     vi.stubEnv('TZ', 'Asia/Kolkata');
     expect(new Date(START).getTimezoneOffset()).toBe(-330);
-    expect(timeRange('2026-10-07T10:00:00.000Z', '2026-10-07T10:30:00.000Z')).toBe(
-      '3:30 \u2013 4:00 pm',
+    expect(hours('2026-10-07T10:00:00.000Z', '2026-10-07T10:30:00.000Z')).toBe(
+      '3:30 pm to 4:00 pm',
     );
   });
 
-  it('uses ordinary spaces, not the narrow no-break space newer ICU writes', () => {
+  it('has no dash and no narrow no-break space', () => {
     vi.stubEnv('TZ', 'UTC');
-    expect(timeRange('2026-10-07T11:30:00.000Z', '2026-10-07T12:30:00.000Z')).not.toMatch(
-      /[^\x20-\x7E\u2013]/,
-    );
+    expect(hours('2026-10-07T11:30:00.000Z', '2026-10-07T12:30:00.000Z')).toMatch(/^[\x20-\x7E]+$/);
   });
 });
 

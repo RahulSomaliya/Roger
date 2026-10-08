@@ -20,6 +20,13 @@ export const PROMPT_SCENARIO_IDS = [
   'stops-other-note',
   'taking-notes',
   'start-failed',
+  'stop-failed',
+  'meeting-blank-title',
+  'two-cards',
+  'taking-notes-call',
+  'taking-notes-two',
+  'read-failed',
+  'click-failed',
 ] as const;
 export type PromptScenarioId = (typeof PROMPT_SCENARIO_IDS)[number];
 
@@ -36,6 +43,17 @@ export function parsePromptQuery(search: string): PromptScenarioId {
     throw new Error(`Unknown prompt card "${card}": use one of ${PROMPT_SCENARIO_IDS.join(', ')}`);
   }
   return card;
+}
+
+/** What the stage behind the panel stands in for: a dark or a light call (`?backdrop=`). */
+export type PromptBackdrop = 'dark' | 'light';
+
+export function parsePromptBackdrop(search: string): PromptBackdrop {
+  const backdrop = new URLSearchParams(search).get('backdrop') ?? 'dark';
+  if (backdrop !== 'dark' && backdrop !== 'light') {
+    throw new Error(`Unknown backdrop "${backdrop}": use dark or light`);
+  }
+  return backdrop;
 }
 
 const MINUTE_MS = 60_000;
@@ -95,11 +113,73 @@ export function promptStateFor(id: PromptScenarioId, nowMs: number): PromptPanel
         recording: true,
         recordingTitle: northwind.title,
       });
+    // The lines below are main's own (PromptService), in the plain words of the sweep's table.
     case 'start-failed':
       return panelState([
-        calendarCard([northwind], {
-          error: 'Roger could not start notes: the microphone is in use by another app.',
-        }),
+        calendarCard([northwind], { error: 'Roger could not start notes from here. Try again.' }),
       ]);
+    case 'stop-failed':
+      return panelState(
+        [
+          calendarCard([northwind], {
+            error:
+              'Roger could not stop the notes on Weekly sync. Stop them in Roger, then try again.',
+          }),
+        ],
+        { recording: true, recordingTitle: 'Weekly sync' },
+      );
+    case 'meeting-blank-title':
+      return panelState([
+        calendarCard([
+          calendarEvent({ id: 'event-blank', title: '', videoLink: null, ...startsIn(1) }),
+        ]),
+      ]);
+    case 'two-cards':
+      // Newest first, as main sends them: a call starting in 6 min, above the one in 1.
+      return panelState([
+        calendarCard(
+          [
+            calendarEvent({
+              id: 'event-review',
+              title: 'Quarterly review',
+              videoLink: null,
+              videoLinkSource: null,
+              ...startsIn(6, 60),
+            }),
+          ],
+          { id: 'prompt-5' },
+        ),
+        calendarCard([northwind], { id: 'prompt-1' }),
+      ]);
+    case 'taking-notes-call':
+      return panelState([callDetectedCard({ phase: 'taking_notes' })], {
+        recording: true,
+        recordingTitle: 'Call in Zoom',
+      });
+    case 'taking-notes-two':
+      return panelState(
+        [
+          calendarCard(
+            [
+              northwind,
+              calendarEvent({
+                id: 'event-standup',
+                title: 'Daily standup',
+                videoLink: null,
+                videoLinkSource: null,
+                ...startsIn(1, 15),
+              }),
+            ],
+            { phase: 'taking_notes', startedEventId: 'event-standup' },
+          ),
+        ],
+        { recording: true, recordingTitle: 'Daily standup' },
+      );
+    case 'read-failed':
+      // No card: the fake api rejects the read (preview/prompt.tsx).
+      return panelState([]);
+    case 'click-failed':
+      // A normal card; the fake api rejects its clicks (preview/prompt.tsx).
+      return panelState([calendarCard([northwind])]);
   }
 }
