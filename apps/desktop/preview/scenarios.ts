@@ -344,6 +344,10 @@ function startLiveCall({ hub }: ScenarioContext): StopScenario {
   return stop;
 }
 
+/** Main's words for a Start whose token request found no server (errorWords.ts serverAway). */
+const API_AWAY_AT_START =
+  'Roger could not reach its server, so notes did not start. Check the Mac is online, then Start notes again.';
+
 function startApiOffline({ hub, roger }: ScenarioContext): StopScenario {
   // A meeting recorded while the API was away: every line safe on this Mac, none in Postgres.
   // The pending meeting is created first (TranscriptUploader.syncMeeting), so that is what fails.
@@ -356,12 +360,15 @@ function startApiOffline({ hub, roger }: ScenarioContext): StopScenario {
   });
   hub.setApiOffline(true);
   // Start fetches a speech-to-text token before anything else, and CaptureService.start reports
-  // that ApiError in the status it answers instead of rejecting.
+  // that ApiError in the status it answers instead of rejecting: main's plain sentence for it
+  // (main/capture/errorWords.ts START_FAILURE_SENTENCES.serverAway, which this copies: the preview
+  // cannot import main), and the raw text as the detail only Details shows.
   roger.startCapture = () =>
     hub.request(captureChannels.CaptureStart, () => {
       const failed: CaptureStatus = {
         ...stopped,
-        error: apiUnreachableMessage('POST /v1/stt/token'),
+        error: API_AWAY_AT_START,
+        errorDetail: apiUnreachableMessage('POST /v1/stt/token'),
       };
       hub.emit(captureChannels.CaptureStatusChanged, failed);
       return failed;

@@ -290,5 +290,6 @@ function list(value: unknown, name: string): readonly unknown[] {
 }
 
 function refuse(why: string): never {
+  // capture/errorWords.ts tells a refused start request by this prefix: reword the two together.
   throw new Error(`invalid start request: ${why}`);
 }

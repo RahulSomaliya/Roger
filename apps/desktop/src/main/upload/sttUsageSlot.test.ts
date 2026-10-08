@@ -204,7 +204,7 @@ describe('the M3-T19b slot of createCaptureRuntime', () => {
     const meetingId = (await capture.start()).meetingId ?? '';
     await capture.stop({ flushUploads: false });
 
-    expect(capture.getStatus().error).toContain('disk I/O error');
+    expect(capture.getStatus().errorDetail).toContain('disk I/O error');
     expect(api.usagePuts()).toHaveLength(1);
     expect(store.listSttUsageToUpload(10).map((usage) => usage.meetingId)).toEqual([meetingId]);
   });

@@ -319,7 +319,7 @@ describe('SignalMonitor: warnings', () => {
     expect(h.warnings()).toEqual([{ kind: 'call-audio-silent', source: 'system', loud: true }]);
   });
 
-  it('names a source the status says stopped, with its reason, until the status says otherwise', () => {
+  it('names a source the status says stopped until the status says otherwise, its reason left to Details', () => {
     const h = harness();
     h.feed({ mic: VOICE, system: VOICE }, 1_000);
     h.monitor.observeStatus(
@@ -327,9 +327,10 @@ describe('SignalMonitor: warnings', () => {
     );
     h.wait(1_000);
     expect(h.warnings()).toEqual([{ kind: 'source-ended', source: 'mic', loud: true }]);
-    expect(h.monitor.contribution().warnings?.[0]?.message).toContain(
-      'the microphone was unplugged',
-    );
+    // The reason is the source's own message (Details); the warning is plain words (sweep W2).
+    const message = h.monitor.contribution().warnings?.[0]?.message;
+    expect(message).toContain('Your microphone stopped');
+    expect(message).not.toContain('the microphone was unplugged');
 
     h.monitor.observeStatus(recordingStatus());
     h.feed({ mic: VOICE, system: VOICE }, 1_000);
@@ -674,6 +675,8 @@ describe('SignalMonitor.attach', () => {
     expect(
       capture.getStatus().warnings?.map(({ kind, source }) => `${kind}/${String(source)}`),
     ).toEqual(['mic-dead/mic', 'source-ended/system']);
+    // Said once: CaptureService sets no error for it (CaptureService.reportSourceState).
+    expect(capture.getStatus().error).toBeNull();
 
     // No flush: the uploader would try the API, which this test does not run.
     await capture.stop({ flushUploads: false });

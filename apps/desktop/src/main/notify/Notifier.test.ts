@@ -151,7 +151,7 @@ describe('Notifier: warnings', () => {
       h.notifier.updateWarnings([warning()]);
     }
     expect(h.ports.posted).toEqual([
-      { title: 'Your mic is silent', body: 'The mic sends only silence.' },
+      { title: "Roger can't hear you", body: 'The mic sends only silence.' },
     ]);
   });
 
@@ -165,7 +165,7 @@ describe('Notifier: warnings', () => {
     h.at(52_000);
     h.notifier.updateWarnings([{ ...silent, loud: true, message: 'Silent for a minute.' }]);
     expect(h.ports.posted).toEqual([
-      { title: 'Call audio is silent', body: 'Silent for a minute.' },
+      { title: "Roger can't hear the call", body: 'Silent for a minute.' },
     ]);
   });
 
@@ -212,11 +212,12 @@ describe('Notifier: warnings', () => {
       warning({ kind: 'no-audio', source: 'mic', message: 'No mic audio.' }),
       warning({ kind: 'no-audio', source: 'system', message: 'No call audio.' }),
     ]);
+    // The page's headlines (shared/captureWords.ts): mic-dead and no-audio share theirs.
     expect(h.titles()).toEqual([
-      'Your mic is silent',
-      'Transcription is offline',
-      'No audio from your mic',
-      'No call audio',
+      "Roger can't hear you",
+      'The Mac is offline',
+      "Roger can't hear you",
+      "Roger can't hear the call",
     ]);
   });
 
@@ -416,7 +417,7 @@ describe('the M2-T11 slot of createCaptureRuntime', () => {
       { kind: 'mic-dead', loud: true },
     ]);
     expect(capture.getStatus().sources.mic.signal).toBe('dead');
-    expect(electron.shown.map(({ options }) => options.title)).toEqual(['Your mic is silent']);
+    expect(electron.shown.map(({ options }) => options.title)).toEqual(["Roger can't hear you"]);
 
     await capture.stop({ flushUploads: false });
     expect(capture.getStatus().warnings).toBeUndefined();
