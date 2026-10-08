@@ -7,6 +7,7 @@ import {
   noteDocProblem,
   type NoteKind,
 } from '../../../shared/notes';
+import { Icon } from '../components/ui/icons';
 import { citationChipView } from './CitationChip';
 import { noteExtensions } from './citationNode';
 import { ConflictBanner } from './ConflictBanner';
@@ -57,20 +58,21 @@ export function NoteEditor({
 }: NoteEditorProps) {
   const { document, state } = useNoteDocument(meetingId, kind);
   if (state.status === 'loading') {
-    return (
-      <section className="note-editor" aria-label={label} aria-busy="true">
-        <p className="note-editor-message">Opening notes...</p>
-      </section>
-    );
+    // Nothing to say: main reads its own file and answers within a frame or two (docs/design.md,
+    // Loading). The empty section keeps the tab's accessible name.
+    return <section className="note-editor" aria-label={label} aria-busy="true" />;
   }
   if (state.status === 'failed') {
     return (
       <section className="note-editor" aria-label={label}>
-        <div className="error note-editor-error" role="alert">
-          Could not open these notes: {state.error}{' '}
+        <div className="problem note-editor-problem" role="alert">
+          <Icon name="circle-alert" />
+          <span className="problem-text">Could not open these notes: {state.error}</span>
           <button
             type="button"
-            className="note-button"
+            className="btn"
+            data-variant="secondary"
+            data-size="sm"
             onClick={() => {
               document.reload();
             }}
@@ -94,9 +96,12 @@ export function NoteEditor({
           saverState={NO_EDITOR}
           docShown={false}
         />
-        <p className="error note-editor-error" role="alert">
-          Roger cannot show these notes, so it leaves them as they are: {state.docProblem}
-        </p>
+        <div className="problem note-editor-problem" role="alert">
+          <Icon name="circle-alert" />
+          <span className="problem-text">
+            Roger cannot show these notes, so it leaves them as they are: {state.docProblem}
+          </span>
+        </div>
       </section>
     );
   }
@@ -220,25 +225,28 @@ interface NoteStateBarProps {
 }
 
 /**
- * Above the doc: its one save state, a refused save's reason, and the choice between two versions
- * while main keeps a conflict copy.
+ * Above the doc: its one save state (silence unless the server is away or a save failed), and the
+ * choice between two versions while main keeps a conflict copy. A failed save is a problem line
+ * in the status slot itself, so it takes the line's place and the doc does not move.
  */
 function NoteStateBar({ document, note, saverState, docShown }: NoteStateBarProps) {
   const status = describeSaveStatus(saverState, note?.sync ?? null);
   return (
     <>
       <div className="note-editor-bar">
-        {status === null ? null : (
-          <p className={`note-status note-status-${status.tone}`} title={status.detail}>
+        {status === null ? null : status.tone === 'bad' ? (
+          <div className="problem" role="alert">
+            <Icon name="circle-alert" />
+            <span className="problem-text">
+              {status.label}. {status.detail}
+            </span>
+          </div>
+        ) : (
+          <p className="note-status" title={status.detail}>
             {status.label}
           </p>
         )}
       </div>
-      {status?.tone === 'bad' ? (
-        <p className="error note-editor-error" role="alert">
-          {status.detail}
-        </p>
-      ) : null}
       {note !== null && note.conflictCopy !== null ? (
         <ConflictBanner
           otherVersion={docShown ? 'shown' : 'unshowable'}

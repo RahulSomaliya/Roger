@@ -2,7 +2,7 @@ import { useEffect, useMemo, useSyncExternalStore } from 'react';
 import type { ChatApi, ChatStreamMessage } from '../../../shared/ipc/chat';
 import type { Unsubscribe } from '../../../shared/ipc/unsubscribe';
 import { type ChatMessage, type ChatThread, isChatText } from '../../../shared/notes';
-import { describeError } from '../app/describeError';
+import { describeError, describeReadFailure } from '../app/describeError';
 import {
   applyChatEvent,
   canRetry,
@@ -54,7 +54,7 @@ export interface ChatExchange {
 export interface MeetingChatState {
   /** `loading` until main answers the first read; `failed` when it could not read the thread. */
   status: 'loading' | 'ready' | 'failed';
-  /** Why the thread could not be read. */
+  /** Why the thread could not be read, in plain words (describeReadFailure), never the raw error. */
   error: string | null;
   exchanges: readonly ChatExchange[];
   /** An answer this page follows is still coming: the next question waits for it, or for Stop. */
@@ -190,7 +190,7 @@ export class MeetingChatStore {
         // question back until the meeting is opened again.
         //
         // Main may answer only once the API stopped the run, long after its `cancelled` offered
-        // Ask again: a retry main took meanwhile is a new paid run, not this Stop's to end.
+        // Try again: a retry main took meanwhile is a new paid run, not this Stop's to end.
         if (this.tries.get(questionId) !== stoppedTry) return;
         const current = this.live.get(questionId);
         if (current === undefined || !isAnswering(current)) return;
@@ -244,7 +244,7 @@ export class MeetingChatStore {
         if (run !== this.run) return;
         // A thread that came meanwhile is the thread; only with none is the read a failure.
         if (this.changedSinceLoad) this.update({ status: 'ready', error: null });
-        else this.update({ status: 'failed', error: describeError(error) });
+        else this.update({ status: 'failed', error: describeReadFailure(error) });
       },
     );
   }

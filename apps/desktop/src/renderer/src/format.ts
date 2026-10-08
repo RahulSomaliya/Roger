@@ -1,5 +1,4 @@
 import {
-  AUDIO_SOURCE_LABEL,
   NO_AUDIO_WARNING_MS,
   type SourceHealth,
   type SttMeter,
@@ -7,15 +6,32 @@ import {
   type SttStreamState,
   type UploadStatus,
 } from '../../shared/capture';
-import { AUDIO_SOURCES } from '../../shared/transcript';
+import { AUDIO_SOURCES, type AudioSource } from '../../shared/transcript';
 
-/** `hh:mm:ss` for an offset in milliseconds. */
+/**
+ * What Details calls each source (docs/design.md, Naming list): the microphone and the call audio.
+ * Not `AUDIO_SOURCE_LABEL` ("Mic (me)", "Call audio (them)"): main writes that into its own messages,
+ * and the transcript's speakers are Me and Them.
+ */
+export const SOURCE_NAME: Readonly<Record<AudioSource, string>> = {
+  mic: 'Microphone',
+  system: 'Call audio',
+};
+
+/**
+ * An offset in milliseconds as docs/design.md writes it: "4:07", and "1:02:05" past an hour.
+ * Only the leading unit goes unpadded. The offsets that main prints for the API's MCP tools
+ * (`hh:mm:ss`, docs/api-contract.md) and a citation chip's label (`mm:ss`, `chipLabel`) are other
+ * formats, fixed by the contract: they are not this one.
+ */
 export function formatOffset(ms: number): string {
   const total = Math.max(0, Math.floor(ms / 1000));
   const hours = Math.floor(total / 3600);
   const minutes = Math.floor((total % 3600) / 60);
-  const seconds = total % 60;
-  return [hours, minutes, seconds].map((n) => String(n).padStart(2, '0')).join(':');
+  const seconds = String(total % 60).padStart(2, '0');
+  return hours > 0
+    ? `${hours}:${String(minutes).padStart(2, '0')}:${seconds}`
+    : `${minutes}:${seconds}`;
 }
 
 /**
@@ -42,13 +58,13 @@ export function describeHealth(health: SourceHealth, chunks: number): string {
 }
 
 /**
- * A source's speech-to-text session as its row's label says it (components/capture/StreamStatus):
+ * A source's speech-to-text session as its row's label says it (components/capture/CaptureFacts):
  * short, because the row shows why beside it (`streamMessages`). "Transcribing" only while its
  * source sends audio; "Reconnecting" only while the audio a reopen waits for flows, because a
  * source reopens with its next chunk, never on a timer (CaptureSession.pushAudio).
  *
- * No default case, here or in streamTone: a new SttStreamState fails the type check (TS2366) until
- * both say how it reads (section 3.1 of docs/plans/phase-2-build-order.md).
+ * No default case: a new SttStreamState fails the type check (TS2366) until this says how it reads
+ * (section 3.1 of docs/plans/phase-2-build-order.md).
  */
 export function describeStream(state: SttStreamState, health: SourceHealth): string {
   switch (state) {
@@ -84,42 +100,13 @@ export function describeStream(state: SttStreamState, health: SourceHealth): str
   }
 }
 
-/**
- * How a source's row colours its label: `ok` only while its words reach the vendor, `warn` while
- * they do not but will once audio or the network returns, `error` once they never will this
- * meeting, `pending` while a session starts, `off` with none.
- */
-export type StreamTone = 'ok' | 'pending' | 'warn' | 'error' | 'off';
-
-export function streamTone(state: SttStreamState, health: SourceHealth): StreamTone {
-  switch (state) {
-    case 'closed':
-      return 'off';
-    case 'connecting':
-      return 'pending';
-    case 'open':
-      // Every Start passes through "connected, no audio yet" for a moment: not a warning.
-      if (health === 'active') return 'ok';
-      return health === 'pending' ? 'pending' : 'warn';
-    case 'paused':
-      // The silence gate's pause (describeStream): nothing is being said, so nothing is lost. A
-      // warning colour there would sit on every muted mic for most of a call.
-      return health === 'active' ? 'off' : 'warn';
-    case 'retrying':
-    case 'offline':
-      return 'warn';
-    case 'error':
-      return 'error';
-  }
-}
-
 export function describeSaved(stored: number, unsaved: number): string {
   const lines = `${stored} lines`;
   return unsaved > 0 ? `${lines} · ${unsaved} could not be saved` : lines;
 }
 
 export function describeUpload(upload: UploadStatus): string {
-  const rejected = upload.rejected > 0 ? ` · ${upload.rejected} rejected by the API` : '';
+  const rejected = upload.rejected > 0 ? ` · ${upload.rejected} refused for good` : '';
   if (upload.state === 'backoff') {
     return `${upload.pending} lines waiting, retrying (${upload.lastError ?? 'error'})${rejected}`;
   }
@@ -159,7 +146,7 @@ export function describeCost(usd: number | null): string {
 }
 
 /**
- * The status line: what the vendor bills for this meeting so far (open time, silent or not). The
+ * The speech-to-text line in Details: what the vendor bills for this meeting so far (open time, silent or not). The
  * time sums both sources' sessions, each billed on its own, so a 12m 30s call with both open
  * reads "25m 00s connected". What the silence gate saved follows ("saved about $0.03 in silence").
  */
@@ -178,7 +165,7 @@ export function meterDetails(meter: SttMeterStatus): string {
   const perSource = AUDIO_SOURCES.map((source) => {
     const used = meter.sources[source];
     const sourceClosed = describeClosedInSilence(used);
-    return `${AUDIO_SOURCE_LABEL[source]}: ${formatDuration(used.connectedMs)} connected, ${describeCost(used.estimatedCostUsd)}${sourceClosed === null ? '' : `, ${sourceClosed}`}.`;
+    return `${SOURCE_NAME[source]}: ${formatDuration(used.connectedMs)} connected, ${describeCost(used.estimatedCostUsd)}${sourceClosed === null ? '' : `, ${sourceClosed}`}.`;
   });
   const parts = [
     `${sessions} · ${formatDuration(total.audioSentMs)} of audio sent${closed === null ? '' : ` · ${closed}`}.`,

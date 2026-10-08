@@ -5,7 +5,7 @@
  *
  * The mark never changes a line's size: the panel turns scroll anchoring off (transcript.css), so
  * a line that grew would push the lines below it while the reader looks for the cited one. The
- * tint reaches 6 px into the log's 12 px side padding for room beside the words, and the negative
+ * tint reaches 8 px into the log's 12 px side padding for room beside the words, and the negative
  * margin gives back what the padding takes: the words keep their place and wrap the same.
  *
  * No transition or animation, in or out: M4-T20's browser check waits for document.getAnimations()
@@ -14,10 +14,10 @@
  */
 
 .live-transcript-lines [data-cited] {
-  margin-inline: -6px;
-  padding-inline: 6px;
-  border-radius: 6px;
-  background: var(--cited-bg);
+  margin-inline: calc(-1 * var(--space-2));
+  padding-inline: var(--space-2);
+  border-radius: var(--radius-md);
+  background: var(--accent-soft);
 }
 
 /*

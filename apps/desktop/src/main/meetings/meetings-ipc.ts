@@ -22,7 +22,7 @@ export interface MeetingsIpcDeps {
 
 /**
  * Wires the meetings channels (src/shared/ipc/meetings.ts) to main's local store, roger.sqlite,
- * for the main window's page only (ipc/trust.ts). Never to the API: the sidebar and the meeting
+ * for the main window's page only (ipc/trust.ts). Never to the API: Home's Earlier list and the meeting
  * page work offline, and show a meeting before it uploads. Each payload goes through the parsers
  * in src/shared/meetings.ts, which the preview fake (preview/fakes/meetings.ts) uses too, so
  * both refuse the same payloads and cap the same limit.
@@ -67,7 +67,15 @@ export function registerMeetingsIpc({ ipcMain, store, getWindow, logger }: Meeti
       // Null, not an error: the page says this Mac has no such meeting (never recorded here, or
       // deleted at Stop because nobody spoke).
       if (meeting === null) return null;
-      return { ...toSummary(meeting), segments: store.listSegments(meetingId) };
+      return {
+        ...toSummary(meeting),
+        segments: store.listSegments(meetingId),
+        // Address and "is the user" only: names and answers stay in main.
+        attendees: (meeting.calendarEvent?.attendees ?? []).map(({ email, isSelf }) => ({
+          email,
+          isSelf,
+        })),
+      };
     });
   });
 }

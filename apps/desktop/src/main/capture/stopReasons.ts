@@ -1,3 +1,4 @@
+import { formatClock } from '../../shared/clock';
 import type { CostGuards } from '../costGuards';
 
 /**
@@ -48,14 +49,14 @@ export function stopNotice(
   guards: Pick<CostGuards, 'noSpeechStopMs' | 'maxRecordingMs'>,
   detail: string | null = null,
 ): string | null {
-  const time = at.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+  const time = formatClock(at);
   switch (reason) {
     case 'user':
       return null;
     case 'no-speech':
       return `Stopped at ${time} after ${spell(guards.noSpeechStopMs)} with no speech.`;
     case 'max-duration':
-      return `Stopped at ${time}: one recording is capped at ${spell(guards.maxRecordingMs)}.`;
+      return `Stopped at ${time}: one meeting is capped at ${spell(guards.maxRecordingMs)}.`;
     case 'quit':
     case 'window-closed':
       // The notice lives in memory and Roger is exiting: only a quit exits (closing the window

@@ -108,7 +108,6 @@ export function calendarState(fields: Partial<CalendarState> = {}): CalendarStat
     connectError: null,
     disconnecting: false,
     disconnectError: null,
-    justConnected: false,
     ...fields,
   };
 }
@@ -124,7 +123,6 @@ export function settingsState(fields: Partial<CalendarSettingsState> = {}): Cale
     openAtLogin: 'off',
     loginItem: 'disabled',
     loginItemError: null,
-    saving: null,
     saveError: null,
     noticeDone: [],
     ...fields,

@@ -1,6 +1,6 @@
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import type { CaptureNotice } from '../../../../shared/capture';
 import { formatClockTime } from '../../app/labels';
 import { findResumeNotice, ResumedNotice } from './ResumedNotice';
@@ -27,24 +27,20 @@ describe('findResumeNotice', () => {
 });
 
 describe('ResumedNotice', () => {
-  const render = (busy = false): string =>
-    renderToStaticMarkup(createElement(ResumedNotice, { notice: RESUMED, busy, onStop: vi.fn() }));
+  const render = (): string =>
+    renderToStaticMarkup(createElement(ResumedNotice, { notice: RESUMED }));
 
-  it("says main's words and when, with a Stop button the resume promised (D7)", () => {
+  it("says main's words and when, as one line with no button: the header's Stop is right there", () => {
     const html = render();
     expect(html).toContain('Roger restarted and kept taking notes');
     expect(html).toContain(`at ${formatClockTime(RESUMED.at)}`);
-    expect(html).toContain('>Stop recording<');
+    expect(html).not.toContain('<button');
+    expect(html).not.toContain('Stop');
   });
 
   it('is a polite status, never an alert: Roger recovered, nothing is lost', () => {
     const html = render();
     expect(html).toContain('role="status"');
     expect(html).not.toContain('role="alert"');
-  });
-
-  it('disables Stop while a start or stop is under way', () => {
-    expect(render(true)).toMatch(/<button[^>]*disabled=""/);
-    expect(render(false)).not.toContain('disabled');
   });
 });

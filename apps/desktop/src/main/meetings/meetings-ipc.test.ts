@@ -1,6 +1,10 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { meetingsChannels } from '../../shared/ipc/meetings';
-import { MAX_MEETINGS_LIST_LIMIT, type MeetingSummary } from '../../shared/meetings';
+import {
+  MAX_MEETINGS_LIST_LIMIT,
+  type MeetingSummary,
+  type StoredMeeting,
+} from '../../shared/meetings';
 import type { TranscriptSegment } from '../../shared/transcript';
 import type { IpcMainLike, SenderEvent, TrustedWindow } from '../ipc/trust';
 import { createLogger } from '../logger';
@@ -155,6 +159,7 @@ describe('the meetings IPC', () => {
       title: 'Pricing call',
       startedAt: '2026-10-06T09:00:00.000Z',
       endedAt: '2026-10-06T09:30:00.000Z',
+      attendees: [],
       segments: [
         line(1),
         line(1, { id: 'sys-1', source: 'system', speaker: 'them' }),
@@ -165,6 +170,47 @@ describe('the meetings IPC', () => {
     // Main logs neither the title nor a line: they are what people named and said.
     expect(h.rawLog()).not.toContain('Pricing call');
     expect(h.rawLog()).not.toContain('line ');
+  });
+
+  it('gives the page the invitees of the linked event, the address and who is the user only', async () => {
+    const h = harness();
+    h.store.createMeeting({
+      id: MEETING,
+      title: 'Northwind sync',
+      startedAt: '2026-10-06T09:00:00.000Z',
+      calendarEvent: {
+        provider: 'fake',
+        eventId: 'evt-1',
+        icalUid: null,
+        recurringEventId: null,
+        scheduledStart: '2026-10-06T09:00:00.000Z',
+        scheduledEnd: '2026-10-06T09:30:00.000Z',
+        attendees: [
+          {
+            email: 'me@linkt.ai',
+            displayName: 'Me Myself',
+            responseStatus: 'accepted',
+            isSelf: true,
+            isOrganizer: true,
+          },
+          {
+            email: 'sam@northwind.com',
+            displayName: 'Sam Guest',
+            responseStatus: 'needs_action',
+            isSelf: false,
+            isOrganizer: false,
+          },
+        ],
+      },
+    });
+    const meeting = (await h.invoke(meetingsChannels.MeetingsGet, MAIN_PAGE, {
+      meetingId: MEETING,
+    })) as StoredMeeting;
+    // Names and answers stay in main: the page asks for the template cue and nothing else.
+    expect(meeting.attendees).toEqual([
+      { email: 'me@linkt.ai', isSelf: true },
+      { email: 'sam@northwind.com', isSelf: false },
+    ]);
   });
 
   it('answers null for a meeting this Mac does not hold, or deleted at Stop', async () => {

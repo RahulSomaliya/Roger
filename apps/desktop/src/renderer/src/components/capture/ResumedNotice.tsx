@@ -10,32 +10,19 @@ export function findResumeNotice(
 }
 
 /**
- * "Roger restarted and kept taking notes", with the Stop the D7 decision promises: Roger resumed
- * the meeting a crash or a quit left open without being asked, so the person must be able to end it
- * from the notice. Quiet, never an alert: Roger recovered, and the window it was down is a few
- * seconds the capture report counts (`resumed_after_crash`).
+ * "Roger restarted and kept taking notes", one quiet line under the meeting header. Roger resumed
+ * the meeting a crash or a quit left open without being asked, so the person is told; the Stop for
+ * it is the header's own (D7 promised a Stop on the notice, and the header's is one click away on
+ * the same page). Never an alert: Roger recovered, and the window it was down is a few seconds the
+ * capture report counts (`resumed_after_crash`).
  *
- * Notices.tsx leaves this kind out of its list: shown there too, the second copy would have no Stop.
+ * Notices.tsx leaves this kind out of Details' recovery list: shown there too, it would be said
+ * twice.
  */
-export function ResumedNotice({
-  notice,
-  busy,
-  onStop,
-}: {
-  notice: CaptureNotice;
-  /** A start or a stop is under way. */
-  busy: boolean;
-  onStop: () => void;
-}) {
+export function ResumedNotice({ notice }: { notice: CaptureNotice }) {
   return (
-    <div className="resumed-notice" role="status">
-      <p className="resumed-notice-text">
-        <span className="resumed-notice-message">{notice.message}</span>{' '}
-        <span className="resumed-notice-meta">at {formatClockTime(notice.at)}</span>
-      </p>
-      <button type="button" className="shell-button" disabled={busy} onClick={onStop}>
-        Stop recording
-      </button>
-    </div>
+    <p className="capture-note" role="status">
+      {notice.message} <span className="problem-since">at {formatClockTime(notice.at)}</span>
+    </p>
   );
 }

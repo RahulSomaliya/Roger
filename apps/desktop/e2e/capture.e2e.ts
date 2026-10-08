@@ -73,14 +73,28 @@ function useRoger(options: LaunchOptions): () => RogerRun {
 /**
  * A speaker's final lines in the transcript (the fake STT sends no interims). By label and words,
  * not by class: M3-T9's LiveTranscript labels the region "Transcript" and names the speaker "Me"
- * or "Them" in a span of its own. e2e/m3-t9.qa.e2e.ts checks this locator against LiveTranscript
- * in the browser (`smokeTestLines`): keep the two in step.
+ * or "Them" in a span of its own. No browser QA reads this locator any more (the redesign's
+ * `redesign.qa.e2e.ts` reads `[data-segment-id]`): a change to the transcript's labels fails this
+ * smoke test first.
  */
 function linesOf(page: Page, speaker: Speaker): Locator {
   return page
     .locator('[aria-label="Transcript"] p')
     .filter({ hasText: FAKE_LINE })
     .filter({ has: page.getByText(speaker, { exact: true }) });
+}
+
+/**
+ * Brings the transcript forward on the meeting page. The page shows one pane at a time and opens
+ * on the first tab (My notes); the Transcript pane stays mounted but `hidden`, so its lines match
+ * `linesOf` yet are never visible, and `visibleLines` counts none. Waits for the page's own tab
+ * row (it is drawn with the panes), then picks Transcript when the row has it: a page whose only
+ * pane is the transcript draws no row, and its lines are already on show.
+ */
+async function openTranscript(page: Page): Promise<void> {
+  await page.locator('[aria-label="Transcript"]').first().waitFor({ state: 'attached' });
+  const tab = page.getByRole('tab', { name: 'Transcript', exact: true });
+  if ((await tab.count()) > 0) await tab.click();
 }
 
 /** How many final lines of each speaker the transcript draws. */
@@ -214,6 +228,8 @@ describe('a recording', () => {
     await watchSentLines(page);
     const startedAt = Date.now();
     await page.getByRole('button', { name: 'New note' }).click();
+    // Inside the 10 s: the tab row is drawn within a frame of the page opening.
+    await openTranscript(page);
     for (const speaker of ['Me', 'Them'] as const) {
       const left = LINES_WITHIN_MS - (Date.now() - startedAt);
       await linesOf(page, speaker)

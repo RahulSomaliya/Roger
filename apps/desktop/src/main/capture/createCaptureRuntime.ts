@@ -1,7 +1,6 @@
 import { app, net, powerMonitor, powerSaveBlocker } from 'electron';
 import type { BackupStatus, CaptureReport, EchoStatus } from '../../shared/capture';
 import { IpcChannel } from '../../shared/ipc';
-import type { MeetingKeptForRerun } from '../../shared/ipc/capture';
 import type { ApiClient } from '../api/ApiClient';
 import { createSystemAudio } from '../audio/system/createSystemAudio';
 import { AudioBackup } from '../backup/AudioBackup';
@@ -32,7 +31,6 @@ import { electronNotifierPorts, Notifier } from '../notify/Notifier';
 import { PowerCoordinator } from '../power/PowerCoordinator';
 import { GapAudioReader } from '../rerun/gapAudio';
 import { GapRetranscriber } from '../rerun/GapRetranscriber';
-import { listMeetingsKeptForRerun } from '../rerun/keptForRerun';
 import { rerunCredentials } from '../rerun/rerunStt';
 import { CaptureService } from './CaptureService';
 import { EchoSink } from './echo/EchoSink';
@@ -92,7 +90,7 @@ export interface CaptureRuntime {
 /**
  * What the M2 features answer for the capture channels; each stays null until its task fills it in
  * its slot below. For each member that takes a meeting, the ids are checked (ipc.ts) and the
- * meeting is known (createCaptureRequests) before it runs; `listMeetingsKeptForRerun` takes none.
+ * meeting is known (createCaptureRequests) before it runs.
  */
 export interface CaptureFeatureHandlers {
   /** M2-T14b: the meeting's echo counts for its report. */
@@ -108,8 +106,6 @@ export interface CaptureFeatureHandlers {
    * ever handed a line of the meeting asked for whose `suppressedReason` is set.
    */
   unhideSegment: ((segment: StoredSegment) => void) | null;
-  /** M2-T16: every meeting whose audio is kept for a re-run, newest first (Home's card). */
-  listMeetingsKeptForRerun: (() => MeetingKeptForRerun[]) | null;
 }
 
 export function noCaptureFeatures(): CaptureFeatureHandlers {
@@ -119,7 +115,6 @@ export function noCaptureFeatures(): CaptureFeatureHandlers {
     deleteMeetingAudio: null,
     rerunGaps: null,
     unhideSegment: null,
-    listMeetingsKeptForRerun: null,
   };
 }
 
@@ -329,8 +324,6 @@ export function createCaptureRuntime(deps: CaptureRuntimeDeps): CaptureRuntime {
   });
   rerun.start();
   features.rerunGaps = (meetingId) => rerun.rerunMeeting(meetingId);
-  features.listMeetingsKeptForRerun = () =>
-    listMeetingsKeptForRerun(store, config.capture.audioRetentionDays);
   quitHooks.push({
     name: 'stop the gap re-run',
     // A terminate, or a killed afconvert: well under a second.
@@ -553,7 +546,5 @@ export function createCaptureRequests(
       }
       features.unhideSegment(segment);
     },
-    // Not wired (tests through noCaptureFeatures()): no audio is kept for a re-run, as NO_BACKUP.
-    listMeetingsKeptForRerun: () => features.listMeetingsKeptForRerun?.() ?? [],
   };
 }

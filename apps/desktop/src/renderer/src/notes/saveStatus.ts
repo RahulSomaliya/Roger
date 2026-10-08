@@ -2,14 +2,22 @@ import type { NoteSyncState } from '../../../shared/notes';
 import type { SaverState } from './debouncedSaver';
 
 /**
- * The one save state a note shows (M4 plan, "Notes on the Mac"): first what the editor has not
- * handed to main yet (debouncedSaver.ts), then where main and NotesSync have the note
- * (`LocalNote.sync`). A failure never hides behind an older good state: a silent failure is the
- * bug this product exists to avoid.
+ * The one save state a note shows (M4 plan, "Notes on the Mac"; docs/design.md, Copy). Saving is
+ * normal, so only three states say anything: "Saved on this Mac" while the server cannot be
+ * reached, "Not saved to Roger" when the server turned the upload down, and "Not saved" with its
+ * reason when a save on this Mac failed. Everything else is silence: no "Syncing",
+ * no green "Synced". A failure never hides behind an older good state (a silent failure is the
+ * bug this product exists to avoid), so the editor's own failure outranks main's state.
+ *
+ * Trap: `saved_locally` is the moment after every save and reads as silence here. NotesSync must
+ * never write it for an upload the server REFUSED (a 401, a 422): that has its own states,
+ * `refused` and `refused_access`, shown as a problem line ("Not saved to Roger"), because the
+ * notes would otherwise sit on this Mac with nothing on the page saying Roger's server never got
+ * them. Offline stays quiet: the server is away, which the user can do nothing about.
  */
 
-/** `quiet` needs nothing from the user; `warn` is safe but not done; `bad` lost a save. */
-export type SaveStatusTone = 'quiet' | 'good' | 'warn' | 'bad';
+/** `quiet` needs nothing from the user; `bad` lost a save, and says so loudly. */
+export type SaveStatusTone = 'quiet' | 'bad';
 
 export interface SaveStatus {
   /** The status line's words. */
@@ -19,42 +27,29 @@ export interface SaveStatus {
   tone: SaveStatusTone;
 }
 
-const SYNC_STATUS: Record<NoteSyncState, SaveStatus> = {
-  saved_locally: {
-    label: 'Saved on this Mac',
-    detail: 'Roger uploads them to your workspace in a moment.',
-    tone: 'quiet',
-  },
-  waiting_for_meeting: {
-    label: 'Waiting for the meeting to upload',
-    detail: 'Saved on this Mac. They upload once the meeting itself has.',
-    tone: 'quiet',
-  },
-  syncing: {
-    label: 'Syncing',
-    detail: 'Saved on this Mac, and uploading to your workspace now.',
-    tone: 'quiet',
-  },
-  synced: {
-    label: 'Synced',
-    detail: 'Saved on this Mac and in your workspace.',
-    tone: 'good',
-  },
+/** The states that say something; every other `NoteSyncState` shows nothing. */
+const SYNC_STATUS: Partial<Record<NoteSyncState, SaveStatus>> = {
   offline: {
-    label: 'Offline: saved on this Mac',
+    label: 'Saved on this Mac',
     detail:
       'Roger cannot reach its server. The notes are safe here, and it uploads them when it can.',
-    tone: 'warn',
+    tone: 'quiet',
   },
-  conflict: {
-    label: 'Two versions',
+  refused: {
+    label: 'Not saved to Roger',
     detail:
-      'These notes also changed somewhere else, and Roger kept both. Pick the version to keep.',
-    tone: 'warn',
+      "Roger's server did not accept these notes. They are safe on this Mac, and Roger tries again.",
+    tone: 'bad',
+  },
+  refused_access: {
+    label: 'Not saved to Roger',
+    detail:
+      "Roger's server did not accept this Mac's access. The notes are safe on this Mac, and Roger tries again.",
+    tone: 'bad',
   },
 };
 
-/** The status line for a note; null for notes nobody has written yet (`sync` null). */
+/** The status line for a note; null when there is nothing to say (saved, or nothing written yet). */
 export function describeSaveStatus(
   saver: SaverState,
   sync: NoteSyncState | null,
@@ -68,12 +63,8 @@ export function describeSaveStatus(
       };
     case 'pending':
     case 'saving':
-      return {
-        label: 'Saving...',
-        detail: 'Writing your latest changes to this Mac.',
-        tone: 'quiet',
-      };
+      return null;
     case 'saved':
-      return sync === null ? null : SYNC_STATUS[sync];
+      return sync === null ? null : (SYNC_STATUS[sync] ?? null);
   }
 }

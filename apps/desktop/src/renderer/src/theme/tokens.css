@@ -1,110 +1,113 @@
 /*
- * Every colour the renderer uses, as a token, in both themes. No other file holds a literal colour
- * (noLiteralColours.test.ts fails on one); read a token with var(--name).
+ * Every colour the renderer uses, as an OKLCH token, in both themes. No other file holds a literal
+ * colour (noLiteralColours.test.ts fails on one); read a token with var(--name). The roles, the
+ * measured pairings and the rename table from the old tokens are in docs/design.md.
  *
  * A new token goes at the end of all three blocks below, with the same dark value in both dark
- * ones; never rename one (tokens.test.ts checks the blocks agree). The theme follows macOS unless
- * the `theme` preference forces one: useTheme.ts then sets `data-theme` on <html>, and these
- * selectors pick the block. Dark is written twice because a media query and an attribute cannot
- * share one rule.
+ * ones (tokens.test.ts checks the blocks agree). The theme follows macOS unless the `theme`
+ * preference forces one: useTheme.ts then sets `data-theme` on <html>, and these selectors pick
+ * the block. Dark is written twice because a media query and an attribute cannot share one rule.
+ *
+ * Fill versus ink: one colour cannot be both. --accent is a FILL (the primary button, the
+ * recording dot, the focus ring) under --on-accent; accent-hued text reads --accent-ink, and
+ * tokens.test.ts fails a `color:` read from --accent. Only colours and the shadows (they hold
+ * colour) live here; space, type, radius and motion live in styles.css.
+ *
+ * Every pairing the app paints is pinned in tokens.test.ts: measure the new one there before you
+ * paint it (--ink-subtle on --accent-soft failed AA in dark before its value was tuned).
  */
 
 /* Light: macOS in light mode, or `theme: light`. */
 :root {
   color-scheme: light;
-  --bg: #f6f6f4;
-  --panel: #ffffff;
-  --ink: #1d1d1b;
-  --muted: #6b6b66;
-  --line: #e4e4df;
-  /*
-   * Fills, such as the Start and Stop buttons, under --on-accent text. Text in these hues reads
-   * --accent-ink and --danger-ink: in dark, a fill dark enough for a white label is too dark to
-   * read as text on --panel, so one token cannot do both (tokens.test.ts checks both contrasts).
-   * In light, --danger as text is 4.46:1 on --bg and 3.7:1 inside the error box's --danger-bg.
-   */
-  --accent: #2563eb;
-  --danger: #dc2626;
-  --warn: #d97706;
-  --ok: #16a34a;
-  /* Tinted backgrounds behind an error, a warning or a good state, drawn over --bg or --panel. */
-  --danger-bg: rgb(220 38 38 / 0.12);
-  --warn-bg: rgb(217 119 6 / 0.14);
-  --ok-bg: rgb(22 163 74 / 0.12);
-  /* Live transcript words not yet final, and lines hidden from the transcript (echo). */
-  --interim-ink: #8a8a84;
-  --hidden-ink: #a3a39c;
-  /* A transcript line a citation chip just revealed (transcriptNavigator.css). */
-  --cited-bg: rgb(250 204 21 / 0.3);
-  /* The recording state: the dot and the label. */
-  --recording: #dc2626;
-  --focus-ring: rgb(37 99 235 / 0.55);
-  --sidebar-bg: #efefec;
-  /* Citation chips and other small labels. */
-  --chip-bg: rgb(37 99 235 / 0.1);
-  /* A note kept as a conflict copy (the notes conflict banner). */
-  --conflict-bg: rgb(234 88 12 / 0.12);
-  /* Text and icons on an --accent or --danger fill, such as the Start and Stop buttons. */
-  --on-accent: #ffffff;
-  /* Text in the accent and danger hues: a speaker name, an error, a failing status row. */
-  --accent-ink: #2563eb;
-  --danger-ink: #b91c1c;
+  /* page background */
+  --canvas: oklch(0.985 0.004 80);
+  /* inputs and the rare card. Dark: lighter = higher */
+  --surface: oklch(0.995 0.002 80);
+  /* menus, dialogs, the prompt panel's card */
+  --raised: oklch(0.995 0.002 80);
+  /* hover wash, citation chips, the tab track */
+  --fill: oklch(0.955 0.006 80);
+  /* a recessed panel inside a dialog. Dark: darker than --raised, or it vanishes there */
+  --sunken: oklch(0.955 0.006 80);
+  /* the selected tab in the tab track */
+  --control: oklch(0.995 0.002 80);
+  /* hairlines, low contrast on purpose: never the only edge of a control */
+  --line: oklch(0.9 0.008 80);
+  /* primary text, problem text */
+  --ink: oklch(0.22 0.01 70);
+  /* secondary text, icons, ghost buttons */
+  --ink-muted: oklch(0.45 0.012 70);
+  /* tertiary TEXT: times, offsets, interim words, echo lines */
+  --ink-subtle: oklch(0.52 0.012 70);
+  /* FILL only: the primary button, the recording dot, the focus ring. Never `color:` */
+  --accent: oklch(0.56 0.17 42);
+  /* the primary button under the pointer */
+  --accent-hover: oklch(0.52 0.165 41);
+  /* text and icons on an --accent fill. Dark: DARK ink, because the dark fill is light */
+  --on-accent: oklch(0.99 0.005 80);
+  /* accent-hued TEXT: a link, the "check" mark on a cited AI line */
+  --accent-ink: oklch(0.48 0.15 40);
+  /* the one tint: the transcript line a chip revealed, text selection */
+  --accent-soft: oklch(0.95 0.035 55);
+  /* The focus ring is the accent fill: 3:1 or better on every surface (non-text). */
+  --ring: var(--accent);
+  /* The dialog backdrop. */
+  --scrim: oklch(0.22 0.01 70 / 0.4);
+  /* Elevation by role: e1 the primary button and selected tab, e2 menus and the prompt card, e3 dialogs. */
+  --e1: 0 1px 2px oklch(0.22 0.01 70 / 0.06), 0 1px 3px oklch(0.22 0.01 70 / 0.1);
+  --e2: 0 4px 8px oklch(0.22 0.01 70 / 0.08), 0 2px 4px oklch(0.22 0.01 70 / 0.06);
+  --e3: 0 16px 32px oklch(0.22 0.01 70 / 0.14), 0 4px 8px oklch(0.22 0.01 70 / 0.06);
 }
 
 /* Dark: macOS in dark mode, unless `theme: light` forces light. Same values as forced dark. */
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme='light']) {
     color-scheme: dark;
-    --bg: #161615;
-    --panel: #1f1f1d;
-    --ink: #ececea;
-    --muted: #9a9a94;
-    --line: #2f2f2c;
-    --accent: #2563eb;
-    --danger: #dc2626;
-    --warn: #f59e0b;
-    --ok: #22c55e;
-    --danger-bg: rgb(239 68 68 / 0.16);
-    --warn-bg: rgb(245 158 11 / 0.16);
-    --ok-bg: rgb(34 197 94 / 0.14);
-    --interim-ink: #8c8c86;
-    --hidden-ink: #6b6b66;
-    --cited-bg: rgb(250 204 21 / 0.18);
-    --recording: #ef4444;
-    --focus-ring: rgb(96 165 250 / 0.7);
-    --sidebar-bg: #1a1a19;
-    --chip-bg: rgb(59 130 246 / 0.18);
-    --conflict-bg: rgb(251 146 60 / 0.16);
-    --on-accent: #ffffff;
-    --accent-ink: #60a5fa;
-    --danger-ink: #f87171;
+    --canvas: oklch(0.17 0.006 70);
+    --surface: oklch(0.21 0.007 70);
+    --raised: oklch(0.25 0.008 70);
+    --fill: oklch(0.26 0.008 70);
+    --sunken: oklch(0.2 0.007 70);
+    --control: oklch(0.34 0.008 70);
+    --line: oklch(0.3 0.008 70);
+    --ink: oklch(0.93 0.008 80);
+    --ink-muted: oklch(0.72 0.01 75);
+    --ink-subtle: oklch(0.66 0.01 75);
+    --accent: oklch(0.72 0.16 50);
+    --accent-hover: oklch(0.76 0.15 52);
+    --on-accent: oklch(0.18 0.02 50);
+    --accent-ink: oklch(0.8 0.13 55);
+    --accent-soft: oklch(0.29 0.05 50);
+    --ring: var(--accent);
+    --scrim: oklch(0.08 0.004 70 / 0.6);
+    --e1: 0 1px 2px oklch(0 0 0 / 0.3);
+    --e2: 0 4px 12px oklch(0 0 0 / 0.35);
+    --e3: 0 16px 40px oklch(0 0 0 / 0.5);
   }
 }
 
 /* Dark forced by `theme: dark`, whatever macOS says. Same values as the block above. */
 :root[data-theme='dark'] {
   color-scheme: dark;
-  --bg: #161615;
-  --panel: #1f1f1d;
-  --ink: #ececea;
-  --muted: #9a9a94;
-  --line: #2f2f2c;
-  --accent: #2563eb;
-  --danger: #dc2626;
-  --warn: #f59e0b;
-  --ok: #22c55e;
-  --danger-bg: rgb(239 68 68 / 0.16);
-  --warn-bg: rgb(245 158 11 / 0.16);
-  --ok-bg: rgb(34 197 94 / 0.14);
-  --interim-ink: #8c8c86;
-  --hidden-ink: #6b6b66;
-  --cited-bg: rgb(250 204 21 / 0.18);
-  --recording: #ef4444;
-  --focus-ring: rgb(96 165 250 / 0.7);
-  --sidebar-bg: #1a1a19;
-  --chip-bg: rgb(59 130 246 / 0.18);
-  --conflict-bg: rgb(251 146 60 / 0.16);
-  --on-accent: #ffffff;
-  --accent-ink: #60a5fa;
-  --danger-ink: #f87171;
+  --canvas: oklch(0.17 0.006 70);
+  --surface: oklch(0.21 0.007 70);
+  --raised: oklch(0.25 0.008 70);
+  --fill: oklch(0.26 0.008 70);
+  --sunken: oklch(0.2 0.007 70);
+  --control: oklch(0.34 0.008 70);
+  --line: oklch(0.3 0.008 70);
+  --ink: oklch(0.93 0.008 80);
+  --ink-muted: oklch(0.72 0.01 75);
+  --ink-subtle: oklch(0.66 0.01 75);
+  --accent: oklch(0.72 0.16 50);
+  --accent-hover: oklch(0.76 0.15 52);
+  --on-accent: oklch(0.18 0.02 50);
+  --accent-ink: oklch(0.8 0.13 55);
+  --accent-soft: oklch(0.29 0.05 50);
+  --ring: var(--accent);
+  --scrim: oklch(0.08 0.004 70 / 0.6);
+  --e1: 0 1px 2px oklch(0 0 0 / 0.3);
+  --e2: 0 4px 12px oklch(0 0 0 / 0.35);
+  --e3: 0 16px 40px oklch(0 0 0 / 0.5);
 }

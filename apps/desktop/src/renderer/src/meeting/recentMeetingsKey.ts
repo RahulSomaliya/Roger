@@ -1,8 +1,8 @@
 import type { CaptureStatus } from '../../../shared/capture';
 
 /**
- * The sidebar's refreshKey (useRecentMeetings): it changes when the meetings on this Mac may have
- * changed, a recording starting (main adds its meeting) or stopping (main ends it, or deletes it
+ * Home's refreshKey (useRecentMeetings, read by HomePage): it changes when the meetings on this
+ * Mac may have changed, a recording starting (main adds its meeting) or stopping (main ends it, or deletes it
  * when nobody spoke), and never on the statuses in between.
  *
  * Never the status object itself: main sends an idle status after every uploader pass, every 2 s,

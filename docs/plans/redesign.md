@@ -13,10 +13,16 @@ still on by default, every AI line still links to its transcript lines.
 
 ## Done when
 
-- [ ] `docs/design.md` matches the code; zero literal colours; every pinned pairing AA in both themes.
-- [ ] Each view has at most one primary button, the one the table in `docs/design.md` names.
-- [ ] Everything in the removal list below is deleted (code, CSS and tests), not hidden.
-- [ ] 12-hour times, one word per concept (the naming list is in `CLAUDE.md`), plain copy.
+- [x] `docs/design.md` matches the code; zero literal colours; every pinned pairing AA in both themes.
+      (R10: the doc was swept against the code, `tokens.test.ts` and `noLiteralColours.test.ts` pass.)
+- [x] Each view has at most one primary button, the one the table in `docs/design.md` names.
+      (R10: 49 states in `e2e/redesign.qa.e2e.ts`, each in both themes at 1440 and 390.)
+- [x] Everything in the removal list below is deleted (code, CSS and tests), not hidden.
+      (R10: a `git grep` of every removed name finds none outside comments; the QA `hides` checks
+      the old words are not on screen.)
+- [x] 12-hour times, one word per concept (the naming list is in `CLAUDE.md`), plain copy.
+      (R13: every error line goes through `describeError`, and QA fails any raw request path,
+      address or errno outside Details; the meeting page writes "Mon 5 Oct" like Home.)
 - [ ] `make check` green; one QA gallery (1440 and 390, light and dark, happy and failure path,
       realistic data) published.
 
@@ -165,3 +171,50 @@ wave run in parallel. One reviewer per M task, none on S. No screenshots until R
 | A removal hides a call that is not being saved | a failure scenario in the preview shows no problem line | R10 shoots offline, save failed and refused-upload states; house rule 1 wins |
 | Wave B and C tasks break each other after merging | merged `make check` red | integration branch, gate run alone after each wave |
 | A renamed shared type breaks the preview fake | `tsc` on `tsconfig.e2e.json` | `preview/fakeRoger.ts` has one owner per wave |
+
+## R10 log: QA, words, close
+
+**2026-10-07.** `e2e/redesign.qa.e2e.ts` run on `rd/r10` (from `rd/r12`) in eight pieces, `home`,
+`live`, `past`, `chat`, `settings`, `setup`, `prompt` and `offline`: 49 states, each in light and
+dark at 1440 and 390, 196 captures, 0 console errors. Per state it asserts at most one visible
+primary and that it is the one `docs/design.md` names (found by variant and by computed accent
+fill, `elementFromPoint` on it), no sideways scroll, nothing animating, and every problem line
+visible. Gallery: `/Users/rahulsomaliya/Documents/learn/roger-qa/qa-2026-10-07-redesign.html`
+(98 light | dark pairs, 4.6 MB).
+
+Not ticked, and why:
+
+- "12-hour times, one word per concept, plain copy": times and names hold, but two failure lines
+  still print raw API text (a failed jargon save, a Write notes that could not start), and the
+  meeting page's date reads the system locale ("Mon, Oct 5") where Home says "Mon 5 Oct". Both are
+  in `docs/design.md` Traps.
+- "`make check` green" and "gallery published": the controller's.
+
+Screens that fail today, in files R10 does not own (marked `fail` in the gallery, listed in
+`KNOWN_FAILURES`): the meeting page's ⋯ menu at 390 wide opens 142 px off the left edge.
+
+Calls that changed while building, now in `docs/design.md`: Reconnect is the primary in Settings
+while Google refuses the grant; Set up Roger has a ghost Later while a check fails; the status line
+is "Recording · 12m" and Details is a header button, not part of the line; the pinned-pairings table
+floors every ratio (7 cells were rounded; fixed in the doc and in `tokens.test.ts`).
+
+## R13 log: fixes from the QA
+
+**2026-10-07.** Fixed what the R10 run found, test first where it is logic: the more-actions menu
+flips to the edge that fits and stays in the window at 390 (`components/ui/menuPlacement.ts`; the
+`past-menu` entry left `KNOWN_FAILURES`); one `describeError` mapping for every error line, so the
+jargon save and the AI notes start failure print "Roger could not reach its server."; the meeting's
+time line is "Mon 5 Oct, 3:00 pm to 3:03 pm"; refused lines show in the banner on every page but the
+meeting whose header says it (both through `captureStatusFor`); a refused or offline note keeps its
+state while a retry runs, so "Not saved to Roger" no longer blinks; migration 3 of `notes.sqlite`
+rebuilds the table in SQLite's order and a test upgrades a schema 2 file with a row in every old
+state; a pending generate left for Stop by an earlier build is dropped with a log line.
+
+Re-shot with `e2e/redesign.qa.e2e.ts` in four pieces (`past`, `settings`, `home`, `offline`, 17 to
+32 s each): 28 states in light and dark at 1440 and 390 (112 captures), 0 failed, 0 known failures,
+0 console errors. New checks: no raw request path, address or errno on the page outside Details, and
+no open menu outside the window. Two new states: refused lines on Home and in Settings. 52 pairs
+replaced, 4 added; gallery
+`/Users/rahulsomaliya/Documents/learn/roger-qa/qa-2026-10-07-redesign.html` (102 light | dark
+pairs, 4.8 MB). The "12-hour times, plain copy" box is ticked on that evidence. Still the
+controller's: "`make check` green" and publishing the gallery.

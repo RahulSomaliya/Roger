@@ -1,4 +1,4 @@
-import { useId } from 'react';
+import { Icon } from '../components/ui/icons';
 
 export interface ConnectCalendarCardProps {
   /** A sign-in is waiting on the browser. */
@@ -9,35 +9,36 @@ export interface ConnectCalendarCardProps {
 }
 
 /**
- * Home's card while no calendar is connected: what Roger does with one, and the button. Connect
- * opens Google's sign-in in the browser and waits for the user to come back (up to 3 minutes), so
- * while it waits the button says so and offers to start over: a second connect cancels the first,
- * which is the only way out of a sign-in the user abandoned in the browser.
+ * Home's line while no calendar is connected: one secondary button and one helper line. The
+ * helper says, once, what connecting gives and that Roger opens at login to do it (the switch is
+ * in Settings): there is no "Roger will open at login" line after the connect any more.
+ *
+ * Connect opens Google's sign-in in the browser and waits for the user to come back (up to 3
+ * minutes), so while it waits the line says so and the button stays: a second connect cancels the
+ * first, which is the only way out of a sign-in the user abandoned in the browser.
  */
 export function ConnectCalendarCard({ connecting, error, onConnect }: ConnectCalendarCardProps) {
-  const headingId = useId();
   return (
-    <section className="card calendar-connect" aria-labelledby={headingId}>
-      <h2 id={headingId} className="calendar-connect-title">
-        See your day in Roger
-      </h2>
-      <p className="calendar-connect-text">
-        Connect Google Calendar and Roger lists today’s meetings, reminds you just before a call and
-        starts your notes in one click. Roger only reads your calendar.
-      </p>
-      <div className="calendar-connect-actions">
-        <button type="button" className="shell-button calendar-start" onClick={onConnect}>
-          {connecting ? 'Open Google again' : 'Connect Google Calendar'}
+    <section className="calendar-connect" aria-label="Google Calendar">
+      <div className="calendar-connect-row">
+        <button type="button" className="btn" onClick={onConnect}>
+          Connect Google Calendar
         </button>
+        {connecting ? (
+          <p className="calendar-connect-help" role="status">
+            Finish signing in in your browser. Roger waits up to 3 minutes.
+          </p>
+        ) : (
+          <p className="calendar-connect-help">
+            Roger shows today’s meetings and reminds you before a call, so it opens at login. It
+            only reads your calendar.
+          </p>
+        )}
       </div>
-      {connecting ? (
-        <p className="calendar-connect-status" role="status">
-          Finish signing in in your browser. Roger waits up to 3 minutes.
-        </p>
-      ) : null}
       {error === null ? null : (
-        <div className="error calendar-connect-error" role="alert">
-          Roger could not connect Google Calendar: {error}
+        <div className="problem" role="alert">
+          <Icon name="circle-alert" />
+          <span className="problem-text">Roger could not connect Google Calendar: {error}</span>
         </div>
       )}
     </section>

@@ -237,11 +237,23 @@ export interface Note {
  * - `syncing`: a `PUT` is on its way.
  * - `synced`: the server holds this doc.
  * - `offline`: the API is away; the doc stays on this Mac and NotesSync retries with backoff.
+ * - `refused`: the API answered and turned the upload down (a `422`, a `409` its own copy did not
+ *   explain). Unlike `offline` it is a problem the user must see ("Not saved to Roger"); the doc
+ *   stays on this Mac and NotesSync retries with backoff.
+ * - `refused_access`: as `refused`, for an answer about this Mac's access (a `401`, a `403`), which
+ *   the page words differently.
  * - `conflict`: the server had a newer version. `doc` is now the server's, and `conflictCopy`
  *   keeps the local one until the user picks ("Use mine").
  */
 export type NoteSyncState =
-  'saved_locally' | 'waiting_for_meeting' | 'syncing' | 'synced' | 'offline' | 'conflict';
+  | 'saved_locally'
+  | 'waiting_for_meeting'
+  | 'syncing'
+  | 'synced'
+  | 'offline'
+  | 'refused'
+  | 'refused_access'
+  | 'conflict';
 
 /** A note as notes.sqlite holds it (main/notes/NotesStore.ts): what the editor shows. */
 export interface LocalNote {
@@ -363,12 +375,15 @@ export type NotesStreamEvent =
   | { type: 'done'; runId: string; note: Note }
   | { type: 'error'; code: string; message: string };
 
-/** Why a notes generate started: Stop with auto-generate on, or the Generate button. */
+/**
+ * Why a notes generate started: `button` (Write notes, Write again as, Retry). `after_stop` was
+ * Stop with auto-generate on; redesign call 5 deleted that, but a row an earlier build stored
+ * still says it and the table's CHECK allows it.
+ */
 export type GenerateReason = 'after_stop' | 'button';
 
 /**
  * Where a pending generate stands. The AI notes panel says one thing per phase:
- * - `needs_template`: "Which kind of call was this?" with the four templates.
  * - `waiting_for_lines`: "Notes will generate when 12 lines finish uploading".
  * - `waiting_for_notes`: the notes could not upload first. `meeting`: the meeting is not in
  *   Postgres yet; `offline`: "Waiting for your notes to upload (offline)"; `conflict`: "Resolve
@@ -377,7 +392,6 @@ export type GenerateReason = 'after_stop' | 'button';
  * - `failed`: a failure Retry can fix (`llm_provider_error`). Others end the pending generate.
  */
 export type PendingGenerateStatus =
-  | { phase: 'needs_template' }
   | { phase: 'waiting_for_lines'; waitingLines: number }
   | { phase: 'waiting_for_notes'; cause: 'meeting' | 'offline' | 'conflict' }
   | { phase: 'running' }
@@ -391,8 +405,7 @@ export interface PendingGenerateState {
    * which then attaches to or replays this run instead of paying for a second one.
    */
   runId: string;
-  /** Null until a template is known; the panel then asks (`needs_template`). */
-  templateId: string | null;
+  templateId: string;
   reason: GenerateReason;
   createdAt: string;
   status: PendingGenerateStatus;

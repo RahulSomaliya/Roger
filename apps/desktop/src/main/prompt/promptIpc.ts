@@ -64,7 +64,6 @@ const MAX_CARD_ID_LENGTH = 64;
 const ACTIONS: readonly PromptActionName[] = [
   'take_notes',
   'join_and_take_notes',
-  'copy_notice',
   'dismiss',
   'open_roger',
 ];

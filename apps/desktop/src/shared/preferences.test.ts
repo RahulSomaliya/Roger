@@ -18,11 +18,12 @@ describe('the preference registry', () => {
     expect(() => registry.parse('theme', null)).toThrow(
       'theme must be one of system, light or dark (got null)',
     );
-    expect(() => registry.parse('notes.autoGenerate', 'yes')).toThrow(
-      'notes.autoGenerate must be true or false (got "yes")',
+    // The two notes keys (redesign calls 5 and 6) are gone: an old file's copy is no preference.
+    expect(() => registry.parse('notes.autoGenerate', true)).toThrow(
+      'unknown preference "notes.autoGenerate"',
     );
-    expect(() => registry.parse('notes.whenUnsure', ['ask'])).toThrow(
-      'notes.whenUnsure must be ask or general (got object)',
+    expect(() => registry.parse('notes.whenUnsure', 'ask')).toThrow(
+      'unknown preference "notes.whenUnsure"',
     );
   });
 
@@ -33,30 +34,17 @@ describe('the preference registry', () => {
   it('returns a good value as a change for its key', () => {
     const registry = appRegistry();
     expect(registry.parse('theme', 'dark')).toEqual({ key: 'theme', value: 'dark' });
-    expect(registry.parse('notes.autoGenerate', false)).toEqual({
-      key: 'notes.autoGenerate',
-      value: false,
-    });
-    expect(registry.parse('notes.whenUnsure', 'general')).toEqual({
-      key: 'notes.whenUnsure',
-      value: 'general',
-    });
   });
 
-  it('follows the system theme, generates notes after Stop and asks when unsure, by default', () => {
-    expect(appRegistry().snapshot(new Map())).toEqual({
-      theme: 'system',
-      'notes.autoGenerate': true,
-      'notes.whenUnsure': 'ask',
-    });
+  it('follows the system theme by default', () => {
+    expect(appRegistry().snapshot(new Map())).toEqual({ theme: 'system' });
   });
 
   it('reads each key from the current values, and the default where it has none', () => {
     const registry = appRegistry();
     const current = new Map<string, unknown>([['theme', 'light']]);
     expect(registry.valueIn('theme', current)).toBe('light');
-    expect(registry.valueIn('notes.autoGenerate', current)).toBe(true);
-    expect(registry.snapshot(current)).toMatchObject({ theme: 'light', 'notes.whenUnsure': 'ask' });
+    expect(registry.snapshot(current)).toEqual({ theme: 'light' });
   });
 
   // Two milestones registering one key would silently share or overwrite a setting.
@@ -72,21 +60,15 @@ describe('the preference registry', () => {
   it('refuses to read a key nobody registered', () => {
     const registry = new PreferenceRegistry();
     registry.register({ theme: APP_PREFERENCES.theme });
-    expect(() => registry.valueIn('notes.autoGenerate', new Map())).toThrow(
-      'unknown preference "notes.autoGenerate"',
+    expect(() => registry.valueIn('colour' as 'theme', new Map())).toThrow(
+      'unknown preference "colour"',
     );
-    expect(() => registry.parse('notes.autoGenerate', true)).toThrow(
-      'unknown preference "notes.autoGenerate"',
-    );
+    expect(() => registry.parse('colour', true)).toThrow('unknown preference "colour"');
   });
 
   it('returns the keys each register call added, in order', () => {
     const registry = new PreferenceRegistry();
-    expect(registry.register(APP_PREFERENCES)).toEqual([
-      'theme',
-      'notes.autoGenerate',
-      'notes.whenUnsure',
-    ]);
-    expect(registry.keys()).toEqual(['theme', 'notes.autoGenerate', 'notes.whenUnsure']);
+    expect(registry.register(APP_PREFERENCES)).toEqual(['theme']);
+    expect(registry.keys()).toEqual(['theme']);
   });
 });

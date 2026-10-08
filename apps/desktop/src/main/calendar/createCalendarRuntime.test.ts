@@ -9,7 +9,6 @@ import { PreferencesStore } from '../preferences/PreferencesStore';
 import {
   createCalendarRuntime,
   createStartRequestEnricher,
-  meetingAttendees,
   type CalendarRuntimeDeps,
   type CalendarWindow,
 } from './createCalendarRuntime';
@@ -100,47 +99,6 @@ describe('createStartRequestEnricher', () => {
   });
 });
 
-describe('meetingAttendees', () => {
-  it('reads the invitees off the local meeting, and none for a start with no event', () => {
-    const attendees = call('a', 0).attendees;
-    const read = meetingAttendees({
-      getMeeting: (id) =>
-        id === 'linked'
-          ? {
-              id,
-              title: 'T',
-              startedAt: iso(NOW),
-              endedAt: null,
-              remoteState: 'pending',
-              startSource: 'notification',
-              calendarEvent: {
-                provider: 'fake',
-                eventId: 'a',
-                icalUid: null,
-                recurringEventId: null,
-                scheduledStart: iso(NOW),
-                scheduledEnd: iso(NOW + MINUTE),
-                attendees,
-              },
-            }
-          : id === 'manual'
-            ? {
-                id,
-                title: 'T',
-                startedAt: iso(NOW),
-                endedAt: null,
-                remoteState: 'pending',
-                startSource: 'manual',
-                calendarEvent: null,
-              }
-            : null,
-    });
-    expect(read('linked')).toEqual(attendees);
-    expect(read('manual')).toEqual([]);
-    expect(read('no such meeting')).toEqual([]);
-  });
-});
-
 describe('createCalendarRuntime', () => {
   beforeEach(() => {
     vi.useFakeTimers({ now: NOW });
@@ -225,7 +183,6 @@ describe('createCalendarRuntime', () => {
         powerMonitor,
         powerSaveBlocker: { start: () => 1, stop: () => undefined },
         shell: { openExternal: () => Promise.resolve() },
-        clipboard: { writeText: () => undefined },
       },
       logger: silent,
       ...overrides,

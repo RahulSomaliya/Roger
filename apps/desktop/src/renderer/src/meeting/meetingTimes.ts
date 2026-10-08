@@ -1,6 +1,11 @@
+import { daysAgo, meetingDayLabel } from '../app/labels';
+import { formatClock } from '../clock';
+
 /**
- * When a meeting ran, as the sidebar and the meeting header say it, on the wall clock in the Mac's
- * own style (12 or 24 hours, its date order). `locale` is for tests; the app passes none.
+ * When a meeting ran, as Home's list and the meeting header say it. The clock is formatClock's
+ * (12-hour, lowercase, never the Mac's 24-hour setting) and the date is Home's `meetingDayLabel`
+ * ("Mon 5 Oct"), both pinned to English (docs/design.md, Copy). Never `toLocaleDateString` here:
+ * the system locale wrote "Mon, Oct 5" on an English-US Mac, a second form for the same day.
  */
 
 interface MeetingSpan {
@@ -9,63 +14,29 @@ interface MeetingSpan {
   endedAt: string | null;
 }
 
-const DAY_MS = 86_400_000;
-
-/** Whole local days from `date` to `now`: 0 today, 1 yesterday. */
-function daysAgo(date: Date, now: Date): number {
-  const midnight = (d: Date): number =>
-    new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
-  // Rounded: a day with a daylight saving change is 23 or 25 hours long.
-  return Math.round((midnight(now) - midnight(date)) / DAY_MS);
-}
-
-function clockTime(date: Date, locale: string | undefined): string {
-  return date.toLocaleTimeString(locale, { hour: 'numeric', minute: '2-digit' });
-}
-
-/** "Today", "Yesterday", a weekday and date this year, or a date with its year. */
-function dayName(date: Date, now: Date, locale: string | undefined, leading: boolean): string {
+/** "Today", "Yesterday" (lowercase mid-sentence), else Home's "Mon 5 Oct". */
+function dayName(date: Date, now: Date, leading: boolean): string {
   const ago = daysAgo(date, now);
   if (ago === 0) return leading ? 'Today' : 'today';
   if (ago === 1) return leading ? 'Yesterday' : 'yesterday';
-  if (date.getFullYear() !== now.getFullYear()) {
-    return date.toLocaleDateString(locale, { day: 'numeric', month: 'short', year: 'numeric' });
-  }
-  return date.toLocaleDateString(locale, { weekday: 'short', day: 'numeric', month: 'short' });
-}
-
-/** The sidebar's label for a meeting: its start time today, else its day. */
-export function recentMeetingLabel(startedAt: string, now: Date, locale?: string): string {
-  const start = new Date(startedAt);
-  const ago = daysAgo(start, now);
-  if (ago === 0) return clockTime(start, locale);
-  if (ago === 1) return 'Yesterday';
-  if (start.getFullYear() !== now.getFullYear()) {
-    return start.toLocaleDateString(locale, { day: 'numeric', month: 'short', year: 'numeric' });
-  }
-  return start.toLocaleDateString(locale, { day: 'numeric', month: 'short' });
+  return meetingDayLabel(date.toISOString(), now);
 }
 
 /**
- * The meeting header's line: "Started 9:05" while it records, "Today, 9:30 to 9:41" once it ended.
- * A meeting with no end that is not recording (a crash left it open, until main closes it at the
- * next start) gives only its start.
+ * The meeting header's line: "Started 9:05 am" while it records, "Today, 9:30 am to 9:41 am" once
+ * it ended. A meeting with no end that is not recording (a crash left it open, until main closes
+ * it at the next start) gives only its start.
  */
-export function meetingTimeLabel(
-  meeting: MeetingSpan,
-  recording: boolean,
-  now: Date,
-  locale?: string,
-): string {
+export function meetingTimeLabel(meeting: MeetingSpan, recording: boolean, now: Date): string {
   const start = new Date(meeting.startedAt);
-  const startDay = dayName(start, now, locale, !recording);
+  const startDay = dayName(start, now, !recording);
   if (recording) {
-    const time = clockTime(start, locale);
+    const time = formatClock(start);
     return daysAgo(start, now) === 0 ? `Started ${time}` : `Started ${startDay}, ${time}`;
   }
-  const from = `${startDay}, ${clockTime(start, locale)}`;
+  const from = `${startDay}, ${formatClock(start)}`;
   if (meeting.endedAt === null) return from;
   const end = new Date(meeting.endedAt);
-  if (daysAgo(end, now) === daysAgo(start, now)) return `${from} to ${clockTime(end, locale)}`;
-  return `${from} to ${dayName(end, now, locale, false)}, ${clockTime(end, locale)}`;
+  if (daysAgo(end, now) === daysAgo(start, now)) return `${from} to ${formatClock(end)}`;
+  return `${from} to ${dayName(end, now, false)}, ${formatClock(end)}`;
 }

@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import type { CalendarConnection, CalendarSyncState } from '../../../shared/calendar';
 import { LOGIN_ITEMS_SETTINGS_PATH } from '../../../shared/ipc/loginItem';
+import { calendarState } from './calendarTesting';
 import {
   calendarNotices,
+  calendarProblem,
   createCalendarFormat,
   openAtLoginHint,
   reconnectLabel,
@@ -36,8 +38,9 @@ const staleSync: CalendarSyncState = {
 };
 
 describe('createCalendarFormat', () => {
-  it('writes times on a 24 hour clock and dates as "Wed 14 Oct", in the given zone', () => {
-    expect(format.time(Date.parse('2026-10-06T03:42:00.000Z'))).toBe('09:12');
+  it('writes times on a 12 hour clock and dates as "Wed 14 Oct", in the given zone', () => {
+    expect(format.time(Date.parse('2026-10-06T03:42:00.000Z'))).toBe('9:12 am');
+    expect(format.time(Date.parse('2026-10-06T15:35:00.000Z'))).toBe('9:05 pm');
     expect(format.date(Date.parse('2026-10-14T00:00:00.000Z'))).toBe('Wed 14 Oct');
   });
 
@@ -48,16 +51,16 @@ describe('createCalendarFormat', () => {
   });
 
   it('adds the weekday only for another day than now', () => {
-    expect(format.when(Date.parse('2026-10-06T03:42:00.000Z'), NOW)).toBe('09:12');
-    expect(format.when(Date.parse('2026-10-07T03:42:00.000Z'), NOW)).toBe('Wed 09:12');
+    expect(format.when(Date.parse('2026-10-06T03:42:00.000Z'), NOW)).toBe('9:12 am');
+    expect(format.when(Date.parse('2026-10-07T03:42:00.000Z'), NOW)).toBe('Wed 9:12 am');
   });
 });
 
 describe('staleText', () => {
   it('says since when, with the weekday for an earlier day', () => {
-    expect(staleText(staleSync, NOW, format)).toBe('Calendar not updated since 09:12');
+    expect(staleText(staleSync, NOW, format)).toBe('Calendar not updated since 9:12 am');
     const older = { ...staleSync, lastSuccessAt: '2026-10-04T15:35:00.000Z' };
-    expect(staleText(older, NOW, format)).toBe('Calendar not updated since Sun 21:05');
+    expect(staleText(older, NOW, format)).toBe('Calendar not updated since Sun 9:05 pm');
   });
 
   it('says only "not updated" when it has never synced', () => {
@@ -87,13 +90,11 @@ describe('reconnectLabel', () => {
   });
 
   it('has no date to give once Google refused the grant or the date has passed', () => {
-    expect(reconnectLabel(expiring, freshSync, expiresAt, format)).toBe(
-      'Reconnect Google Calendar',
-    );
+    expect(reconnectLabel(expiring, freshSync, expiresAt, format)).toBe('Reconnect');
     const refused = { ...connection, status: 'reconnect_required' as const };
-    expect(reconnectLabel(refused, freshSync, NOW, format)).toBe('Reconnect Google Calendar');
+    expect(reconnectLabel(refused, freshSync, NOW, format)).toBe('Reconnect');
     expect(reconnectLabel(connection, { ...freshSync, reconnectRequired: true }, NOW, format)).toBe(
-      'Reconnect Google Calendar',
+      'Reconnect',
     );
   });
 
@@ -116,7 +117,7 @@ describe('calendarNotices', () => {
     expect(rest).toEqual([]);
     expect(notice).toMatchObject({
       kind: 'stale',
-      text: 'Calendar not updated since 09:12',
+      text: 'Calendar not updated since 9:12 am',
       action: null,
     });
   });
@@ -129,7 +130,7 @@ describe('calendarNotices', () => {
       format,
     });
     expect(notices.map((notice) => notice.kind)).toEqual(['reconnect-required']);
-    expect(notices[0]?.action).toBe('Reconnect Google Calendar');
+    expect(notices[0]?.action).toBe('Reconnect');
   });
 
   it('warns before the expiry date and still shows a stale copy', () => {
@@ -141,31 +142,75 @@ describe('calendarNotices', () => {
     });
     expect(notices.map((notice) => notice.kind)).toEqual(['reconnect-soon', 'stale']);
     expect(notices[0]?.action).toBe('Reconnect before Tue 6 Oct');
+    // The date moved from the button into the sentence: Home's button just says Reconnect.
+    expect(notices[0]?.text).toContain('on Tue 6 Oct');
+  });
+});
+
+describe("calendarProblem (Home's one quiet line)", () => {
+  const problem = (fields: Parameters<typeof calendarState>[0] = {}, nowMs = NOW) =>
+    calendarProblem({
+      state: calendarState({ sync: freshSync, ...fields }),
+      nowMs,
+      format,
+    });
+
+  it('is null for a healthy calendar', () => {
+    expect(problem()).toBeNull();
+  });
+
+  it('says a stale copy since when, with nothing to press', () => {
+    expect(problem({ sync: staleSync })).toEqual({
+      text: 'Calendar not updated since 9:12 am',
+      action: null,
+    });
+  });
+
+  it('puts a refused grant first, with Reconnect, over every other problem', () => {
+    const result = problem({
+      connection: { ...connection, status: 'reconnect_required' },
+      sync: { ...staleSync, reconnectRequired: true },
+      copyError: 'disk is full',
+    });
+    expect(result?.action).toBe('reconnect');
+    expect(result?.text).toContain('sign in again');
+  });
+
+  it('says why the connection or the copy could not be read, and offers to try again', () => {
+    expect(problem({ connectionStatus: 'failed', connectionError: 'API is down' })).toEqual({
+      text: 'Roger could not check your Google Calendar connection: API is down',
+      action: 'reload',
+    });
+    expect(problem({ copyError: 'disk is full' })).toEqual({
+      text: 'Roger could not read your calendar: disk is full',
+      action: 'reload',
+    });
+  });
+
+  it('warns before the grant expires, with Reconnect', () => {
+    const expiresAt = NOW + 5 * 60 * 60 * 1000;
+    const result = problem({
+      connection: { ...connection, expiresHint: new Date(expiresAt).toISOString() },
+    });
+    expect(result?.action).toBe('reconnect');
+  });
+
+  it('says last that the lookup of existing notes failed, with nothing to press', () => {
+    expect(problem({ linksError: 'main is busy' })).toEqual({
+      text: 'Roger could not check which meetings already have notes: main is busy',
+      action: null,
+    });
   });
 });
 
 describe('openAtLoginHint', () => {
   it('says where to allow Roger when macOS waits for the user, with the path System Settings uses', () => {
-    const hint = openAtLoginHint('on', 'requires-approval');
+    const hint = openAtLoginHint('requires-approval');
     expect(hint).toContain(LOGIN_ITEMS_SETTINGS_PATH);
     expect(hint).toContain('missed');
   });
 
-  it('says it is on when macOS opens Roger at login', () => {
-    expect(openAtLoginHint('on', 'enabled')).toBe(
-      'Roger opens when you log in, so it can remind you before your first call.',
-    );
-  });
-
   it('says what a dev build, or a Roger macOS cannot find, cannot do', () => {
-    expect(openAtLoginHint('off', 'unavailable')).toContain('Not available');
-  });
-
-  it('says what an off or not yet registered login item means, by the choice', () => {
-    expect(openAtLoginHint('off', 'disabled')).toContain('only when you open it');
-    expect(openAtLoginHint('off', null)).toContain('only when you open it');
-    expect(openAtLoginHint('auto', 'disabled')).toBe(
-      'Roger turns this on when you connect your calendar.',
-    );
+    expect(openAtLoginHint('unavailable')).toContain('Not available');
   });
 });

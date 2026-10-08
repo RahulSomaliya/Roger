@@ -111,7 +111,8 @@ export function createMeetingsFake(hub: FakeHub): MeetingsApi {
           .filter((line) => !line.hidden)
           .map((line) => line.segment)
           .sort(compareTranscriptOrder);
-        return { ...meeting, segments };
+        // The preview starts no meeting from an invite, so it has no invitees.
+        return { ...meeting, segments, attendees: [] };
       }),
   };
 }

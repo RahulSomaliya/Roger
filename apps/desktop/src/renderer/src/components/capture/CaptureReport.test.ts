@@ -55,16 +55,17 @@ describe('CaptureReport', () => {
   it('says why the recording ended and how the gaps stand', () => {
     const html = render(REPORT);
     expect(html).toContain('Roger stopped because the call ended.');
-    expect(html).toContain('2 gaps, 1 filled by a re-run.');
+    expect(html).toContain('2 gaps, 1 transcribed again.');
   });
 
-  it('lists each gap with its span, stream, reason and re-run state', () => {
+  it('lists each gap with its span, stream, reason and where transcribing it again stands', () => {
     const html = render(REPORT);
-    expect(html).toContain('00:01:01 to 00:02:05');
-    expect(html).toContain('Call audio (them)');
+    expect(html).toContain('1:01 to 2:05');
+    expect(html).toContain('Call audio');
+    expect(html).not.toContain('Call audio (them)');
     expect(html).toContain('the Mac was offline');
     expect(html).toContain('data-status="recovered"');
-    expect(html).toContain('Re-run failed: the audio for it is gone');
+    expect(html).toContain('Transcribing again failed: the audio for it is gone');
     expect(html).toContain('data-status="failed"');
   });
 

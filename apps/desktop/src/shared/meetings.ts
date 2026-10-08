@@ -1,4 +1,5 @@
 import { isMeetingId } from './ipc/app';
+import type { TemplateAttendee } from './suggestTemplate';
 import type { TranscriptSegment } from './transcript';
 
 /**
@@ -26,6 +27,12 @@ export interface StoredMeeting extends MeetingSummary {
    * Lines the echo filter hid are left out, as the uploader leaves them out of Postgres.
    */
   segments: TranscriptSegment[];
+  /**
+   * The invitees of the calendar event it was started for, empty for a manual start: the address
+   * and whether it is the user's own, which is all "Write notes" needs to read an outside guest as
+   * a client call (suggestTemplate). Names and answers stay in main.
+   */
+  attendees: TemplateAttendee[];
 }
 
 /** How many meetings the sidebar asks for. */

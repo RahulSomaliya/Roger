@@ -3,7 +3,6 @@ import {
   promptKey,
   toMeetingCalendarEvent,
   type CalendarPromptCard,
-  type CalendarSyncState,
   type CallApp,
   type CallDetectedPromptCard,
   type PromptCard,
@@ -16,8 +15,6 @@ import type { CapturePhase, CaptureStatus, StartCaptureRequest } from '../../sha
 import type { PromptActionRequest, PromptPanelState } from '../../shared/ipc/prompt';
 import { parseJoinLink } from '../../shared/meetingLinks';
 import { AUDIO_SOURCES, type AudioSource } from '../../shared/transcript';
-import type { CalendarSync } from '../calendar/CalendarSync';
-import type { ConsentNotice } from '../calendar/consentNotice';
 import { NO_ACCOUNT, type PromptLog, type PromptOutcome } from '../calendar/PromptLog';
 import type { PromptOfferPort } from '../calendar/ReminderScheduler';
 import { oneClearMatch, PROMPT_OPEN_AFTER_START_MS, sharesCard } from '../calendar/reminderPolicy';
@@ -37,7 +34,7 @@ const MINUTE_MS = 60 * SECOND_MS;
  */
 export const START_OUTCOME_WINDOW_MS = 20 * SECOND_MS;
 
-/** "Taking notes · Open Roger" stays on the card this long after a start action, then it goes. */
+/** "Recording" with Open Roger stays on the card this long after a start action, then it goes. */
 export const TAKING_NOTES_SHOWN_MS = 5 * SECOND_MS;
 
 /**
@@ -61,9 +58,10 @@ export const CALL_CARD_OPEN_MS = PROMPT_OPEN_AFTER_START_MS;
 const DEADLINE_CHECK_MS = 10 * SECOND_MS;
 
 /** What the card says when a click starts nothing because no window took the request. */
-const NOT_TAKEN_MESSAGE = "Roger's window did not start the note. Open Roger and press Start.";
+const NOT_TAKEN_MESSAGE =
+  "Roger's window did not start the notes. Open Roger and choose Start notes.";
 const NO_JOIN_LINK_MESSAGE = 'This meeting has no Meet, Zoom or Teams link Roger can open.';
-const BUSY_MESSAGE = 'Roger is still starting the last note. Try again in a moment.';
+const BUSY_MESSAGE = 'Roger is still starting your last notes. Try again in a moment.';
 
 /**
  * Capture as the prompt reads and drives it: CaptureService fits as it is (PromptService.test.ts
@@ -94,8 +92,8 @@ export interface RevealableWindow {
  * Roger: over a full-screen Meet macOS switches Spaces away from the call, and after Join the
  * window covers the tab that just opened, undoing the panel's `focusable: false` (M5 design, "One
  * click starts the note"). Whether even `showInactive()` pulls the Space away is real-Mac check 3;
- * if it does, pass a port that leaves the window hidden: the panel's "Taking notes · Open Roger"
- * is then the way in.
+ * if it does, pass a port that leaves the window hidden: the panel's "Recording" line with Open
+ * Roger is then the way in.
  */
 export function revealWithoutFocus(getWindow: () => RevealableWindow | null): () => void {
   return () => {
@@ -109,7 +107,6 @@ export function revealWithoutFocus(getWindow: () => RevealableWindow | null): ()
 
 export interface PromptServiceOptions {
   cache: Pick<SqliteCalendarCache, 'activeConnection' | 'listEvents'>;
-  sync: Pick<CalendarSync, 'getState' | 'onStateChange'>;
   log: Pick<PromptLog, 'recordShown' | 'recordCallDetected' | 'recordAction'>;
   capture: PromptCapture;
   /** `app:navigate`, the const of `[slot M4-S1]`: the started note's page opens in the window. */
@@ -123,7 +120,6 @@ export interface PromptServiceOptions {
   openWindow: () => void;
   /** `shell.openExternal`, for Join. Only links `parseJoinLink` accepts reach it. */
   openExternal: (url: string) => Promise<void>;
-  notice: ConsentNotice;
   logger: Logger;
   /** Epoch ms. */
   clock?: () => number;
@@ -164,18 +160,11 @@ interface CallCardState extends CardBase {
   closesAtMs: number;
 }
 
-interface StaleCardState {
-  kind: 'stale_calendar';
-  id: string;
-  lastSuccessAt: string | null;
-}
-
-type CardState = CalendarCardState | CallCardState | StaleCardState;
-type StartableCard = CalendarCardState | CallCardState;
+type CardState = CalendarCardState | CallCardState;
 
 /** A start action, from the click until its outcome is logged. */
 interface StartAttempt {
-  card: StartableCard;
+  card: CardState;
   accountEmail: string;
   key: string;
   /** Join opened the video link. */
@@ -209,7 +198,6 @@ interface PromptServiceEvents extends Record<string, unknown> {
  *   capture statuses that follow: `started` once both sources deliver and both streams are open,
  *   within START_OUTCOME_WINDOW_MS; else `started_degraded` naming the source, or `start_failed`
  *   (the card comes back with the error, to try again).
- * - "Calendar not updated since …": one card per stale spell of the local copy.
  *
  * Log lines name keys, bundle ids and codes, never a title, an attendee or the notice text.
  */
@@ -226,8 +214,8 @@ export class PromptService implements PromptOfferPort {
   private lateStartKey: string | null = null;
   /** What the panel was last told about `recording`, to send a change only when it flips. */
   private recordingShown = false;
-  /** The stale spell (its `staleSince`) a card was shown for; a spell gets one card. */
-  private staleSpellCarded: string | null = null;
+  /** The title the panel was last told, for the same reason. */
+  private recordingTitleShown: string | null = null;
   /** Calendar cards answered lately, with their events: D5 rule 2. */
   private recentAnswers: { atMs: number; events: TimedCalendarEvent[] }[] = [];
   private timer: NodeJS.Timeout | null = null;
@@ -243,24 +231,18 @@ export class PromptService implements PromptOfferPort {
     this.clock = options.clock ?? (() => Date.now());
   }
 
-  /** Follows capture, the calendar copy's health and the notice setting. Call once, at launch. */
+  /** Follows capture. Call once, at launch. */
   start(): void {
     if (this.running) throw new Error('the prompt service is already running');
     this.running = true;
-    const { capture, sync, notice } = this.options;
+    const { capture } = this.options;
     this.recordingShown = isRecording(capture.phase);
+    this.recordingTitleShown = this.recordingTitle();
     this.stops = [
       capture.on('status', (status) => {
         this.onCaptureStatus(status);
       }),
-      sync.onStateChange((state) => {
-        this.onSyncState(state);
-      }),
-      notice.onEnabledChange(() => {
-        this.changed();
-      }),
     ];
-    this.onSyncState(sync.getState());
   }
 
   /**
@@ -282,8 +264,17 @@ export class PromptService implements PromptOfferPort {
         return shown === null ? [] : [shown];
       }),
       recording: isRecording(this.options.capture.phase),
-      noticeEnabled: this.options.notice.enabled(),
+      recordingTitle: this.recordingTitle(),
     };
+  }
+
+  /**
+   * The title of the note being recorded, for the panel's "Stops notes on Weekly sync" line; null
+   * while none is, or while one is starting and has no meeting yet (`CaptureStatus.title`).
+   */
+  private recordingTitle(): string | null {
+    const { capture } = this.options;
+    return isRecording(capture.phase) ? capture.getStatus().title : null;
   }
 
   /** Called with the new state after every change. Returns the removal. */
@@ -338,9 +329,6 @@ export class PromptService implements PromptOfferPort {
     switch (request.action) {
       case 'dismiss':
         this.dismiss(card);
-        return;
-      case 'copy_notice':
-        this.copyNotice(card);
         return;
       case 'open_roger':
         this.openRoger(card);
@@ -528,11 +516,6 @@ export class PromptService implements PromptOfferPort {
 
   private dismiss(card: CardState): void {
     const nowMs = this.clock();
-    if (card.kind === 'stale_calendar') {
-      this.removeCard(card);
-      this.changed();
-      return;
-    }
     if (card.phase !== 'open') {
       this.options.logger.info('dismiss ignored: the card is taking notes');
       return;
@@ -548,19 +531,9 @@ export class PromptService implements PromptOfferPort {
     if (card.kind === 'call_detected') this.events.emit('call-card-dismissed', card.app);
   }
 
-  private copyNotice(card: CardState): void {
-    if (card.kind === 'stale_calendar') return;
-    if (!this.options.notice.copy()) {
-      // The panel hides Copy notice while the notice is off; a click can still race the setting.
-      this.options.logger.info('copy notice ignored: the notice is off');
-      return;
-    }
-    if (card.kind === 'calendar') this.noteAnswered(card, this.clock());
-  }
-
-  /** "Taking notes · Open Roger": the user leaves the call for Roger, so activating is right. */
+  /** "Recording" and Open Roger: the user leaves the call for Roger, so activating is right. */
   private openRoger(card: CardState): void {
-    if (card.kind === 'stale_calendar' || card.phase !== 'taking_notes') {
+    if (card.phase !== 'taking_notes') {
       this.options.logger.info('open Roger ignored: the card is not taking notes');
       return;
     }
@@ -570,7 +543,7 @@ export class PromptService implements PromptOfferPort {
   }
 
   private async startFrom(card: CardState, eventId: string | null, join: boolean): Promise<void> {
-    if (card.kind === 'stale_calendar' || card.phase !== 'open') {
+    if (card.phase !== 'open') {
       this.options.logger.info('start ignored: the card cannot start a note now');
       return;
     }
@@ -584,7 +557,7 @@ export class PromptService implements PromptOfferPort {
     const nowMs = this.clock();
     // `starting` first: the row then holds the click's time, whatever the stop below costs.
     if (!this.record(card.accountEmail, target.key, 'starting', nowMs)) {
-      this.showError(card, 'Roger could not start a note from this prompt.');
+      this.showError(card, 'Roger could not start notes from this prompt. Try again.');
       return;
     }
     const attempt: StartAttempt = {
@@ -652,7 +625,7 @@ export class PromptService implements PromptOfferPort {
    * user can act on it (a Join with no link they can use).
    */
   private startTarget(
-    card: StartableCard,
+    card: CardState,
     eventId: string | null,
     join: boolean,
   ): { key: string; request: StartCaptureRequest; joinUrl: string | null } | null {
@@ -713,9 +686,13 @@ export class PromptService implements PromptOfferPort {
       }
     }
     if (this.lateStartKey !== null) this.followLateStart(this.lateStartKey, status);
+    // The title joins the flag: a start's meeting (and so its title) arrives a status after
+    // `starting`, and the panel's helper line names it.
     const recording = isRecording(status.phase);
-    if (recording !== this.recordingShown) {
+    const title = recording ? status.title : null;
+    if (recording !== this.recordingShown || title !== this.recordingTitleShown) {
       this.recordingShown = recording;
+      this.recordingTitleShown = title;
       this.changed();
     }
   }
@@ -883,7 +860,6 @@ export class PromptService implements PromptOfferPort {
     let changed = false;
     let failed = false;
     for (const card of [...this.cards]) {
-      if (card.kind === 'stale_calendar') continue;
       try {
         if (card.takingNotesUntilMs !== null && card.takingNotesUntilMs <= nowMs) {
           this.endTakingNotes(card, nowMs);
@@ -918,7 +894,7 @@ export class PromptService implements PromptOfferPort {
   }
 
   /** Logs `expired` for each open event past its window. Returns whether the card changed. */
-  private expire(card: StartableCard, nowMs: number): boolean {
+  private expire(card: CardState, nowMs: number): boolean {
     if (card.phase !== 'open') return false;
     if (card.kind === 'call_detected') {
       if (card.closesAtMs > nowMs) return false;
@@ -935,11 +911,11 @@ export class PromptService implements PromptOfferPort {
   }
 
   /**
-   * The "Taking notes" moment is over: the card leaves the panel. The other calls on a shared card
+   * The "Recording" moment is over: the card leaves the panel. The other calls on a shared card
    * go with it, `expired`: the user chose one of the two. The deadline is cleared only after their
    * rows are written: cleared first, a write that throws would leave the card up for good.
    */
-  private endTakingNotes(card: StartableCard, nowMs: number): void {
+  private endTakingNotes(card: CardState, nowMs: number): void {
     if (card.kind === 'calendar') {
       const others = card.events.filter(({ key }) => key !== card.startingKey);
       for (const { key } of others) {
@@ -971,7 +947,6 @@ export class PromptService implements PromptOfferPort {
   private deadlines(): number[] {
     const deadlines: number[] = [];
     for (const card of this.cards) {
-      if (card.kind === 'stale_calendar') continue;
       if (card.takingNotesUntilMs !== null) deadlines.push(card.takingNotesUntilMs);
       if (card.phase !== 'open') continue;
       if (card.kind === 'call_detected') deadlines.push(card.closesAtMs);
@@ -984,30 +959,6 @@ export class PromptService implements PromptOfferPort {
   private clearTimer(): void {
     if (this.timer !== null) clearTimeout(this.timer);
     this.timer = null;
-  }
-
-  // The stale card -------------------------------------------------------------------------------
-
-  private onSyncState(state: CalendarSyncState): void {
-    const card = this.cards.find((candidate) => candidate.kind === 'stale_calendar');
-    if (state.staleSince === null) {
-      if (card === undefined) return;
-      this.removeCard(card);
-      this.changed();
-      return;
-    }
-    // Once per spell: a dismissed card stays dismissed until the copy is fresh again and goes
-    // stale anew. Remembered for this run only; a relaunch mid-spell shows it once more.
-    if (state.staleSince === this.staleSpellCarded) return;
-    this.staleSpellCarded = state.staleSince;
-    if (card !== undefined) this.removeCard(card);
-    this.cards.push({
-      kind: 'stale_calendar',
-      id: this.newCardId(),
-      lastSuccessAt: state.lastSuccessAt,
-    });
-    this.options.logger.info('stale calendar prompt shown', { staleSince: state.staleSince });
-    this.changed();
   }
 
   // Helpers --------------------------------------------------------------------------------------
@@ -1047,7 +998,7 @@ export class PromptService implements PromptOfferPort {
     );
   }
 
-  private showError(card: StartableCard, message: string): void {
+  private showError(card: CardState, message: string): void {
     card.error = message;
     this.changed();
   }
@@ -1111,14 +1062,12 @@ function sourceProblems(status: CaptureStatus, source: AudioSource): string[] {
 }
 
 /** The prompt rows a card stands for, for the log. */
-function cardKeys(card: StartableCard): string[] {
+function cardKeys(card: CardState): string[] {
   return card.kind === 'call_detected' ? [card.key] : card.events.map(({ key }) => key);
 }
 
 function toPromptCard(card: CardState): PromptCard | null {
   switch (card.kind) {
-    case 'stale_calendar':
-      return { kind: 'stale_calendar', id: card.id, lastSuccessAt: card.lastSuccessAt };
     case 'call_detected': {
       const shown: CallDetectedPromptCard = {
         kind: 'call_detected',

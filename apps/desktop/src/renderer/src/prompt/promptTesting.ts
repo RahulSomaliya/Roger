@@ -2,7 +2,6 @@ import type {
   CalendarAttendee,
   CalendarPromptCard,
   CallDetectedPromptCard,
-  StaleCalendarPromptCard,
   TimedCalendarEvent,
 } from '../../../shared/calendar';
 import type { PromptPanelState } from '../../../shared/ipc/prompt';
@@ -76,20 +75,9 @@ export function callDetectedCard(
   };
 }
 
-export function staleCard(
-  overrides: Partial<StaleCalendarPromptCard> = {},
-): StaleCalendarPromptCard {
-  return {
-    kind: 'stale_calendar',
-    id: 'prompt-3',
-    lastSuccessAt: '2026-10-07T08:41:00.000Z',
-    ...overrides,
-  };
-}
-
 export function panelState(
   cards: PromptPanelState['cards'],
   overrides: Partial<PromptPanelState> = {},
 ): PromptPanelState {
-  return { cards, recording: false, noticeEnabled: true, ...overrides };
+  return { cards, recording: false, recordingTitle: null, ...overrides };
 }

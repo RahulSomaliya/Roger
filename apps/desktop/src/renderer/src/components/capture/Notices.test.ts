@@ -43,7 +43,7 @@ describe('noticesToShow', () => {
     ]);
   });
 
-  it("leaves the crash resume to M2-T20b's notice, which carries its Stop button", () => {
+  it("leaves the crash resume to M2-T20b's notice under the header", () => {
     expect(noticesToShow([RESUMED])).toEqual([]);
   });
 });
@@ -52,6 +52,7 @@ describe('Notices', () => {
   it('says what Roger recovered from and when, quietly', () => {
     const html = render([RESTARTED, switched('AirPods Pro', '2026-10-07T09:31:00.000Z')]);
     expect(html).toContain('aria-live="polite"');
+    expect(html).toContain('>Recovered on its own<');
     expect(html).not.toContain('role="alert"');
     expect(html).toContain('Switched to AirPods Pro');
     expect(html).toContain(`at ${formatClockTime('2026-10-07T09:31:00.000Z')}`);

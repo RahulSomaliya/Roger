@@ -1,182 +1,113 @@
 /*
  * The permission setup screen (SetupScreen.tsx), in the shell's setup route. Colours are tokens
- * only (theme/tokens.css): text reads the ink tokens, and --ok, --warn and --danger colour only
- * the state dot and a row's edge, never text.
+ * only (theme/tokens.css). No card, no pill, no tint: rows are space and a hairline, a state is
+ * words with an icon in --ink-muted, and a failing check is told apart by its words and its icon,
+ * never by a colour or a coloured edge (docs/design.md, Calm). --accent is a fill and never text.
  */
 
 .setup {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: var(--space-6);
 }
 
 .setup-intro,
 .setup-privacy {
   margin: 0;
-  max-width: 68ch;
-  color: var(--muted);
+  max-width: var(--measure);
+  color: var(--ink-muted);
 }
 
 .setup-privacy {
-  font-size: 13px;
-}
-
-.setup-summary {
-  margin: 0;
-  font-weight: 600;
+  font-size: var(--text-xs);
+  line-height: var(--leading-xs);
 }
 
 .setup-failed {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-}
-
-.setup-failed .error {
-  margin: 0;
+  align-items: flex-start;
+  gap: var(--space-2);
 }
 
 .setup-list {
   display: flex;
   flex-direction: column;
-  gap: 12px;
   margin: 0;
   padding: 0;
   list-style: none;
 }
 
+/* Rows are separated by a hairline; the list's first row has none above it. */
 .setup-row {
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  padding: 14px 16px;
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  background: var(--panel);
+  align-items: flex-start;
+  gap: var(--space-2);
+  padding: var(--space-4) 0;
+  border-top: 1px solid var(--line);
 }
 
-/* A row that needs the person carries its colour on its leading edge, not in its text. */
-.setup-row[data-tone='problem'] {
-  box-shadow: inset 3px 0 0 var(--danger);
-}
-
-.setup-row[data-tone='attention'] {
-  box-shadow: inset 3px 0 0 var(--warn);
+.setup-row:first-child {
+  padding-top: 0;
+  border-top: 0;
 }
 
 .setup-row-head {
   display: flex;
   flex-wrap: wrap;
-  align-items: flex-start;
-  gap: 6px 12px;
-}
-
-.setup-row-text {
-  flex: 1 1 260px;
-  min-width: 0;
+  align-items: baseline;
+  gap: var(--space-1) var(--space-3);
 }
 
 .setup-row-title {
   margin: 0;
-  font-size: 15px;
+  font-size: var(--text-base);
+  line-height: var(--leading-base);
   font-weight: 600;
-}
-
-.setup-row-description {
-  margin: 2px 0 0;
-  font-size: 13px;
-  color: var(--muted);
 }
 
 .setup-state {
   display: inline-flex;
-  flex: none;
   align-items: center;
-  gap: 6px;
-  padding: 3px 10px 3px 8px;
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--ink);
+  gap: var(--space-1);
+  color: var(--ink-muted);
   white-space: nowrap;
 }
 
-.setup-state::before {
-  content: '';
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--muted);
-}
-
-.setup-row[data-tone='ok'] .setup-state {
-  border-color: transparent;
-  background: var(--ok-bg);
-}
-
-.setup-row[data-tone='ok'] .setup-state::before {
-  background: var(--ok);
-}
-
-.setup-row[data-tone='attention'] .setup-state {
-  border-color: transparent;
-  background: var(--warn-bg);
-}
-
-.setup-row[data-tone='attention'] .setup-state::before {
-  background: var(--warn);
-}
-
-.setup-row[data-tone='problem'] .setup-state {
-  border-color: transparent;
-  background: var(--danger-bg);
-}
-
-.setup-row[data-tone='problem'] .setup-state::before {
-  background: var(--danger);
+.setup-state > svg {
+  /* A 16 px icon on the 20 px line the words sit on. */
+  flex: none;
 }
 
 /* Main's words: a long path (System Settings > ... > System Audio Recording Only) must wrap. */
 .setup-row-message {
   margin: 0;
+  max-width: var(--measure);
   color: var(--ink);
   overflow-wrap: anywhere;
 }
 
-.setup-row-error {
-  margin: 0;
-  overflow-wrap: anywhere;
+.setup-row .problem {
+  max-width: var(--measure);
 }
 
 .setup-busy {
   margin: 0;
-  font-size: 13px;
-  color: var(--muted);
+  color: var(--ink-muted);
 }
 
 .setup-actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: var(--space-2);
 }
 
-.setup-primary {
-  padding: 6px 14px;
-  border: 1px solid var(--accent);
-  border-radius: 8px;
-  background: var(--accent);
-  color: var(--on-accent);
-  font: inherit;
-  font-weight: 600;
-  cursor: pointer;
-}
-
-.setup-actions button:disabled {
-  opacity: 0.55;
-  cursor: default;
-}
-
-.setup-actions .shell-button:disabled:hover {
-  background: var(--panel);
+/* "5 checks pass" then Show: the folded rows, one click away. The ghost button's own padding
+   carries the line to 32 px, so the line is not taller than a row's actions. */
+.setup-passing {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  color: var(--ink-muted);
 }

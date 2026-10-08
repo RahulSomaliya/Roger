@@ -1,69 +1,62 @@
 /*
  * The meeting chat (MeetingChat.tsx). Colours only from theme/tokens.css (noLiteralColours.test.ts
- * fails on a literal one). Text reads ink tokens: --ink, --muted, --danger-ink; --accent is a fill
- * under --on-accent only (tokens.test.ts). The chips are the notes' (notes/notes.css).
+ * fails on a literal one); type, space and radius from styles.css. Text reads ink tokens; --accent
+ * is a fill only (tokens.test.ts). The chips are the notes' (notes/notes.css). A problem is the
+ * shared `.problem` line (styles.css), never a box.
  *
  * The panel fills the region it is given, as the transcript panel does, and its log scrolls
- * inside it: the meeting page's chat region is a flex column with a height (meeting/meeting.css).
+ * inside it: the meeting page's chat pane is a flex column with a height (meeting/meeting.css).
+ * No card around it: the tab names it, whitespace and one hairline above the box set it apart.
+ *
+ * The pane clips whatever sticks out of it, so the panel keeps --space-1 of room at its sides and
+ * bottom for a focus ring (2 px line, 2 px offset) on the box and the button.
  */
 
 .meeting-chat {
   display: flex;
   flex: 1;
   flex-direction: column;
+  gap: var(--space-3);
   min-width: 0;
   min-height: 0;
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  background: var(--panel);
-}
-
-.meeting-chat-title {
-  margin: 0;
-  padding: 8px 12px;
-  border-bottom: 1px solid var(--line);
-  font-size: 13px;
-  font-weight: 650;
 }
 
 /*
  * Positioned for the screen-reader labels (.visually-hidden, absolute, MeetingChat.tsx): with no
  * positioned ancestor each one is placed against the window at its unscrolled place, outside this
  * scroller, and a long thread makes the whole window scroll into blank space
- * (e2e/m4-t19.qa.e2e.ts, expectNoPageScroll).
+ * (e2e/redesign.qa.e2e.ts checks every chat state for sideways and page scroll).
  */
 .meeting-chat-log {
   position: relative;
   display: flex;
   flex: 1;
   flex-direction: column;
-  gap: 16px;
+  gap: var(--space-6);
   /* At least a few lines of answer, even in a short region: the page scrolls instead. */
   min-height: 120px;
-  padding: 12px;
+  padding: var(--space-1);
   overflow-y: auto;
-  line-height: 1.55;
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
   overflow-wrap: anywhere;
 }
 
 .meeting-chat-log:focus-visible {
-  outline: 2px solid var(--focus-ring);
+  outline: 2px solid var(--ring);
   outline-offset: -2px;
 }
 
+/* "Opening the chat...": the one read that can take seconds. */
 .meeting-chat-message {
   margin: 0;
-  color: var(--muted);
-}
-
-.meeting-chat-read-error {
-  margin: 0;
+  color: var(--ink-muted);
 }
 
 .meeting-chat-exchange {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-2);
 }
 
 /* The question, on the right, as typed: its line breaks kept. */
@@ -71,9 +64,9 @@
   align-self: flex-end;
   max-width: 85%;
   margin: 0;
-  padding: 6px 10px;
-  border-radius: 12px 12px 4px 12px;
-  background: var(--chip-bg);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-lg);
+  background: var(--fill);
   color: var(--ink);
   white-space: pre-wrap;
 }
@@ -81,8 +74,9 @@
 .meeting-chat-answer {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-2);
   min-width: 0;
+  max-width: var(--measure);
   color: var(--ink);
 }
 
@@ -91,61 +85,26 @@
 }
 
 .meeting-chat-text > * + * {
-  margin-top: 6px;
+  margin-top: var(--space-2);
 }
 
 .meeting-chat-text :is(ul, ol) {
-  padding-left: 20px;
+  padding-left: var(--space-6);
 }
 
 .meeting-chat-text li + li {
-  margin-top: 2px;
+  margin-top: var(--space-1);
 }
 
 /* "Reading the meeting...", "Writing...", "You stopped this answer." */
 .meeting-chat-state {
   margin: 0;
-  color: var(--muted);
-  font-size: 12px;
-}
-
-.meeting-chat-error {
-  margin: 0;
-  padding: 6px 10px;
-  border-radius: 8px;
-  background: var(--danger-bg);
-  color: var(--danger-ink);
+  color: var(--ink-muted);
 }
 
 .meeting-chat-actions {
   display: flex;
-  gap: 8px;
-}
-
-/* "Stop", "Try again", "Ask again": the notes' secondary button. */
-.meeting-chat-button {
-  padding: 3px 10px;
-  border: 1px solid var(--line);
-  border-radius: 7px;
-  background: var(--panel);
-  color: var(--ink);
-  font: inherit;
-  font-size: 12px;
-  font-weight: 600;
-  cursor: pointer;
-}
-
-.meeting-chat-button:disabled {
-  opacity: 0.55;
-  cursor: default;
-}
-
-.meeting-chat-notice {
-  margin: 0 12px 8px;
-  padding: 6px 10px;
-  border-radius: 8px;
-  background: var(--warn-bg);
-  color: var(--ink);
+  gap: var(--space-2);
 }
 
 /* The box to ask in, under the log. */
@@ -153,8 +112,8 @@
   display: flex;
   flex-wrap: wrap;
   align-items: flex-end;
-  gap: 4px 8px;
-  padding: 8px 12px 10px;
+  gap: var(--space-1) var(--space-2);
+  padding: var(--space-3) var(--space-1) var(--space-1);
   border-top: 1px solid var(--line);
 }
 
@@ -163,55 +122,38 @@
   min-width: 0;
   /* Grows with the question up to about six lines, then scrolls. */
   field-sizing: content;
-  min-height: 34px;
+  min-height: 40px;
   max-height: 140px;
-  padding: 6px 10px;
+  padding: var(--space-2) var(--space-3);
   border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--bg);
+  border-radius: var(--radius-md);
+  background: var(--surface);
   color: var(--ink);
   font: inherit;
-  line-height: 1.45;
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
   resize: none;
 }
 
 .meeting-chat-input::placeholder {
-  color: var(--muted);
+  color: var(--ink-muted);
 }
 
-.meeting-chat-ask {
-  min-height: 34px;
-  padding: 0 14px;
-  border: none;
-  border-radius: 8px;
-  background: var(--accent);
-  color: var(--on-accent);
-  font: inherit;
-  font-weight: 650;
-  cursor: pointer;
-}
-
-.meeting-chat-ask:disabled {
-  opacity: 0.55;
-  cursor: default;
-}
-
-.meeting-chat-input:focus-visible,
-.meeting-chat-ask:focus-visible,
-.meeting-chat-button:focus-visible {
-  outline: 2px solid var(--focus-ring);
-  outline-offset: 1px;
+.meeting-chat-input:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
 }
 
 .meeting-chat-count {
   flex-basis: 100%;
   margin: 0;
-  color: var(--muted);
-  font-size: 12px;
+  color: var(--ink-subtle);
+  font-size: var(--text-xs);
+  line-height: var(--leading-xs);
   font-variant-numeric: tabular-nums;
 }
 
 .meeting-chat-count-over {
-  color: var(--danger-ink);
+  color: var(--ink);
   font-weight: 600;
 }

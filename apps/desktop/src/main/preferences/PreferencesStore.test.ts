@@ -61,11 +61,7 @@ function fileJson(): unknown {
 describe('PreferencesStore', () => {
   it('defaults when the file is missing', () => {
     const { store, lines } = open();
-    expect(store.getAll()).toEqual({
-      theme: 'system',
-      'notes.autoGenerate': true,
-      'notes.whenUnsure': 'ask',
-    });
+    expect(store.getAll()).toEqual({ theme: 'system' });
     expect(store.get('theme')).toBe('system');
     // Opening never writes: a missing file is the normal first run.
     expect(existsSync(path)).toBe(false);
@@ -73,15 +69,40 @@ describe('PreferencesStore', () => {
   });
 
   it('a bad value falls back to its default and is logged', () => {
-    writeFileSync(path, JSON.stringify({ theme: 'sepia', 'notes.autoGenerate': false }));
+    writeFileSync(path, JSON.stringify({ theme: 'sepia' }));
     const { store, lines } = open();
     expect(store.get('theme')).toBe('system');
-    expect(store.get('notes.autoGenerate')).toBe(false);
     expect(lines).toHaveLength(1);
     expect(JSON.parse(lines[0]!)).toMatchObject({
       level: 'warn',
       key: 'theme',
       error: 'theme must be one of system, light or dark (got "sepia")',
+    });
+  });
+
+  // Redesign calls 5 and 6 deleted `notes.autoGenerate` and `notes.whenUnsure`: a file written by
+  // an earlier build still holds them, and that must neither log nor refuse to start.
+  it('ignores the retired notes keys an older preferences file holds, and keeps them on save', () => {
+    writeFileSync(
+      path,
+      JSON.stringify({
+        theme: 'light',
+        'notes.autoGenerate': false,
+        'notes.whenUnsure': 'general',
+      }),
+    );
+    const { store, lines } = open();
+    expect(store.getAll()).toEqual({ theme: 'light' });
+    expect(() => store.get('notes.autoGenerate' as 'theme')).toThrow(
+      'unknown preference "notes.autoGenerate"',
+    );
+    expect(lines).toEqual([]);
+
+    store.set('theme', 'dark');
+    expect(fileJson()).toEqual({
+      theme: 'dark',
+      'notes.autoGenerate': false,
+      'notes.whenUnsure': 'general',
     });
   });
 
@@ -99,13 +120,7 @@ describe('PreferencesStore', () => {
   it('survives reopening', () => {
     const first = open().store;
     first.set('theme', 'light');
-    first.set('notes.autoGenerate', false);
-    first.set('notes.whenUnsure', 'general');
-    expect(open().store.getAll()).toEqual({
-      theme: 'light',
-      'notes.autoGenerate': false,
-      'notes.whenUnsure': 'general',
-    });
+    expect(open().store.getAll()).toEqual({ theme: 'light' });
   });
 
   it('a torn write keeps the last good copy', () => {
@@ -135,15 +150,12 @@ describe('PreferencesStore', () => {
     const { files, calls } = recordingFiles();
     const { store, changes } = open(files);
     expect(() => store.parseAndSet('colour', 'dark')).toThrow('unknown preference "colour"');
-    expect(() => store.parseAndSet('notes.autoGenerate', 'yes')).toThrow(
-      'notes.autoGenerate must be true or false (got "yes")',
+    expect(() => store.parseAndSet('theme', 'sepia')).toThrow(
+      'theme must be one of system, light or dark (got "sepia")',
     );
     expect(calls).toEqual([]);
     expect(changes).toEqual([]);
-    expect(store.parseAndSet('notes.whenUnsure', 'general')).toEqual({
-      key: 'notes.whenUnsure',
-      value: 'general',
-    });
+    expect(store.parseAndSet('theme', 'dark')).toEqual({ key: 'theme', value: 'dark' });
   });
 
   it('sends one change per set, even when the value does not change', () => {
@@ -186,8 +198,8 @@ describe('PreferencesStore', () => {
   // to flip app.openAtLogin) would never reach a user who never chose.
   it('stores only the values that were set, never the defaults', () => {
     const { store } = open();
-    store.set('notes.whenUnsure', 'general');
-    expect(fileJson()).toEqual({ 'notes.whenUnsure': 'general' });
+    store.set('theme', 'dark');
+    expect(fileJson()).toEqual({ theme: 'dark' });
   });
 
   // Another milestone registers its keys later in startup (M5 from its slot), and an older build
@@ -195,12 +207,8 @@ describe('PreferencesStore', () => {
   it('keeps the keys nobody registered when it writes', () => {
     writeFileSync(path, JSON.stringify({ 'calendar.reminderLeadMinutes': 5, theme: 'light' }));
     const { store } = open();
-    store.set('notes.autoGenerate', false);
-    expect(fileJson()).toEqual({
-      'calendar.reminderLeadMinutes': 5,
-      theme: 'light',
-      'notes.autoGenerate': false,
-    });
+    store.set('theme', 'dark');
+    expect(fileJson()).toEqual({ 'calendar.reminderLeadMinutes': 5, theme: 'dark' });
   });
 
   it('reads a value from the file for a key registered after opening', () => {
@@ -255,9 +263,9 @@ describe('PreferencesStore', () => {
     ])('is moved aside, intact, before the first save when it %s', (_, original) => {
       writeFileSync(path, original);
       const { store, lines, changes } = open();
-      store.set('notes.autoGenerate', false);
-      expect(fileJson()).toEqual({ 'notes.autoGenerate': false });
-      expect(changes).toEqual([{ key: 'notes.autoGenerate', value: false }]);
+      store.set('theme', 'light');
+      expect(fileJson()).toEqual({ theme: 'light' });
+      expect(changes).toEqual([{ key: 'theme', value: 'light' }]);
       const [aside, ...more] = asideFiles();
       expect(more).toEqual([]);
       expect(aside).toMatch(
@@ -274,9 +282,9 @@ describe('PreferencesStore', () => {
       writeFileSync(path, '{"theme": "dark",}');
       const { store } = open();
       store.set('theme', 'light');
-      store.set('notes.whenUnsure', 'general');
+      store.set('theme', 'dark');
       expect(asideFiles()).toHaveLength(1);
-      expect(fileJson()).toEqual({ theme: 'light', 'notes.whenUnsure': 'general' });
+      expect(fileJson()).toEqual({ theme: 'dark' });
     });
 
     it('is moved aside when it could not be opened (EACCES)', () => {

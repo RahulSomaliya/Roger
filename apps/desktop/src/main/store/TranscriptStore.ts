@@ -26,7 +26,7 @@ export interface NewLocalMeeting {
   /**
    * In `toISOString` form ("2026-10-06T09:30:00.000Z"), as CaptureService writes it: the store
    * orders meetings on this text (listMeetings), and "09:30:00Z" or a "+01:00" offset sorts
-   * against it by its characters, not by its instant, so the sidebar would list it out of order.
+   * against it by its characters, not by its instant, so Home's Earlier list would show it out of order.
    */
   startedAt: string;
   /** Default `manual`. A value outside StartSource is refused (storeChecks.checkStartSource). */
@@ -388,7 +388,7 @@ export interface TranscriptStore {
   markSttUsageSynced(sent: MeetingSttUsage, syncedAt: string): boolean;
 
   /**
-   * The newest meetings first, open ones included, at most `limit`: the sidebar's recent list
+   * The newest meetings first, open ones included, at most `limit`: Home's Earlier list
    * (M4-S4b). Ordered by `startedAt`, then by id, both descending. The start is compared as text,
    * which is right only while every start is written in `toISOString` form (NewLocalMeeting).
    * Throws on a limit that is not a whole number from 1: SQLite reads a negative one as no limit.

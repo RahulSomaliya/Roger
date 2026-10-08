@@ -132,8 +132,8 @@ export interface SourceStatus {
  *   until it is back online; then its next chunk reopens it with no backoff wait
  * - error: ended and will not reopen this meeting; `streamMessages` says why
  *
- * renderer/src/format.ts `describeStream` and `streamTone` switch over every state with no default
- * case: a state added here without its case in both fails the type check (TS2366).
+ * renderer/src/format.ts `describeStream` switches over every state with no default case: a state
+ * added here without its case fails the type check (TS2366).
  */
 export type SttStreamState =
   'closed' | 'connecting' | 'open' | 'paused' | 'retrying' | 'offline' | 'error';
@@ -390,7 +390,7 @@ export interface CaptureReport {
  * - notification: a click on the calendar prompt (M5); the exit check's streak counts only these
  * - home: a start from Home (M5-T12)
  * - tray: a start from the menu bar (M5-T11)
- * - call_detected: Take notes on the call-detected card (M2's detection, on M5's panel)
+ * - call_detected: Start notes on the call-detected card (M2's detection, on M5's panel)
  */
 export const START_SOURCES = ['manual', 'notification', 'home', 'tray', 'call_detected'] as const;
 
@@ -477,7 +477,7 @@ export interface StartCaptureRequest {
    * refused. A calendar event's title has no such limit: main cuts the title of its own requests to
    * fit (fitMeetingTitle), and a page that builds a request from an event cuts it first. Blank as
    * the API reads it (isApiBlank, at any length) or left out, main names the meeting after its
-   * start, "Meeting 6 Oct 2026 09:30" (defaultMeetingTitle in main/capture/CaptureService.ts).
+   * start, "Meeting at 9:30 am" (defaultMeetingTitle in main/capture/CaptureService.ts).
    */
   title?: string;
   /**

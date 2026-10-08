@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import type { SetupStatus } from '../../../../shared/ipc/setup';
-import { setupRows, setupSummary, type SetupRowView } from './setupRows';
+import {
+  leadingFix,
+  needsYou,
+  passingLine,
+  setupRows,
+  splitRows,
+  type SetupRowView,
+} from './setupRows';
 import { fine, firstRunMac, readyMac, refusedMac } from './setupTesting';
 
 function row(status: SetupStatus, id: SetupRowView['id']): SetupRowView {
@@ -99,7 +106,6 @@ describe('setupRows', () => {
     };
     const callAudio = row(status, 'callAudio');
     expect(callAudio).toMatchObject({ tone: 'problem', stateLabel: 'Not allowed' });
-    expect(callAudio.description).toContain('Screen Recording');
     expect(callAudio.actions).toEqual([
       { kind: 'open-pane', pane: 'screenRecording', label: 'Open Screen Recording settings' },
       { kind: 'relaunch', label: 'Relaunch Roger' },
@@ -207,23 +213,83 @@ describe('setupRows', () => {
   });
 });
 
-describe('setupSummary', () => {
-  it('says all is ready, or how many checks need the person', () => {
-    expect(setupSummary(setupRows(readyMac()))).toBe('Roger has what it needs on this Mac.');
-    expect(setupSummary(setupRows(firstRunMac()))).toBe('1 check needs you.');
-    expect(setupSummary(setupRows(refusedMac()))).toBe('4 checks need you.');
+const helperMissing: SetupStatus = {
+  ...readyMac(),
+  systemAudio: {
+    state: 'unknown',
+    message:
+      "Roger's call audio helper is missing from this copy of Roger, so it cannot record call audio. Reinstall Roger with make install-desktop.",
+    relaunchNeeded: false,
+  },
+};
+
+describe('splitRows', () => {
+  it('keeps only what is not fine in the default view, and counts the rest as passing', () => {
+    const { open, passing } = splitRows(setupRows(readyMac()));
+    // Notifications are not tested yet: not a pass, so the person can still send the test.
+    expect(open.map((view) => view.id)).toEqual(['notifications']);
+    expect(passing.map((view) => view.id)).toEqual([
+      'microphone',
+      'callAudio',
+      'signing',
+      'server',
+      'speechToText',
+    ]);
   });
 
-  it('never says Roger has what it needs above a row that says it cannot record', () => {
-    const helperMissing: SetupStatus = {
+  it('puts every failing check in the default view, in the order a person fixes them', () => {
+    const { open, passing } = splitRows(setupRows(refusedMac()));
+    expect(open.map((view) => view.id)).toEqual([
+      'microphone',
+      'callAudio',
+      'notifications',
+      'signing',
+      'server',
+      'speechToText',
+    ]);
+    expect(passing).toEqual([]);
+  });
+
+  it('never folds a row that says it cannot record into the passing ones', () => {
+    // A grey row with a message is tone attention (fromCheck): hiding it under "5 checks pass"
+    // would say Roger can record call audio while main says it cannot.
+    expect(splitRows(setupRows(helperMissing)).open.map((view) => view.id)).toContain('callAudio');
+  });
+});
+
+describe('passingLine', () => {
+  it('counts the checks that pass', () => {
+    expect(passingLine(1)).toBe('1 check passes');
+    expect(passingLine(4)).toBe('4 checks pass');
+  });
+});
+
+describe('leadingFix', () => {
+  it('is the first failing check that has a fix, so a screen has one main button', () => {
+    expect(leadingFix(setupRows(refusedMac()))).toBe('microphone');
+    expect(leadingFix(setupRows(firstRunMac()))).toBe('microphone');
+  });
+
+  it('skips a failing check with nothing to press', () => {
+    // An ad hoc signature has no button (only its message); the server's Check again leads.
+    const status: SetupStatus = {
       ...readyMac(),
-      systemAudio: {
-        state: 'unknown',
-        message:
-          "Roger's call audio helper is missing from this copy of Roger, so it cannot record call audio. Reinstall Roger with make install-desktop.",
-        relaunchNeeded: false,
-      },
+      signing: refusedMac().signing,
+      api: refusedMac().api,
     };
-    expect(setupSummary(setupRows(helperMissing))).toBe('1 check needs you.');
+    expect(leadingFix(setupRows(status))).toBe('server');
+  });
+
+  it('is none when every check passes or is only untested', () => {
+    expect(leadingFix(setupRows(readyMac()))).toBeNull();
+  });
+});
+
+describe('needsYou', () => {
+  it('is true while any check fails or says it needs a look, false once only tests are left', () => {
+    expect(needsYou(setupRows(readyMac()))).toBe(false);
+    expect(needsYou(setupRows(firstRunMac()))).toBe(true);
+    expect(needsYou(setupRows(refusedMac()))).toBe(true);
+    expect(needsYou(setupRows(helperMissing))).toBe(true);
   });
 });

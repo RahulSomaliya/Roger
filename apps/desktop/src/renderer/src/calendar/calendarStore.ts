@@ -40,8 +40,6 @@ export interface CalendarState {
   connectError: string | null;
   disconnecting: boolean;
   disconnectError: string | null;
-  /** This window just connected a calendar for the first time: the line about opening at login. */
-  justConnected: boolean;
 }
 
 type Part = 'connection' | 'events' | 'sync';
@@ -69,7 +67,6 @@ export class CalendarStore extends RetainedStore<CalendarState> {
       connectError: null,
       disconnecting: false,
       disconnectError: null,
-      justConnected: false,
     });
   }
 
@@ -142,7 +139,6 @@ export class CalendarStore extends RetainedStore<CalendarState> {
   async connect(): Promise<void> {
     this.connectRun += 1;
     const run = this.connectRun;
-    const first = this.state.connection === null;
     this.update({ connecting: true, connectError: null });
     try {
       const connection = await this.api.connectCalendar();
@@ -153,8 +149,6 @@ export class CalendarStore extends RetainedStore<CalendarState> {
         connectionStatus: 'ready',
         connectionError: null,
         connecting: false,
-        // Only the first connect turns open at login on (main), so only it earns the line.
-        justConnected: first,
       });
     } catch (error) {
       if (run === this.connectRun) {
@@ -177,7 +171,6 @@ export class CalendarStore extends RetainedStore<CalendarState> {
         connection: null,
         events: [],
         links: new Map(),
-        justConnected: false,
         connectError: null,
       });
     } catch (error) {
@@ -185,11 +178,6 @@ export class CalendarStore extends RetainedStore<CalendarState> {
     } finally {
       this.update({ disconnecting: false });
     }
-  }
-
-  /** The user dismissed the line about opening at login, or acted on it. */
-  dismissConnectedLine(): void {
-    this.update({ justConnected: false });
   }
 
   private read(run: number): void {

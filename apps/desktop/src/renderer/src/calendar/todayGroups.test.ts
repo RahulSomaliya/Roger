@@ -2,10 +2,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type {
   AllDayCalendarEvent,
   CalendarEvent,
-  SelfResponse,
   TimedCalendarEvent,
 } from '../../../shared/calendar';
-import { START_NOTES_LEAD_MS, startNotesAvailable, todayGroups } from './todayGroups';
+import {
+  HERO_LEAD_MS,
+  heroMeeting,
+  START_NOTES_LEAD_MS,
+  startNotesAvailable,
+  todayGroups,
+} from './todayGroups';
 
 const MINUTE = 60_000;
 
@@ -108,59 +113,34 @@ describe('todayGroups in Asia/Kolkata (UTC+5:30)', () => {
     expect(todayGroups({ events: [late], links: NO_LINKS, nowMs: eighth }).timed).toEqual([]);
   });
 
-  it('orders by start, with declined events greyed and last', () => {
+  it('orders by start', () => {
     const nowMs = Date.parse('2026-10-06T04:00:00Z');
     const events = [
-      timed('declined-early', '2026-10-06T04:30:00Z', '2026-10-06T05:00:00Z', {
-        selfResponse: 'declined',
-      }),
       timed('late', '2026-10-06T09:00:00Z', '2026-10-06T09:30:00Z'),
       timed('early', '2026-10-06T05:00:00Z', '2026-10-06T05:30:00Z'),
     ];
-    const { timed: today } = todayGroups({ events, links: NO_LINKS, nowMs });
-    expect(ids(today)).toEqual(['early', 'late', 'declined-early']);
-    expect(today.map((entry) => entry.declined)).toEqual([false, false, true]);
+    expect(ids(todayGroups({ events, links: NO_LINKS, nowMs }).timed)).toEqual(['early', 'late']);
   });
 
-  it('puts all-day events in a strip of their own, a multi-day one on each of its days', () => {
+  it('leaves out a meeting the user declined: they are not going', () => {
+    const nowMs = Date.parse('2026-10-06T04:00:00Z');
+    const events = [
+      timed('declined', '2026-10-06T04:30:00Z', '2026-10-06T05:00:00Z', {
+        selfResponse: 'declined',
+      }),
+      timed('kept', '2026-10-06T05:00:00Z', '2026-10-06T05:30:00Z'),
+    ];
+    expect(ids(todayGroups({ events, links: NO_LINKS, nowMs }).timed)).toEqual(['kept']);
+  });
+
+  it('leaves out all-day events: nobody starts notes on one', () => {
     const nowMs = Date.parse('2026-10-06T06:00:00Z');
     const events = [
       timed('call', '2026-10-06T09:00:00Z', '2026-10-06T09:30:00Z'),
       allDay('holiday', '2026-10-06', '2026-10-07'),
-      allDay('offsite', '2026-10-05', '2026-10-08'), // 5, 6 and 7 Oct: the end is exclusive
-      allDay('yesterday', '2026-10-05', '2026-10-06'),
-      allDay('tomorrow', '2026-10-07', '2026-10-08'),
+      allDay('offsite', '2026-10-05', '2026-10-08'),
     ];
-    const groups = todayGroups({ events, links: NO_LINKS, nowMs });
-    expect(ids(groups.allDay)).toEqual(['holiday', 'offsite']);
-    expect(ids(groups.timed)).toEqual(['call']);
-  });
-
-  it('marks a declined all-day event and never offers notes for it', () => {
-    const nowMs = Date.parse('2026-10-06T06:00:00Z');
-    const events = [
-      allDay('ooo', '2026-10-06', '2026-10-07', { selfResponse: 'declined' }),
-      allDay('holiday', '2026-10-06', '2026-10-07'),
-    ];
-    const { allDay: strip } = todayGroups({ events, links: NO_LINKS, nowMs });
-    expect(ids(strip)).toEqual(['holiday', 'ooo']);
-    expect(strip.map((entry) => entry.declined)).toEqual([false, true]);
-    expect(strip.map((entry) => entry.startNotes)).toEqual([false, false]);
-  });
-});
-
-describe('todayGroups in America/Los_Angeles (UTC-7)', () => {
-  inZone('America/Los_Angeles', 420);
-
-  it('keeps an all-day event on its own date, even when UTC has moved on to the next day', () => {
-    // 20:00 PDT on 6 Oct is 03:00 UTC on the 7th: a midnight-UTC conversion would put the
-    // 6 Oct all-day event a day back and the 7 Oct one on today.
-    const nowMs = Date.parse('2026-10-07T03:00:00Z');
-    const events = [
-      allDay('sixth', '2026-10-06', '2026-10-07'),
-      allDay('seventh', '2026-10-07', '2026-10-08'),
-    ];
-    expect(ids(todayGroups({ events, links: NO_LINKS, nowMs }).allDay)).toEqual(['sixth']);
+    expect(ids(todayGroups({ events, links: NO_LINKS, nowMs }).timed)).toEqual(['call']);
   });
 });
 
@@ -177,10 +157,6 @@ describe('Start notes and Open note', () => {
     expect(startNotesAvailable(call, start)).toBe(true);
     expect(startNotesAvailable(call, start + 30 * MINUTE - 1)).toBe(true);
     expect(startNotesAvailable(call, start + 30 * MINUTE)).toBe(false);
-  });
-
-  it('never offers it for an all-day event', () => {
-    expect(startNotesAvailable(allDay('day', '2026-10-06', '2026-10-07'), start)).toBe(false);
   });
 
   it('sets startNotes on the entry from the clock', () => {
@@ -206,7 +182,7 @@ describe('the next meeting', () => {
     timed('done', '2026-10-06T04:00:00Z', '2026-10-06T04:30:00Z'),
     timed('running', '2026-10-06T05:00:00Z', '2026-10-06T06:00:00Z'),
     timed('declined', '2026-10-06T06:00:00Z', '2026-10-06T07:00:00Z', {
-      selfResponse: 'declined' satisfies SelfResponse,
+      selfResponse: 'declined',
     }),
     timed('later', '2026-10-06T08:00:00Z', '2026-10-06T09:00:00Z'),
   ];
@@ -226,6 +202,31 @@ describe('the next meeting', () => {
       nowMs: Date.parse('2026-10-06T10:00:00Z'),
     });
     expect(groups.next).toBeNull();
-    expect(ids(groups.timed)).toEqual(['done', 'running', 'later', 'declined']);
+    expect(ids(groups.timed)).toEqual(['done', 'running', 'later']);
+  });
+});
+
+describe("the hero meeting (Home's Start notes is for it)", () => {
+  inZone('Asia/Kolkata', -330);
+
+  const start = Date.parse('2026-10-06T09:00:00Z');
+  const call = timed('call', '2026-10-06T09:00:00Z', '2026-10-06T09:30:00Z');
+  const hero = (nowMs: number, links = NO_LINKS) =>
+    heroMeeting(todayGroups({ events: [call], links, nowMs }), nowMs);
+
+  it('is the next meeting from 10 minutes before it starts', () => {
+    expect(HERO_LEAD_MS).toBe(10 * MINUTE);
+    expect(hero(start - 10 * MINUTE - 1)).toBeNull();
+    expect(hero(start - 10 * MINUTE)?.event.id).toBe('call');
+    expect(hero(start - 2 * MINUTE)?.event.id).toBe('call');
+  });
+
+  it('stays while the meeting is on, and goes when it ends', () => {
+    expect(hero(start + 29 * MINUTE)?.event.id).toBe('call');
+    expect(hero(start + 30 * MINUTE)).toBeNull();
+  });
+
+  it('is nothing when the meeting already has its notes: a second Start would make a second note', () => {
+    expect(hero(start, new Map([['call', 'meeting-7']]))).toBeNull();
   });
 });

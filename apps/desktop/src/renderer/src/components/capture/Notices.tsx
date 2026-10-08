@@ -1,6 +1,6 @@
 import type { CaptureNotice, CaptureNoticeKind } from '../../../../shared/capture';
 import { formatClockTime } from '../../app/labels';
-import './captureStatus.css';
+import './captureDetails.css';
 
 /** A notice as the list shows it: the latest of its kind and stream, and how many main lists. */
 export interface ShownNotice {
@@ -26,9 +26,8 @@ const COUNTED_AS: Record<Exclude<CaptureNoticeKind, 'resumed-after-crash'>, stri
  * of each kind and stream, newest first. Main keeps up to 20 device switches (AirPods that flap),
  * and a list of every one would push the meeting down the page; the count says how many it kept.
  *
- * `resumed-after-crash` is not shown here: M2-T20b's ResumedNotice shows it, with the Stop button
- * the D7 decision promises ("Roger restarted and kept taking notes"). Shown twice, the second
- * copy would have no Stop.
+ * `resumed-after-crash` is not shown here: M2-T20b's ResumedNotice shows it as a line under the
+ * header ("Roger restarted and kept taking notes"). Shown twice, it would be said twice.
  */
 export function noticesToShow(notices: readonly CaptureNotice[]): ShownNotice[] {
   const latest = new Map<string, ShownNotice>();
@@ -48,27 +47,30 @@ export function noticesToShow(notices: readonly CaptureNotice[]): ShownNotice[] 
 
 /**
  * Quiet by design: a recovery is never a warning ("Switched to <device>", "helper restarted"), so
- * the list is a polite live region, never an alert.
+ * the list is a polite live region, never an alert. It sits in Details with its heading.
  */
 export function Notices({ notices }: { notices: readonly CaptureNotice[] }) {
   const shown = noticesToShow(notices);
   if (shown.length === 0) return null;
   return (
-    <ul className="capture-notices" aria-label="Recovered on its own" aria-live="polite">
-      {shown.map(({ key, notice, times, countedAs }) => (
-        <li key={key} className="capture-notice" data-kind={notice.kind}>
-          <span className="capture-notice-message">{notice.message}</span>{' '}
-          <span className="capture-notice-meta">
-            at {formatClockTime(notice.at)}
-            {/* "latest of 3 recent switches". Recent, never "this recording": main lists only
-                the newest 20 switches (SignalMonitor's MAX_NOTICES), so a mic that flapped 27
-                times read "20 times this recording". And it counts every switch on the stream,
-                whatever the device, so it never follows the device's name: "Switched to AirPods
-                Pro · 3 times" read as three switches to AirPods. */}
-            {times > 1 ? ` · latest of ${times} recent ${countedAs}` : null}
-          </span>
-        </li>
-      ))}
-    </ul>
+    <section className="details-section" aria-label="Recovered on its own">
+      <h3 className="details-heading">Recovered on its own</h3>
+      <ul className="details-list" aria-live="polite">
+        {shown.map(({ key, notice, times, countedAs }) => (
+          <li key={key} data-kind={notice.kind}>
+            {notice.message}{' '}
+            <span className="problem-since">
+              at {formatClockTime(notice.at)}
+              {/* "latest of 3 recent switches". Recent, never "this recording": main lists only
+                  the newest 20 switches (SignalMonitor's MAX_NOTICES), so a mic that flapped 27
+                  times read "20 times this recording". And it counts every switch on the stream,
+                  whatever the device, so it never follows the device's name: "Switched to AirPods
+                  Pro · 3 times" read as three switches to AirPods. */}
+              {times > 1 ? ` · latest of ${times} recent ${countedAs}` : null}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </section>
   );
 }

@@ -1,8 +1,12 @@
 # Browser QA
 
-Phase 2's screens are checked in a browser, not in Electron: the **preview** runs the renderer in
+Roger's screens are checked in a browser, not in Electron: the **preview** runs the renderer in
 Chrome with a fake `window.roger`, and **`qa/driver.ts`** opens it, checks it and shoots it. Every
-QA gallery (M2, M3, M4, M5) uses this one driver.
+QA gallery uses this one driver. The one QA script is `e2e/redesign.qa.e2e.ts`: every screen in its
+states, both themes, 1440 and 390 wide, with the checks the redesign promises (at most one visible
+primary and the one `docs/design.md` names, every problem line visible, no sideways scroll, no
+console error, nothing animating). It replaced the per-milestone scripts, which selected classes
+the redesign deleted.
 
 ## The preview
 
@@ -60,6 +64,15 @@ fails as main's ApiError for the route; unmarked, the offline scenario shows a f
 picker where the app shows an error. `failNextRequest` is no stand-in: it fails whichever request
 comes next.
 
+## The prompt panel's preview
+
+The panel is its own page with its own preload, so it is not a scenario of the page above:
+`http://127.0.0.1:5173/prompt.html?card=meeting-link` (cards: `preview/promptScenarios.ts`). It has
+a fake `window.rogerPrompt` that records clicks on `window.__rogerPromptPreview.acts`, no
+`window.roger`, and no `useTheme`: it follows the system colour scheme only, which `qa.openPrompt`
+forces with the browser context. `<html data-preview="prompt">` tells `qa.settle()` there is no
+`__rogerPreview` to wait on.
+
 ## A QA script
 
 A QA script is a vitest file, `e2e/<task>.qa.e2e.ts`, so vitest compiles it and `expect` makes
@@ -104,9 +117,18 @@ pnpm --filter @roger/desktop exec vitest run --config vitest.e2e.config.ts e2e/m
 ```
 
 Shots and `shots.json` go to `ROGER_QA_OUT`, else `<tmp>/roger-qa/<slug>`, never into the repo.
+`gallery.write()` adds to a `shots.json` already there (a shot of the same file is replaced), so a
+script too long for one call runs in pieces, `-t "^home"`, `-t "^live"` and so on, each under about
+8 minutes (a 10-minute stall limit kills a longer call). Clear the folder before a full run, or a
+shot of a state that no longer exists stays in it. A screen that fails in a file the QA task does
+not own goes in `KNOWN_FAILURES`: its shot is kept and marked `fail`, the run stays green, and the
+run fails once the screen is fixed so the entry is removed.
 `shots.json` is the manifest the gallery page is built from: `{ title, meta, groups: [{ name,
 shots: [{ file, caption, check, note }] }] }`, `check` being `pass`, `warn` or `fail`. The gallery
-is published as one page (an Artifact), never as loose PNG paths.
+is published as one page (an Artifact), never as loose PNG paths. Keep it under 12 MB: shoot PNG,
+then write JPEG at quality about 55 with the 1440 shots scaled to about 1000 px wide
+(`sips -s format jpeg -s formatOptions 55 --resampleWidth 1000 in.png --out out.jpg`), and build the page
+with `python3 ~/.claude/scripts/qa-gallery.py --manifest shots.json -o <page>.html`.
 
 ## Rules the driver keeps, and why
 

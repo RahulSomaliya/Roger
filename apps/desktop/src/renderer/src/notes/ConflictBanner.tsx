@@ -1,9 +1,11 @@
 import { useState } from 'react';
 import type { ResolveNoteConflictRequest } from '../../../shared/ipc/notes';
 import { describeError } from '../app/describeError';
+import { Icon } from '../components/ui/icons';
 
 /**
- * Shown above a note main holds in `conflict` (M4 plan, "Conflict rule"): the server had a newer
+ * Shown above a note main holds in `conflict` (M4 plan, "Conflict rule"), as a problem line (an
+ * icon and plain words, no tint: docs/design.md, Problem line): the server had a newer
  * version, so the editor now shows it, and main keeps the local doc as the conflict copy. Nothing
  * is lost until the user picks: "Use mine" puts the copy back as the doc; "Keep this version"
  * drops the copy and keeps what the editor shows. Typing the editor had not saved when the 409
@@ -37,38 +39,45 @@ export function ConflictBanner({ onResolve, otherVersion = 'shown' }: ConflictBa
       });
   };
   return (
-    <div className="note-conflict" role="alert">
-      <p className="note-conflict-text">
-        <strong>These notes also changed somewhere else.</strong>{' '}
-        {otherVersion === 'shown'
-          ? 'Roger shows that version here, and yours is kept as a copy until you choose.'
-          : 'Roger cannot show that version, and yours is kept as a copy until you choose.'}
-      </p>
-      <div className="note-conflict-actions">
-        <button
-          type="button"
-          className="note-button note-button-primary"
-          disabled={busy}
-          onClick={() => {
-            resolve('mine');
-          }}
-        >
-          Use mine
-        </button>
-        <button
-          type="button"
-          className="note-button"
-          disabled={busy}
-          onClick={() => {
-            resolve('theirs');
-          }}
-        >
-          {otherVersion === 'shown' ? 'Keep this version' : 'Keep the other version'}
-        </button>
+    <div className="problem note-conflict" role="alert">
+      <Icon name="circle-alert" />
+      <div className="problem-text">
+        <p className="note-conflict-text">
+          These notes also changed somewhere else.{' '}
+          {otherVersion === 'shown'
+            ? 'Roger shows that version here, and yours is kept as a copy until you choose.'
+            : 'Roger cannot show that version, and yours is kept as a copy until you choose.'}
+        </p>
+        <div className="note-conflict-actions">
+          <button
+            type="button"
+            className="btn"
+            data-variant="secondary"
+            data-size="sm"
+            disabled={busy}
+            onClick={() => {
+              resolve('mine');
+            }}
+          >
+            Use mine
+          </button>
+          <button
+            type="button"
+            className="btn"
+            data-variant="ghost"
+            data-size="sm"
+            disabled={busy}
+            onClick={() => {
+              resolve('theirs');
+            }}
+          >
+            {otherVersion === 'shown' ? 'Keep this version' : 'Keep the other version'}
+          </button>
+        </div>
+        {error === null ? null : (
+          <p className="note-conflict-error">Could not keep your choice: {error}</p>
+        )}
       </div>
-      {error === null ? null : (
-        <p className="note-conflict-error">Could not keep your choice: {error}</p>
-      )}
     </div>
   );
 }

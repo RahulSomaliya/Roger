@@ -18,6 +18,7 @@ import {
   type SttMeterStatus,
   type SttStreamState,
 } from '../../shared/capture';
+import { formatClock } from '../../shared/clock';
 import { PCM_ENCODING, PCM_SAMPLE_RATE } from '../../shared/ipc';
 import { pcmBytesToMs } from '../../shared/pcm';
 import {
@@ -829,7 +830,11 @@ export class CaptureService {
             // The count and this error stay on screen so the person can decide to stop.
             this.segmentsUnsaved += 1;
             const lines = this.segmentsUnsaved === 1 ? '1 line' : `${this.segmentsUnsaved} lines`;
-            this.error = `${lines} could not be saved on this Mac (latest from ${AUDIO_SOURCE_LABEL[source]}, meeting ${meetingId}): ${reason}. Recording continues; free disk space, or press Stop if this keeps happening.`;
+            // No meeting id or stream label here: the page shows this text as it is (docs/design.md,
+            // Copy: no internals outside Details), and CaptureSession's 'line not saved locally'
+            // log line has both. Keep the fact and the way out: house rule 1, the person must
+            // always see that lines are not being saved.
+            this.error = `${lines} could not be saved on this Mac: ${reason}. Recording continues; free disk space, or press Stop if this keeps happening.`;
             this.emitStatus();
           },
         },
@@ -1451,15 +1456,11 @@ function withTitleCutToFit(request: StartCaptureRequest): StartCaptureRequest {
 }
 
 /**
- * What a meeting is called when its start names nothing. shared/suggestTemplate.ts matches this
- * format (DEFAULT_MEETING_TITLE) to leave it out of template picks: change the two together.
+ * What a meeting is called when its start names nothing: "Meeting at 5:01 pm". shared/
+ * suggestTemplate.ts matches this format (DEFAULT_MEETING_TITLE) to leave it out of template
+ * picks: change the two together, and keep that pattern reading the old "Meeting 6 Oct 2026 09:30"
+ * too, because meetings already saved keep the title they were given.
  */
 export function defaultMeetingTitle(startedAt: Date): string {
-  const date = startedAt.toLocaleDateString('en-GB', {
-    day: 'numeric',
-    month: 'short',
-    year: 'numeric',
-  });
-  const time = startedAt.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
-  return `Meeting ${date} ${time}`;
+  return `Meeting at ${formatClock(startedAt)}`;
 }

@@ -1,5 +1,6 @@
 import { chatChannels, type ChatApi, type ChatStreamMessage } from '../../src/shared/ipc/chat';
 import { type ChatMessage, type ChatThread, isChatText } from '../../src/shared/notes';
+import { fromApi } from '../control';
 import type { FakeHub } from './hub';
 
 /**
@@ -28,10 +29,14 @@ export function createChatFake(hub: FakeHub): ChatApi {
 
   return {
     getChatThread: (meetingId) =>
-      hub.request(chatChannels.ChatGetThread, () => ({
-        meetingId,
-        messages: structuredClone(threads.get(meetingId) ?? []),
-      })),
+      // From the API, like main's read (notes-ipc.ts): offline, the page's read fails as it does there.
+      hub.request(
+        chatChannels.ChatGetThread,
+        fromApi(`GET /v1/meetings/${meetingId}/chat`, () => ({
+          meetingId,
+          messages: structuredClone(threads.get(meetingId) ?? []),
+        })),
+      ),
     sendChatMessage: ({ meetingId, messageId, text }) =>
       hub.request(chatChannels.ChatSend, () => {
         if (!isChatText(text)) {

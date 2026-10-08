@@ -1,12 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { callDetectedButtons, eventButtons, footerButtons, openRogerButton } from './promptButtons';
-import {
-  callDetectedCard,
-  calendarCard,
-  calendarEvent,
-  panelState,
-  staleCard,
-} from './promptTesting';
+import { callDetectedCard, calendarCard, calendarEvent } from './promptTesting';
 
 const labels = (buttons: { label: string }[]): string[] => buttons.map((button) => button.label);
 
@@ -15,21 +9,24 @@ describe('eventButtons', () => {
   const card = calendarCard([event]);
 
   it('sends the event id with every start, so a card holding two calls starts the right one', () => {
-    expect(eventButtons(card, event, false).map((button) => button.request)).toEqual([
+    expect(eventButtons(card, event).map((button) => button.request)).toEqual([
       { cardId: 'prompt-1', action: 'join_and_take_notes', eventId: 'event-9' },
       { cardId: 'prompt-1', action: 'take_notes', eventId: 'event-9' },
     ]);
   });
 
-  it('makes Join the primary button when there is a link, else Take notes', () => {
-    expect(eventButtons(card, event, false).map((button) => button.tone)).toEqual([
-      'primary',
-      'secondary',
+  it('makes Join the one primary when there is a link, and Start notes a ghost beside it', () => {
+    expect(eventButtons(card, event).map(({ label, variant }) => [label, variant])).toEqual([
+      ['Join and start notes', 'primary'],
+      ['Start notes', 'ghost'],
     ]);
+  });
+
+  it('makes Start notes the one primary when there is no link', () => {
     const noLink = calendarEvent({ videoLink: null });
     expect(
-      eventButtons(calendarCard([noLink]), noLink, false).map((button) => button.tone),
-    ).toEqual(['primary']);
+      eventButtons(calendarCard([noLink]), noLink).map(({ label, variant }) => [label, variant]),
+    ).toEqual([['Start notes', 'primary']]);
   });
 
   it('offers Join only for a link main would open (parseJoinLink)', () => {
@@ -39,59 +36,58 @@ describe('eventButtons', () => {
       'http://meet.google.com/abc-defg-hij',
     ]) {
       const bad = calendarEvent({ videoLink });
-      expect(labels(eventButtons(calendarCard([bad]), bad, false))).toEqual(['Take notes']);
+      expect(labels(eventButtons(calendarCard([bad]), bad))).toEqual(['Start notes']);
     }
   });
+});
 
-  it('words the starts for a recording in progress', () => {
-    expect(labels(eventButtons(card, event, true))).toEqual([
-      'Stop current note and join',
-      'Stop current note and start',
+describe('a start that does not lead the panel', () => {
+  const event = calendarEvent();
+  const card = calendarCard([event]);
+
+  it('is secondary, never a second accent fill (one primary per view)', () => {
+    expect(eventButtons(card, event, false).map(({ variant }) => variant)).toEqual([
+      'secondary',
+      'ghost',
+    ]);
+    const noLink = calendarEvent({ videoLink: null });
+    expect(
+      eventButtons(calendarCard([noLink]), noLink, false).map(({ variant }) => variant),
+    ).toEqual(['secondary']);
+    expect(callDetectedButtons(callDetectedCard(), false).map(({ variant }) => variant)).toEqual([
+      'secondary',
     ]);
   });
 });
 
 describe('callDetectedButtons', () => {
-  it('starts a note with no event id', () => {
-    expect(callDetectedButtons(callDetectedCard(), false)).toEqual([
+  it('starts a note with no event id, as the one primary', () => {
+    expect(callDetectedButtons(callDetectedCard())).toEqual([
       {
-        label: 'Take notes',
-        tone: 'primary',
+        label: 'Start notes',
+        variant: 'primary',
         request: { cardId: 'prompt-2', action: 'take_notes' },
       },
-    ]);
-    expect(labels(callDetectedButtons(callDetectedCard(), true))).toEqual([
-      'Stop current note and start',
     ]);
   });
 });
 
 describe('footerButtons', () => {
-  it('has Copy notice on a calendar card while the notice is on, and always Dismiss', () => {
-    const on = footerButtons(calendarCard(), panelState([], { noticeEnabled: true }));
-    expect(on.map((button) => button.request)).toEqual([
-      { cardId: 'prompt-1', action: 'copy_notice' },
-      { cardId: 'prompt-1', action: 'dismiss' },
-    ]);
-    expect(labels(footerButtons(calendarCard(), panelState([], { noticeEnabled: false })))).toEqual(
-      ['Dismiss'],
-    );
-  });
-
-  it('has only Dismiss on a call-detected card and the stale card', () => {
-    const state = panelState([], { noticeEnabled: true });
-    expect(labels(footerButtons(callDetectedCard(), state))).toEqual(['Dismiss']);
-    expect(footerButtons(staleCard(), state).map((button) => button.request)).toEqual([
-      { cardId: 'prompt-3', action: 'dismiss' },
-    ]);
+  it('is Dismiss, a ghost, on every card: there is no Copy notice any more', () => {
+    for (const card of [calendarCard(), callDetectedCard()]) {
+      expect(footerButtons(card)).toEqual([
+        { label: 'Dismiss', variant: 'ghost', request: { cardId: card.id, action: 'dismiss' } },
+      ]);
+    }
   });
 });
 
 describe('openRogerButton', () => {
   it('asks main to bring Roger forward, the one action that may', () => {
-    expect(openRogerButton(callDetectedCard({ phase: 'taking_notes' })).request).toEqual({
-      cardId: 'prompt-2',
-      action: 'open_roger',
+    expect(openRogerButton(callDetectedCard({ phase: 'taking_notes' }))).toEqual({
+      label: 'Open Roger',
+      variant: 'ghost',
+      request: { cardId: 'prompt-2', action: 'open_roger' },
     });
   });
 });

@@ -183,39 +183,40 @@ describe('MenuBarTray', () => {
     h.tray.start();
     expect(h.view.icons).toEqual(['/icons/idle.png']);
     expect(h.view.tooltips).toEqual(['Roger']);
-    expect(h.view.labels).toEqual(['Start notes now', 'Open Roger', 'Quit Roger']);
+    expect(h.view.labels).toEqual(['Start notes', 'Open Roger', 'Quit Roger']);
   });
 
   it('shows the next meeting once the calendar is connected, and follows its changes', () => {
     const h = setup();
     h.tray.start();
     h.calendar?.emitConnection(connection);
-    expect(h.view.labels[0]).toBe('Next: Acme renewal, 15:30');
+    expect(h.view.labels[0]).toBe('Next: Acme renewal, 3:30 pm');
 
     h.calendar?.emitEvents([]);
     expect(h.view.labels[0]).toBe('No upcoming meetings');
 
     h.calendar?.emitState({ ...fresh, staleSince: '2026-10-06T04:42:00.000Z' });
-    expect(h.view.labels).toContain('Calendar not updated since 14:25');
-    expect(h.view.icons.at(-1)).toBe('/icons/warning.png');
+    // Home says a stale calendar; the menu bar does not repeat it (docs/plans/redesign.md).
+    expect(h.view.labels.some((label) => label.startsWith('Calendar not updated'))).toBe(false);
+    expect(h.view.icons.at(-1)).toBe('/icons/idle.png');
 
     h.calendar?.emitConnection(null);
-    expect(h.view.labels[0]).toBe('Start notes now');
+    expect(h.view.labels[0]).toBe('Start notes');
   });
 
   it('reads the copy as it stands at launch', () => {
     const h = setup({ calendar: fakeCalendar([meeting]) });
     h.tray.start();
     h.calendar?.emitConnection(connection);
-    expect(h.view.labels[0]).toBe('Next: Acme renewal, 15:30');
+    expect(h.view.labels[0]).toBe('Next: Acme renewal, 3:30 pm');
   });
 
-  it('turns the icon to recording and offers Stop note while a note is taken', () => {
+  it('turns the icon to recording and offers Stop while a note is taken', () => {
     const h = setup();
     h.tray.start();
     h.capture.setPhase('recording');
     expect(h.view.icons.at(-1)).toBe('/icons/recording.png');
-    expect(h.view.labels).toContain('Stop note');
+    expect(h.view.labels).toContain('Stop');
     h.capture.setPhase('idle');
     expect(h.view.icons.at(-1)).toBe('/icons/idle.png');
   });
@@ -238,10 +239,10 @@ describe('MenuBarTray', () => {
     expect(h.view.labels[0]).toBe('Now: Acme renewal');
   });
 
-  it('starts a note as the tray, through the window that captures the audio', () => {
+  it('starts notes as the tray, through the window that captures the audio', () => {
     const h = setup();
     h.tray.start();
-    h.view.click('Start notes now');
+    h.view.click('Start notes');
     expect(h.capture.starts).toEqual([{ source: 'tray' }]);
   });
 
@@ -249,7 +250,7 @@ describe('MenuBarTray', () => {
     const h = setup();
     h.tray.start();
     h.capture.setPhase('recording');
-    h.view.click('Stop note');
+    h.view.click('Stop');
     expect(h.capture.stops).toBe(1);
     h.view.click('Quit Roger');
     // Quit goes through app.quit(), where RecordingLifecycle stops the recording; none here.
@@ -271,7 +272,7 @@ describe('MenuBarTray', () => {
     h.tray.start();
     h.capture.failStart = new Error('title is too long');
     expect(() => {
-      h.view.click('Start notes now');
+      h.view.click('Start notes');
     }).not.toThrow();
     expect(h.lines.some((line) => line.includes('title is too long'))).toBe(true);
   });
@@ -281,7 +282,7 @@ describe('MenuBarTray', () => {
     h.tray.start();
     h.capture.setPhase('recording');
     h.capture.stop = () => Promise.reject(new Error('vendor hung'));
-    h.view.click('Stop note');
+    h.view.click('Stop');
     await vi.advanceTimersByTimeAsync(0);
     expect(h.lines.some((line) => line.includes('vendor hung'))).toBe(true);
   });
@@ -289,7 +290,7 @@ describe('MenuBarTray', () => {
   it('works without a calendar: no meeting lines, and no calendar listeners', () => {
     const h = setup({ calendar: null });
     h.tray.start();
-    expect(h.view.labels).toEqual(['Start notes now', 'Open Roger', 'Quit Roger']);
+    expect(h.view.labels).toEqual(['Start notes', 'Open Roger', 'Quit Roger']);
   });
 
   it('removes the icon and every listener and timer when stopped', () => {

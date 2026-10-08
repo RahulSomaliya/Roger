@@ -30,8 +30,8 @@ const fakes = vi.hoisted(() => ({
 }));
 // M4-T20's notes and chat need `window.roger`, which Node lacks, and the page's frame is what is
 // checked here: with nothing mounted in the notes and chat regions the page shows the transcript
-// alone. The real regions are checked in the browser (e2e/m4-t20.qa.e2e.ts). Likewise M5's notice
-// banner (its store reads `window.roger`): e2e/m5-t13.qa.e2e.ts and slots/m5-calendar.test.ts.
+// alone. The real regions are checked in the browser (e2e/redesign.qa.e2e.ts). Likewise M5's notice
+// banner (its store reads `window.roger`): the same script and slots/m5-calendar.test.ts.
 vi.mock('../app/slots/m4-notes', () => ({ contributions: {} }));
 vi.mock('../app/slots/m5-calendar', () => ({ contributions: {} }));
 vi.mock('../app/ShellContext', () => ({
@@ -98,6 +98,7 @@ function stored(meetingId: string, segments: TranscriptSegment[]): StoredMeeting
     startedAt: '2026-10-05T09:30:04.000Z',
     endedAt: '2026-10-05T09:33:16.000Z',
     segments,
+    attendees: [],
   };
 }
 
@@ -193,24 +194,62 @@ describe('the meeting page', () => {
     expect(html).not.toContain('aria-label="Capture status"');
   });
 
-  it('shows the recording state, Stop and the capture status while the meeting records', () => {
+  it('shows Stop and the capture status line while the meeting records, and no recording pill', () => {
     fakes.shell = shell({
       status: recording(A),
       captureMeeting: { id: A, startedAt: '2026-10-06T09:00:00.000Z' },
     });
     fakes.read = read(stored(A, []));
     const html = page();
-    expect(text(html)).toContain('Recording');
-    expect(html).toMatch(/<button[^>]*class="button stop"[^>]*>Stop<\/button>/);
+    expect(text(html)).toContain('Started');
+    expect(html).toMatch(/<button[^>]*class="btn"[^>]*data-variant="primary"[^>]*>Stop<\/button>/);
+    // The status line (a slot) sits in the header; it holds its line while recording.
+    expect(html).toMatch(
+      /<header class="meeting-header" data-recording="">.*class="meeting-status"/,
+    );
     expect(html).toContain('aria-label="Capture status"');
-    expect(text(html)).toContain('Speech-to-text');
+    // The words "Recording" are the status line's now: the pill beside Stop is deleted.
+    expect(html).not.toContain('meeting-phase');
+  });
 
+  it('shows Stopping… as busy, not disabled, while a stop is under way', () => {
+    // Busy keeps its colour and is aria-disabled; `disabled` would read as "you cannot".
     fakes.shell = shell({
       status: recording(A),
       captureMeeting: { id: A, startedAt: '2026-10-06T09:00:00.000Z' },
       busy: true,
     });
-    expect(page()).toMatch(/<button[^>]*disabled=""[^>]*>Stop<\/button>/);
+    fakes.read = read(stored(A, []));
+    const html = page();
+    expect(html).toMatch(
+      /<button[^>]*data-variant="primary"[^>]*aria-disabled="true"[^>]*>Stopping…<\/button>/,
+    );
+    expect(html).not.toMatch(/<button[^>]*disabled=""/);
+  });
+
+  it('offers Details for a meeting this Mac holds, and keeps its content unmounted until opened', () => {
+    fakes.read = read(stored(A, []));
+    const html = page();
+    expect(html).toMatch(/<button[^>]*aria-haspopup="dialog"[^>]*>Details<\/button>/);
+    // A closed dialog mounts no children: the capture report reads nothing until someone opens it.
+    expect(html).toMatch(/<dialog[^>]*class="dialog"[^>]*><\/dialog>/);
+  });
+
+  it('has no Details, and no primary, for a meeting this Mac does not hold', () => {
+    fakes.read = read(null);
+    const html = page();
+    expect(html).not.toContain('>Details<');
+    expect(html).not.toContain('data-variant="primary"');
+  });
+
+  it('has no primary for a past meeting while another one records', () => {
+    // Stop belongs to the live meeting's own page (docs/design.md, the one primary per moment).
+    fakes.shell = shell({
+      status: recording(B),
+      captureMeeting: { id: B, startedAt: '2026-10-06T10:00:00.000Z' },
+    });
+    fakes.read = read(stored(A, []));
+    expect(page(A)).not.toContain('data-variant="primary"');
   });
 
   it('shows the lines in the live transcript panel, which follows while the meeting records', () => {
@@ -224,19 +263,20 @@ describe('the meeting page', () => {
     expect(html).not.toContain('Jump to live');
   });
 
-  it("keeps the last recording's meter after Stop, the cost the owner asked to see", () => {
+  it('shows no Stop after Stop, and no recording mark on the header', () => {
+    // The meter main keeps after Stop is Details' content now (the Details dialog, R3), not the page's.
     fakes.shell = shell({
       status: { ...IDLE, meter: METER },
       captureMeeting: { id: A, startedAt: '2026-10-06T09:00:00.000Z' },
     });
     fakes.read = read(stored(A, [line(A, 'l1', 2100, 'Done for today')]));
     const html = page();
-    expect(text(html)).toContain('Last recording');
     expect(html).not.toContain('>Stop<');
+    expect(html).not.toContain('data-recording');
   });
 
   it('keeps showing meeting A while meeting B starts, never the M1 placeholder', () => {
-    // New note on A's page: main names B before start() resolves and the shell opens B's page,
+    // Start notes on A's page: main names B before start() resolves and the shell opens B's page,
     // so for a moment the route is A while the capture view already describes B.
     fakes.shell = shell({
       status: recording(B),
@@ -277,16 +317,18 @@ describe('the meeting page', () => {
     const html = page();
     expect(text(html)).not.toContain('This meeting is not on this Mac');
     expect(html).toMatch(PANEL);
-    expect(text(html)).toContain('Listening. Lines appear here as people speak.');
+    // The empty live transcript says nothing (no "Listening" line): its log is what is mounted.
+    expect(html).toContain('aria-label="Transcript"');
   });
 
-  it('shows the transcript alone, with no pane buttons, while nothing else is mounted', () => {
-    // The notes and chat mount in M4-T20 (wave 6): until then no button opens an empty pane.
+  it('shows the transcript alone, with no tab row, while nothing else is mounted', () => {
+    // The notes and chat mount from M4-T20's slot file, mocked here: no tab opens onto nothing,
+    // and a row of one tab is not drawn.
     fakes.read = read(stored(A, [line(A, 'l1', 2100, 'Only the transcript')]));
     const html = page();
-    expect(html).toContain('data-layout="single"');
-    expect(html).not.toContain('aria-pressed');
     expect(html).not.toContain('role="tablist"');
+    expect(html).not.toContain('role="tab"');
+    expect(html).toMatch(PANEL);
   });
 
   it("reads again when this meeting's recording starts or stops, never for another's", () => {
@@ -345,9 +387,8 @@ describe('the meeting page', () => {
     fakes.later = [shell({ status: { ...IDLE, meter: METER }, captureMeeting: LIVE })];
     fakes.read = read(undefined, 'Roger could not read this meeting on this Mac: disk I/O error');
     const html = page();
-    // The page's own last render is the one after Stop: no Stop button, the meter kept.
+    // The page's own last render is the one after Stop: no Stop button.
     expect(html).not.toContain('>Stop<');
-    expect(html).toContain('Last recording');
     expect(html).toMatch(PANEL);
     expect(text(html)).not.toContain('The transcript shows here once');
     expect(html).toMatch(/role="alert"[^>]*>.*disk I\/O error/);
@@ -369,6 +410,6 @@ describe('the meeting page', () => {
 
   it('shows the transcript of a meeting recording now before the first read answers', () => {
     fakes.shell = shell({ status: recording(A), captureMeeting: LIVE });
-    expect(text(page())).toContain('Listening. Lines appear here as people speak.');
+    expect(page()).toContain('aria-label="Transcript"');
   });
 });

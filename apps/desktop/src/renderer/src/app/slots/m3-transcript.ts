@@ -1,4 +1,4 @@
-// Stub from M4-S1; owned by M3-T9, which replaced M1's TranscriptView (M4-S4's seed) here.
+// Owned by M3-T9, which replaced M1's TranscriptView here.
 import { createElement } from 'react';
 import { useMeetingView } from '../../meeting/useMeeting';
 import { VocabularySettings } from '../../settings/VocabularySettings';
