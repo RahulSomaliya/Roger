@@ -298,6 +298,15 @@ describe('RecordingLifecycle.stopFor', () => {
     expect(h.lines.some((line) => line.includes('"reason":"window-closed"'))).toBe(true);
   });
 
+  it("logs a crash's reason and never hands it to the stop, whose detail words the notice", () => {
+    const h = harness();
+    h.lifecycle.stopFor('renderer-gone', 'it kept crashing: crashed');
+    expect(h.capture.stops).toEqual([{ flushUploads: false, reason: 'renderer-gone' }]);
+    expect(h.lines.some((line) => line.includes('"detail":"it kept crashing: crashed"'))).toBe(
+      true,
+    );
+  });
+
   it('stops one still starting too, once it has started', () => {
     const h = harness('starting');
     h.lifecycle.stopFor('window-closed');
@@ -349,7 +358,20 @@ function watched(phase: CapturePhase = 'recording') {
   h.capture.idleAfterStop = false;
   const window = fakeWindow();
   watchWindow(h.lifecycle, window);
-  const stops = () => h.capture.stops.map((stop) => [stop.reason, stop.detail]);
+  /**
+   * Each stop's reason, with why as the log line 'stopping the recording' says it: the stop itself
+   * carries no detail, since a stop's detail words the notice on the page (sweep W3).
+   */
+  const stops = () => {
+    const logged = h.lines
+      .map((line) => JSON.parse(line) as { message: string; detail?: string | null })
+      .filter((entry) => entry.message === 'stopping the recording')
+      .map((entry) => entry.detail ?? undefined);
+    return h.capture.stops.map((stop, index) => {
+      expect(stop.detail).toBeUndefined();
+      return [stop.reason, logged[index]];
+    });
+  };
   return { ...h, window, stops };
 }
 

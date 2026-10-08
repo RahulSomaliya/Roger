@@ -124,12 +124,11 @@ export class RecordingLifecycle {
     const { capture, logger } = this.options;
     const phase = capture.phase;
     if (phase !== 'recording' && phase !== 'starting') return;
+    // `detail` (a crash's reason, a load error) is for this log line only: never the stop's
+    // `detail`, which words the notice on the page (stopReasons.ts stopNotice; sweep W3).
     logger.warn('stopping the recording', { reason, detail: detail ?? null });
     // No upload flush: the app may be going away, and the uploader resumes on its own.
-    const options: StopOptions =
-      detail === undefined
-        ? { flushUploads: false, reason }
-        : { flushUploads: false, reason, detail };
+    const options: StopOptions = { flushUploads: false, reason };
     capture.stop(options).catch((error: unknown) => {
       logger.error('stop failed', { reason, error: errorMessage(error) });
     });
