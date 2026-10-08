@@ -42,9 +42,14 @@
   overflow-wrap: anywhere;
 }
 
+/* No box: a 2 px --ring line at the left edge (docs/design.md, Focus). Same rule as the transcript
+   log, transcript/transcript.css: an inset shadow so the scrolling log cannot clip it. */
+.meeting-chat-log:focus {
+  outline: none;
+}
+
 .meeting-chat-log:focus-visible {
-  outline: 2px solid var(--ring);
-  outline-offset: -2px;
+  box-shadow: inset 2px 0 0 var(--ring);
 }
 
 /* "Opening the chat...": the one read that can take seconds. */

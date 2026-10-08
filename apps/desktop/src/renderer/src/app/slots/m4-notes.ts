@@ -11,7 +11,7 @@ function MyNotes({ meetingId }: MeetingSlotProps) {
     meetingId,
     kind: 'user',
     label: 'My notes',
-    placeholder: 'Type your notes. Roger turns them into clean notes after the call.',
+    placeholder: 'Type your notes. Roger turns them into AI notes after the call.',
   });
 }
 

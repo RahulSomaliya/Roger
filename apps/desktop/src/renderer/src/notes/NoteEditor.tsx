@@ -1,5 +1,6 @@
 import { EditorContent, type EditorEvents, useEditor } from '@tiptap/react';
-import { useEffect, useState } from 'react';
+import { useContext, useEffect, useState } from 'react';
+import { createPortal } from 'react-dom';
 import {
   isNoteDoc,
   type LocalNote,
@@ -13,6 +14,7 @@ import { noteExtensions } from './citationNode';
 import { ConflictBanner } from './ConflictBanner';
 import { DebouncedSaver, notesFlushResponder, type SaverState } from './debouncedSaver';
 import { describeSaveStatus } from './saveStatus';
+import { SaveStatusSlotContext } from './saveStatusSlot';
 import {
   followNoteDocument,
   type NoteDocument,
@@ -225,28 +227,35 @@ interface NoteStateBarProps {
 }
 
 /**
- * Above the doc: its one save state (silence unless the server is away or a save failed), and the
- * choice between two versions while main keeps a conflict copy. A failed save is a problem line
- * in the status slot itself, so it takes the line's place and the doc does not move.
+ * Its one save state (silence unless the server is away or a save failed), and the choice between
+ * two versions while main keeps a conflict copy. The state goes to the meeting page's tab row when
+ * there is one (saveStatusSlot.ts), else above the doc. A failed save is a problem line in the
+ * state itself, so it takes the place of the quiet one and the doc does not move: the tab row
+ * holds its height whatever it says.
  */
 function NoteStateBar({ document, note, saverState, docShown }: NoteStateBarProps) {
   const status = describeSaveStatus(saverState, note?.sync ?? null);
+  const slot = useContext(SaveStatusSlotContext);
+  const bar =
+    status === null ? null : status.tone === 'bad' ? (
+      <div className="problem" role="alert">
+        <Icon name="circle-alert" />
+        <span className="problem-text">
+          {status.label}. {status.detail}
+        </span>
+      </div>
+    ) : (
+      <p className="note-status" title={status.detail}>
+        {status.label}
+      </p>
+    );
   return (
     <>
-      <div className="note-editor-bar">
-        {status === null ? null : status.tone === 'bad' ? (
-          <div className="problem" role="alert">
-            <Icon name="circle-alert" />
-            <span className="problem-text">
-              {status.label}. {status.detail}
-            </span>
-          </div>
-        ) : (
-          <p className="note-status" title={status.detail}>
-            {status.label}
-          </p>
-        )}
-      </div>
+      {slot === null ? (
+        <div className="note-editor-bar">{bar}</div>
+      ) : bar !== null && slot.target !== null && (slot.shown || status?.tone === 'bad') ? (
+        createPortal(<div className="note-editor-bar">{bar}</div>, slot.target)
+      ) : null}
       {note !== null && note.conflictCopy !== null ? (
         <ConflictBanner
           otherVersion={docShown ? 'shown' : 'unshowable'}

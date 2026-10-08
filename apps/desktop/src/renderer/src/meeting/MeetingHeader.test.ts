@@ -34,6 +34,8 @@ const header = (
       title: 'Northwind renewal',
       pending: false,
       time: 'Today, 9:30 am to 9:41 am',
+      live: false,
+      copied: null,
       action,
       onStop: vi.fn(),
       onWrite: vi.fn(),
@@ -78,6 +80,15 @@ describe('the meeting header: one primary per moment (docs/design.md)', () => {
     expect(html).toMatch(/<button[^>]*data-variant="ghost"[^>]*>Cancel<\/button>/);
   });
 
+  it('puts Cancel to the LEFT of the primary, every header button sm (R3)', () => {
+    const html = header({ kind: 'writing', cancellable: true, cancelling: false });
+    expect(html.indexOf('>Cancel<')).toBeGreaterThan(-1);
+    expect(html.indexOf('>Cancel<')).toBeLessThan(html.indexOf('>Writing notes…<'));
+    const sizes = [...html.matchAll(/<button[^>]*data-size="(\w+)"/g)].map((m) => m[1]);
+    expect(sizes.length).toBeGreaterThanOrEqual(3);
+    expect(new Set(sizes)).toEqual(new Set(['sm']));
+  });
+
   it('shows Cancelling… as busy, and no Cancel before main has a generate to drop', () => {
     const cancelling = header({ kind: 'writing', cancellable: true, cancelling: true });
     expect(cancelling).toMatch(/<button[^>]*aria-disabled="true"[^>]*>Cancelling…<\/button>/);
@@ -112,6 +123,19 @@ describe('the meeting header: title, time, menu and Details', () => {
   it('keeps a blank line for the time until it is known, so the header never grows', () => {
     const html = header({ kind: 'none' }, { time: null });
     expect(html).toMatch(/<p class="meeting-time" aria-hidden="true">\u00a0<\/p>/);
+  });
+
+  it('has no time line while the meeting is live: the status line says Recording (R9)', () => {
+    const html = header({ kind: 'stop', busy: false }, { live: true });
+    expect(html).not.toContain('meeting-time');
+    expect(html).not.toContain('Started');
+  });
+
+  it('says what Copy notes did in a status region that is always mounted', () => {
+    expect(header({ kind: 'none' })).toMatch(/<p class="meeting-copied" role="status"><\/p>/);
+    expect(header({ kind: 'none' }, { copied: 'Notes copied' })).toMatch(
+      /<p class="meeting-copied" role="status">Notes copied<\/p>/,
+    );
   });
 
   it('draws the ⋯ menu only when it has entries, as a ghost button', () => {

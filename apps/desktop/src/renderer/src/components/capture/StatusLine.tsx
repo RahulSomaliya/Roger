@@ -1,3 +1,4 @@
+import { useId } from 'react';
 import type { CapturePhase, CaptureWarning } from '../../../../shared/capture';
 import { formatClockTime, formatElapsed } from '../../app/labels';
 import { Icon } from '../ui/icons';
@@ -23,19 +24,24 @@ export interface StatusLineProps {
  * It holds ONE line and is replaced, never added to: the header reserves that line while recording
  * (meeting.css), so a problem that arrives mid-call never moves the editor under the person's
  * cursor. A long headline is cut with an ellipsis for the same reason; main's full message, with
- * what to do, is its tooltip and Details' text. With two streams in trouble it names the first and
+ * what to do, shows on hover and on focus (the line takes focus) and is Details' text. With two streams in trouble it names the first and
  * counts the rest. The quiet warnings are Details' too.
  *
  * Nothing while Roger starts or stops (the header's busy button says so) or when nothing records.
  */
 export function StatusLine({ phase, startedAt, nowMs, warnings }: StatusLineProps) {
+  // Before the early returns: hooks run in the same order whatever the line says.
+  const fullId = useId();
   const [first, ...more] = groupWarnings(warnings, true);
   if (first !== undefined) {
     return (
-      <section className="capture-status" aria-label="Capture status">
+      <section className="capture-status" aria-label="Meeting status">
         <div
           className="problem meeting-status-problem"
           role="alert"
+          // Hover has the title; the keyboard has focus. Both show the full message (R8).
+          tabIndex={0}
+          aria-describedby={fullId}
           title={first.messages.join(' ')}
         >
           <Icon name="circle-alert" />
@@ -47,6 +53,9 @@ export function StatusLine({ phase, startedAt, nowMs, warnings }: StatusLineProp
               <span className="problem-since">· +{more.length} more</span>
             </>
           )}
+          <span id={fullId} className="meeting-status-full">
+            {first.messages.join(' ')}
+          </span>
         </div>
       </section>
     );
@@ -54,7 +63,7 @@ export function StatusLine({ phase, startedAt, nowMs, warnings }: StatusLineProp
   if (phase !== 'recording') return null;
   const elapsed = startedAt === null ? null : formatElapsed(Date.parse(startedAt), nowMs);
   return (
-    <section className="capture-status" aria-label="Capture status">
+    <section className="capture-status" aria-label="Meeting status">
       <p className="meeting-status-text">Recording{elapsed === null ? '' : ` · ${elapsed}`}</p>
     </section>
   );

@@ -11,6 +11,13 @@ interface MeetingHeaderProps {
   pending: boolean;
   /** When it ran (meetingTimes.ts), or null when unknown. */
   time: string | null;
+  /**
+   * The meeting records or starts or stops now: no time line at all, because the status line
+   * says "Recording · 39m" and a start time beside it told the time twice (redesign R9).
+   */
+  live: boolean;
+  /** What Copy notes just did, said once beside the buttons and gone after a few seconds. */
+  copied: string | null;
   /** The one primary button (headerAction.ts). */
   action: HeaderAction;
   onStop: () => void;
@@ -40,6 +47,8 @@ export function MeetingHeader({
   title,
   pending,
   time,
+  live,
+  copied,
   action,
   onStop,
   onWrite,
@@ -56,21 +65,31 @@ export function MeetingHeader({
             {title}
           </h1>
           {/*
-            Always a line, blank until the time is known: a header that grows when main answers
-            shrinks the transcript under it after it scrolled to its newest line, cutting that off.
+            A line once the meeting is over, blank until the time is known: a header that grows
+            when main answers shrinks the transcript under it after it scrolled to its newest
+            line, cutting that off. While live there is none, from the first frame (R9).
           */}
-          <p className="meeting-time" aria-hidden={time === null ? true : undefined}>
-            {time ?? '\u00a0'}
-          </p>
+          {live ? null : (
+            <p className="meeting-time" aria-hidden={time === null ? true : undefined}>
+              {time ?? '\u00a0'}
+            </p>
+          )}
         </div>
         <div className="meeting-actions">
-          <PrimaryAction action={action} onStop={onStop} onWrite={onWrite} />
+          {/* Always mounted, so a screen reader hears the text the moment it appears. */}
+          <p className="meeting-copied" role="status">
+            {copied}
+          </p>
+          {/*
+            Cancel sits LEFT of the primary: the primary keeps its place when a busy state adds
+            Cancel, so a second click lands on the same button (redesign R3). All `sm`, Details'.
+          */}
           {action.kind === 'writing' && action.cancellable ? (
             <button
               type="button"
               className="btn"
               data-variant="ghost"
-              data-size="md"
+              data-size="sm"
               aria-disabled={action.cancelling ? 'true' : undefined}
               onClick={() => {
                 // Busy is aria-disabled, which CSS cannot enforce against the keyboard.
@@ -80,6 +99,7 @@ export function MeetingHeader({
               {action.cancelling ? 'Cancelling…' : 'Cancel'}
             </button>
           ) : null}
+          <PrimaryAction action={action} onStop={onStop} onWrite={onWrite} />
           {menu.length === 0 ? null : <Menu label="More actions" items={menu} />}
           {details ? (
             <button
@@ -138,7 +158,7 @@ function PrimaryAction({
           type="button"
           className="btn"
           data-variant="primary"
-          data-size="md"
+          data-size="sm"
           aria-disabled={action.busy ? 'true' : undefined}
           onClick={() => {
             // CSS stops the pointer only: Enter and Space still click a busy button.
@@ -154,7 +174,7 @@ function PrimaryAction({
           type="button"
           className="btn"
           data-variant="primary"
-          data-size="md"
+          data-size="sm"
           onClick={onWrite}
         >
           Write notes
@@ -169,7 +189,7 @@ function BusyButton({ label }: { label: string }) {
       type="button"
       className="btn"
       data-variant="primary"
-      data-size="md"
+      data-size="sm"
       aria-disabled="true"
     >
       {label}

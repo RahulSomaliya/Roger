@@ -1,4 +1,5 @@
 import { daysAgo, meetingDayLabel } from '../app/labels';
+import { meetingHours } from '../../../shared/clock';
 import { formatClock } from '../clock';
 
 /**
@@ -23,20 +24,18 @@ function dayName(date: Date, now: Date, leading: boolean): string {
 }
 
 /**
- * The meeting header's line: "Started 9:05 am" while it records, "Today, 9:30 am to 9:41 am" once
- * it ended. A meeting with no end that is not recording (a crash left it open, until main closes
- * it at the next start) gives only its start.
+ * The meeting header's line once a meeting ended: "Today, 9:30 am to 9:41 am". The hours are
+ * shared/clock.ts `meetingHours`, the one form Home and the prompt panel write too. A meeting with
+ * no end (a crash left it open, until main closes it at the next start) gives only its start.
+ *
+ * Not asked while the meeting records: the header has no time line then, because the status line
+ * already says "Recording · 39m" and a "Started 2:56 pm" beside it told the time twice (R9).
  */
-export function meetingTimeLabel(meeting: MeetingSpan, recording: boolean, now: Date): string {
+export function meetingTimeLabel(meeting: MeetingSpan, now: Date): string {
   const start = new Date(meeting.startedAt);
-  const startDay = dayName(start, now, !recording);
-  if (recording) {
-    const time = formatClock(start);
-    return daysAgo(start, now) === 0 ? `Started ${time}` : `Started ${startDay}, ${time}`;
-  }
-  const from = `${startDay}, ${formatClock(start)}`;
-  if (meeting.endedAt === null) return from;
+  const from = `${dayName(start, now, true)}, `;
+  if (meeting.endedAt === null) return `${from}${formatClock(start)}`;
   const end = new Date(meeting.endedAt);
-  if (daysAgo(end, now) === daysAgo(start, now)) return `${from} to ${formatClock(end)}`;
-  return `${from} to ${dayName(end, now, false)}, ${formatClock(end)}`;
+  if (daysAgo(end, now) === daysAgo(start, now)) return `${from}${meetingHours(start, end)}`;
+  return `${from}${formatClock(start)} to ${dayName(end, now, false)}, ${formatClock(end)}`;
 }
