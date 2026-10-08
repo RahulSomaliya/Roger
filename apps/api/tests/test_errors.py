@@ -7,6 +7,7 @@ from fastapi import FastAPI
 from roger_api.config import REPO_ROOT_ENV_FILE
 from roger_api.errors import (
     AppError,
+    CalendarNotConfiguredError,
     CalendarProviderError,
     CalendarReconnectRequiredError,
     EmptyMeetingError,
@@ -26,6 +27,7 @@ API_CONTRACT = REPO_ROOT_ENV_FILE.parent / "docs" / "api-contract.md"
         (MeetingTooLongError, 422, "meeting_too_long"),
         (CalendarProviderError, 502, "calendar_provider_error"),
         (CalendarReconnectRequiredError, 424, "calendar_reconnect_required"),
+        (CalendarNotConfiguredError, 503, "calendar_not_configured"),
     ],
 )
 async def test_phase_2_error_uses_the_envelope(

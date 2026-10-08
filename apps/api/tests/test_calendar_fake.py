@@ -15,7 +15,7 @@ import pytest
 
 from roger_api.errors import CalendarReconnectRequiredError
 from roger_api.services.calendar.fake import (
-    FAKE_ACCOUNT_EMAIL,
+    FAKE_ACCOUNT_NAME,
     FAKE_CODE,
     FakeCalendarProvider,
 )
@@ -78,7 +78,7 @@ async def test_exchange_of_the_fake_code_is_a_grant_with_no_refresh_token() -> N
         code=FAKE_CODE, code_verifier="verifier", redirect_uri=REDIRECT_URI
     )
 
-    assert grant.account_email == FAKE_ACCOUNT_EMAIL
+    assert grant.account_email == FAKE_ACCOUNT_NAME == "Demo calendar"
     assert CALENDAR_SCOPE in grant.scopes
     # calendar_connections.refresh_token is NULL only for the fake provider (M5 plan, Postgres).
     assert grant.refresh_token is None

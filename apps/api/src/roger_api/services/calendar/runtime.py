@@ -27,6 +27,7 @@ from roger_api.config_calendar import GoogleOAuthAudience
 from roger_api.services.calendar.fake import FakeCalendarProvider
 from roger_api.services.calendar.google import GOOGLE_TIMEOUT, GoogleCalendarProvider
 from roger_api.services.calendar.provider import AccessToken, CalendarProvider
+from roger_api.services.calendar.unconfigured import UnconfiguredCalendarProvider
 
 # An access token is used until this long before Google says it expires: a token that expires on
 # its way to Google is a 401, and that costs a refresh and a retry anyway.
@@ -91,6 +92,9 @@ class CalendarRuntime:
         access_tokens: AccessTokenCache | None = None,
     ) -> None:
         self.provider = provider
+        # False with no CALENDAR_PROVIDER: connect and events answer `calendar_not_configured`,
+        # while a stored connection stays readable and can be disconnected.
+        self.configured = not isinstance(provider, UnconfiguredCalendarProvider)
         # CALENDAR_TOKEN_KEY. Settings require it with the Google provider; the fake stores no
         # token, so it may run without one.
         self.token_key = token_key
@@ -101,6 +105,9 @@ class CalendarRuntime:
 @asynccontextmanager
 async def open_calendar_runtime(settings: Settings) -> AsyncIterator[CalendarRuntime]:
     """Entered by the app lifespan; exiting it closes the Google HTTP client."""
+    if settings.calendar_provider is None:
+        yield _runtime(settings, UnconfiguredCalendarProvider())
+        return
     if settings.calendar_provider == "fake":
         # Its events are anchored here, at startup: restart the API for a fresh "call in 2
         # minutes". A bad FAKE_CALENDAR_FILE stops the start, naming the file.

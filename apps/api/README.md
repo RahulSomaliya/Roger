@@ -131,9 +131,11 @@ Two vendor rules to know before testing (read 2026-10-06):
 The `/v1/calendar/*` routes sign in to Google Calendar for the desktop and list the primary
 calendar's events (contract: "Calendar"). The API keeps the Google refresh token, encrypted in
 Postgres with pgcrypto under `CALENDAR_TOKEN_KEY`; the desktop never sees a Google token.
-`CALENDAR_PROVIDER=fake`, the default, needs no Google client: sign-in completes at once and the
-events are a script anchored to the API's start time (restart for a fresh "call in 2 minutes"), or
-the `events.list` JSON in `FAKE_CALENDAR_FILE`.
+With no `CALENDAR_PROVIDER` (the default) the API has no calendar and Connect answers
+`calendar_not_configured`. `CALENDAR_PROVIDER=fake` is for developers: it needs no Google client,
+sign-in completes at once as a "Demo calendar" account, and the events are a script anchored to the
+API's start time (restart for a fresh "call in 2 minutes"), or the `events.list` JSON in
+`FAKE_CALENDAR_FILE`. Its meetings raise real alerts, so keep it off a Mac that takes real calls.
 
 For real calendars, create the Google OAuth client first:
 [`docs/plans/M5-calendar.md`, "Owner setup: Google Cloud"](../../docs/plans/M5-calendar.md#owner-setup-google-cloud-about-10-minutes)

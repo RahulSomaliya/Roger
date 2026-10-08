@@ -75,3 +75,12 @@ class CalendarReconnectRequiredError(AppError):
 
     status_code = 424
     code = "calendar_reconnect_required"
+
+
+class CalendarNotConfiguredError(AppError):
+    """The API has no calendar provider: no Google client is set and `CALENDAR_PROVIDER` is not
+    `fake` (the calendar-provider honesty change). Nothing the user does in the app fixes it, so
+    the message says the server is not set up; 503 is the "not available here" status."""
+
+    status_code = 503
+    code = "calendar_not_configured"

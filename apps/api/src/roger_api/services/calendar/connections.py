@@ -36,10 +36,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from roger_api.auth import Principal
 from roger_api.config_calendar import GoogleOAuthAudience
 from roger_api.db.models_calendar import CalendarConnection, CalendarConnectionStatus
-from roger_api.errors import AppError, CalendarProviderError, CalendarReconnectRequiredError
+from roger_api.errors import (
+    AppError,
+    CalendarNotConfiguredError,
+    CalendarProviderError,
+    CalendarReconnectRequiredError,
+)
 from roger_api.log import get_logger
 from roger_api.services.calendar.provider import CalendarGrant, CalendarProviderName
 from roger_api.services.calendar.runtime import CalendarRuntime
+from roger_api.services.calendar.unconfigured import NOT_CONFIGURED_MESSAGE
 
 logger = get_logger(__name__)
 
@@ -127,9 +133,12 @@ async def connect(
 ) -> StoredConnection:
     """Redeems the sign-in code and stores the grant, replacing any connection the caller had.
 
-    Raises `CalendarReconnectRequiredError` (424) when calendar access was not granted or the code
+    Raises `CalendarNotConfiguredError` (503) with no calendar provider set,
+    `CalendarReconnectRequiredError` (424) when calendar access was not granted or the code
     is no longer valid, `CalendarProviderError` (502) when Google fails; nothing is stored then.
     """
+    if not runtime.configured:
+        raise CalendarNotConfiguredError(NOT_CONFIGURED_MESSAGE)
     calendar = runtime.provider
     grant = await calendar.exchange_code(
         code=code, code_verifier=code_verifier, redirect_uri=redirect_uri
@@ -237,6 +246,15 @@ async def disconnect(session: AsyncSession, principal: Principal, runtime: Calen
         "calendar_disconnected", provider=connection.provider, connection_id=str(connection.id)
     )
     calendar = runtime.provider
+    if not runtime.configured:
+        # No provider at all (CALENDAR_PROVIDER unset): the row is gone, nothing to revoke with.
+        logger.warning(
+            "calendar_revoke_skipped",
+            provider=connection.provider,
+            connection_id=str(connection.id),
+            reason="no calendar provider is set",
+        )
+        return
     if connection.provider != calendar.provider:
         # Another provider's grant (CALENDAR_PROVIDER changed since): this one cannot revoke it.
         logger.warning(
