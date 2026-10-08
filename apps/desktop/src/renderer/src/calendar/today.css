@@ -1,7 +1,7 @@
 /*
  * Home's Today and the connect line (TodaySection.tsx, ConnectCalendarCard.tsx): a time and a
  * title per row, the button in a fixed right column. Split from the old calendar.css with
- * calendarSettings.css (the Settings section) and calendarNotice.css (the meeting page's notice).
+ * calendarSettings.css (the Settings section).
  * They reuse styles.css (.btn, .problem, .overline). calendarSettings.css no longer imports this
  * file; .calendar-status is read by TodaySection.tsx only, so a file that wants it imports this
  * one. Colours only from theme/tokens.css (noLiteralColours.test.ts fails on a literal one); text

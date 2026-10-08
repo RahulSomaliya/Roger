@@ -1,7 +1,6 @@
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
-import { DEFAULT_NOTICE_TEXT } from '../../../shared/calendarPrefs';
 import { CalendarSettingsSection, type CalendarSettingsActions } from './CalendarSettings';
 import type { CalendarSettingsState } from './calendarSettingsStore';
 import type { CalendarState } from './calendarStore';
@@ -53,7 +52,7 @@ function primaries(html: string): number {
 describe('the Calendar section of Settings', () => {
   it('lays its fields out as label and control rows, which stack under 720 px (settings.css)', () => {
     const html = render();
-    expect(html.match(/class="settings-row"/g)?.length).toBeGreaterThanOrEqual(3);
+    expect(html.match(/class="settings-row"/g)?.length).toBeGreaterThanOrEqual(2);
     expect(html).toMatch(/class="settings-row-label"[\s\S]*Google account/);
   });
 
@@ -192,49 +191,9 @@ describe('the Calendar section of Settings', () => {
       expect(html).toMatch(/<option value="5" selected="">5 minutes before<\/option>/);
     });
 
-    // The notice box saves on blur, and a blur comes before the click that caused it: a control
-    // that went disabled while that save was out would swallow the click (the next switch, Use
-    // the default text).
-    it('never waits on a save: no control goes disabled, so no click is lost', () => {
+    it('never waits on a save: the select never goes disabled, so no click is lost', () => {
       const html = render();
       expect(tag(html, /class="settings-input calendar-select"/)).not.toContain('disabled');
-      expect(tag(html, /type="checkbox"/)).not.toContain('disabled');
-    });
-  });
-
-  describe('the notice', () => {
-    it('shows the text while the notice is on, with no Save button: it saves on blur', () => {
-      const html = render(calendarState(), settingsState({ noticeText: 'Recording this call.' }));
-      expect(html).toContain('Recording this call.</textarea>');
-      expect(tag(html, /type="checkbox"[^>]*checked/)).toContain('checked');
-      expect(html).not.toContain('Save notice');
-    });
-
-    it('describes only the Copy notice button the meeting page has', () => {
-      const html = render();
-      expect(html).toContain('The meeting page gets a Copy notice button');
-      expect(html).not.toContain('The reminder and the meeting page');
-    });
-
-    it('hides the text with the notice off', () => {
-      const html = render(calendarState(), settingsState({ noticeEnabled: false }));
-      expect(html).not.toContain('<textarea');
-      expect(html).not.toContain('Use the default text');
-    });
-
-    it('limits the text to what the preference accepts', () => {
-      const html = render(calendarState(), settingsState({ noticeText: 'Mine' }));
-      expect(html).toContain('maxLength="1000"');
-    });
-
-    it('offers the default text, as a ghost, only when the text differs from it', () => {
-      const custom = render(calendarState(), settingsState({ noticeText: 'Mine' }));
-      expect(custom).toMatch(
-        /<button type="button" class="btn" data-variant="ghost" data-size="sm">Use the default text</,
-      );
-      // The default text already in the box leaves nothing to reset: the button is not there.
-      const stock = render(calendarState(), settingsState({ noticeText: DEFAULT_NOTICE_TEXT }));
-      expect(stock).not.toContain('Use the default text');
     });
   });
 
@@ -265,9 +224,14 @@ describe('the Calendar section of Settings', () => {
       expect(
         render(
           calendarState(),
-          settingsState({ saveError: 'Roger could not save that setting: notice.text is blank' }),
+          settingsState({
+            saveError:
+              'Roger could not save that setting: reminderLeadMinutes must be one of 0, 1, 2, 5 or 10',
+          }),
         ),
-      ).toContain('Roger could not save that setting: notice.text is blank');
+      ).toContain(
+        'Roger could not save that setting: reminderLeadMinutes must be one of 0, 1, 2, 5 or 10',
+      );
     });
   });
 });

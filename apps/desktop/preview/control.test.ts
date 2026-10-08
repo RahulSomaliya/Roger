@@ -101,8 +101,11 @@ describe('PreviewHub', () => {
   it('answers prefs:get-all with the forced theme, as if preferences.json held it', async () => {
     const hub = new PreviewHub({ forcedTheme: 'dark' });
     await expect(
-      hub.request(PREFS_GET_ALL_CHANNEL, () => ({ theme: 'system', 'notice.enabled': true })),
-    ).resolves.toEqual({ theme: 'dark', 'notice.enabled': true });
+      hub.request(PREFS_GET_ALL_CHANNEL, () => ({
+        theme: 'system',
+        'calendar.reminderLeadMinutes': 1,
+      })),
+    ).resolves.toEqual({ theme: 'dark', 'calendar.reminderLeadMinutes': 1 });
     await expect(hub.request('prefs:set', () => ({ theme: 'system' }))).resolves.toEqual({
       theme: 'system',
     });

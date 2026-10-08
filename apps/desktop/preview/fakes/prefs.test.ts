@@ -13,7 +13,7 @@ describe('the preview fake of the preferences', () => {
     const calendarDefaults = Object.fromEntries(
       Object.values(CALENDAR_PREFERENCES).map((spec) => [spec.key, spec.default]),
     );
-    expect(Object.keys(calendarDefaults)).toHaveLength(4);
+    expect(Object.keys(calendarDefaults)).toHaveLength(2);
     await expect(createPrefsFake(new FakeHub()).getPreferences()).resolves.toEqual({
       theme: 'system',
       ...calendarDefaults,
@@ -24,13 +24,13 @@ describe('the preview fake of the preferences', () => {
     const hub = new FakeHub();
     const prefs = createPrefsFake(hub);
     await prefs.setPreference('calendar.reminderLeadMinutes', 5);
-    hub.emit(prefsChannels.PrefsChanged, { key: 'notice.enabled', value: false });
+    hub.emit(prefsChannels.PrefsChanged, { key: 'app.openAtLogin', value: 'on' });
     await expect(prefs.getPreferences()).resolves.toMatchObject({
       'calendar.reminderLeadMinutes': 5,
-      'notice.enabled': false,
+      'app.openAtLogin': 'on',
     });
-    await expect(prefs.setPreference('notice.text', ' ')).rejects.toThrow(
-      'notice.text is blank: write the notice, or turn the notice off',
+    await expect(prefs.setPreference('calendar.reminderLeadMinutes', 3 as 5)).rejects.toThrow(
+      'calendar.reminderLeadMinutes must be one of 0, 1, 2, 5 or 10',
     );
   });
 

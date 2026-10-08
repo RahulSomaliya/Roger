@@ -1,9 +1,8 @@
 import type { SlotContributions } from '../slotRegistry';
 import { CalendarSettings } from '../../calendar/CalendarSettings';
-import { NoticeBanner } from '../../calendar/NoticeBanner';
 
 /**
- * What M5-T13 mounts: the calendar settings and the consent notice on the meeting page. Slot
+ * What M5-T13 mounts: the calendar settings. Slot
  * names and their props: ../slotRegistry.ts. Today is not here: HomePage mounts TodaySection
  * itself, and there is no Home slot.
  *
@@ -14,5 +13,4 @@ import { NoticeBanner } from '../../calendar/NoticeBanner';
  */
 export const contributions: SlotContributions = {
   settings: [{ id: 'm5-calendar', order: 5, component: CalendarSettings }],
-  meetingBanner: [{ id: 'm5-calendar-notice', order: 0, component: NoticeBanner }],
 };

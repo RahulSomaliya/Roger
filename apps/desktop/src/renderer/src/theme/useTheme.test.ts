@@ -1,5 +1,4 @@
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_NOTICE_TEXT } from '../../../shared/calendarPrefs';
 import type { PrefsApi } from '../../../shared/ipc/prefs';
 import type { PreferenceChange, PreferenceValues } from '../../../shared/preferences';
 import { applyTheme, followThemePreference, type ThemeRoot, type ThemeState } from './useTheme';
@@ -7,8 +6,6 @@ import { applyTheme, followThemePreference, type ThemeRoot, type ThemeState } fr
 const STORED: PreferenceValues = {
   theme: 'dark',
   'calendar.reminderLeadMinutes': 1,
-  'notice.enabled': true,
-  'notice.text': DEFAULT_NOTICE_TEXT,
   'app.openAtLogin': 'auto',
 };
 
@@ -91,7 +88,7 @@ describe('the theme on <html>', () => {
   it('follows every theme change and ignores other keys', async () => {
     const { root, main, states } = follow();
     await main.answer(STORED);
-    main.change({ key: 'notice.enabled', value: false });
+    main.change({ key: 'app.openAtLogin', value: 'on' });
     main.change({ key: 'theme', value: 'system' });
     expect(root.attributes.has('data-theme')).toBe(false);
     main.change({ key: 'theme', value: 'light' });
