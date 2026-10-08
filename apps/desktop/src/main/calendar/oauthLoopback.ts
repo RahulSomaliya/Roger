@@ -129,13 +129,13 @@ export async function listenForOAuthCallback(
   return { redirectUri: `http://127.0.0.1:${address.port}${OAUTH_CALLBACK_PATH}`, outcome };
 }
 
-/** "Google sign-in timed out after 3 minutes. Connect again." */
+/** "Google sign-in timed out after 3 minutes. Press Connect Google Calendar to try again." */
 export function signInTimeoutMessage(timeoutMs: number): string {
   const minutes = timeoutMs / 60_000;
   const after = Number.isInteger(minutes)
     ? `${minutes} minute${minutes === 1 ? '' : 's'}`
     : `${timeoutMs} ms`;
-  return `Google sign-in timed out after ${after}. Connect again.`;
+  return `Google sign-in timed out after ${after}. Press Connect Google Calendar to try again.`;
 }
 
 // PKCE (RFC 7636) and state ------------------------------------------------------------------
@@ -205,10 +205,10 @@ function answer(request: IncomingMessage, state: string, settled: boolean): Repl
     return {
       status: 400,
       page: page(
-        'This reply is not from the sign-in Roger started. Close this tab and connect again in Roger.',
+        'This reply is not from the sign-in Roger started. Close this tab, then press Connect Google Calendar in Roger.',
       ),
       outcome: failed(
-        'The Google sign-in reply did not match the sign-in Roger started. Connect again.',
+        'The Google sign-in reply did not match the sign-in Roger started. Press Connect Google Calendar to try again.',
       ),
     };
   }
@@ -223,8 +223,12 @@ function answer(request: IncomingMessage, state: string, settled: boolean): Repl
     const named = OAUTH_ERROR_CODE.test(error) ? ` (${error})` : '';
     return {
       status: 200,
-      page: page('Google sign-in did not finish. Close this tab and try again in Roger.'),
-      outcome: failed(`Google sign-in did not finish${named}. Connect again.`),
+      page: page(
+        'Google sign-in did not finish. Close this tab, then press Connect Google Calendar in Roger.',
+      ),
+      outcome: failed(
+        `Google sign-in did not finish${named}. Press Connect Google Calendar to try again.`,
+      ),
     };
   }
   return {
@@ -238,16 +242,36 @@ function failed(message: string): OAuthOutcome {
   return { ok: false, error: new Error(message) };
 }
 
-/** A static page: no script, nothing from the request, never cached, no referrer onwards. */
+/**
+ * The page's one stylesheet. The colours are the renderer's paper canvas and ink tokens
+ * (`renderer/src/theme/tokens.css`: `--canvas`, `--ink`, `--ink-muted`, `--line`), copied because
+ * this page is served to the browser and cannot read the app's CSS: change them together. Light
+ * and dark follow the browser's `prefers-color-scheme`, as the app does with Theme on System.
+ */
+const PAGE_STYLE = `:root{color-scheme:light dark;--canvas:oklch(0.985 0.004 80);--ink:oklch(0.22 0.01 70);--ink-muted:oklch(0.45 0.012 70);--line:oklch(0.9 0.008 80)}@media (prefers-color-scheme:dark){:root{--canvas:oklch(0.17 0.006 70);--ink:oklch(0.93 0.008 80);--ink-muted:oklch(0.72 0.01 75);--line:oklch(0.3 0.008 70)}}html,body{height:100%;margin:0}body{display:flex;align-items:center;justify-content:center;padding:24px;box-sizing:border-box;background:var(--canvas);color:var(--ink);font:16px/24px -apple-system,BlinkMacSystemFont,'SF Pro Text',system-ui,sans-serif;-webkit-font-smoothing:antialiased}main{max-width:44ch;border-top:1px solid var(--line);padding-top:24px}h1{margin:0 0 8px;font-size:20px;line-height:28px;font-weight:600;letter-spacing:-0.01em}p{margin:0;color:var(--ink-muted)}`;
+
+/**
+ * The style's hash, for the CSP: the page stays free of script and of any style source but this
+ * one sheet, so a reply can never pull anything in. Change PAGE_STYLE and the hash follows.
+ */
+const PAGE_STYLE_HASH = createHash('sha256').update(PAGE_STYLE, 'utf8').digest('base64');
+
+/**
+ * A static page: a headline and one line saying what to do, on the paper canvas. No script,
+ * nothing from the request, never cached, no referrer onwards. `text` is a sentence or two; the
+ * first sentence is the headline.
+ */
 function page(text: string): string {
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Roger</title></head><body><p>${text}</p></body></html>`;
+  const [headline = text, ...rest] = text.split(/(?<=\.)\s+/);
+  const detail = rest.length > 0 ? `<p>${rest.join(' ')}</p>` : '';
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Roger</title><style>${PAGE_STYLE}</style></head><body><main><h1>${headline}</h1>${detail}</main></body></html>`;
 }
 
 function send(response: ServerResponse, status: number, body: string, done?: () => void): void {
   response.writeHead(status, {
     'Content-Type': 'text/html; charset=utf-8',
     'Cache-Control': 'no-store',
-    'Content-Security-Policy': "default-src 'none'",
+    'Content-Security-Policy': `default-src 'none'; style-src 'sha256-${PAGE_STYLE_HASH}'`,
     'Referrer-Policy': 'no-referrer',
     Connection: 'close',
   });

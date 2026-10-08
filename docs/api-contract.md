@@ -38,6 +38,7 @@ same change as the code on both sides. Base URL in development: `http://127.0.0.
   | 502 | `stt_provider_error` | The speech-to-text vendor refused or failed a token request |
   | 502 | `llm_provider_error` | The notes model's vendor refused or failed before the stream started |
   | 502 | `calendar_provider_error` | Google is unreachable or answered with an error we cannot use |
+  | 503 | `calendar_not_configured` | The API has no calendar provider (no Google client set up on the server). Only the server's owner can fix it; the desktop says so in plain words. Sent by the calendar authorization, connection (POST) and events routes. |
 
   A 401 carries `WWW-Authenticate: Bearer`. Every response carries `X-Request-ID` (echoed when the
   caller sends a safe one, generated otherwise); the same id is on every log line for the request.
@@ -818,9 +819,13 @@ Google Calendar, read only: the primary calendar's events for the desktop's "Tod
 prompts (M5). The API signs in to Google for the desktop and keeps the refresh token, encrypted
 (`calendar_connections`, Database below); the desktop never holds a Google token. Events are not
 stored: every `GET /v1/calendar/events` asks Google live. One connection per workspace (per user
-from M6). `CALENDAR_PROVIDER=fake`, the default, answers every route here with no Google client:
-its authorization URL is the desktop's own redirect with `code=fake`, and its events are a script
-anchored to the API's start time.
+from M6). With no `CALENDAR_PROVIDER` set (the default) the API has no calendar: the authorization
+and connection routes and the events route answer `503 calendar_not_configured`, while
+`GET /v1/calendar/connection` and `DELETE /v1/calendar/connection` keep working on a stored
+connection. `CALENDAR_PROVIDER=fake` is for developers only: it answers every route with no Google
+client, its authorization URL is the desktop's own redirect with `code=fake`, its account is
+`Demo calendar` (shown as `account_email`, which is then not an address), and its events are a
+script anchored to the API's start time.
 
 Sign-in: the desktop makes a PKCE verifier, its S256 challenge and a state, and listens on
 `http://127.0.0.1:<random port>/oauth/callback`. It asks for the authorization URL, opens it in the

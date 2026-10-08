@@ -1,7 +1,8 @@
 """The calendar provider seam (house rule 4): what the calendar routes need from a calendar vendor.
 
 `google.py` talks to Google over httpx; `fake.py` answers from a script with no Google client
-(`CALENDAR_PROVIDER=fake`, the default). The routes and the token store (M5-T3) see only this
+(`CALENDAR_PROVIDER=fake`, for developers only); `unconfigured.py` stands in when none is set.
+The routes and the token store (M5-T3) see only this
 protocol and these types, never Google's JSON. The types mirror `CalendarEvent` and
 `CalendarAttendee` in docs/api-contract.md; the desktop's camelCase copy is
 apps/desktop/src/shared/calendar.ts.

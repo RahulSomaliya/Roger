@@ -17,7 +17,11 @@ from datetime import datetime
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from roger_api.auth import Principal
-from roger_api.errors import CalendarReconnectRequiredError, NotFoundError
+from roger_api.errors import (
+    CalendarNotConfiguredError,
+    CalendarReconnectRequiredError,
+    NotFoundError,
+)
 from roger_api.log import get_logger
 from roger_api.services.calendar import connections
 from roger_api.services.calendar.connections import StoredConnection
@@ -26,6 +30,7 @@ from roger_api.services.calendar.provider import (
     CalendarEvent,
 )
 from roger_api.services.calendar.runtime import CalendarRuntime
+from roger_api.services.calendar.unconfigured import NOT_CONFIGURED_MESSAGE
 
 logger = get_logger(__name__)
 
@@ -43,7 +48,8 @@ async def list_events(
 ) -> list[CalendarEvent]:
     """Events that end after `time_min` and start before `time_max`, ordered by start.
 
-    Raises `NotFoundError` with no connection, `CalendarReconnectRequiredError` (424) when only
+    Raises `NotFoundError` with no connection, `CalendarNotConfiguredError` (503) with no calendar
+    provider set, `CalendarReconnectRequiredError` (424) when only
     connecting again helps, `CalendarProviderError` (502) when the provider fails.
     """
     connection = await connections.find_connection(session, principal)
@@ -51,6 +57,10 @@ async def list_events(
         raise NotFoundError(NOT_CONNECTED_MESSAGE)
     if connection.status == "reconnect_required":
         raise CalendarReconnectRequiredError(connection.last_error or RECONNECT_MESSAGE)
+    if not runtime.configured:
+        # Before the provider-mismatch check: "connect again" would be a dead end when the server
+        # has no calendar at all. The stored connection is kept, as for a changed provider.
+        raise CalendarNotConfiguredError(NOT_CONFIGURED_MESSAGE)
     calendar = runtime.provider
     if connection.provider != calendar.provider:
         # CALENDAR_PROVIDER changed since the connect: this provider cannot use that grant. Raised

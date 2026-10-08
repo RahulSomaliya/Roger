@@ -28,10 +28,11 @@ GOOGLE = {
 }
 
 
-def test_defaults_are_the_fake_provider_and_an_external_testing_audience() -> None:
+def test_defaults_are_no_provider_and_an_external_testing_audience() -> None:
     settings = make_settings(DATABASE_URL)
 
-    assert settings.calendar_provider == "fake"
+    # No default provider: the fake used to be one and showed a made-up account on a real Mac.
+    assert settings.calendar_provider is None
     assert settings.google_oauth_audience == "external_testing"
     assert settings.google_oauth_client_id is None
     assert settings.google_oauth_client_secret is None
@@ -176,3 +177,9 @@ def test_env_example_documents_every_calendar_setting_and_loads_as_the_defaults(
 
     for name in CalendarSettings.model_fields:
         assert getattr(from_example, name) == getattr(defaults, name), name
+
+
+def test_a_blank_calendar_provider_is_no_provider_and_fake_stays_readable() -> None:
+    # `.env.example` ships `CALENDAR_PROVIDER=` empty; an old `.env` that says fake still works.
+    assert make_settings(DATABASE_URL, calendar_provider="").calendar_provider is None
+    assert make_settings(DATABASE_URL, calendar_provider="fake").calendar_provider == "fake"

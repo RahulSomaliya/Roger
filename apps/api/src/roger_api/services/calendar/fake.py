@@ -1,6 +1,10 @@
-"""The fake calendar provider: `CALENDAR_PROVIDER=fake`, the default.
+"""The fake calendar provider: runs only when a developer sets `CALENDAR_PROVIDER=fake`.
 
-Every screen, test and demo runs with no Google client (M5 plan, constraint C4):
+It is never the default: with no provider set the API answers `calendar_not_configured`
+(unconfigured.py). As a default it showed a made-up account and meetings that raised real alerts
+on a real Mac. Its account reads `Demo calendar`, so Settings never passes it off as a person.
+
+Every screen, test and demo can run with no Google client (M5 plan, constraint C4):
 - Sign-in: the authorization URL is the desktop's own loopback redirect with `code=fake`, so the
   whole browser round trip runs; the exchange grants a fake account and stores no refresh token.
 - Events: a script anchored to the API's start time, so they stay put between polls and a restart
@@ -31,6 +35,9 @@ from roger_api.services.calendar.provider import (
 
 FAKE_CODE = "fake"
 FAKE_ACCOUNT_EMAIL = "you@example.com"
+# What the connection shows as its account (`account_email` on the wire, shown as is). Not an
+# address: the attendee lists below still use FAKE_ACCOUNT_EMAIL as "you".
+FAKE_ACCOUNT_NAME = "Demo calendar"
 FAKE_ACCESS_TOKEN = "fake-access-token"  # noqa: S105 - a placeholder that opens nothing
 FAKE_SCOPES = ("openid", "email", CALENDAR_SCOPE)
 _TOKEN_LIFETIME_SECONDS = 3600
@@ -83,7 +90,7 @@ class FakeCalendarProvider:
                 "The fake calendar did not issue this code. Connect the calendar again."
             )
         return CalendarGrant(
-            account_email=FAKE_ACCOUNT_EMAIL,
+            account_email=FAKE_ACCOUNT_NAME,
             scopes=FAKE_SCOPES,
             refresh_token=None,
             access_token=await self.refresh(None),

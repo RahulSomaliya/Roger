@@ -41,7 +41,11 @@ _GOOGLE_REQUIRED = (
 class CalendarSettings(BaseModel):
     """The calendar provider, the Google OAuth client, its audience and the token encryption key."""
 
-    calendar_provider: CalendarProviderName = "fake"
+    # None means no calendar: Connect answers `calendar_not_configured` (services/calendar/
+    # unconfigured.py). There is no default provider on purpose: the old default, `fake`, put a
+    # made-up "you@example.com" account and meetings that raised real alerts on a real Mac. The
+    # fake runs only when `CALENDAR_PROVIDER=fake` is written down.
+    calendar_provider: CalendarProviderName | None = None
     # The Google Cloud "Desktop app" OAuth client. The id is public (it is in every authorization
     # URL); Google still wants the secret at its token endpoint, so it stays on the API.
     google_oauth_client_id: str | None = None
@@ -54,6 +58,7 @@ class CalendarSettings(BaseModel):
     fake_calendar_file: Path | None = None
 
     @field_validator(
+        "calendar_provider",
         "google_oauth_client_id",
         "google_oauth_client_secret",
         "calendar_token_key",
