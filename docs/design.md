@@ -65,6 +65,12 @@ bug, and `noLiteralColours.test.ts` fails on it.
 | `ring` | = `accent` | = `accent` | focus ring |
 | `scrim` | `0.22 0.01 70 / 0.4` | `0.08 0.004 70 / 0.6` | dialog backdrop |
 | `e1`, `e2`, `e3` | shadows, see Elevation | | they hold colour, so they live here |
+| `fill-raised` (sweep, built by T0) | = `fill` | lighter than `raised`, about `0.31 0.008 70` | hover and pressed wash on a `raised` surface (menu rows, the prompt card's ghost buttons): `fill` vanishes there in dark |
+| `edge` (sweep, built by T0) | = `line` | about `0.36 0.008 70` | the 1 px edge of a floating surface over another app (the prompt card), where the system shadow cannot show in dark |
+
+Added by the redesign sweep (2026-10-08, `docs/plans/redesign-sweep.md`): the two rows above. T0
+measures them, pins `ink` and `ink-muted` on `fill-raised` in the pairings table and writes both dark
+blocks; the values here are its starting point.
 
 Hand-tuned from Course Player, each for a pairing Roger paints and Course Player does not:
 light `ink-subtle` 0.53 → 0.52 (a timestamp on the revealed line read 4.51:1 on `accent-soft`);
@@ -142,9 +148,11 @@ tabular-nums`. Reading text (notes, AI notes, transcript, chat) is capped at 68c
 The 4 px ladder only: `--space-1` 4 · `--space-2` 8 · `--space-3` 12 · `--space-4` 16 · `--space-6`
 24 · `--space-8` 32 · `--space-12` 48 · `--space-16` 64 · `--space-24` 96. More space between
 groups than inside them. Fewer containers: whitespace and 1 px `line` hairlines, never a card
-inside a card. The window opens 520 × 760 (`main/window.ts`, min 420): design at 520 first. Page
-gutter 16 px under 720 px wide, 32 px above; Home and Settings sit in a 720 px column, the meeting
-page in a 760 px one (68ch of 16 px text plus its gutters). One breakpoint: 720 px.
+inside a card. The window opens landscape, about 1080 × 730 (min 420 × 520): design at 1080
+first, then check 420. The page grid has three widths (Window and layout, below); the meeting
+page's column is 760 px (68ch of 16 px text plus its gutters) at every width above 720. (Changed by
+the redesign sweep, 2026-10-08: the rule was "520 × 760, design at 520 first". Until task T3 of
+`docs/plans/redesign-sweep.md` lands, `main/window.ts` still opens 520 × 760.)
 
 Radius: `--radius-md` 8 px (buttons, inputs, chips, menu items), `--radius-lg` 12 px (menus,
 dialogs, the prompt card), `--radius-full` (the recording chip, dots). Never square and rounded
@@ -183,6 +191,9 @@ it is never a sub-second flash.
 | A chip reveals its transcript line | scroll to centre; a static `accent-soft` tint | smooth scroll unless reduced motion; the tint never fades |
 | Copy notice → "Copied" | the label swaps | stays until the line is dismissed |
 | Recording | nothing | the dot is static |
+| A prompt card arrives (sweep) | opacity 0 → 1, `translateX(12px)` → 0 | `slide-in` 240 ms ease-out, after the window shows |
+| A prompt card leaves (sweep) | opacity → 0, `translateX(12px)` | 170 ms ease-in; main hides the window only after the page reports height 0, 400 ms fallback |
+| A page changes (sweep) | nothing | pages swap at once; focus moves to the new page's `h1` |
 
 ## Components (one primary per view)
 
@@ -249,10 +260,121 @@ it is never a sub-second flash.
 | Settings | otherwise | none | Disconnect (ghost) |
 | Set up Roger | a check fails | **the first failing check's fix** (Allow microphone, Open Microphone settings, Open System Audio settings, Check again, Relaunch Roger) | other fixes secondary; **Later** (ghost) is the way out, there is no header |
 | Set up Roger | all pass | **Done** | Later is gone |
-| Prompt panel | a meeting with a video link | **Join and start notes** | Start notes (ghost), Dismiss (ghost) |
-| Prompt panel | no link, or a call detected | **Start notes** | Dismiss (ghost) |
+| Prompt panel | a meeting with a video link | **Join and start notes** | Start notes (ghost), Dismiss (× icon, top right; sweep) |
+| Prompt panel | no link, or a call detected | **Start notes** | Dismiss (× icon, top right; sweep) |
 | Prompt panel | taking notes | none | Open Roger (ghost) |
+| Settings | Appearance (sweep) | none | System · Light · Dark, a segmented control |
 | Details dialog | | none | Transcribe again (secondary), Delete audio (ghost, confirms) |
+
+## Window and layout (added by the redesign sweep, 2026-10-08)
+
+The redesign designed the pages and skipped the window around them. These rules cover it; the
+build is `docs/plans/redesign-sweep.md` (T3 to T6). Decisions D1, D2 and D6 there are Rahul's; the
+rules below are written with their pre-filled picks and change if he picks otherwise.
+
+- **The window.** Opens about 1080 × 730, clamped to the work area less 48 px each way, centred on
+  the display under the cursor; minimum 420 × 520. It remembers its bounds per Mac and restores them
+  only onto a connected display. Its `backgroundColor` is the theme's `canvas`, so nothing flashes at
+  show or resize.
+- **Title bar (D1).** No system title bar row: `hiddenInset`, the traffic lights inside the header
+  row. The header is the window's drag region; every control in it is `no-drag`; its left 80 px hold
+  nothing but the lights.
+- **Page grid.** Three widths: 960 px and up (the landscape window): 48 px gutter, Home, Settings and
+  Set up Roger 880 px, the meeting page 760 px; 720 to 959: 32 px gutter, 720 px and 760 px; under
+  720: 16 px gutter, full width. Content starts at the column's left edge; a column narrower than
+  the window is centred, and the full-width header above it is what makes the side space read as
+  margins, not emptiness.
+- **Home at 960 and up (D2).** Two top-aligned columns, 64 px apart: the hero (overline, title,
+  hours, Start notes) and the calendar line or Connect on the left; Today, then Earlier on the right
+  (360 px). With nothing in either list the right column is absent. Under 960 they stack.
+- **The meeting page** keeps one column and one tab row at every width. Its panes span the column, so
+  their right edge is the header actions' right edge; reading text is capped at 68ch inside them. A
+  busy state that adds a control (Cancel) adds it on the LEFT of the primary, so the primary never
+  moves under the pointer.
+- **Settings at 720 and up.** Rows in two columns: a 240 px label column (label 600, helper
+  `ink-muted`) and the control. Under 720 they stack.
+- **A page that fails to draw** is replaced, under the header and the banner, by one problem line and
+  Reload (secondary): Stop and the recording chip stay one click away.
+
+## Navigation (added by the redesign sweep, 2026-10-08)
+
+Every place is one step from Home and one step back. Rahul: "I don't have a way to go back to home
+screen".
+
+- **The header, every page.** Left: on Home the wordmark "Roger" as text; on every other page **‹
+  Home** (ghost `sm`: the `arrow-left` icon and the word Home; the "‹" in these docs stands for the
+  icon). Right: the recording chip (not on the live meeting's
+  own page), then Settings (ghost icon). The current place is shown by more than colour: the gear on
+  Settings has the `fill` wash and `aria-current="page"`. With D6, Set up Roger has the header too.
+- **Keyboard.** Cmd+[ goes Home from anywhere (every page is one level under Home, so Back is Home);
+  Escape does the same on Settings and Set up Roger when focus is not in a text field, never on the
+  meeting page (it would leave the notes mid-sentence); Cmd+, opens Settings; Cmd+N starts notes. Stop
+  has no shortcut: ending a recording is a click.
+- **The app menu** names every place: Roger › Settings…, Set up Roger…; File › Start notes, Stop;
+  Go › Home. The shipped build has no Reload, Force Reload or Developer Tools (Cmd+R mid-call reloads
+  the page that captures audio).
+- **Focus** moves to the new page's `h1` on every navigation; the window title names the page.
+- **Settings holds what a person comes for**, in this order: Appearance, Calendar, Jargon list, Mac
+  (Open Roger at login, Open Set up Roger). Nothing a person sets lives only in the app menu.
+
+## Appearance (added by the redesign sweep, 2026-10-08)
+
+- Settings' first section: **Appearance**, a segmented control **System · Light · Dark** (a
+  `radiogroup` in the tab track's look; arrow keys move and choose), saved on change.
+- Main applies the `theme` preference with `nativeTheme.themeSource`, so the main window, the prompt
+  panel, menus, dialogs and scrollbars change together. The prompt panel needs no theme code of its
+  own: it follows `prefers-color-scheme`, which `themeSource` sets. (This replaces the Trap "it follows
+  macOS even when the `theme` preference forces one" once T3 lands.)
+
+## Prompt panel (added by the redesign sweep, 2026-10-08)
+
+The top-right meeting alert: one question, answered in one click or ignored, in Home's words. It
+never takes focus (a non-activating panel), so its keyboard path is Cmd+N and the menu bar.
+
+- **Window.** 360 px wide, 16 px from the top and right of the work area of the display under the
+  cursor; height follows its cards, top edge anchored; cards stack newest first with 8 px transparent
+  gaps; the system shadow, refreshed with `invalidateShadow()` after every resize.
+- **Card.** `raised`, `--radius-lg`, 1 px `edge`, 16 px padding. Overline (12 px caps, `ink-muted`):
+  "Roger · Starting in 1 min" (Home's `startLabel`); title 16/24 600, two lines then an ellipsis;
+  hours 14/20 `ink-subtle`, "3:27 pm to 3:57 pm"; 12 px, then the buttons (`sm`). Dismiss is an ×
+  icon button (32 px, accessible name "Dismiss") at the top right. A call Roger noticed: "Roger ·
+  Now", title "Call in Zoom". After a start, for 5 s: one row, the static dot, "Recording · <title>",
+  Open Roger. Another meeting recording: "Stops notes on Weekly sync" under the buttons.
+- **Failures** are a loud problem line between the hours and the buttons, in plain words; never
+  main's or a vendor's text.
+- **Lifetimes.** A calendar card from start − lead until 10 min after the start; a call card 10 min;
+  the Recording row 5 s.
+- **Motion.** In the Motion table: `slide-in` 240 ms, out 170 ms; main waits for the page's exit
+  before it hides the window.
+- **QA** shoots it at its real place (top right of a display frame, under a menu bar strip, over a
+  light and a dark call), never centred on a stage.
+
+## Notifications, the menu bar and other macOS surfaces (added by the redesign sweep, 2026-10-08)
+
+- **One word list.** A notification's title is the same headline the page shows for that warning
+  (`shared/captureWords.ts`, T2); its body is main's message, which follows Copy and the Naming list
+  like any page text. Never transcript text (lock screen, history).
+- **A click opens the place it is about** (the meeting of a warning). Only the call-ended stop, the
+  loud warnings and Set up Roger's test post one.
+- **The menu bar item** follows the naming list; it may say "Reconnect Google Calendar" in full (a
+  menu has no context to lean on). Its icon is a template glyph: idle, recording, and recording with a
+  loud warning; the calendar grant's warning never outranks recording.
+- **The app icon, About, the dock** carry Roger's own icon (decision D3). The only dock badge is "!"
+  when macOS refuses notifications.
+- **Native dialogs and pages Roger serves** (the Google sign-in return page, the fatal start box)
+  speak plainly and say what to do; the sign-in page uses the paper canvas and the system font in both
+  themes.
+- **Permission prompts** use the naming list: microphone, call audio.
+
+## Words from main (added by the redesign sweep, 2026-10-08)
+
+- Main writes every sentence a person reads in plain words with the next step, on the page, the
+  banner, the prompt panel, a notification, a menu or a Set up Roger row. Vendor names with codes,
+  HTTP statuses, routes, errnos, ids and the words helper, stream, worklet, Postgres, API, SQLite go
+  to the log and to a detail field (`errorDetail`) that only Details shows.
+- `describeError` is the renderer's last net, not the plan: it rewrites only the API client's
+  shapes. A new failure gets its sentence where it is made (`main/capture/errorWords.ts`).
+- A time that ticks never rides in a message ("in 12 s"): it re-renders the line every second.
 
 ## Copy
 
@@ -300,6 +422,13 @@ it is never a sub-second flash.
 | Open Google again, Reconnect Google Calendar | **Connect Google Calendar**, **Reconnect** |
 | Delete this meeting's audio | **Delete audio** |
 | Set up Roger, setup, permissions | **Set up Roger** |
+| system audio (permission prompt), Mic (me), "the call audio helper" (sweep) | **call audio**, **microphone**; the helper is never named outside Details |
+| the recording, a recording (noun) (sweep) | **the meeting**, or **notes** ("Roger stopped the notes on Weekly sync") |
+| Start (in "press Stop, then Start again") (sweep) | **Start notes** |
+| clean notes (sweep) | **AI notes** |
+| Back, Go back, the wordmark as the way Home (sweep) | **‹ Home** |
+| Theme, Dark mode, Light mode (sweep) | **Appearance**: **System**, **Light**, **Dark** |
+| Untitled meeting, for an invite with no title (sweep) | **Meeting at 3:27 pm**, the title the meeting will get |
 
 ## Traps
 
@@ -381,3 +510,30 @@ it is never a sub-second flash.
   through `captureStatusFor`). A person who stops a call and stays on Home is told.
 - A failed note keeps its failed state while a retry is out (`NotesSync`): `syncing` written over
   `refused` made the "Not saved to Roger" line blink off during every retry.
+
+Added by the redesign sweep (2026-10-08, `docs/plans/redesign-sweep.md`):
+
+- A surface outside the main window is still a surface. The redesign restyled every page and left
+  the prompt panel, notifications, the menu bar, the app menu, the app icon, the window and the
+  sign-in page as they were; R8 only removed things from the panel. Any design pass lists them
+  (the sweep's inventory) before it starts.
+- QA that feeds the page invented copy proves nothing about the words. The redesign's QA warning read
+  "Roger can't hear the call. Check the call plays on this Mac." while main sends "Call audio has been
+  silent for 3 minutes. ... press Stop, then Start again." A QA fixture for main's text imports main's
+  own messages.
+- QA at sizes the window never has: the gallery was 1440 and 390 while the window opened at 520, and
+  the 360 px prompt panel was shot "at 1440" on a centred stage. Shoot the window's real sizes and the
+  panel at its real place.
+- `describeError` passes any text it does not recognise: "xAI: rejected with HTTP 401" reached the
+  banner of the installed app through `CaptureStatus.error`, which never went through it at all.
+  Plain words are made where the failure is (Words from main).
+- `fill` on `raised` vanishes in dark, and the trap above was written for panels inside dialogs: the
+  same pairing is the ghost hover of the prompt card and the menu rows. Hover on a raised surface reads
+  `fill-raised`.
+- The API's calendar provider defaulted to `fake`: a press of Connect against a local API signs in as
+  `you@example.com` in an instant, and its scripted "Weekly sync" then pops the prompt panel all day on
+  a real Mac. A demo source is labelled as one and never the default.
+- With `titleBarStyle: 'hiddenInset'` the header is the drag region: a control without `no-drag`
+  drags the window instead of clicking, and anything in the left 80 px sits under the traffic lights.
+- The prompt panel cannot animate out if main hides its window the moment the state empties
+  (`PromptWindow.sync`): main waits for the page's height-0 report, with a fallback timer.
