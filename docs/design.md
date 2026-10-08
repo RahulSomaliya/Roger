@@ -539,6 +539,13 @@ Added by the redesign sweep (2026-10-08, `docs/plans/redesign-sweep.md`):
 - `describeError` passes any text it does not recognise: "xAI: rejected with HTTP 401" reached the
   banner of the installed app through `CaptureStatus.error`, which never went through it at all.
   Plain words are made where the failure is (Words from main).
+- A dialog's title runs into its first row in `textContent` ("DetailsMicrophone"): a QA check that
+  skips Details by a word boundary after the title skips nothing, and "500 lines" reads as an HTTP
+  code outside it. Match the start, not the word.
+- Details opened empty for a meeting with no gaps, events or kept audio, because `showEcho` is true
+  for any report whose counts are zero though the echo section draws nothing, so the "stored facts"
+  fallback never ran. A fallback that triggers on "nothing to show" must test what is drawn, not
+  what exists. (Found by the sweep's QA, `past-details`.)
 - `fill` on `raised` vanishes in dark, and the trap above was written for panels inside dialogs: the
   same pairing is the ghost hover of the prompt card and the menu rows. Hover on a raised surface reads
   `fill-raised`.

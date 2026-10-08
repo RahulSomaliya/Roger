@@ -2,7 +2,7 @@ import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
 import type { EchoLine } from './echoChanges';
-import { describeEcho, EchoLines } from './EchoLines';
+import { describeEcho, echoLinesShow, EchoLines } from './EchoLines';
 
 const HIDDEN: EchoLine = {
   segmentId: 'seg-hidden',
@@ -95,5 +95,19 @@ describe('EchoLines', () => {
     const html = render({ showHidden: true, error: 'Line seg-hidden is not hidden' });
     expect(html).toContain('role="alert"');
     expect(html).toContain('Line seg-hidden is not hidden');
+  });
+});
+
+describe('echoLinesShow', () => {
+  it('is false when the filter did nothing and no line was seen', () => {
+    expect(echoLinesShow(null, 0)).toBe(false);
+    expect(echoLinesShow({ hidden: 0, trimmed: 0, held: 3 }, 0)).toBe(false);
+  });
+
+  it('is true for a hidden count, a trimmed count or a listed line', () => {
+    expect(echoLinesShow({ hidden: 1, trimmed: 0, held: 0 }, 0)).toBe(true);
+    expect(echoLinesShow({ hidden: 0, trimmed: 2, held: 0 }, 0)).toBe(true);
+    expect(echoLinesShow({ hidden: 0, trimmed: 0, held: 0 }, 1)).toBe(true);
+    expect(echoLinesShow(null, 1)).toBe(true);
   });
 });
