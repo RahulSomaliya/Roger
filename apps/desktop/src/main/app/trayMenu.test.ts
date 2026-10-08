@@ -64,6 +64,8 @@ function event(
 function inputs(changes: Partial<TrayInputs> = {}): TrayInputs {
   return {
     recording: false,
+    recordingTitle: null,
+    recordingStartedMs: null,
     loudWarning: false,
     nowMs: NOW,
     events: [],
@@ -183,6 +185,35 @@ describe('the menu bar menu', () => {
       }),
     );
     expect(texts(untitled)[0]).toBe('Next: Meeting at 3:30 pm, 3:30 pm');
+  });
+
+  it('names the meeting being recorded and for how long, first, while notes are taken (gap M6)', () => {
+    const at = (minutes: number) => NOW - minutes * 60_000;
+    const first = (changes: Partial<TrayInputs>) =>
+      texts(buildTrayModel(inputs({ recording: true, ...changes })))[0];
+    expect(first({ recordingTitle: 'Acme renewal', recordingStartedMs: at(12) })).toBe(
+      'Recording: Acme renewal, 12m',
+    );
+    expect(first({ recordingTitle: 'Acme renewal', recordingStartedMs: at(83) })).toBe(
+      'Recording: Acme renewal, 1h 23m',
+    );
+    expect(first({ recordingTitle: 'Acme renewal', recordingStartedMs: NOW })).toBe(
+      'Recording: Acme renewal, 0m',
+    );
+    // Long titles are cut like the next meeting's; a missing one or start leaves that part out.
+    expect(
+      first({
+        recordingTitle: 'Quarterly planning with every team lead and the whole finance group',
+        recordingStartedMs: at(1),
+      }),
+    ).toBe('Recording: Quarterly planning with every team lead…, 1m');
+    expect(first({ recordingTitle: null, recordingStartedMs: at(5) })).toBe('Recording, 5m');
+    expect(first({ recordingTitle: 'Acme renewal', recordingStartedMs: null })).toBe(
+      'Recording: Acme renewal',
+    );
+    expect(texts(buildTrayModel(inputs({ recordingTitle: 'Acme renewal' })))).not.toContain(
+      'Recording: Acme renewal',
+    );
   });
 
   it('never puts attendees into the menu', () => {

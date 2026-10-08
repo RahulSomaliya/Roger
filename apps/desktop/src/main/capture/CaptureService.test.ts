@@ -2188,6 +2188,20 @@ describe('CaptureService start requests (M5)', () => {
     expect(lastMeeting(h)?.title).toBe(defaultMeetingTitle(new Date(h.now())));
   });
 
+  it("names a blank-titled calendar start from the event's start, as the prompt card does, not from the click", async () => {
+    const h = harness();
+    // The click is not the invite's start (STANDUP is 09:30 UTC; the harness clock differs).
+    const started = await h.service.start({
+      source: 'notification',
+      title: ' ',
+      calendarEvent: STANDUP,
+    });
+    const expected = defaultMeetingTitle(new Date(STANDUP.scheduledStart));
+    expect(expected).not.toBe(defaultMeetingTitle(new Date(h.now())));
+    expect(started.title).toBe(expected);
+    expect(lastMeeting(h)?.title).toBe(expected);
+  });
+
   // The uploader sends the stored title, so the local title is the one the server keeps.
   it('stores the title as the API stores it: U+0000 dropped, then trimmed as the API trims', async () => {
     const h = harness();

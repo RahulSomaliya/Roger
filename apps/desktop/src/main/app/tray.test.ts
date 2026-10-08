@@ -118,9 +118,18 @@ function fakeCapture() {
       capture.stops += 1;
       return Promise.resolve();
     },
-    setPhase: (phase: CapturePhase, warnings: CaptureWarning[] = []) => {
+    setPhase: (
+      phase: CapturePhase,
+      warnings: CaptureWarning[] = [],
+      meeting: { title: string; startedAt: string } | null = null,
+    ) => {
       capture.phase = phase;
-      const status: CaptureStatus = { ...idleCaptureStatus(NO_UPLOAD), phase, warnings };
+      const status: CaptureStatus = {
+        ...idleCaptureStatus(NO_UPLOAD),
+        phase,
+        warnings,
+        ...(meeting ?? {}),
+      };
       for (const listener of [...listeners]) listener(status);
     },
     listenerCount: () => listeners.size,
@@ -244,6 +253,21 @@ describe('MenuBarTray', () => {
     expect(h.view.labels).toContain('Stop');
     h.capture.setPhase('idle');
     expect(h.view.icons.at(-1)).toBe('/icons/idle.png');
+  });
+
+  it('names the recording meeting and its length, and moves the length on at the minute tick', () => {
+    const h = setup();
+    h.tray.start();
+    h.capture.setPhase('recording', [], {
+      title: 'Acme renewal',
+      startedAt: new Date(h.clock.ms).toISOString(),
+    });
+    expect(h.view.labels[0]).toBe('Recording: Acme renewal, 0m');
+    h.clock.ms += 5 * 60_000;
+    vi.advanceTimersByTime(60_000);
+    expect(h.view.labels[0]).toBe('Recording: Acme renewal, 5m');
+    h.capture.setPhase('idle');
+    expect(h.view.labels.some((label) => label.startsWith('Recording'))).toBe(false);
   });
 
   it('does not rebuild the menu for a status change that changes nothing', () => {

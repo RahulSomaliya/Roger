@@ -93,6 +93,9 @@ export class MenuBarTray {
   private events: readonly CalendarEvent[] = [];
   private sync: CalendarSyncState | null = null;
   private loudWarning = false;
+  /** The recording meeting's title and start, from the last status; read only while recording. */
+  private recordingTitle: string | null = null;
+  private recordingStartedMs: number | null = null;
   /** The model last given to the view, as text: an unchanged model touches nothing. */
   private shown: string | null = null;
   private shownIcon: TrayIconState | null = null;
@@ -106,6 +109,9 @@ export class MenuBarTray {
     this.stops.push(
       capture.on('status', (status) => {
         this.loudWarning = (status.warnings ?? []).some((warning) => warning.loud);
+        this.recordingTitle = status.title;
+        const startedMs = status.startedAt === null ? Number.NaN : Date.parse(status.startedAt);
+        this.recordingStartedMs = Number.isFinite(startedMs) ? startedMs : null;
         this.refresh();
       }),
     );
@@ -146,6 +152,8 @@ export class MenuBarTray {
     try {
       const model = buildTrayModel({
         recording: capture.phase === 'recording',
+        recordingTitle: this.recordingTitle,
+        recordingStartedMs: this.recordingStartedMs,
         loudWarning: this.loudWarning,
         nowMs: now(),
         events: this.events,
