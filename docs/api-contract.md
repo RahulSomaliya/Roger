@@ -24,21 +24,21 @@ same change as the code on both sides. Base URL in development: `http://127.0.0.
   { "error": { "code": "not_found", "message": "Meeting 7f3c... not found" } }
   ```
 
-  | HTTP | code | When |
-  | --- | --- | --- |
-  | 401 | `unauthorized` | Missing or wrong bearer token |
-  | 404 | `not_found` | Unknown id, or an id in another workspace |
-  | 409 | `conflict` | The request clashes with what is stored. Each route's section lists its own `409`s. |
-  | 405 | `method_not_allowed` | Known path, wrong method |
-  | 422 | `validation_error` | Body or query failed validation; `message` lists the fields |
-  | 422 | `empty_meeting` | Notes were asked for a meeting with no transcript lines and no user notes |
-  | 422 | `meeting_too_long` | The meeting is over the chat model's input budget (about 10 hours of talk) |
-  | 424 | `calendar_reconnect_required` | Only connecting the calendar again helps: Google refused the stored refresh token or a used or expired sign-in code (`invalid_grant`), the user did not grant calendar access, or the API can no longer use the stored grant (`CALENDAR_TOKEN_KEY` changed). Also when `CALENDAR_PROVIDER` changed since the connect, where setting it back helps too. The message says what to do. |
-  | 500 | `internal_error` | Unexpected; details only in server logs |
-  | 502 | `stt_provider_error` | The speech-to-text vendor refused or failed a token request |
-  | 502 | `llm_provider_error` | The notes model's vendor refused or failed before the stream started |
-  | 502 | `calendar_provider_error` | Google is unreachable or answered with an error we cannot use |
-  | 503 | `calendar_not_configured` | The API has no calendar provider (no Google client set up on the server). Only the server's owner can fix it; the desktop says so in plain words. Sent by the calendar authorization, connection (POST) and events routes. |
+  | HTTP | code                          | When                                                                                                                                                                                                                                                                                                                                                                                |
+  | ---- | ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+  | 401  | `unauthorized`                | Missing or wrong bearer token                                                                                                                                                                                                                                                                                                                                                       |
+  | 404  | `not_found`                   | Unknown id, or an id in another workspace                                                                                                                                                                                                                                                                                                                                           |
+  | 409  | `conflict`                    | The request clashes with what is stored. Each route's section lists its own `409`s.                                                                                                                                                                                                                                                                                                 |
+  | 405  | `method_not_allowed`          | Known path, wrong method                                                                                                                                                                                                                                                                                                                                                            |
+  | 422  | `validation_error`            | Body or query failed validation; `message` lists the fields                                                                                                                                                                                                                                                                                                                         |
+  | 422  | `empty_meeting`               | Notes were asked for a meeting with no transcript lines and no user notes                                                                                                                                                                                                                                                                                                           |
+  | 422  | `meeting_too_long`            | The meeting is over the chat model's input budget (about 10 hours of talk)                                                                                                                                                                                                                                                                                                          |
+  | 424  | `calendar_reconnect_required` | Only connecting the calendar again helps: Google refused the stored refresh token or a used or expired sign-in code (`invalid_grant`), the user did not grant calendar access, or the API can no longer use the stored grant (`CALENDAR_TOKEN_KEY` changed). Also when `CALENDAR_PROVIDER` changed since the connect, where setting it back helps too. The message says what to do. |
+  | 500  | `internal_error`              | Unexpected; details only in server logs                                                                                                                                                                                                                                                                                                                                             |
+  | 502  | `stt_provider_error`          | The speech-to-text vendor refused or failed a token request                                                                                                                                                                                                                                                                                                                         |
+  | 502  | `llm_provider_error`          | The notes model's vendor refused or failed before the stream started                                                                                                                                                                                                                                                                                                                |
+  | 502  | `calendar_provider_error`     | Google is unreachable or answered with an error we cannot use                                                                                                                                                                                                                                                                                                                       |
+  | 503  | `calendar_not_configured`     | The API has no calendar provider (no Google client set up on the server). Only the server's owner can fix it; the desktop says so in plain words. Sent by the calendar authorization, connection (POST) and events routes.                                                                                                                                                          |
 
   A 401 carries `WWW-Authenticate: Bearer`. Every response carries `X-Request-ID` (echoed when the
   caller sends a safe one, generated otherwise); the same id is on every log line for the request.
@@ -52,16 +52,17 @@ same change as the code on both sides. Base URL in development: `http://127.0.0.
 type MeetingStatus = "recording" | "ended";
 // How the recording was started. `notification` is a click on the calendar prompt,
 // `call_detected` one on the call-detected card; `manual` is the default.
-type StartSource = "manual" | "notification" | "home" | "tray" | "call_detected";
+type StartSource =
+  "manual" | "notification" | "home" | "tray" | "call_detected";
 
 interface Meeting {
   id: string;
   workspace_id: string;
   title: string;
   status: MeetingStatus;
-  started_at: string;        // instant
-  ended_at: string | null;   // instant
-  segment_count: number;     // transcript segments stored so far
+  started_at: string; // instant
+  ended_at: string | null; // instant
+  segment_count: number; // transcript segments stored so far
   start_source: StartSource; // "manual" for every meeting stored before it existed
   calendar_event: MeetingCalendarEvent | null; // the event it was started for
   created_at: string;
@@ -72,12 +73,12 @@ interface Meeting {
 // shared with `CalendarEvent`. Never copy them here: two copies drift apart.
 interface MeetingCalendarEvent {
   provider: "google" | "fake";
-  event_id: string;                // the instance id for a recurring event
-  ical_uid: string | null;         // the same for every invitee
+  event_id: string; // the instance id for a recurring event
+  ical_uid: string | null; // the same for every invitee
   recurring_event_id: string | null;
-  scheduled_start: string;         // instant
-  scheduled_end: string;           // instant
-  attendees: CalendarAttendee[];   // at most 200, in invite order
+  scheduled_start: string; // instant
+  scheduled_end: string; // instant
+  attendees: CalendarAttendee[]; // at most 200, in invite order
 }
 
 type AudioSource = "mic" | "system";
@@ -92,11 +93,11 @@ interface TranscriptWord {
 interface TranscriptSegment {
   id: string;
   meeting_id: string;
-  source: AudioSource;       // which audio stream produced it
-  speaker: string;           // "me" for mic, "them" for system in M1; names arrive in M9
-  start_ms: number;          // offset from meeting.started_at
-  end_ms: number;            // >= start_ms
-  text: string;              // non-empty, trimmed
+  source: AudioSource; // which audio stream produced it
+  speaker: string; // "me" for mic, "them" for system in M1; names arrive in M9
+  start_ms: number; // offset from meeting.started_at
+  end_ms: number; // >= start_ms
+  text: string; // non-empty, trimmed
   confidence: number | null; // 0..1
   words: TranscriptWord[] | null;
   created_at: string;
@@ -173,10 +174,21 @@ Request:
 {
   "segments": [
     {
-      "id": "uuid", "source": "mic", "speaker": "me",
-      "start_ms": 1200, "end_ms": 2950, "text": "Hello everyone.",
+      "id": "uuid",
+      "source": "mic",
+      "speaker": "me",
+      "start_ms": 1200,
+      "end_ms": 2950,
+      "text": "Hello everyone.",
       "confidence": 0.98,
-      "words": [{ "text": "Hello", "start_ms": 1200, "end_ms": 1600, "confidence": 0.99 }]
+      "words": [
+        {
+          "text": "Hello",
+          "start_ms": 1200,
+          "end_ms": 1600,
+          "confidence": 0.99
+        }
+      ]
     }
   ]
 }
@@ -210,22 +222,22 @@ preset. Both sides keep a vendor registry with the same provider ids (`STT_VENDO
 API may list a vendor before the desktop has its adapter (`soniox` did until M3-T15): Start then
 fails on the Mac with "Unsupported speech-to-text provider".
 
-| `STT_PROVIDER` (preset) | `provider` | `stream.model` | `stream.price_per_hour_usd_without_keyterms`, and `price_per_hour_usd` with no jargon list | `stream.price_per_hour_usd` with a jargon list |
-| --- | --- | --- | --- | --- |
-| `assemblyai` (Roger's vendor since 2026-10-06) | `assemblyai` | `universal-streaming-english` | `0.15` | `0.19` |
-| `assemblyai-pro` | `assemblyai` | `universal-3-6-pro` | `0.45` | `0.45` (keyterms included) |
-| `deepgram` (the second adapter) | `deepgram` | `nova-3` | `0.462` | `0.54` |
-| `soniox` (the optional third vendor) | `soniox` | `stt-rt-v5` | `0.12` | `0.12` (Soniox bills the list as a few input tokens per stream opened, under $0.001, not per hour) |
-| `xai` (to compare Grok with AssemblyAI) | `xai` | `grok-voice-transcribe-2.0` | `0.2` | `0.2` (xAI lists no keyterm charge) |
-| `fake` | `fake` | `fake` | `0` | `0` |
+| `STT_PROVIDER` (preset)                        | `provider`   | `stream.model`                | `stream.price_per_hour_usd_without_keyterms`, and `price_per_hour_usd` with no jargon list | `stream.price_per_hour_usd` with a jargon list                                                     |
+| ---------------------------------------------- | ------------ | ----------------------------- | ------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------- |
+| `assemblyai` (Roger's vendor since 2026-10-06) | `assemblyai` | `universal-streaming-english` | `0.15`                                                                                     | `0.19`                                                                                             |
+| `assemblyai-pro`                               | `assemblyai` | `universal-3-6-pro`           | `0.45`                                                                                     | `0.45` (keyterms included)                                                                         |
+| `deepgram` (the second adapter)                | `deepgram`   | `nova-3`                      | `0.462`                                                                                    | `0.54`                                                                                             |
+| `soniox` (the optional third vendor)           | `soniox`     | `stt-rt-v5`                   | `0.12`                                                                                     | `0.12` (Soniox bills the list as a few input tokens per stream opened, under $0.001, not per hour) |
+| `xai` (to compare Grok with AssemblyAI)        | `xai`        | `grok-voice-transcribe-2.0`   | `0.2`                                                                                      | `0.2` (xAI lists no keyterm charge)                                                                |
+| `fake`                                         | `fake`       | `fake`                        | `0`                                                                                        | `0`                                                                                                |
 
-| `provider` | `access_token` | `expires_in` |
-| --- | --- | --- |
-| `assemblyai` | AssemblyAI temporary streaming token; the desktop sends it as the `token` query parameter | Seconds left to open the stream (1..600). One token opens both streams; a session then runs up to 3 hours, a cap the API asks for explicitly on every token (`max_session_duration_seconds=10800`), after which AssemblyAI closes it with 3008. |
-| `deepgram` | Deepgram grant (JWT); the desktop sends it as `Authorization: Bearer` | Seconds the grant is valid |
-| `soniox` | Soniox temporary API key; the desktop sends it as `Authorization: Bearer` | Seconds left to open a stream (1..3600). One key opens both streams (never `single_use`); a stream then runs up to 5 hours, a cap the API asks for explicitly on every key (`max_session_duration_seconds=18000`), after which Soniox ends it with a `temp_api_key_session_expired` error. |
-| `xai` | xAI client secret (`xai-client-secret.` prefix), minted by `POST /v1/realtime/client_secrets`; the desktop sends it as `Authorization: Bearer` on the websocket handshake. `/v1/stt` accepts it (live check 2026-10-07), though xAI documents it for the voice-agent socket only. It opens ONE connection, ever: a second websocket on it, at the same time or after the first closed, is refused with HTTP 401 (probe 2026-10-08), so the desktop asks for one token per stream it opens (two at every Start). | Seconds left to open its one stream (1..3600). xAI documents no session cap, so the API asks for none. |
-| `fake` | `""` | `0` |
+| `provider`   | `access_token`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  | `expires_in`                                                                                                                                                                                                                                                                               |
+| ------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `assemblyai` | AssemblyAI temporary streaming token; the desktop sends it as the `token` query parameter                                                                                                                                                                                                                                                                                                                                                                                                                       | Seconds left to open the stream (1..600). One token opens both streams; a session then runs up to 3 hours, a cap the API asks for explicitly on every token (`max_session_duration_seconds=10800`), after which AssemblyAI closes it with 3008.                                            |
+| `deepgram`   | Deepgram grant (JWT); the desktop sends it as `Authorization: Bearer`                                                                                                                                                                                                                                                                                                                                                                                                                                           | Seconds the grant is valid                                                                                                                                                                                                                                                                 |
+| `soniox`     | Soniox temporary API key; the desktop sends it as `Authorization: Bearer`                                                                                                                                                                                                                                                                                                                                                                                                                                       | Seconds left to open a stream (1..3600). One key opens both streams (never `single_use`); a stream then runs up to 5 hours, a cap the API asks for explicitly on every key (`max_session_duration_seconds=18000`), after which Soniox ends it with a `temp_api_key_session_expired` error. |
+| `xai`        | xAI client secret (`xai-client-secret.` prefix), minted by `POST /v1/realtime/client_secrets`; the desktop sends it as `Authorization: Bearer` on the websocket handshake. `/v1/stt` accepts it (live check 2026-10-07), though xAI documents it for the voice-agent socket only. It opens ONE connection, ever: a second websocket on it, at the same time or after the first closed, is refused with HTTP 401 (probe 2026-10-08), so the desktop asks for one token per stream it opens (two at every Start). | Seconds left to open its one stream (1..3600). xAI documents no session cap, so the API asks for none.                                                                                                                                                                                     |
+| `fake`       | `""`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            | `0`                                                                                                                                                                                                                                                                                        |
 
 How many streams one `access_token` opens is the vendor's, and the desktop's adapter declares it
 (`credentialUse` in `apps/desktop/src/main/stt/core/SttProtocol.ts`): `reusable` for `assemblyai`,
@@ -345,27 +357,27 @@ price its token named (see `POST /v1/stt/token`).
 
 ```ts
 interface SttSourceUsage {
-  sessions_opened: number;           // sockets that completed the handshake; each may be billed
-  connected_ms: number;              // open time summed over sessions: what the vendor bills
-  audio_sent_ms: number;             // audio sent, in ms of PCM; a fraction is rounded (PUT below)
-  dropped_chunks: number;            // chunks dropped because their stream was not open
-  gated_ms: number;                  // stream time the silence gate kept closed (M3-T20)
+  sessions_opened: number; // sockets that completed the handshake; each may be billed
+  connected_ms: number; // open time summed over sessions: what the vendor bills
+  audio_sent_ms: number; // audio sent, in ms of PCM; a fraction is rounded (PUT below)
+  dropped_chunks: number; // chunks dropped because their stream was not open
+  gated_ms: number; // stream time the silence gate kept closed (M3-T20)
   estimated_cost_usd: number | null; // null when a session opened with no known price, never 0
 }
 
 interface SttUsage {
   meeting_id: string;
-  provider: string;                  // the token's `provider`, such as "assemblyai"
-  sessions_opened: number;           // these six: both sources summed
+  provider: string; // the token's `provider`, such as "assemblyai"
+  sessions_opened: number; // these six: both sources summed
   connected_ms: number;
   audio_sent_ms: number;
   dropped_chunks: number;
   gated_ms: number;
   estimated_cost_usd: number | null;
   by_source: { mic: SttSourceUsage; system: SttSourceUsage };
-  stop_reason: string | null;        // why the recording stopped; null while it still runs
-  created_at: string;                // the first upload
-  updated_at: string;                // the last
+  stop_reason: string | null; // why the recording stopped; null while it still runs
+  created_at: string; // the first upload
+  updated_at: string; // the last
 }
 ```
 
@@ -424,17 +436,17 @@ Response:
 }
 ```
 
-| Field | What it is |
-| --- | --- |
-| `meetings` | Meetings with usage in the window |
-| `stream_hours` | `connected_ms` summed: the open time the vendor bills. A meeting opens two streams, so an hour's call is about 2 stream hours. |
-| `meeting_hours` | From `started_at` to `ended_at`, for meetings that have a meeting row and have ended (an end before the start counts 0). A meeting without a row, or still recording, adds none. |
-| `estimated_cost_usd` | The known costs summed. `null` when every meeting in the window has an unknown price; `0` when the window has no meetings. |
-| `cost_per_meeting_hour` | The cost of the meetings with both a known price and meeting hours, over those meetings' hours. `null` when there are none. |
-| `gated_hours` | `gated_ms` summed: stream time the silence gate kept closed |
-| `estimated_saved_usd` | Each meeting's `gated_ms` at that meeting's own price per stream hour (its `estimated_cost_usd` over its `connected_ms`), summed over meetings with a known price. `null` exactly when `estimated_cost_usd` is. |
-| `unpriced_meetings` | Meetings whose `estimated_cost_usd` is `null` |
-| `unpriced_meeting_ids` | Their ids, newest first, at most 100 |
+| Field                   | What it is                                                                                                                                                                                                      |
+| ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `meetings`              | Meetings with usage in the window                                                                                                                                                                               |
+| `stream_hours`          | `connected_ms` summed: the open time the vendor bills. A meeting opens two streams, so an hour's call is about 2 stream hours.                                                                                  |
+| `meeting_hours`         | From `started_at` to `ended_at`, for meetings that have a meeting row and have ended (an end before the start counts 0). A meeting without a row, or still recording, adds none.                                |
+| `estimated_cost_usd`    | The known costs summed. `null` when every meeting in the window has an unknown price; `0` when the window has no meetings.                                                                                      |
+| `cost_per_meeting_hour` | The cost of the meetings with both a known price and meeting hours, over those meetings' hours. `null` when there are none.                                                                                     |
+| `gated_hours`           | `gated_ms` summed: stream time the silence gate kept closed                                                                                                                                                     |
+| `estimated_saved_usd`   | Each meeting's `gated_ms` at that meeting's own price per stream hour (its `estimated_cost_usd` over its `connected_ms`), summed over meetings with a known price. `null` exactly when `estimated_cost_usd` is. |
+| `unpriced_meetings`     | Meetings whose `estimated_cost_usd` is `null`                                                                                                                                                                   |
+| `unpriced_meeting_ids`  | Their ids, newest first, at most 100                                                                                                                                                                            |
 
 A meeting with an unknown price is counted and named, never summed as `0`: its time counts in
 `stream_hours`, `meeting_hours` and `gated_hours`, its cost nowhere, and `cost_per_meeting_hour`
@@ -455,15 +467,15 @@ Response: `200 { "items": NoteTemplate[] }`, ordered by `name`. No `409`s.
 
 ```ts
 interface NoteTemplateSection {
-  heading: string;   // written as the notes heading, exactly as given
-  guidance: string;  // what goes under the heading; only the model reads it
+  heading: string; // written as the notes heading, exactly as given
+  guidance: string; // what goes under the heading; only the model reads it
 }
 
 interface NoteTemplate {
-  id: string;        // stable: stored on notes and runs as `template_id`
-  name: string;      // shown in the template picker
+  id: string; // stable: stored on notes and runs as `template_id`
+  name: string; // shown in the template picker
   description: string;
-  sections: NoteTemplateSection[];  // in the order the notes use them; at least one
+  sections: NoteTemplateSection[]; // in the order the notes use them; at least one
 }
 ```
 
@@ -484,12 +496,12 @@ type NoteKind = "user" | "ai";
 
 interface Note {
   kind: NoteKind;
-  doc: { type: "doc"; content?: object[] };  // TipTap JSON, as the editor's getJSON() writes it
-  version: number;                  // 1 when created; every stored save adds 1
-  template_id: string | null;       // the template of the notes run that wrote the AI notes
-  last_run_id: string | null;       // that run
+  doc: { type: "doc"; content?: object[] }; // TipTap JSON, as the editor's getJSON() writes it
+  version: number; // 1 when created; every stored save adds 1
+  template_id: string | null; // the template of the notes run that wrote the AI notes
+  last_run_id: string | null; // that run
   generated_version: number | null; // the version that run wrote: a higher `version` was edited since
-  updated_at: string;               // instant
+  updated_at: string; // instant
 }
 ```
 
@@ -508,7 +520,11 @@ Saves the whole doc of one kind. `kind` is `user` or `ai`; anything else is a `4
 Request:
 
 ```json
-{ "doc": { "type": "doc", "content": [] }, "base_version": 3, "revision_id": "uuid" }
+{
+  "doc": { "type": "doc", "content": [] },
+  "base_version": 3,
+  "revision_id": "uuid"
+}
 ```
 
 - `base_version`: the stored version the doc was edited from; `0` creates the note.
@@ -570,7 +586,8 @@ not stop it, and it saves without anyone listening. Notes runs and chat runs (Ch
 type RunKind = "notes" | "chat";
 type RunStatus = "running" | "succeeded" | "failed" | "cancelled";
 // The `error` event's codes, also stored as `error_code`.
-type RunErrorCode = "llm_provider_error" | "cut_off" | "cancelled" | "internal_error";
+type RunErrorCode =
+  "llm_provider_error" | "cut_off" | "cancelled" | "internal_error";
 // `no_refs`: the line cited nothing. `unknown_refs`: every ref it cited points nowhere.
 type DropReason = "no_refs" | "unknown_refs";
 
@@ -584,24 +601,24 @@ interface LlmRun {
   meeting_id: string;
   kind: RunKind;
   status: RunStatus;
-  model: string;                     // the model the run asked
-  prompt_version: string;            // changes with the prompt's rules or layout
-  template_id: string | null;        // notes runs only
-  line_count: number;                // transcript lines the model was shown
+  model: string; // the model the run asked
+  prompt_version: string; // changes with the prompt's rules or layout
+  template_id: string | null; // notes runs only
+  line_count: number; // transcript lines the model was shown
   user_notes_version: number | null; // the versions a notes run built on; 0: that note did not exist
   ai_base_version: number | null;
-  error_code: RunErrorCode | null;   // null unless failed or cancelled
-  error: string | null;              // in words for the user; never the vendor's body
-  dropped: DroppedLine[] | null;     // removed lines, in the order written; null unless succeeded
-  flagged_count: number;             // lines kept with support "weak" ("check this")
-  from_notes_count: number;          // lines under "From your notes"
+  error_code: RunErrorCode | null; // null unless failed or cancelled
+  error: string | null; // in words for the user; never the vendor's body
+  dropped: DroppedLine[] | null; // removed lines, in the order written; null unless succeeded
+  flagged_count: number; // lines kept with support "weak" ("check this")
+  from_notes_count: number; // lines under "From your notes"
   input_tokens: number | null;
   output_tokens: number | null;
   cached_tokens: number | null;
-  cost_usd: string | null;           // a decimal string ("0.00083"); null when unknown, never "0"
-  started_at: string;                // instant
-  heartbeat_at: string;              // instant; moves every 20 s while the run runs
-  finished_at: string | null;        // instant
+  cost_usd: string | null; // a decimal string ("0.00083"); null when unknown, never "0"
+  started_at: string; // instant
+  heartbeat_at: string; // instant; moves every 20 s while the run runs
+  finished_at: string | null; // instant
 }
 ```
 
@@ -614,7 +631,12 @@ of its meeting is claimed.
 Request:
 
 ```json
-{ "run_id": "uuid", "template_id": "standup", "user_notes_version": 3, "ai_base_version": 1 }
+{
+  "run_id": "uuid",
+  "template_id": "standup",
+  "user_notes_version": 3,
+  "ai_base_version": 1
+}
 ```
 
 - `run_id`: made by the client before its first attempt and re-sent by every retry of that
@@ -629,15 +651,15 @@ Response: `200 text/event-stream`. The headers are sent only once the run is cla
 model's vendor has accepted the request, then a `: ping` comment every 15 s while nothing else is
 sent. Each event's `data` is one JSON object:
 
-| Event | Data | When |
-| --- | --- | --- |
-| `run` | `{run_id, model, template_id, line_count}` | First |
-| `section` | `{index, heading}` | Before the first kept line of a section. `index` names the section in `item`; a section that keeps no line is never sent. |
-| `item` | `{section, text, citations: [{ref, segment_id, start_ms}], support}` | A kept line, with each transcript line it cites in transcript order. `support` is `"weak"` when a number in the line is in none of its cited lines and note blocks, or the line shares no word with them; else `"ok"`. |
-| `from_notes` | `{text}` | A line only the user's notes back: it goes to the closing "From your notes" list, without chips |
-| `dropped` | `{text, reason}` | A removed line (`DropReason`) |
-| `done` | `{run_id, note}` | Last, once the AI notes are saved: `note` is the `ai` `Note` as stored |
-| `error` | `{code, message}` | Last, when the run failed or was cancelled (`RunErrorCode`); the AI notes are unchanged |
+| Event        | Data                                                                 | When                                                                                                                                                                                                                   |
+| ------------ | -------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `run`        | `{run_id, model, template_id, line_count}`                           | First                                                                                                                                                                                                                  |
+| `section`    | `{index, heading}`                                                   | Before the first kept line of a section. `index` names the section in `item`; a section that keeps no line is never sent.                                                                                              |
+| `item`       | `{section, text, citations: [{ref, segment_id, start_ms}], support}` | A kept line, with each transcript line it cites in transcript order. `support` is `"weak"` when a number in the line is in none of its cited lines and note blocks, or the line shares no word with them; else `"ok"`. |
+| `from_notes` | `{text}`                                                             | A line only the user's notes back: it goes to the closing "From your notes" list, without chips                                                                                                                        |
+| `dropped`    | `{text, reason}`                                                     | A removed line (`DropReason`)                                                                                                                                                                                          |
+| `done`       | `{run_id, note}`                                                     | Last, once the AI notes are saved: `note` is the `ai` `Note` as stored                                                                                                                                                 |
+| `error`      | `{code, message}`                                                    | Last, when the run failed or was cancelled (`RunErrorCode`); the AI notes are unchanged                                                                                                                                |
 
 Error codes: `llm_provider_error` (the vendor failed after the stream started), `cut_off` (the
 answer stopped at the output limit), `cancelled` (`POST .../cancel`), `internal_error`. A stream
@@ -671,8 +693,15 @@ then a `citation` chip for each run of neighbouring transcript lines it cites (`
 is two chips):
 
 ```json
-{ "type": "citation",
-  "attrs": { "segmentIds": ["uuid", "uuid"], "startMs": 305000, "label": "05:05", "support": "ok" } }
+{
+  "type": "citation",
+  "attrs": {
+    "segmentIds": ["uuid", "uuid"],
+    "startMs": 305000,
+    "label": "05:05",
+    "support": "ok"
+  }
+}
 ```
 
 `startMs` is the first line's start; `label` is its time as the chip shows it (`mm:ss`, or
@@ -732,22 +761,22 @@ type ChatRole = "user" | "assistant";
 type ChatMessageStatus = "complete" | "streaming" | "failed";
 
 interface RefCitation {
-  ref: string;         // "L12": the transcript line as the answer cites it
-  segment_id: string;  // that line's segment
-  start_ms: number;    // and its start, so a chip outlives a re-numbered transcript
+  ref: string; // "L12": the transcript line as the answer cites it
+  segment_id: string; // that line's segment
+  start_ms: number; // and its start, so a chip outlives a re-numbered transcript
 }
 
 interface ChatMessage {
-  id: string;                       // a question's id is the desktop's `message_id`
-  role: ChatRole;                   // "user": a question; "assistant": an answer
-  text: string;                     // "" while an answer streams
-  citations: RefCitation[] | null;  // an answer's, each ref once, in the order it first appears
-                                    // in `text`; null for a question
-  reply_to: string | null;          // the question an answer replies to; null for a question
-  run_id: string | null;            // the run that wrote an answer (the latest, when written
-                                    // again); null for a question
-  status: ChatMessageStatus;        // a question is always "complete"
-  created_at: string;               // instant
+  id: string; // a question's id is the desktop's `message_id`
+  role: ChatRole; // "user": a question; "assistant": an answer
+  text: string; // "" while an answer streams
+  citations: RefCitation[] | null; // an answer's, each ref once, in the order it first appears
+  // in `text`; null for a question
+  reply_to: string | null; // the question an answer replies to; null for a question
+  run_id: string | null; // the run that wrote an answer (the latest, when written
+  // again); null for a question
+  status: ChatMessageStatus; // a question is always "complete"
+  created_at: string; // instant
 }
 ```
 
@@ -776,13 +805,13 @@ Asks a question about the meeting. Any meeting, recording or ended.
 Response: `200 text/event-stream`, with a `: ping` comment after every 15 s of silence. Each event's
 `data` is one JSON object:
 
-| Event | Data | When |
-| --- | --- | --- |
-| `run` | `{ run_id, model }` | First, before any text. Both fields are always there. |
-| `delta` | `{ text }` | The answer's next piece, as the model wrote it |
-| `citation` | `RefCitation` | Once per line the answer cites, as soon as its bracket closes. A ref with no `citation` stays text. |
-| `done` | `{ message: ChatMessage }` | Last, once the answer is stored. Its `text` replaces the streamed text. |
-| `error` | `{ code, message }` | Last, when no answer was stored: `llm_provider_error`, `cut_off`, `cancelled` or `internal_error`. The answer is stored `failed`. |
+| Event      | Data                       | When                                                                                                                              |
+| ---------- | -------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `run`      | `{ run_id, model }`        | First, before any text. Both fields are always there.                                                                             |
+| `delta`    | `{ text }`                 | The answer's next piece, as the model wrote it                                                                                    |
+| `citation` | `RefCitation`              | Once per line the answer cites, as soon as its bracket closes. A ref with no `citation` stays text.                               |
+| `done`     | `{ message: ChatMessage }` | Last, once the answer is stored. Its `text` replaces the streamed text.                                                           |
+| `error`    | `{ code, message }`        | Last, when no answer was stored: `llm_provider_error`, `cut_off`, `cancelled` or `internal_error`. The answer is stored `failed`. |
 
 The answer is written in the background: a dropped stream does not stop it, and it is stored when
 it finishes. Read it with the thread, or by sending the same `message_id` again. Cancel it with
@@ -841,25 +870,25 @@ interface CalendarAttendee {
   display_name: string | null;
   response_status: ResponseStatus;
   is_self: boolean;
-  is_organizer: boolean;          // rooms and other resources are never listed
+  is_organizer: boolean; // rooms and other resources are never listed
 }
 
 interface CalendarEvent {
   provider: CalendarProvider;
-  id: string;                      // instance id for a recurring event
+  id: string; // instance id for a recurring event
   ical_uid: string | null;
   recurring_event_id: string | null;
-  title: string;                   // "" when the invite has none
+  title: string; // "" when the invite has none
   status: "confirmed" | "tentative"; // cancelled events are never returned
   all_day: boolean;
-  start: string | null;            // instant; null when all_day
+  start: string | null; // instant; null when all_day
   end: string | null;
-  start_date: string | null;       // "2026-10-06" when all_day; never turned into midnight UTC
-  end_date: string | null;         // exclusive
+  start_date: string | null; // "2026-10-06" when all_day; never turned into midnight UTC
+  end_date: string | null; // exclusive
   self_response: ResponseStatus | "organizer" | "unknown";
-  attendees: CalendarAttendee[];   // invite order, at most 100
-  attendees_omitted: boolean;      // Google left some out (privacy or more than 100)
-  video_link: string | null;       // Meet, Zoom or Teams join links only
+  attendees: CalendarAttendee[]; // invite order, at most 100
+  attendees_omitted: boolean; // Google left some out (privacy or more than 100)
+  video_link: string | null; // Meet, Zoom or Teams join links only
   video_link_source: "conference" | "location" | "description" | null;
   html_link: string | null;
 }
@@ -868,9 +897,9 @@ interface CalendarConnection {
   provider: CalendarProvider;
   account_email: string;
   status: "active" | "reconnect_required";
-  connected_at: string;            // instant
-  expires_hint: string | null;     // connected_at + 7 d, see below
-  last_error: string | null;       // the 424's message while reconnect_required
+  connected_at: string; // instant
+  expires_hint: string | null; // connected_at + 7 d, see below
+  last_error: string | null; // the 424's message while reconnect_required
 }
 ```
 

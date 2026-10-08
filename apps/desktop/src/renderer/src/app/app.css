@@ -170,7 +170,9 @@
 
 /* Home: three groups (the hero, Today, Earlier) with more space between them than inside them.
    Under 960 px they stack. From 960 px (D2) two top-aligned columns, 64 px apart: the hero and the
-   calendar line on the left, Today and Earlier on the right (360 px). The right column is
+   calendar line on the left (a bounded column, 280 to 340 px), Today and Earlier on the right: the
+   lists are the wide column, so titles are cut late and the hero is not a half-empty half. The
+   right column is
    `:empty` when neither list has anything (React renders no node for a null child), and then
    stays out of the grid so the hero stands at the left of the content, not centred. */
 
@@ -199,7 +201,7 @@
 @media (min-width: 960px) {
   .home {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) 360px;
+    grid-template-columns: minmax(280px, 340px) minmax(0, 1fr);
     align-items: start;
     column-gap: var(--space-16);
   }

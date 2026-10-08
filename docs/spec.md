@@ -16,17 +16,17 @@ and Teams later. Each person's calls are private by default; team spaces are sha
 
 ## What v1 does
 
-| Area | v1 behaviour |
-| --- | --- |
-| Capture | Mic and system audio as two streams. No bot. Starts from a notification or one click. Loud warning when it hears nothing. Local audio backup kept a few days. |
-| Transcript | Live, within about 2 seconds, labelled Me and Them. Saved on the Mac as it arrives, then in Postgres. Jargon list. |
-| Speaker names | Attendee names from the invite plus the active-speaker signal from Meet. One click fixes a name for the whole call. |
-| Notes | Notepad beside the transcript. After the call, AI rewrites rough notes with the transcript. Every AI line links to the transcript lines behind it. Templates per meeting type. |
-| Calendar | Google Calendar sign-in, today's meetings, pre-call notification, consent notice on by default. |
-| Team | Google sign-in, workspaces, folders, private by default, share by link or person, Slack export. |
-| Search and chat | Keyword plus meaning search across every call the user may see; chat with one call or many. |
-| MCP and API | Remote MCP (Streamable HTTP, OAuth) and REST with the same powers: list meetings for any dates, search, get notes, get a full transcript or a time slice. |
-| Ship | Signed, notarized, auto-updating Mac build. First run under 3 minutes. |
+| Area            | v1 behaviour                                                                                                                                                                   |
+| --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Capture         | Mic and system audio as two streams. No bot. Starts from a notification or one click. Loud warning when it hears nothing. Local audio backup kept a few days.                  |
+| Transcript      | Live, within about 2 seconds, labelled Me and Them. Saved on the Mac as it arrives, then in Postgres. Jargon list.                                                             |
+| Speaker names   | Attendee names from the invite plus the active-speaker signal from Meet. One click fixes a name for the whole call.                                                            |
+| Notes           | Notepad beside the transcript. After the call, AI rewrites rough notes with the transcript. Every AI line links to the transcript lines behind it. Templates per meeting type. |
+| Calendar        | Google Calendar sign-in, today's meetings, pre-call notification, consent notice on by default.                                                                                |
+| Team            | Google sign-in, workspaces, folders, private by default, share by link or person, Slack export.                                                                                |
+| Search and chat | Keyword plus meaning search across every call the user may see; chat with one call or many.                                                                                    |
+| MCP and API     | Remote MCP (Streamable HTTP, OAuth) and REST with the same powers: list meetings for any dates, search, get notes, get a full transcript or a time slice.                      |
+| Ship            | Signed, notarized, auto-updating Mac build. First run under 3 minutes.                                                                                                         |
 
 ## Where it beats Granola
 
