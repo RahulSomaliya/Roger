@@ -183,12 +183,19 @@ interface FocusableWindow {
   readonly webContents: { readonly id: number };
 }
 
+/** Notifications kept alive for their click; far more than a person has on screen. */
+const MAX_HELD_NOTIFICATIONS = 20;
+
 /** The Notifier's ports on Electron, for the window `getMainWindow` returns. */
-export function electronNotifierPorts(getMainWindow: () => FocusableWindow | null): NotifierPorts {
-  // Held until macOS answers, so a notification is not collected with its `failed` listener
-  // before the answer comes.
+export function electronNotifierPorts(
+  getMainWindow: () => FocusableWindow | null,
+): NotifierPorts & { heldCount(): number } {
+  // Held until it is clicked, closed or failed, NOT merely shown: Electron emits `click` only on a
+  // live object, so a notification dropped at `show` can be collected before the person clicks it a
+  // minute later, and the click (which opens its meeting) then does nothing.
   const pending = new Set<Notification>();
   return {
+    heldCount: () => pending.size,
     show(content, onFailed, onClick) {
       if (!Notification.isSupported()) {
         onFailed('this Mac does not support notifications for Roger');
@@ -196,10 +203,15 @@ export function electronNotifierPorts(getMainWindow: () => FocusableWindow | nul
       }
       const notification = new Notification({ title: content.title, body: content.body });
       pending.add(notification);
+      // Insertion order: past the cap the oldest is let go, so a Mac that never fires `close` cannot
+      // grow this set without limit.
+      if (pending.size > MAX_HELD_NOTIFICATIONS) {
+        const oldest = pending.values().next().value;
+        if (oldest !== undefined) pending.delete(oldest);
+      }
       const settle = (): void => {
         pending.delete(notification);
       };
-      notification.on('show', settle);
       notification.on('close', settle);
       notification.on('click', () => {
         settle();

@@ -382,6 +382,38 @@ describe('electronNotifierPorts', () => {
     expect(failures).toEqual(['UNErrorDomain error 1']);
   });
 
+  it('keeps a shown notification alive until it is clicked or closed, then lets it go', () => {
+    const ports = electronNotifierPorts(() => mainWindow);
+    const show = (): void => {
+      ports.show(
+        { title: 'T', body: 'B' },
+        () => undefined,
+        () => undefined,
+      );
+    };
+    show();
+    show();
+    electron.shown[0]?.emit('show');
+    electron.shown[1]?.emit('show');
+    expect(ports.heldCount()).toBe(2);
+    electron.shown[0]?.emit('click');
+    expect(ports.heldCount()).toBe(1);
+    electron.shown[1]?.emit('close');
+    expect(ports.heldCount()).toBe(0);
+  });
+
+  it('holds at most a bounded number of notifications', () => {
+    const ports = electronNotifierPorts(() => mainWindow);
+    for (let i = 0; i < 60; i += 1) {
+      ports.show(
+        { title: 'T', body: 'B' },
+        () => undefined,
+        () => undefined,
+      );
+    }
+    expect(ports.heldCount()).toBeLessThanOrEqual(20);
+  });
+
   it('runs onClick when macOS reports a click on the notification', () => {
     let clicks = 0;
     electronNotifierPorts(() => mainWindow).show(
