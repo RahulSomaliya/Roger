@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import {
   createOAuthState,
@@ -89,6 +90,29 @@ describe('listenForOAuthCallback', () => {
     await expect(portIsOpen(loopback)).resolves.toBe(false);
   });
 
+  it('serves a styled page: paper canvas, system font, both themes, a style allowed by hash only', async () => {
+    const loopback = await listen();
+    const { page, headers } = await visit(loopback, `?code=${CODE}&state=${STATE}`);
+
+    expect(page).toContain('<h1>Google sign-in is done.</h1>');
+    expect(page).toContain('<p>You can close this tab and go back to Roger.</p>');
+    expect(page).toContain('prefers-color-scheme:dark');
+    expect(page).toContain('-apple-system');
+    const style = /<style>([\s\S]*)<\/style>/.exec(page)?.[1] ?? '';
+    const hash = createHash('sha256').update(style, 'utf8').digest('base64');
+    expect(headers.get('content-security-policy')).toBe(
+      `default-src 'none'; style-src 'sha256-${hash}'`,
+    );
+  });
+
+  it('names the Connect Google Calendar button where the user has to try again', async () => {
+    const loopback = await listen();
+    const { page } = await visit(loopback, `?error=server_error&state=${STATE}`);
+
+    expect(page).toContain('Close this tab, then press Connect Google Calendar in Roger.');
+    expect(page).not.toMatch(/connect again/i);
+  });
+
   it('keeps waiting through a request without a code, another path and another method', async () => {
     const loopback = await listen();
 
@@ -111,7 +135,7 @@ describe('listenForOAuthCallback', () => {
 
     expect(answer.status).toBe(400);
     expect(failure(await loopback.outcome).message).toBe(
-      'The Google sign-in reply did not match the sign-in Roger started. Connect again.',
+      'The Google sign-in reply did not match the sign-in Roger started. Press Connect Google Calendar to try again.',
     );
     await expect(portIsOpen(loopback)).resolves.toBe(false);
   });
@@ -128,13 +152,13 @@ describe('listenForOAuthCallback', () => {
     const named = await listen();
     await visit(named, `?error=invalid_scope&state=${STATE}`);
     expect(failure(await named.outcome).message).toBe(
-      'Google sign-in did not finish (invalid_scope). Connect again.',
+      'Google sign-in did not finish (invalid_scope). Press Connect Google Calendar to try again.',
     );
 
     const odd = await listen();
     await visit(odd, `?error=${encodeURIComponent('<script>x</script>')}&state=${STATE}`);
     expect(failure(await odd.outcome).message).toBe(
-      'Google sign-in did not finish. Connect again.',
+      'Google sign-in did not finish. Press Connect Google Calendar to try again.',
     );
   });
 
@@ -154,17 +178,17 @@ describe('listenForOAuthCallback', () => {
   it('times out, closing the port', async () => {
     const loopback = await listen({ timeoutMs: 50 });
     expect(failure(await loopback.outcome).message).toBe(
-      'Google sign-in timed out after 50 ms. Connect again.',
+      'Google sign-in timed out after 50 ms. Press Connect Google Calendar to try again.',
     );
     await expect(portIsOpen(loopback)).resolves.toBe(false);
   });
 
   it('says the timeout in minutes when it is whole minutes', () => {
     expect(signInTimeoutMessage(3 * MINUTE)).toBe(
-      'Google sign-in timed out after 3 minutes. Connect again.',
+      'Google sign-in timed out after 3 minutes. Press Connect Google Calendar to try again.',
     );
     expect(signInTimeoutMessage(MINUTE)).toBe(
-      'Google sign-in timed out after 1 minute. Connect again.',
+      'Google sign-in timed out after 1 minute. Press Connect Google Calendar to try again.',
     );
   });
 
