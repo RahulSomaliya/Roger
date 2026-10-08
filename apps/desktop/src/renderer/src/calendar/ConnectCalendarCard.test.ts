@@ -37,6 +37,16 @@ describe('ConnectCalendarCard', () => {
     );
   });
 
+  it('disables Connect and says why when the server has no Google client (D4), as Settings does', () => {
+    const html = card({ error: 'calendar_not_configured' });
+    expect(html).toMatch(/<button[^>]*disabled=""[^>]*>Connect Google Calendar<\/button>/);
+    expect(html).toContain('Google Calendar is not set up on Roger&#x27;s server yet');
+    // The reason replaces the failure line and the helper: one sentence, not three.
+    expect(html).not.toContain('role="alert"');
+    expect(html).not.toContain('only reads your calendar');
+    expect(card({ error: 'Tick the calendar box' })).not.toContain('disabled');
+  });
+
   it('connects when the button is pressed', () => {
     const onConnect = vi.fn();
     const element = ConnectCalendarCard({ connecting: false, error: null, onConnect });
