@@ -5,6 +5,7 @@ import {
   formatClockTime,
   formatElapsed,
   meetingDayLabel,
+  windowTitle,
 } from './labels';
 
 // Every case builds its dates from local parts, so it reads the same in any zone.
@@ -68,5 +69,16 @@ describe('meetingDayLabel', () => {
   it('writes an older day as "Mon 5 Oct", with the year only for another year', () => {
     expect(meetingDayLabel(local(5, 9, 5).toISOString(), NOW)).toBe('Mon 5 Oct');
     expect(meetingDayLabel(local(2, 9, 5, 9, 2025).toISOString(), NOW)).toBe('Thu 2 Oct 2025');
+  });
+});
+
+describe('windowTitle', () => {
+  it('names each page, and a meeting by its own title', () => {
+    expect(windowTitle({ name: 'home' }, '')).toBe('Roger');
+    expect(windowTitle({ name: 'settings' }, '')).toBe('Settings');
+    expect(windowTitle({ name: 'setup' }, '')).toBe('Set up Roger');
+    const meeting = { name: 'meeting', meetingId: 'x' } as const;
+    expect(windowTitle(meeting, ' Northwind renewal ')).toBe('Northwind renewal');
+    expect(windowTitle(meeting, '')).toBe('Roger');
   });
 });

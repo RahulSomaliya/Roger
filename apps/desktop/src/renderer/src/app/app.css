@@ -9,18 +9,27 @@
  */
 
 .shell {
-  /* The header, the banner and every page share one column, so a warning lines up with the page
-     below. Home and Settings are 720 px; the meeting page is 760 px (68ch of 16 px text plus its
-     gutters), set by the data-route rule below. One breakpoint: 720 px. */
+  /* The banner and every page share one column, so a warning lines up with the page below. The
+     page grid has three widths (docs/design.md, Window and layout): 960 px and up (the landscape
+     window) a 48 px gutter and 880 px of content; 720 to 959, 32 px and 720 px; under 720, 16 px
+     and the full width. The meeting page is 760 px at every width (data-route below). */
   --shell-content-width: 720px;
   --shell-gutter: var(--space-8);
+  /* The header row is the title bar (D1): 52 px, the traffic lights inset 16 px from the left. Its
+     left 80 px hold nothing but them. main/window.ts sets the lights' place (trafficLightPosition):
+     change both together. */
+  --header-height: 52px;
+  --header-inset-start: 80px;
   display: flex;
   flex-direction: column;
   height: 100vh;
 }
 
-.shell[data-route='meeting'] {
-  --shell-content-width: 760px;
+@media (min-width: 960px) {
+  .shell {
+    --shell-content-width: 880px;
+    --shell-gutter: var(--space-12);
+  }
 }
 
 @media (max-width: 719px) {
@@ -29,27 +38,47 @@
   }
 }
 
-/* Header: Roger (Home), the recording chip when a call records, Settings. No fill, no border:
-   the page starts under it. */
+/* After the width rules, and more specific, so the meeting page stays 760 px at 880 and 720 alike. */
+.shell[data-route='meeting'] {
+  --shell-content-width: 760px;
+}
+
+/* Header: the way back (or the wordmark on Home), the recording chip when a call records, Settings.
+   Full window width with a 1 px line under it, which also shows where the window can be dragged. */
 
 .app-header {
   flex: none;
-  padding: var(--space-2) var(--shell-gutter);
+  box-sizing: border-box;
+  height: var(--header-height);
+  padding: 0 var(--space-4) 0 var(--header-inset-start);
+  border-bottom: 1px solid var(--line);
+  /* Drag region (D1). A control without no-drag below would drag the window instead of clicking:
+     the rule after this one covers every button; a new kind of control needs its own. */
+  -webkit-app-region: drag;
+  user-select: none;
+}
+
+.app-header button {
+  -webkit-app-region: no-drag;
 }
 
 .app-header-inner {
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  max-width: var(--shell-content-width);
-  margin: 0 auto;
+  height: 100%;
 }
 
-/* The wordmark is a ghost button (Home), a little heavier than a button label. */
+/* The wordmark on Home is text, a little heavier than a label: it goes nowhere. */
 .app-brand {
-  margin-left: calc(-1 * var(--space-3));
+  padding: 0 var(--space-2);
   color: var(--ink);
   font-weight: 600;
+}
+
+/* "Home": the arrow and the word in a ghost button, level with the title bar's content. */
+.app-back {
+  gap: var(--space-1);
 }
 
 .app-header-end {
@@ -64,7 +93,10 @@
   padding: 0;
 }
 
-.app-header [aria-current='page'] {
+/* The page the person is on reads as selected by more than colour: the wash, like a hover that
+   stays (V2). */
+.app-header .icon-button[aria-current='page'] {
+  background: var(--fill);
   color: var(--ink);
 }
 
@@ -106,16 +138,75 @@
   overflow-y: auto;
 }
 
-/* Home: three groups (the hero, Today, Earlier) with more space between them than inside them. */
+/* Focus moves here on arrival (AppLayout): a screen reader hears the page, a sighted person sees no
+   ring on a heading they did not tab to. */
+.shell-page h1:focus {
+  outline: none;
+}
+
+/* A page or part of one that failed to draw: one problem line and a button (AppLayout, SlotOutlet). */
+.page-problem,
+.slot-problem {
+  align-items: center;
+}
+
+.page-problem > svg,
+.slot-problem > svg {
+  margin-top: 0;
+}
+
+/* Text for a screen reader and for focus, not for the eye. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  border: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* Home: three groups (the hero, Today, Earlier) with more space between them than inside them.
+   Under 960 px they stack. From 960 px (D2) two top-aligned columns, 64 px apart: the hero and the
+   calendar line on the left, Today and Earlier on the right (360 px). The right column is
+   `:empty` when neither list has anything (React renders no node for a null child), and then
+   stays out of the grid so the hero stands at the left of the content, not centred. */
 
 .home {
   display: flex;
   flex-direction: column;
   gap: var(--space-12);
   /* The fixed left column of Today's times and Earlier's days, so the titles line up. */
-  --home-when-width: 104px;
+  --home-when-width: 88px;
   max-width: var(--shell-content-width);
   margin: 0 auto;
+}
+
+.home-main,
+.home-side {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-12);
+  min-width: 0;
+}
+
+.home-side:empty {
+  display: none;
+}
+
+@media (min-width: 960px) {
+  .home {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 360px;
+    align-items: start;
+    column-gap: var(--space-16);
+  }
+
+  .home:has(> .home-side:empty) {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 .home-hero {

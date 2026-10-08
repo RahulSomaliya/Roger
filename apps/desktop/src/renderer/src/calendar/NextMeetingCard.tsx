@@ -1,6 +1,6 @@
 import { parseInstant } from '../../../shared/calendar';
+import { meetingHours } from '../../../shared/clock';
 import { eventTitle, startLabel } from '../prompt/promptFormat';
-import { createCalendarFormat } from './calendarFormat';
 import type { TimedEntry } from './todayGroups';
 
 export interface NextMeetingCardProps {
@@ -16,8 +16,6 @@ export interface NextMeetingCardProps {
 export function NextMeetingCard({ entry, nowMs }: NextMeetingCardProps) {
   const { event } = entry;
   const underWay = parseInstant(event.start) <= nowMs;
-  // Per render, not at import: createCalendarFormat says why.
-  const format = createCalendarFormat();
   return (
     <>
       <p className="overline home-hero-kicker">
@@ -25,7 +23,7 @@ export function NextMeetingCard({ entry, nowMs }: NextMeetingCardProps) {
       </p>
       <h1 className="home-hero-title">{eventTitle(event)}</h1>
       <p className="home-hero-meta">
-        {format.time(parseInstant(event.start))} to {format.time(parseInstant(event.end))}
+        {meetingHours(parseInstant(event.start), parseInstant(event.end))}
       </p>
     </>
   );

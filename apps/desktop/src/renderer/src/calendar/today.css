@@ -10,7 +10,7 @@
 
 .calendar-status {
   margin: 0;
-  font-size: 13px;
+  font-size: var(--text-sm);
   color: var(--ink-muted);
 }
 
@@ -63,11 +63,12 @@
   list-style: none;
 }
 
-/* Time | title | button. All three columns are fixed, so a button that appears on hover moves
-   nothing, and the titles line up with Earlier's (--home-when-width, app.css). */
+/* Time | title | button. All three columns are fixed (the button's is 96 px whether or not the row
+   has one), so a button that appears on hover moves nothing, every title is cut at the same place,
+   and the titles line up with Earlier's (--home-when-width, app.css). */
 .today-row {
   display: grid;
-  grid-template-columns: var(--home-when-width) minmax(0, 1fr) auto;
+  grid-template-columns: var(--home-when-width) minmax(0, 1fr) 96px;
   align-items: center;
   gap: var(--space-3);
   min-height: 40px;
@@ -100,6 +101,7 @@
 /* The row's button is there on hover and focus, not on the page by default. Opacity, never
    display: the column stays, and a keyboard user tabbing in lands on a button that then shows. */
 .today-action {
+  justify-self: end;
   opacity: 0;
 }
 

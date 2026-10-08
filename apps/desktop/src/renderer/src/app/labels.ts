@@ -1,5 +1,6 @@
 import type { CapturePhase } from '../../../shared/capture';
 import { formatClock } from '../clock';
+import type { Route } from './router';
 
 /** The recording state, as the meeting header and the recording chip say it. */
 export const PHASE_LABEL: Readonly<Record<CapturePhase, string>> = {
@@ -79,4 +80,21 @@ export function meetingDayLabel(startedAtIso: string, now: Date): string {
     parts.find((candidate) => candidate.type === type)?.value ?? '';
   const day = `${part('weekday')} ${part('day')} ${part('month')}`;
   return start.getFullYear() === now.getFullYear() ? day : `${day} ${part('year')}`;
+}
+
+/**
+ * The window's title for a page, so Mission Control and the Window menu tell pages apart (V5).
+ * `meetingTitle` is the meeting page's own heading, empty until it has loaded.
+ */
+export function windowTitle(route: Route, meetingTitle: string): string {
+  switch (route.name) {
+    case 'home':
+      return 'Roger';
+    case 'settings':
+      return 'Settings';
+    case 'setup':
+      return 'Set up Roger';
+    case 'meeting':
+      return meetingTitle.trim() === '' ? 'Roger' : meetingTitle.trim();
+  }
 }

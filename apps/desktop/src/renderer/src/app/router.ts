@@ -37,6 +37,11 @@ export function formatRoute(route: Route): string {
   }
 }
 
+/** Pages that Escape leaves for Home: Settings and Set up Roger, never the meeting page. */
+export function escapeLeavesPage(route: Route): boolean {
+  return route.name === 'settings' || route.name === 'setup';
+}
+
 /**
  * The screen an app:navigate payload opens, or null for one this page lacks, which it ignores
  * (M5's SHELL-0 spec). Checked again here: the preload passes the payload on unread.

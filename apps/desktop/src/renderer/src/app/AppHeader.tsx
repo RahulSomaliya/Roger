@@ -9,10 +9,14 @@ import { useShell } from './ShellContext';
 const SETTINGS: Route = { name: 'settings' };
 
 /**
- * The slim header on every page but Set up Roger: Roger (Home), the recording chip while a call
- * records, Settings. It replaces the sidebar, whose "New note" was a second Start. Every item is a
- * button that calls navigate(): a link to `#/...` would change the hash, which router.ts explains
- * must never happen.
+ * The slim header on every page: on Home the wordmark, on every other page "Home" (the way back,
+ * one level up: V1), then the recording chip while a call records and Settings. It replaces the
+ * sidebar, whose "New note" was a second Start. Every item is a button that calls navigate(): a
+ * link to `#/...` would change the hash, which router.ts explains must never happen.
+ *
+ * It is the window's title bar row (D1, hiddenInset): app.css makes it the drag region, leaves its
+ * left 80 px to the traffic lights and marks every control no-drag. A new control here needs no
+ * extra rule (`button` is covered), but anything else clickable does.
  */
 export function AppHeader() {
   const { route, navigate, capture, captureMeeting } = useShell();
@@ -27,18 +31,22 @@ export function AppHeader() {
   return (
     <header className="app-header">
       <div className="app-header-inner">
-        <button
-          type="button"
-          className="btn app-brand"
-          data-variant="ghost"
-          data-size="sm"
-          aria-current={route.name === 'home' ? 'page' : undefined}
-          onClick={() => {
-            navigate(HOME);
-          }}
-        >
-          Roger
-        </button>
+        {route.name === 'home' ? (
+          <span className="app-brand">Roger</span>
+        ) : (
+          <button
+            type="button"
+            className="btn app-back"
+            data-variant="ghost"
+            data-size="sm"
+            onClick={() => {
+              navigate(HOME);
+            }}
+          >
+            <Icon name="arrow-left" />
+            Home
+          </button>
+        )}
         <div className="app-header-end">
           {chipShown ? (
             <RecordingChip

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  escapeLeavesPage,
   formatRoute,
   HOME,
   parseRoute,
@@ -161,5 +162,14 @@ describe('RouteStore', () => {
 
     unsubscribe();
     expect(fake.listeners.size).toBe(0);
+  });
+});
+
+describe('escapeLeavesPage', () => {
+  it('is Settings and Set up Roger, never Home or a meeting (Escape would leave the notes)', () => {
+    expect(escapeLeavesPage({ name: 'settings' })).toBe(true);
+    expect(escapeLeavesPage({ name: 'setup' })).toBe(true);
+    expect(escapeLeavesPage(HOME)).toBe(false);
+    expect(escapeLeavesPage({ name: 'meeting', meetingId: MEETING })).toBe(false);
   });
 });
