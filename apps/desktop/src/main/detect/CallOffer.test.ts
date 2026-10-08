@@ -3,6 +3,7 @@ import type { CallApp, PromptOffer } from '../../shared/calendar';
 import type { CapturePhase } from '../../shared/capture';
 import type { StatusContributor, StopOptions } from '../capture/CaptureService';
 import { createLogger, type Logger } from '../logger';
+import type { NotificationContent } from '../notify/Notifier';
 import { CALL_NATIVE_RELEASE_MS, CALL_WAKE_GRACE_MS } from './CallDetector';
 import { CALL_DISMISS_COOLDOWN_MS, CallOffer, type CallPromptPort } from './CallOffer';
 import type { DetectedCallApp } from './callApps';
