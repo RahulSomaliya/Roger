@@ -181,13 +181,7 @@ interface KnownFailure {
   /** The file and what the screen shows. */
   reason: string;
 }
-const KNOWN_FAILURES: readonly KnownFailure[] = [
-  {
-    slug: 'past-details',
-    reason:
-      'components/capture/CaptureDetails.tsx (T5): `showEcho` is true for every report (counts is never null) though EchoLines draws nothing for zero counts, so `nothing` is never true and StoredFacts never shows: Details of a past meeting with no gaps, events or kept audio opens an empty dialog (D3)',
-  },
-];
+const KNOWN_FAILURES: readonly KnownFailure[] = [];
 
 async function verifyAndShoot(preview: qa.PreviewPage, combo: Combo, spec: Spec): Promise<void> {
   const failure = await checkView(preview, spec).then(

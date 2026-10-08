@@ -11,7 +11,7 @@ import { type AudioBusy, GapLine, KeptAudio, RERUN_BLOCKED_WHILE_RECORDING } fro
 import { CaptureFacts } from './CaptureFacts';
 import { CaptureReport } from './CaptureReport';
 import { applyEchoChange, echoLinesIn, type EchoLineMap, NO_ECHO_LINES } from './echoChanges';
-import { EchoLines } from './EchoLines';
+import { EchoLines, echoLinesShow } from './EchoLines';
 import { reportsChanged, useCaptureReport, useReportsEpoch } from './captureReads';
 import { Notices } from './Notices';
 import { ProblemLine } from './ProblemLine';
@@ -213,7 +213,11 @@ export function MeetingCaptureDetails({ meetingId }: { meetingId: string }) {
     (report.stopReason !== null || report.gaps.length > 0 || report.events.length > 0);
   const audio = audioViewFor(meetingId, status, phase, report);
   const mine = actions.state.busy?.meetingId === meetingId ? actions.state.busy.action : null;
-  const showEcho = counts !== null || lines.size > 0;
+  // WHY not `counts !== null`: every report carries echo counts (all zero when the filter did
+  // nothing) while EchoLines draws nothing for zeros, so `nothing` below was never true and a past
+  // meeting with no gaps, events, kept audio or echo opened an EMPTY dialog (D3). Ask what is
+  // drawn, not what exists; a fallback triggered by "nothing to show" must test the drawing.
+  const showEcho = echoLinesShow(counts, lines.size);
   const showReport = phase === 'idle' && hasReport;
   // A meeting from before any of this existed has no capture report. Details still holds what the
   // store knows (StoredFacts), never an empty dialog that reads as broken (redesign D3).
