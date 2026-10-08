@@ -28,6 +28,13 @@
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
+  /*
+   * Room for `.meeting-copied` below: its 16 px line fills the page's whole 16 px gap to the tab
+   * row, so at 420 px it touched the tabs' top edge. The padding is always there (not only while
+   * the line shows) so the tab row never moves when "Notes copied" comes and goes. It sits below
+   * the row, so the buttons do not move.
+   */
+  padding-bottom: var(--space-2);
 }
 
 .meeting-header-row {
@@ -73,8 +80,8 @@
  * What Copy notes just did ("Notes copied"), for 3 s. Out of the row's flow, right-aligned under the
  * buttons: beside them it widened `.meeting-actions` (flex: none, no wrap) past the column at 420 px
  * ("No notes to copy yet" next to Cancel, Writing notes... and Details ran to 493 px in a 404 px
- * column) and moved the buttons when it came and went. It fills the gap above the tab row, so
- * nothing shifts either way.
+ * column) and moved the buttons when it came and went. It fills the gap above the tab row (the
+ * header's bottom padding keeps it off the tabs), so nothing shifts either way.
  */
 .meeting-actions {
   position: relative;
