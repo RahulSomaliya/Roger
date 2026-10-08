@@ -23,7 +23,7 @@ Appearance is a setting.
 ## Done when
 
 - [ ] Every row of the inventory below reads "yes" in its last column, checked in the QA run.
-- [ ] No text a person reads (page, banner, prompt panel, notification, menu, dialog, setup row)
+- [x] No text a person reads (page, banner, prompt panel, notification, menu, dialog, setup row)
       holds a vendor name with an HTTP code, a route, an errno, an id, or the words helper, stream,
       worklet, Postgres, API, SQLite; raw text lives in a detail field that only Details and the log
       show. A test pins it for every known failure (T2, T7, T9).
@@ -674,3 +674,47 @@ From the sweep's trace (paths under `apps/desktop/src`). RAW: printed as is. DE:
 | The prompt panel's exit animation leaves a stale shadow or never hides | a ghost rectangle after Dismiss on a real Mac | `invalidateShadow()` after every change; main's 400 ms fallback hides anyway |
 | T2's `CaptureStatus` change breaks fakes in files other tasks own | `tsc` on `tsconfig.e2e.json` red after the merge | T2 owns the capture fakes in wave 1; gate the merged branch alone |
 | Plain words hide what an engineer needs | a bug report says only "Roger could not start notes" | the raw text stays in the log and in Details (`errorDetail`) |
+
+## QA log (T10, 2026-10-08)
+
+Run on the browser preview (`apps/desktop/qa/README.md`), system Chrome, 1080 x 730 and 420 x 760,
+light and dark; the prompt panel on its 1440 x 900 stage over a dark and a light call. File:
+`apps/desktop/e2e/redesign.qa.e2e.ts`, 69 tests in 12 pieces, each its own call (`home` 7, `live` 7,
+`past`+`chat` 5, `settings`+`setup` 13, `prompt`+`offline` 24, `nav`+`appearance`+`focus`+`words`
+13), all green; the gallery is 160 images. Every shot passed its checks first: one primary and the
+right one, every problem line visible (box and `elementFromPoint`), no word of `wordsOutsideDetails`
+outside Details (text nodes, `aria-label` and `title`), the header (52 px, "Home" on every page
+but Home and on top at its centre, clear of the traffic lights' 80 px, the gear current on Settings
+only), no sideways scroll, no console error, no running animation.
+
+What the run proved, by gap:
+
+| Gap | Proof |
+| --- | --- |
+| R13 | `focus`: the transcript focused by a click, by Jump to live and by a citation, then a key: no outline, no border change, a shadow only if it is the 2 px left-edge line; Tab shows exactly that line; the chat log and My notes the same, My notes with no shadow at all. Checked by mutation: an outline added to `.live-transcript-lines:focus` fails it. |
+| V1 V2 V3 R11 V5 | `nav`: "Home" on Settings, a meeting and Set up Roger goes Home with focus on the h1 and the window titled; Escape leaves Settings and Set up Roger, not a meeting, not a text field, and closes Disconnect's question first; what main's Cmd+[ sends (`app:navigate` `home`) takes any page Home; the Recording chip opens the live meeting from every page and is absent on it. |
+| A1 | `appearance`: Light, Dark and System switch this window in one frame (canvas colour changed, no wait on main), the save reaches main (`PrefsChanged`), arrow keys choose as they move, a refused save puts the look back and says why. |
+| D6 | `setup`: the exits are ["Home"] for every failing state and ["Done", "Home"] once all pass; no "Later". |
+| P1 to P12, P14 | `prompt`: 14 kinds x 2 themes x 2 backdrops at the real place (right edge 16 px in, 41 px down, 360 wide), one primary, the problem line, the extra sentence, `elementFromPoint` on the primary and the x, no raw text; the buttons send dismiss, join_and_take_notes, take_notes. |
+| W1 W2 W3 N1 | `words`: every `START_FAILURE_SENTENCES`, seven warnings from `detectWarnings`, every stop notice, as the banner and the status line draw them; "xAI: rejected with HTTP 401" is in Details and nowhere else. |
+| D4 D5 | `settings` and `past`: Disconnect asks in place with focus on Cancel; Copy notes copies the AI notes with no chip times and says "Notes copied" beside the buttons. |
+| D3 | FAILS, see below. |
+
+Open failures, not in T10's files (the shot is kept and marked `fail`; `KNOWN_FAILURES` names it and
+fails the run once it is fixed):
+
+- `past-details`: `components/capture/CaptureDetails.tsx` (T5). Details of a past meeting whose
+  report has no gaps, events or kept audio opens an empty dialog: `showEcho` is true for any report
+  (`counts` is never null) though `EchoLines` draws nothing at zero counts, so `nothing` is never true
+  and `StoredFacts` never shows. Fix: `showEcho` from what `EchoLines` would draw (a non-empty summary
+  or lines), not from `counts !== null`.
+
+Not provable in a browser, left to the controller's Electron check: that the window opens 1080 x 730
+and remembers its bounds (T3), that Cmd+[ and the other accelerators fire (T3, `appMenu.test.ts`
+pins the items), that `nativeTheme` carries Appearance to the prompt panel and menus (the preview's
+panel follows the system scheme, which is what `nativeTheme` sets), the traffic lights over the
+header, and the real macOS shadow and notifications.
+
+Observations that are not failures: on Home while a call records the h1 is the live meeting's title
+(the hero), so Back from the meeting lands focus there, not on "Home"; Set up Roger with every check
+passing has two ways out, "Home" and "Done" (both go Home).
