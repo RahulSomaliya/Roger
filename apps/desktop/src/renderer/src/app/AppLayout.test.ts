@@ -2,7 +2,7 @@ import { createElement } from 'react';
 import { renderToString } from 'react-dom/server';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ThemeState } from '../theme/useTheme';
-import { AppLayout } from './AppLayout';
+import { AppLayout, escapeIsForThePage, PageBoundary } from './AppLayout';
 import { HOME, type Route } from './router';
 import type { Shell } from './ShellContext';
 
@@ -67,13 +67,63 @@ describe('AppLayout', () => {
     }
   });
 
-  it('leaves the header off the setup route, which fills the window', () => {
+  it('shows the same header on Set up Roger, with the way back (D6)', () => {
     fakes.route = { name: 'setup' };
-    expect(renderToString(createElement(AppLayout))).not.toContain('app-header');
+    const html = renderToString(createElement(AppLayout));
+    expect(html).toContain('class="app-header"');
+    expect(html).toContain('app-back');
   });
 
   it('tells the shell which route it shows, so the meeting page gets its wider column', () => {
     fakes.route = { name: 'meeting', meetingId: '5c1d7a4e-2f3b-4c8a-9e61-0d2b7f4a9c13' };
     expect(renderToString(createElement(AppLayout))).toContain('data-route="meeting"');
+  });
+});
+
+describe('PageBoundary', () => {
+  function Broken(): never {
+    throw new Error('GET /v1/meetings failed: ECONNREFUSED');
+  }
+
+  it('replaces only the page with plain words and a Reload, and logs the cause', () => {
+    const report = vi.fn();
+    vi.stubGlobal('reportError', report);
+    // renderToString has no error boundary support for the throwing child: drive the statics.
+    expect(PageBoundary.getDerivedStateFromError()).toEqual({ failed: true });
+    const boundary = new PageBoundary({ children: createElement(Broken) });
+    boundary.state = { failed: true };
+    const html = renderToString(boundary.render() as never);
+    expect(html).toContain('Roger could not show this page.');
+    expect(html).toContain('>Reload</button>');
+    expect(html).not.toContain('ECONNREFUSED');
+    const error = new Error('boom');
+    boundary.componentDidCatch(error);
+    expect(report).toHaveBeenCalledWith(error);
+    vi.unstubAllGlobals();
+  });
+
+  it('shows its children until a page fails', () => {
+    const boundary = new PageBoundary({ children: 'the page' });
+    expect(boundary.render()).toBe('the page');
+  });
+});
+
+describe('Escape on Settings and Set up Roger', () => {
+  const target = (tagName: string, extra: { editable?: boolean; inside?: boolean } = {}) => ({
+    tagName,
+    isContentEditable: extra.editable ?? false,
+    closest: () => (extra.inside === true ? {} : null),
+  });
+
+  it('goes back from a button or the page itself', () => {
+    expect(escapeIsForThePage(null)).toBe(true);
+    expect(escapeIsForThePage(target('BUTTON'))).toBe(true);
+  });
+
+  it('leaves a text field, an editor, and an open menu or dialog alone', () => {
+    expect(escapeIsForThePage(target('INPUT'))).toBe(false);
+    expect(escapeIsForThePage(target('TEXTAREA'))).toBe(false);
+    expect(escapeIsForThePage(target('DIV', { editable: true }))).toBe(false);
+    expect(escapeIsForThePage(target('BUTTON', { inside: true }))).toBe(false);
   });
 });
