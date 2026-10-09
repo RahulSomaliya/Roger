@@ -1,6 +1,6 @@
 /**
  * Calendar preference keys, defaults and validators: defined here once, read by main (reminders,
- * the notice, the login item) and by the renderer's Settings. `registerCalendarPreferences`
+ * the login item) and by the renderer's Settings. `registerCalendarPreferences`
  * (M5-T9a) hands `CALENDAR_PREFERENCES` to M4-S2's `PreferencesStore.register`, which stores them
  * in `userData/preferences.json`.
  * Keep this file free of runtime imports: it is bundled into every process.
@@ -14,17 +14,8 @@ export type ReminderLeadMinutes = (typeof REMINDER_LEAD_MINUTES)[number];
 export type OpenAtLogin = 'auto' | 'on' | 'off';
 const OPEN_AT_LOGIN: readonly OpenAtLogin[] = ['auto', 'on', 'off'];
 
-/** The notice to the other people on the call (owner decision D3). Reviewed by legal before Gate 2. */
-export const DEFAULT_NOTICE_TEXT =
-  "Hi all, I'm using Roger to transcribe this call for my notes. Let me know if you'd rather I didn't.";
-
-/** The notice is pasted into a meeting chat: a few sentences, not a document. */
-export const MAX_NOTICE_TEXT_LENGTH = 1_000;
-
 export interface CalendarPreferenceValues {
   'calendar.reminderLeadMinutes': ReminderLeadMinutes;
-  'notice.enabled': boolean;
-  'notice.text': string;
   'app.openAtLogin': OpenAtLogin;
 }
 
@@ -52,30 +43,6 @@ export const CALENDAR_PREFERENCES: {
       throw new Error(
         `calendar.reminderLeadMinutes must be one of ${listOf(REMINDER_LEAD_MINUTES)} (got ${describe(raw)})`,
       );
-    },
-  },
-  'notice.enabled': {
-    key: 'notice.enabled',
-    default: true,
-    parse: (raw) => {
-      if (typeof raw === 'boolean') return raw;
-      throw new Error(`notice.enabled must be true or false (got ${describe(raw)})`);
-    },
-  },
-  'notice.text': {
-    key: 'notice.text',
-    default: DEFAULT_NOTICE_TEXT,
-    parse: (raw) => {
-      if (typeof raw !== 'string')
-        throw new Error(`notice.text must be text (got ${describe(raw)})`);
-      // Copy notice would paste nothing; `notice.enabled` is the way to send no notice.
-      if (raw.trim() === '')
-        throw new Error('notice.text is blank: write the notice, or turn the notice off');
-      if (raw.length > MAX_NOTICE_TEXT_LENGTH)
-        throw new Error(
-          `notice.text must be at most ${MAX_NOTICE_TEXT_LENGTH} characters (got ${raw.length})`,
-        );
-      return raw;
     },
   },
   'app.openAtLogin': {

@@ -229,7 +229,7 @@ describe('PreferencesStore', () => {
   });
 
   it('reads a file that is not JSON as defaults, and logs why without its contents', () => {
-    writeFileSync(path, '{"theme": "dark", "notice.text": "secret');
+    writeFileSync(path, '{"theme": "dark", "jargon.note": "secret');
     const { store, lines } = open();
     expect(store.get('theme')).toBe('system');
     expect(lines).toHaveLength(1);
@@ -288,7 +288,7 @@ describe('PreferencesStore', () => {
     });
 
     it('is moved aside when it could not be opened (EACCES)', () => {
-      writeFileSync(path, JSON.stringify({ 'notice.text': 'my own words' }));
+      writeFileSync(path, JSON.stringify({ 'jargon.note': 'my own words' }));
       const { files } = recordingFiles();
       const denied: PreferenceFiles = {
         ...files,
@@ -302,7 +302,7 @@ describe('PreferencesStore', () => {
       store.set('theme', 'dark');
       const [aside] = asideFiles();
       expect(JSON.parse(readFileSync(join(dir, aside!), 'utf8'))).toEqual({
-        'notice.text': 'my own words',
+        'jargon.note': 'my own words',
       });
       expect(fileJson()).toEqual({ theme: 'dark' });
     });

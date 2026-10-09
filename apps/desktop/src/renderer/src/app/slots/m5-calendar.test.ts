@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
 import { CalendarSettings } from '../../calendar/CalendarSettings';
-import { NoticeBanner } from '../../calendar/NoticeBanner';
 import type { SlotEntry } from '../slotRegistry';
 import { slots } from '../slots';
 import { contributions } from './m5-calendar';
@@ -20,25 +19,22 @@ describe("M5-T13's mounts", () => {
     expect(contributions.banner ?? []).toEqual([]);
   });
 
-  it("mounts the consent notice in the meeting page's banner slot", () => {
-    expect(only(contributions.meetingBanner, 'meetingBanner').component).toBe(NoticeBanner);
+  // 2026-10-08: the call notice is gone; M5 mounts nothing on the meeting page.
+  it('mounts nothing in the meeting page banner slot', () => {
+    expect(contributions.meetingBanner ?? []).toEqual([]);
   });
 
   // Settings runs by order: the calendar (5) comes before M3's jargon list (10), as a person
   // comes for them (sweep section 4).
   it('keeps its ids unique to M5 and Settings before the jargon list', () => {
-    const ids = [
-      only(contributions.settings, 'settings').id,
-      only(contributions.meetingBanner, 'meetingBanner').id,
-    ];
-    for (const id of ids) expect(id.startsWith('m5-')).toBe(true);
+    expect(only(contributions.settings, 'settings').id.startsWith('m5-')).toBe(true);
     expect(only(contributions.settings, 'settings').order).toBeLessThan(10);
   });
 
   it("shows in the merged shell, before M3's Settings section", () => {
     expect(slots.settings.map((entry) => entry.id)).toEqual(['m5-calendar', 'm3-vocabulary']);
     // M2's lines under the header (refused lines, the crash resume) share the slot (R3).
-    expect(slots.meetingBanner.map((entry) => entry.id)).toContain('m5-calendar-notice');
+    expect(slots.meetingBanner.map((entry) => entry.id)).not.toContain('m5-calendar-notice');
     expect(slots.banner.map((entry) => entry.id)).not.toContain('m5-calendar-status');
   });
 });

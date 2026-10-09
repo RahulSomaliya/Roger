@@ -24,21 +24,17 @@ export interface CalendarSettingsState {
   status: ReadStatus;
   error: string | null;
   reminderLeadMinutes: ReminderLeadMinutes;
-  noticeEnabled: boolean;
-  noticeText: string;
   /** What the user chose. What macOS did with it is `loginItem`. */
   openAtLogin: OpenAtLogin;
   /** What macOS says about Roger as a login item; null until it answers or when it cannot. */
   loginItem: LoginItemStatus | null;
   loginItemError: string | null;
   saveError: string | null;
-  /** Meetings whose notice was copied or dismissed: the meeting banner shows once per meeting. */
-  noticeDone: readonly string[];
 }
 
 /**
- * The calendar's four preferences and the login item's state, for Settings, the meeting banner
- * and the line after the first connect. Main's PreferencesStore keeps the values; the page shows
+ * The calendar's preferences and the login item's state, for Settings and the line after the
+ * first connect. Main's PreferencesStore keeps the values; the page shows
  * what main stored and changes it only through `setPreference`, whose change event then updates
  * the page. A preference cannot say whether macOS accepted the login item (it can wait for the
  * user's approval), so that comes from its own channel.
@@ -53,13 +49,10 @@ export class CalendarSettingsStore extends RetainedStore<CalendarSettingsState> 
       status: 'loading',
       error: null,
       reminderLeadMinutes: CALENDAR_PREFERENCES['calendar.reminderLeadMinutes'].default,
-      noticeEnabled: CALENDAR_PREFERENCES['notice.enabled'].default,
-      noticeText: CALENDAR_PREFERENCES['notice.text'].default,
       openAtLogin: CALENDAR_PREFERENCES['app.openAtLogin'].default,
       loginItem: null,
       loginItemError: null,
       saveError: null,
-      noticeDone: [],
     });
   }
 
@@ -72,12 +65,6 @@ export class CalendarSettingsStore extends RetainedStore<CalendarSettingsState> 
         switch (change.key) {
           case 'calendar.reminderLeadMinutes':
             this.update({ reminderLeadMinutes: change.value });
-            break;
-          case 'notice.enabled':
-            this.update({ noticeEnabled: change.value });
-            break;
-          case 'notice.text':
-            this.update({ noticeText: change.value });
             break;
           case 'app.openAtLogin':
             this.update({ openAtLogin: change.value });
@@ -107,7 +94,7 @@ export class CalendarSettingsStore extends RetainedStore<CalendarSettingsState> 
 
   /**
    * Saves one choice. Never rejects: a refusal shows in `saveError`, the stored value stays. Calls
-   * may overlap (the notice text saves on blur, a click later saves another choice); main applies
+   * may overlap (one choice saves, a click later saves another); main applies
    * them in the order they arrive, so there is no "saving" state for a control to wait on.
    */
   async choose<K extends CalendarPreferenceKey>(key: K, value: PreferenceValues[K]): Promise<void> {
@@ -117,12 +104,6 @@ export class CalendarSettingsStore extends RetainedStore<CalendarSettingsState> 
     } catch (error) {
       this.update({ saveError: `Roger could not save that setting: ${describeError(error)}` });
     }
-  }
-
-  /** The notice for this meeting was copied or dismissed: its banner is done. */
-  markNoticeDone(meetingId: string): void {
-    if (this.state.noticeDone.includes(meetingId)) return;
-    this.update({ noticeDone: [...this.state.noticeDone, meetingId] });
   }
 
   private read(run: number): void {
@@ -137,8 +118,6 @@ export class CalendarSettingsStore extends RetainedStore<CalendarSettingsState> 
           ...(keep('calendar.reminderLeadMinutes')
             ? {}
             : { reminderLeadMinutes: values['calendar.reminderLeadMinutes'] }),
-          ...(keep('notice.enabled') ? {} : { noticeEnabled: values['notice.enabled'] }),
-          ...(keep('notice.text') ? {} : { noticeText: values['notice.text'] }),
           ...(keep('app.openAtLogin') ? {} : { openAtLogin: values['app.openAtLogin'] }),
         });
       },

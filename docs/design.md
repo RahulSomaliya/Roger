@@ -189,7 +189,6 @@ it is never a sub-second flash.
 | An interim word turns final | nothing | `ink-subtle` → `ink` at once |
 | A tab is picked | nothing | panes swap at once; they stay mounted (Traps) |
 | A chip reveals its transcript line | scroll to centre; a static `accent-soft` tint | smooth scroll unless reduced motion; the tint never fades |
-| Copy notice → "Copied" | the label swaps | stays until the line is dismissed |
 | Recording | nothing | the dot is static |
 | A prompt card arrives (sweep) | opacity 0 → 1, `translateX(12px)` → 0 | `slide-in` 240 ms ease-out, after the window shows |
 | A prompt card leaves (sweep) | opacity → 0, `translateX(12px)` | 170 ms ease-in; main hides the window only after the page reports height 0, 400 ms fallback |
@@ -253,7 +252,7 @@ it is never a sub-second flash.
 | Home | idle | **Start notes** (`lg`); for the next meeting when it starts within 10 minutes or is on now, else a blank note | Connect Google Calendar (secondary), a row's Start notes on hover (ghost), Settings (ghost icon) |
 | Home | recording | **Stop** (the live meeting shown above it) | the meeting title opens it |
 | Meeting | starting | **Starting…** (busy) | |
-| Meeting | recording | **Stop** | Copy notice (secondary), Details (ghost) |
+| Meeting | recording | **Stop** | Details (ghost) |
 | Meeting | stopping | **Stopping…** (busy) | |
 | Meeting | stopped, no AI notes | **Write notes** | Details (ghost); the ⋯ menu only once AI notes exist |
 | Meeting | writing | **Writing notes…** (busy) | Cancel (ghost) |
@@ -392,7 +391,7 @@ never takes focus (a non-activating panel), so its keyboard path is Cmd+N and th
 ## Copy
 
 - Plain short words; sentence case; no full stop on a button or label. Labels say what happens,
-  verb first: Start notes, Stop, Write notes, Copy notice, Transcribe again.
+  verb first: Start notes, Stop, Write notes, Transcribe again.
 - Helper text explains a limit once, where it bites ("Up to 100 terms" only once the list nears
   it). One message says a thing once: never the same fact in a banner and a card.
 - No internals outside Details: no ids, no "Postgres", "helper", "worklet", "stream", "API",
@@ -405,7 +404,7 @@ never takes focus (a non-activating panel), so its keyboard path is Cmd+N and th
   line ("Mon 5 Oct, 3:00 pm to 3:03 pm") both come from `meetingDayLabel`, English whatever the
   Mac's language. Every error line goes through `describeError`: a few plain words per kind
   ("Roger could not reach its server."), never a route, an address or a vendor's text.
-- Confirm what mattered, truthfully: "Notes written", "Notice copied". "Saved" is not news.
+- Confirm what mattered, truthfully: "Notes written". "Saved" is not news.
 
 ### Naming list (one word per concept; goes into `CLAUDE.md`)
 
@@ -490,7 +489,7 @@ never takes focus (a non-activating panel), so its keyboard path is Cmd+N and th
   stays transparent (the window is), and it has no `useTheme`, so it follows macOS even when the
   `theme` preference forces one.
 - Unit tests pin copy and class names (`renderToStaticMarkup` output: "New note", "Regenerate",
-  "Copy notice", `button stop`), and QA scripts select by class. Rename a word or class and its
+  `button stop`), and QA scripts select by class. Rename a word or class and its
   test in one commit. A test of a deleted component goes with it; a test of a behaviour that
   stays is kept, never skipped.
 - A shared type change (a preference key, a prompt card kind) breaks `preview/fakeRoger.ts` and

@@ -1,14 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import {
-  CALENDAR_PREFERENCES,
-  DEFAULT_NOTICE_TEXT,
-  MAX_NOTICE_TEXT_LENGTH,
-  REMINDER_LEAD_MINUTES,
-} from './calendarPrefs';
+import { CALENDAR_PREFERENCES, REMINDER_LEAD_MINUTES } from './calendarPrefs';
 
 const lead = CALENDAR_PREFERENCES['calendar.reminderLeadMinutes'];
-const noticeEnabled = CALENDAR_PREFERENCES['notice.enabled'];
-const noticeText = CALENDAR_PREFERENCES['notice.text'];
 const openAtLogin = CALENDAR_PREFERENCES['app.openAtLogin'];
 
 describe('calendar preferences', () => {
@@ -22,13 +15,16 @@ describe('calendar preferences', () => {
     }
   });
 
-  it('defaults to a 1-minute reminder and the notice on, with the agreed text', () => {
+  it('defaults to a 1-minute reminder', () => {
     expect(lead.default).toBe(1);
-    expect(noticeEnabled.default).toBe(true);
-    expect(noticeText.default).toBe(DEFAULT_NOTICE_TEXT);
-    expect(DEFAULT_NOTICE_TEXT).toBe(
-      "Hi all, I'm using Roger to transcribe this call for my notes. Let me know if you'd rather I didn't.",
-    );
+  });
+
+  // 2026-10-08: the call notice was removed end to end; its keys must not come back by accident.
+  it('registers no call notice keys', () => {
+    expect(Object.keys(CALENDAR_PREFERENCES).sort()).toEqual([
+      'app.openAtLogin',
+      'calendar.reminderLeadMinutes',
+    ]);
   });
 
   it('keeps open at login off until the login item is proven on a real Mac', () => {
@@ -45,39 +41,6 @@ describe('calendar.reminderLeadMinutes', () => {
     expect(() => lead.parse(raw)).toThrow(
       /calendar\.reminderLeadMinutes must be one of 0, 1, 2, 5 or 10/,
     );
-  });
-});
-
-describe('notice.enabled', () => {
-  it('accepts true and false only', () => {
-    expect(noticeEnabled.parse(true)).toBe(true);
-    expect(noticeEnabled.parse(false)).toBe(false);
-    expect(() => noticeEnabled.parse('true')).toThrow(/notice\.enabled must be true or false/);
-    expect(() => noticeEnabled.parse(1)).toThrow(/notice\.enabled/);
-  });
-});
-
-describe('notice.text', () => {
-  it('accepts the user’s own wording as written', () => {
-    const text = '  Heads up: Roger is taking notes on this call.  ';
-    expect(noticeText.parse(text)).toBe(text);
-  });
-
-  it('refuses a blank text and says to turn the notice off instead', () => {
-    expect(() => noticeText.parse('  \n ')).toThrow(/notice\.text.*turn the notice off/);
-  });
-
-  it('refuses a text longer than a chat message', () => {
-    expect(noticeText.parse('x'.repeat(MAX_NOTICE_TEXT_LENGTH))).toHaveLength(
-      MAX_NOTICE_TEXT_LENGTH,
-    );
-    expect(() => noticeText.parse('x'.repeat(MAX_NOTICE_TEXT_LENGTH + 1))).toThrow(
-      /notice\.text.*at most 1000 characters \(got 1001\)/,
-    );
-  });
-
-  it('refuses anything but a string', () => {
-    expect(() => noticeText.parse(42)).toThrow(/notice\.text must be text/);
   });
 });
 

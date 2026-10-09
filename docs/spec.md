@@ -22,7 +22,7 @@ and Teams later. Each person's calls are private by default; team spaces are sha
 | Transcript | Live, within about 2 seconds, labelled Me and Them. Saved on the Mac as it arrives, then in Postgres. Jargon list. |
 | Speaker names | Attendee names from the invite plus the active-speaker signal from Meet. One click fixes a name for the whole call. |
 | Notes | Notepad beside the transcript. After the call, AI rewrites rough notes with the transcript. Every AI line links to the transcript lines behind it. Templates per meeting type. |
-| Calendar | Google Calendar sign-in, today's meetings, pre-call notification, consent notice on by default. |
+| Calendar | Google Calendar sign-in, today's meetings, pre-call notification. |
 | Team | Google sign-in, workspaces, folders, private by default, share by link or person, Slack export. |
 | Search and chat | Keyword plus meaning search across every call the user may see; chat with one call or many. |
 | MCP and API | Remote MCP (Streamable HTTP, OAuth) and REST with the same powers: list meetings for any dates, search, get notes, get a full transcript or a time slice. |
@@ -45,7 +45,7 @@ Windows, phones, CRM sync, SSO and SCIM, billing, on-device transcription, train
 - No vendor keys in the app; the backend hands out short-lived tokens.
 - Vendors behind small interfaces; swapping one is a config change.
 - `workspace_id` on every row from day one; the same permission rules on app, API, search and MCP.
-- Consent by default: the notice to other people on the call is on from M5.
+- The call notice (a message to paste to the other people on the call) was built in M5 and removed on 2026-10-08 at Rahul's request; Roger offers none.
 
 ## System shape
 

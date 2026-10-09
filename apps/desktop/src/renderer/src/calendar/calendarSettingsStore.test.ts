@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { CALENDAR_PREFERENCES, DEFAULT_NOTICE_TEXT } from '../../../shared/calendarPrefs';
+import { CALENDAR_PREFERENCES } from '../../../shared/calendarPrefs';
 import type { LoginItemApi, LoginItemState } from '../../../shared/ipc/loginItem';
 import type { PrefsApi } from '../../../shared/ipc/prefs';
 import type { PreferenceChange, PreferenceValues } from '../../../shared/preferences';
@@ -8,8 +8,6 @@ import { CalendarSettingsStore, type CalendarSettingsApi } from './calendarSetti
 const stored: PreferenceValues = {
   theme: 'system',
   'calendar.reminderLeadMinutes': 5,
-  'notice.enabled': false,
-  'notice.text': 'Recording this one.',
   'app.openAtLogin': 'on',
 };
 
@@ -74,21 +72,17 @@ describe('CalendarSettingsStore', () => {
     expect(state.reminderLeadMinutes).toBe(
       CALENDAR_PREFERENCES['calendar.reminderLeadMinutes'].default,
     );
-    expect(state.noticeEnabled).toBe(true);
-    expect(state.noticeText).toBe(DEFAULT_NOTICE_TEXT);
     expect(state.openAtLogin).toBe('off');
     expect(state.loginItem).toBeNull();
   });
 
-  it('reads the four calendar preferences and the login item state', async () => {
+  it('reads the calendar preferences and the login item state', async () => {
     const store = new CalendarSettingsStore(fake().api);
     store.retain();
     await settle();
     expect(store.getState()).toMatchObject({
       status: 'ready',
       reminderLeadMinutes: 5,
-      noticeEnabled: false,
-      noticeText: 'Recording this one.',
       openAtLogin: 'on',
       loginItem: 'enabled',
     });
@@ -120,7 +114,7 @@ describe('CalendarSettingsStore', () => {
     read.resolve(stored);
     await settle();
     expect(store.getState().reminderLeadMinutes).toBe(10);
-    expect(store.getState().noticeText).toBe('Recording this one.');
+    expect(store.getState().openAtLogin).toBe('on');
   });
 
   it('follows a preference changed elsewhere, and ignores the keys it does not own', async () => {
@@ -128,10 +122,16 @@ describe('CalendarSettingsStore', () => {
     const store = new CalendarSettingsStore(calendar.api);
     store.retain();
     await settle();
-    calendar.changePreference({ key: 'notice.enabled', value: true });
+    // The retired call notice keys are no longer in the type; an old build's event could still
+    // name one. WHY the cast: it is the one way to send a key nobody registers.
+    calendar.changePreference({
+      key: 'notice.enabled',
+      value: true,
+    } as unknown as PreferenceChange);
     calendar.changePreference({ key: 'app.openAtLogin', value: 'off' });
     calendar.changePreference({ key: 'theme', value: 'dark' });
-    expect(store.getState()).toMatchObject({ noticeEnabled: true, openAtLogin: 'off' });
+    expect(store.getState()).toMatchObject({ openAtLogin: 'off' });
+    expect(store.getState()).not.toHaveProperty('noticeEnabled');
   });
 
   it('saves one choice through setPreference and waits for its change event to show it', async () => {
@@ -139,25 +139,27 @@ describe('CalendarSettingsStore', () => {
     const store = new CalendarSettingsStore(fake({ setPreference }).api);
     store.retain();
     await settle();
-    await store.choose('notice.enabled', true);
-    expect(setPreference).toHaveBeenCalledWith('notice.enabled', true);
-    expect(store.getState()).toMatchObject({ saveError: null, noticeEnabled: false });
+    await store.choose('calendar.reminderLeadMinutes', 10);
+    expect(setPreference).toHaveBeenCalledWith('calendar.reminderLeadMinutes', 10);
+    expect(store.getState()).toMatchObject({ saveError: null, reminderLeadMinutes: 5 });
   });
 
   it('says why a save failed and keeps the stored value', async () => {
     const setPreference = vi
       .fn<PrefsApi['setPreference']>()
       .mockRejectedValue(
-        new Error("Error invoking remote method 'prefs:set': Error: notice.text is blank"),
+        new Error(
+          "Error invoking remote method 'prefs:set': Error: calendar.reminderLeadMinutes must be one of 0, 1, 2, 5 or 10",
+        ),
       );
     const store = new CalendarSettingsStore(fake({ setPreference }).api);
     store.retain();
     await settle();
-    await store.choose('notice.text', ' ');
+    await store.choose('calendar.reminderLeadMinutes', 3 as 5);
     expect(store.getState().saveError).toBe(
-      'Roger could not save that setting: notice.text is blank',
+      'Roger could not save that setting: calendar.reminderLeadMinutes must be one of 0, 1, 2, 5 or 10',
     );
-    expect(store.getState()).toMatchObject({ noticeText: 'Recording this one.' });
+    expect(store.getState()).toMatchObject({ reminderLeadMinutes: 5 });
   });
 
   it('follows what macOS says about the login item, and why it could not be asked', async () => {
@@ -178,14 +180,6 @@ describe('CalendarSettingsStore', () => {
       loginItem: null,
       loginItemError: 'macOS did not answer',
     });
-  });
-
-  it('remembers the meetings whose notice was copied or dismissed', () => {
-    const store = new CalendarSettingsStore(fake().api);
-    store.markNoticeDone('m1');
-    store.markNoticeDone('m1');
-    store.markNoticeDone('m2');
-    expect(store.getState().noticeDone).toEqual(['m1', 'm2']);
   });
 
   it('stops listening with its last holder', () => {

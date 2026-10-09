@@ -118,13 +118,10 @@ export function settingsState(fields: Partial<CalendarSettingsState> = {}): Cale
     status: 'ready',
     error: null,
     reminderLeadMinutes: 1,
-    noticeEnabled: true,
-    noticeText: 'Hi all, I am taking notes with Roger.',
     openAtLogin: 'off',
     loginItem: 'disabled',
     loginItemError: null,
     saveError: null,
-    noticeDone: [],
     ...fields,
   };
 }

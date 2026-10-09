@@ -928,9 +928,10 @@ describe('live', () => {
         {
           group: 'Live meeting',
           slug: 'live-recording',
-          caption: 'Title, Stop, "Recording · 39m", the consent line; no panel, no meter, no pill',
+          caption: 'Title, Stop, "Recording · 39m"; no notice line, no panel, no meter, no pill',
           primary: 'Stop',
-          shows: ['Recording ·', 'Copy notice', 'Details'],
+          shows: ['Recording ·', 'Details'],
+          hides: ['Copy notice', 'Tell the others'],
         },
         liveMeeting,
       );
@@ -1649,10 +1650,10 @@ describe('settings', () => {
           group: 'Settings',
           slug: 'settings-connected',
           caption:
-            'The demo calendar (a developer set CALENDAR_PROVIDER=fake): the account says so, then Remind me, the notice and its text, Open at login; no Save, no counters',
+            'The demo calendar (a developer set CALENDAR_PROVIDER=fake): the account says so, then Remind me, Open at login; no notice, no Save, no counters',
           primary: null,
-          shows: ['Connected as Demo calendar', 'Notice text', 'Open Roger at login'],
-          hides: ['Save notice', 'of 100 terms', 'you@example.com'],
+          shows: ['Connected as Demo calendar', 'Remind me', 'Open Roger at login'],
+          hides: ['Call notice', 'Notice text', 'Save notice', 'of 100 terms', 'you@example.com'],
         },
         connectedSettings,
         async ({ page }) => {

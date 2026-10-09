@@ -1,10 +1,5 @@
 import { useEffect, useId, useRef, useState, type KeyboardEvent } from 'react';
-import {
-  DEFAULT_NOTICE_TEXT,
-  MAX_NOTICE_TEXT_LENGTH,
-  REMINDER_LEAD_MINUTES,
-  type ReminderLeadMinutes,
-} from '../../../shared/calendarPrefs';
+import { REMINDER_LEAD_MINUTES, type ReminderLeadMinutes } from '../../../shared/calendarPrefs';
 import { SettingsProblem } from '../settings/SettingsProblem';
 import { SettingsRow } from '../settings/SettingsRow';
 import {
@@ -15,7 +10,6 @@ import {
 } from './calendarFormat';
 import type { CalendarSettingsState, CalendarSettingsStore } from './calendarSettingsStore';
 import type { CalendarState, CalendarStore } from './calendarStore';
-import { noticeToSave } from './noticeDraft';
 import { useCalendar, useCalendarSettings, useNow } from './useCalendar';
 import '../settings/settings.css';
 import './calendarSettings.css';
@@ -28,16 +22,14 @@ export interface CalendarSettingsActions {
 
 /**
  * Settings: the Calendar section (M5-T12; M5-T13 mounts it in the shell's `settings` slot): the
- * Google account with Connect, Reconnect and Disconnect (which asks first, in place), how long
- * before a call the reminder shows, and the notice to the other people on the call with its text.
- * Opening Roger at login lives in the Mac section (settings/MacSettings.tsx). Every choice saves as
- * it is made (no Save buttons, redesign R6): the select and the switch on change, the notice text
- * on blur. Main's PreferencesStore keeps the choices; this
- * shows what main stored and changes it only through `setPreference` (calendarSettingsStore.ts).
+ * Google account with Connect, Reconnect and Disconnect (which asks first, in place), and how long
+ * before a call the reminder shows. Opening Roger at login lives in the Mac section
+ * (settings/MacSettings.tsx). Every choice saves as it is made (no Save buttons, redesign R6): the
+ * select on change. Main's PreferencesStore keeps the choices; this shows what main stored and
+ * changes it only through `setPreference` (calendarSettingsStore.ts).
  *
- * Trap: no control here is ever `disabled` while a save is out. The notice box saves on blur, and
- * a blur comes BEFORE the click that caused it: a switch or "Use the default text" that went
- * disabled in between would swallow that click.
+ * Trap: no control here is ever `disabled` while a save is out. A blur comes BEFORE the click that
+ * caused it, so a control that went disabled in between would swallow that click.
  */
 export function CalendarSettings() {
   const calendar = useCalendar();
@@ -115,10 +107,7 @@ export function CalendarSettingsSection({
         </SettingsProblem>
       ) : null}
       {settings.status === 'ready' ? (
-        <>
-          <ReminderField settings={settings} actions={actions.settings} />
-          <NoticeFields settings={settings} actions={actions.settings} />
-        </>
+        <ReminderField settings={settings} actions={actions.settings} />
       ) : null}
       {settings.saveError === null ? null : (
         <SettingsProblem role="alert">{settings.saveError}</SettingsProblem>
@@ -345,93 +334,5 @@ function ReminderField({ settings, actions }: FieldProps) {
         ))}
       </select>
     </SettingsRow>
-  );
-}
-
-function NoticeFields({ settings, actions }: FieldProps) {
-  return (
-    <SettingsRow label="Call notice">
-      <div className="settings-field">
-        <label className="settings-check">
-          <input
-            type="checkbox"
-            checked={settings.noticeEnabled}
-            onChange={(event) => {
-              void actions.choose('notice.enabled', event.currentTarget.checked);
-            }}
-          />
-          <span className="settings-check-text">
-            <span>Offer a notice for the other people on the call</span>
-            <span className="settings-hint">
-              The meeting page gets a Copy notice button, to paste into the call’s chat.
-            </span>
-          </span>
-        </label>
-        {settings.noticeEnabled ? (
-          // Keyed by the stored text: after a save the draft starts again from what main stored.
-          <NoticeTextEditor
-            key={settings.noticeText}
-            stored={settings.noticeText}
-            onSave={(text) => {
-              void actions.choose('notice.text', text);
-            }}
-          />
-        ) : null}
-      </div>
-    </SettingsRow>
-  );
-}
-
-function NoticeTextEditor({ stored, onSave }: { stored: string; onSave: (text: string) => void }) {
-  const id = useId();
-  const box = useRef<HTMLTextAreaElement>(null);
-  const [draft, setDraft] = useState(stored);
-  const blank = draft.trim() === '';
-  return (
-    <div className="calendar-notice-editor">
-      <label htmlFor={id} className="settings-label">
-        Notice text
-      </label>
-      <textarea
-        ref={box}
-        id={id}
-        className="settings-input calendar-textarea"
-        rows={3}
-        maxLength={MAX_NOTICE_TEXT_LENGTH}
-        value={draft}
-        onChange={(event) => {
-          setDraft(event.currentTarget.value);
-        }}
-        onBlur={() => {
-          const text = noticeToSave(draft, stored);
-          if (text !== null) onSave(text);
-        }}
-      />
-      {blank ? (
-        <SettingsProblem role="status">
-          Write the notice, or turn it off above: a blank notice would paste nothing.
-        </SettingsProblem>
-      ) : null}
-      {draft === DEFAULT_NOTICE_TEXT ? null : (
-        <div className="calendar-notice-actions">
-          <button
-            type="button"
-            className="btn"
-            data-variant="ghost"
-            data-size="sm"
-            onClick={() => {
-              // Saves itself: the click blurs the box first, and a draft set here would otherwise
-              // sit unsaved until a blur that never comes.
-              setDraft(DEFAULT_NOTICE_TEXT);
-              onSave(DEFAULT_NOTICE_TEXT);
-              // The button goes with the difference; keep the keyboard in the editor.
-              box.current?.focus();
-            }}
-          >
-            Use the default text
-          </button>
-        </div>
-      )}
-    </div>
   );
 }
